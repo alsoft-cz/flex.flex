@@ -45,7 +45,8 @@ module cc_codes =
 --  631,632,633,634,635,636,637,638,639,640,641,642,643,644,645,646,647,648,
 --  649,650,651,652,653,654,655,656,657,658,659,660,661,662,663,664,665,666,
 --  667,668,669,670,671,672,673,674,675,676,677,678,679,680,681,682,683,684,
---  685,686,687,688,689,690,691,692,693,694,695,696,697,698,699,700,701,702
+--  685,686,687,688,689,690,691,692,693,694,695,696,697,698,699,700,701,702,
+--  703
 ----------------------------------------------------------------------------------------------------
 
 ----- %%TECH Pou‘it‚ k¢dy neimplementovan˜ch blok– -------------------------------------------------
@@ -69,7 +70,7 @@ module cc_codes =
 --
 --     CE.SETERROR | CE.SETWARNING | CE.SETMSG
 --     [ SETPARAM ]
---     [ SETHINT ]
+--     [ SETINFO ]
 --     [ SETPOS/LOADPOS ]
 --
 -- Chyby, ze kter˜ch se nelze zotavit, se ¨¡©¡ p©¡kazem CE.RAISEERROR jako
@@ -161,6 +162,7 @@ type
       ce_x_end_entry;
       ce_x_end_enum;
       ce_x_end_exit;
+      ce_x_end_protected;
       ce_x_end_sequential;
       ce_x_end_return;
       ce_x_end_rollback;
@@ -217,8 +219,9 @@ type
       ce_duptparam;
       ce_wrongdecl;
       ce_baddecl;
-      ce_badprivate;
-      ce_badprotected;
+      ce_bad_protected;
+      ce_bad_supervised;
+      ce_bad_private;
       ce_dupdecl;
       ce_dupentry;
       ce_dupexit;
@@ -298,6 +301,7 @@ type
       ce_i_current_selector;
       ce_i_association;
       ce_i_write_access;
+      ce_i_reference;
       --- platformovˆ specifick‚ chyby ---
       ce_cantimport;
       ce_imported;
@@ -421,6 +425,7 @@ var
       for ce_x_end_if            use '"END IF" expected',--'O‡ek v no "END IF"',
       for ce_x_end_loop          use '"END LOOP" expected',--'O‡ek v no "END LOOP"',
       for ce_x_end_loop_until    use '"END LOOP" or "UNTIL" expected',--'O‡ek v no "END LOOP" nebo "UNTIL"',
+      for ce_x_end_protected     use '"END PROTECTED" expected',
       for ce_x_end_sequential    use '"END SEQUENTIAL" expected',
       for ce_x_end_record        use '"END RECORD" expected',--'O‡ek v no "END RECORD"',
       for ce_x_end_rollback      use '"END ROLLBACK" expected',
@@ -474,8 +479,9 @@ var
       for ce_duptparam           use 'Duplicate template parameter actual value association',
       for ce_wrongdecl           use 'Wrong declaration of the entity "%1"',--'Chybn  deklarace symbolu %1',
       for ce_baddecl             use 'Illegal declaration',--'Nep©¡pustn  deklarace',
-      for ce_badprivate          use 'Illegal PRIVATE part',--'Nep©¡pustn  ‡ st PRIVATE',
-      for ce_badprotected        use 'Illegal PROTECTED',--'Nep©¡pustn  ‡ st PROTECTED',
+      for ce_bad_protected       use 'Illegal PROTECTED part',--'Nep©¡pustn  ‡ st PROTECTED',
+      for ce_bad_supervised      use 'Illegal SUPERVISED part',
+      for ce_bad_private         use 'Illegal PRIVATE part',--'Nep©¡pustn  ‡ st PRIVATE',
       for ce_dupdecl             use 'Duplicate declaration of "%1"',--'Duplicitn¡ deklarace symbolu "%1"',
       for ce_dupentry            use 'Duplicate declaration of the ENTRY special method',--'Duplicitn¡ deklarace speci ln¡ metody ENTRY',
       for ce_dupexit             use 'Duplicate declaration of the EXIT special method',--'Duplicitn¡ deklarace speci ln¡ metody EXIT',
@@ -554,6 +560,7 @@ var
       for ce_i_current_selector  use 'Illegal entity selector',--'Nep©¡pustn˜ selektor entity',
       for ce_i_association       use 'Illegal item association',--'Nep©¡pustn  vazba polo‘ky',
       for ce_i_write_access      use 'Illegal object access',--'Nep©¡pustn˜ p©¡stup k objektu',
+      for ce_i_reference         use 'Illegal object reference',
 
       --- platformovˆ specifick‚ chyby ---
       for ce_cantimport          use 'Cannot import the "%1" procedure',--'Proceduru "%1" nelze importovat',
@@ -647,36 +654,120 @@ var
       [for id use 'UNKNOWN_SYNTAX_IDENTIFIER'       , for warn use cw_unknown_syntax        ],
       [for id use 'UNUSED_ENTITY'                   , for warn use cw_unused_entity         ],
       [for id use 'USER_WARNING'                    , for warn use cw_meta_warning          ]];
+
      
   -- v¨echny warningy
   cc_warning_id_all : const tshortident := 'ALL';
 
   -- texty varov n¡
   twarningcodetxt  : const array twarningcode of t_char32str := [
-          --- varov n¡ p©i syntaktick‚ anal˜ze ---
-          for cw_obsolete_syntax       use 'Obsolete syntax',--'Zastaral  syntaktick  konstrukce',
+      --- varov n¡ p©i syntaktick‚ anal˜ze ---
+      for cw_obsolete_syntax       use 'Obsolete syntax',--'Zastaral  syntaktick  konstrukce',
 
-          --- varov n¡ p©i s‚mantick‚ anal˜ze ---
-          for cw_null_slice            use 'Null slice',--'Nulov˜ ©ez',
-          for cw_null_choice           use 'Null choive',--'Nulov˜ v˜bˆr',
-          for cw_duplicate_choice      use 'Duplicate choice',--'Duplicitn¡ v˜bˆr',
-          for cw_duplicate_association use 'Duplicate item association',--'Duplicitn¡ vazba polo‘ky',
-          for cw_imm_strlength         use 'String too long',--'žetˆzec je p©¡li¨ dlouh˜',
-          for cw_concat_strlength      use 'Resulting string too long',--'V˜sledn˜ ©ˆtˆzec je p©¡li¨ dlouh˜',
-          for cw_unused_entity         use 'Unused entity "%1"',--'Nepou‘it  entita "%1"',
-          for cw_constant_condition    use 'Constant condition',--'Konstantn¡ podm¡nka',
-          for cw_strange_design        use 'Strange design',--'Neobvykl  konstrukce',
+      --- varov n¡ p©i s‚mantick‚ anal˜ze ---
+      for cw_null_slice            use 'Null slice',--'Nulov˜ ©ez',
+      for cw_null_choice           use 'Null choive',--'Nulov˜ v˜bˆr',
+      for cw_duplicate_choice      use 'Duplicate choice',--'Duplicitn¡ v˜bˆr',
+      for cw_duplicate_association use 'Duplicate item association',--'Duplicitn¡ vazba polo‘ky',
+      for cw_imm_strlength         use 'String too long',--'žetˆzec je p©¡li¨ dlouh˜',
+      for cw_concat_strlength      use 'Resulting string too long',--'V˜sledn˜ ©ˆtˆzec je p©¡li¨ dlouh˜',
+      for cw_unused_entity         use 'Unused entity "%1"',--'Nepou‘it  entita "%1"',
+      for cw_constant_condition    use 'Constant condition',--'Konstantn¡ podm¡nka',
+      for cw_strange_design        use 'Strange design',--'Neobvykl  konstrukce',
 
-          --- varov n¡ preprocesoru ---
-          for cw_unknown_meta          use 'Unknown metastatement "%1"',--'Mezn m˜ metap©¡kaz "%1"',
-          for cw_unknown_assign        use 'Unknown internal-procedure identifier "%1"',--'Nezn m˜ identifik tor intern¡ procedury "%1"',
-          for cw_unknown_option        use 'Unknown compiler option "%1"',--'Nezn m˜ parametr p©eklada‡e "%1"',
-          for cw_unknown_pragma        use 'Unknown pragma "%1"',--'Nezn m‚ pragma "%1"',
-          for cw_unknown_environment   use 'Unknown variable "%1"',--'Nezn m  promˆnn  "%1"',
-          for cw_unknown_syntax        use 'Unknown syntax "%1"',--'Nezn m  syntaxe "%1"',
-          for cw_meta_warning          use '%1',
-          for cw_option_redefined      use 'Compiler option %1 redefined',--'Parametr prekladace %1 predefinovan'
-          for cw_option_not_applicable use 'Compiler option %1 not applicable in this context'];--'Parametr prekladace %1 neni platny pro tento kontext'
+      --- varov n¡ preprocesoru ---
+      for cw_unknown_meta          use 'Unknown metastatement "%1"',--'Mezn m˜ metap©¡kaz "%1"',
+      for cw_unknown_assign        use 'Unknown internal-procedure identifier "%1"',--'Nezn m˜ identifik tor intern¡ procedury "%1"',
+      for cw_unknown_option        use 'Unknown compiler option "%1"',--'Nezn m˜ parametr p©eklada‡e "%1"',
+      for cw_unknown_pragma        use 'Unknown pragma "%1"',--'Nezn m‚ pragma "%1"',
+      for cw_unknown_environment   use 'Unknown variable "%1"',--'Nezn m  promˆnn  "%1"',
+      for cw_unknown_syntax        use 'Unknown syntax "%1"',--'Nezn m  syntaxe "%1"',
+      for cw_meta_warning          use '%1',
+      for cw_option_redefined      use 'Compiler option %1 redefined',--'Parametr prekladace %1 predefinovan'
+      for cw_option_not_applicable use 'Compiler option %1 not applicable in this context'];--'Parametr prekladace %1 neni platny pro tento kontext'
+
+
+type
+  -- k¢dy hint–
+  thintcode        = enum
+      --- skupina 1 ---
+      ch_hint_11;                                -- hint 1
+      ch_hint_12;                                -- hint 2
+      --- skupina 2 ---
+      ch_hint_21;                                -- hint 1
+      ch_hint_22;                                -- hint 2
+      ch_hint_23;                                -- hint 3
+      end enum;
+  thintcodeset  = set of thintcode {%%TODO(SET)}for size use 4;
+
+  -- popis hintu
+  thintdesc        = record
+      id           : tshortident;                -- identifik tor hintu
+      hint         : thintcode;                  -- k¢d hintu
+      end record;
+
+var
+  -- tabulka popis– hint–
+  cc_hint_desc    : const array 0..4 of thintdesc := [
+      [for id use 'HINT_11', for hint use ch_hint_11 ],
+      [for id use 'HINT_12', for hint use ch_hint_12 ],
+      [for id use 'HINT_21', for hint use ch_hint_21 ],
+      [for id use 'HINT_22', for hint use ch_hint_22 ],
+      [for id use 'HINT_23', for hint use ch_hint_23 ]];
+     
+  -- v¨echny hinty
+  cc_hint_id_all : const tshortident := 'ALL';
+
+  -- texty hint–
+  thintcodetxt  : const array thintcode of t_char32str := [
+      --- skupina 1 ---
+      for ch_hint_11     use 'Toto je text hintu 1.1',
+      for ch_hint_12     use 'Toto je text hintu 1.2',
+      --- skupina 1 ---
+      for ch_hint_21     use 'Toto je text hintu 2.1',
+      for ch_hint_22     use 'Toto je text hintu 2.2',
+      for ch_hint_23     use 'Toto je text hintu 2.3' ];
+
+
+type
+  -- k¢dy diagnostick˜ch hl ¨en¡
+  tdiagcode        = enum
+      --- skupina 1 ---
+      ch_diag_11;                                -- diag 1
+      ch_diag_12;                                -- diag 2
+      --- skupina 2 ---
+      ch_diag_21;                                -- diag 1
+      ch_diag_22;                                -- diag 2
+      end enum;
+  tdiagcodeset     = set of tdiagcode {%%TODO(SET)}for size use 4;
+
+  -- popis diagnostick‚ho hl ¨en¡
+  tdiagdesc        = record
+      id           : tshortident;                -- identifik tor diagnostick‚ho hl ¨en¡
+      diag         : tdiagcode;                  -- k¢d diagnostick‚ho hl ¨en¡
+      end record;
+
+var
+  -- tabulka popis– diagnostick˜ch hl ¨en¡
+  cc_diag_desc    : const array 0..4 of tdiagdesc := [
+      [for id use 'DIAG_11', for diag use ch_diag_11 ],
+      [for id use 'DIAG_12', for diag use ch_diag_12 ],
+      [for id use 'DIAG_21', for diag use ch_diag_21 ],
+      [for id use 'DIAG_22', for diag use ch_diag_22 ]];
+     
+  -- v¨echna diagnostick  hl ¨en¡
+  cc_diag_id_all : const tshortident := 'ALL';
+
+  -- texty diagnostick˜ch hl ¨en¡
+  tdiagcodetxt  : const array tdiagcode of t_char32str := [
+      --- skupina 1 ---
+      for ch_diag_11     use 'Toto je text diagu 1.1',
+      for ch_diag_12     use 'Toto je text diagu 1.2',
+      --- skupina 2 ---
+      for ch_diag_21     use 'Toto je text diagu 2.1',
+      for ch_diag_22     use 'Toto je text diagu 2.2' ];
+
+
 
 message
   -- spole‡n˜ potomek pro chyby (v˜jimky) pou‘¡van‚ p©eklada‡em (a propagovan‚ ven)
@@ -698,10 +789,12 @@ const
   hint_x_completion        = 'O‡ek v no dokon‡en¡ deklarace symbolu';
   hint_x_private           = 'O‡ek v na deklarace Private body';
   hint_def_or_forward      = 'O‡ek v na definice nebo ne£pln  deklarace';
-  hint_part_no_private     = '€ st PRIVATE m  smysl pouze v modulu a t©¡dˆ';
-  hint_part_bad_private    = '€ st PRIVATE m–‘e n sledovat pouze po ‡ stech PUBLIC nebo PROTECTED';
   hint_part_no_protected   = '€ st PROTECTED m  smysl pouze v modulu a t©¡dˆ';
   hint_part_bad_protected  = '€ st PROTECTED m–‘e n sledovat pouze po ‡ sti PUBLIC';
+  hint_part_no_supervised  = '€ st SUPERVISED m  smysl pouze v modulu a t©¡dˆ';
+  hint_part_bad_supervised = '€ st SUPERVISED m–‘e n sledovat pouze po ‡ sti PUBLIC nebo PROTECTED';
+  hint_part_no_private     = '€ st PRIVATE m  smysl pouze v modulu a t©¡dˆ';
+  hint_part_bad_private    = '€ st PRIVATE m–‘e n sledovat pouze po ‡ stech PUBLIC, PROTECTED nebo SUPERVISED';
   -- n vˆ¨t¡
   hint_decl_label          = 'Deklarace n vˆ¨t¡ nem  smysl v modulu a t©¡dˆ';
   -- moduly/t©¡dy

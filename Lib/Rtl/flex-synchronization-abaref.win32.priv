@@ -8,48 +8,9 @@ const
   lock_thread_base                   =      1;
 
 
-----------------------------------------------------------------------------------------------------
-procedure rtl_interlocked_abaref_compare_exchange(
-    locked_value   : in p_rtl_abaref_pointer;
-    new_value      : in t_rtl_abaref_pointer;
-    when_locked_eq : in t_rtl_abaref_pointer;
-    old_value      : out t_rtl_abaref_pointer);
-----------------------------------------------------------------------------------------------------
-procedure rtl_abaref_copy_pointer_both(
-    target_pointer : in out ref t_rtl_abaref_pointer;  -- shared interlocked 
-    when_tg_eq     : in p_rtl_abaref_pointer;          -- nil allowed 
-    source_pointer : in out ref t_rtl_abaref_pointer;  -- shared interlocked 
-    when_sc_eq     : in p_rtl_abaref_pointer;          -- nil allowed 
-    new_target     : in p_rtl_abaref_pointer;          -- nil allowed 
-    success        : out t_rtl_logical8);
-----------------------------------------------------------------------------------------------------
-procedure rtl_abaref_copy_pointer_target(
-    target_pointer : in out ref t_rtl_abaref_pointer;  -- shared interlocked 
-    when_tg_eq     : in p_rtl_abaref_pointer;          -- nil allowed 
-    source_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
-    new_target     : in p_rtl_abaref_pointer;          -- nil allowed 
-    success        : out t_rtl_logical8);
-----------------------------------------------------------------------------------------------------
-procedure rtl_abaref_copy_pointer_source(
-    target_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
-    source_pointer : in out ref t_rtl_abaref_pointer;  -- shared interlocked 
-    when_sc_eq     : in p_rtl_abaref_pointer;          -- nil allowed 
-    success        : out t_rtl_logical8);
-----------------------------------------------------------------------------------------------------
-procedure rtl_abaref_copy_pointer_none(
-    target_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
-    source_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
-    success        : out t_rtl_logical8);
-----------------------------------------------------------------------------------------------------
-procedure rtl_abaref_discard(
-    target_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
-    success        : out t_rtl_logical8);
-----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_abaref_new(
-    node           : out ref t_rtl_abaref_pointer
-)=
+procedure rtl_abaref_new =
 ----------------------------------------------------------------------------------------------------
 begin
   node:=nil;
@@ -64,8 +25,15 @@ procedure rtl_abaref_destroy(
     node           : in out p_rtl_abaref_item
 )=
 ----------------------------------------------------------------------------------------------------
+var 
+    success        : t_rtl_logical8;
+
 begin
   if node^.refcount<>0 then
+    raise synchronization_error;
+    end if;
+  rtl_abaref_discard(node^.next,success);
+  if not success then
     raise synchronization_error;
     end if;
   discard node;
@@ -114,7 +82,7 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_abaref_incref_ptr(
-    locked_pointer : in out ref t_rtl_abaref_pointer;
+    locked_pointer : in out aliased t_rtl_abaref_pointer;
     when_old_eq    : in out ref t_rtl_abaref_pointer;
     count          : t_rtl_signed16;
     success        : out t_rtl_logical8
@@ -421,6 +389,7 @@ begin
 
   -- lock old tg node by thread
   if old_tg.ptr<>nil then
+    --%%TODO optimize to rtl_abaref_incref only ?
     rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
     if not success then
       return;
@@ -449,6 +418,7 @@ begin
   end rtl_abaref_copy_pointer_none;
 
 
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_abaref_discard =
 ----------------------------------------------------------------------------------------------------
@@ -461,6 +431,12 @@ var
 begin
   -- get comparands
   old_tg:=target_pointer;
+
+  -- speedup
+  if old_tg.ptr=nil then
+    success:=true;
+    return;
+    end if;
 
   -- get comparands
   old_sc:=nil;

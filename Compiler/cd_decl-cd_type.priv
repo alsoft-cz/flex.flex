@@ -259,7 +259,7 @@ begin
       -- v tom p©¡padˆ ale musel b˜t uveden modifik tor UNCHECKED
       if curr.pbase<>pb_unchecked then
         ce^.seterror({CCERR=}000026,ce_x_typ);
-        ce^.sethint(hint_ptrunchecked);
+        ce^.setinfo(hint_ptrunchecked);
         ce^.loadpos;
         {%%RESUME ce^.raiseerror;}
         ce^.resumeerror;
@@ -325,6 +325,9 @@ begin
       -- datov˜ typ
       curr.stype:=dt_uarray;
 
+      -- ALIASED
+      p_aliased_access(curr_context,curr.saliased);
+
       -- b zov˜ typ
       p_typeidef(context,curr_context,curr.base);
 
@@ -343,6 +346,9 @@ begin
       case lex
         -- OF
         when lex_of     do
+            -- ALIASED
+            p_aliased_access(curr_context,curr.saliased);
+  
             -- b zov˜ typ
             p_typeidef(context,curr_context,curr.base);
 
@@ -406,6 +412,9 @@ begin
         end if;
       end if;
 
+  -- ALIASED
+  p_aliased_access(curr_context,curr.saliased);
+
   -- b zov˜ typ
   p_typeidef(context,curr_context,curr.base);
   end p_def_string;
@@ -446,6 +455,9 @@ begin
       ce^.loadpos;
       {%%RESUME ce^.raiseerror;}
       end if;
+
+    -- ALIASED
+    p_aliased_access(item_context,pitem^.valiased);
 
     -- typ
     p_typeidef(context,item_context,pitem^.typ);
@@ -525,6 +537,7 @@ var
   param_context    : tcontext;                   -- kontext parametru
   parmode          : parammode;                  -- m¢d parametru
   parpass          : parampass;                  -- p©ed n¡ parametru
+  paraliased       : t_mem_aliased;              -- povolen¡ aliased p©¡stupu
   num              : t_unsigned;                 -- po©ad¡ parametru
   expr             : pexpnode;                   -- inicializa‡n¡ v˜raz
   pos              : lexposblock;                -- pozice
@@ -568,25 +581,18 @@ begin
         --
         ------------------------------------------------------------------
 
-        -- dal¨¡ symbol
-        getlex(param_context,lex);
-
         -- %%TECH Doplnˆn¡ implicitn¡ volac¡ konvence PP_REF pro m¢dy OUT
         -- a IN OUT je kl¡‡ov‚ pro spr vn‚ vyhodnocen¡ deklarace v E_PARAM.
 
         -- IN
-        if lex=lex_in then
+        if checklex(param_context,lex_in) then
           -- dal¨¡ symbol
-          getlex(param_context,lex);
-          if lex=lex_out
+          if checklex(param_context,lex_out)
 
             -- IN OUT
             then
               parmode:=pm_inout;
               parpass:=pp_ref;
-
-              -- dal¨¡ symbol
-              getlex(param_context,lex);
 
             -- IN
             else
@@ -595,12 +601,9 @@ begin
               end if;
 
         -- OUT
-        elsif lex=lex_out then
+        elsif checklex(param_context,lex_out) then
           parmode:=pm_out;
           parpass:=pp_ref;
-
-          -- dal¨¡ symbol
-          getlex(param_context,lex);
 
         -- nen¡ uveden m¢d
         else
@@ -608,13 +611,18 @@ begin
           parpass:=pp_default;
           end if;
 
+        -- ALIASED
+        p_aliased_access(param_context,paraliased);
+        paraliased:=true{%%X};
+
         -- p©ed n¡ parametru
+        getlex(param_context,lex);
         case lex
           when lex_static    do
               -- OUT a IN OUT se nesm¡ p©ed vat hodnotou
               if parmode in parammodeset:[pm_out,pm_inout] then
                 ce^.seterror({CCERR=}000035,ce_i_static);
-                ce^.sethint(hint_par_no_static);
+                ce^.setinfo(hint_par_no_static);
                 ce^.loadpos;
                 {%%RESUME ce^.raiseerror;}
                 goto R1;
@@ -643,7 +651,7 @@ begin
             -- sm¡ m¡t parametr vynech n typ ?
             if parpass<>pp_unchecked then
               ce^.seterror({CCERR=}000036,ce_wrongdecl);
-              ce^.sethint(hint_no_param_type);
+              ce^.setinfo(hint_no_param_type);
               ce^.loadpos;
               {%%RESUME ce^.raiseerror;}
               ce^.resumeerror;
@@ -671,6 +679,7 @@ begin
     -- doplnit £daje
     pparam^.mode:=parmode;
     pparam^.pass:=parpass;
+    pparam^.paliased:=paraliased;
     pparam^.num:=num;
     pparam^.init.setexpr(expr);
     succ num;
@@ -890,7 +899,7 @@ begin
                 if not ((context.entity^.etype in tentitytypeset:[et_module,et_class])
                 and (context.region^.vsect in tentityvisibleset:[etv_public,etv_protected])) then
                   ce^.seterror({CCERR=}000038,ce_i_extension);
-                  ce^.sethint(hint_private_extension);
+                  ce^.setinfo(hint_private_extension);
                   {%%RESUME ce^.raiseerror;}
                   ce^.resumeerror;
                   end if;

@@ -493,7 +493,8 @@ class private tentitysearch =
                   if ycontext.entity^.ancestor.getuentity=nil
 
                     -- neexistuje => dal¨¡ krok
-                    then this.status:=this.next
+                    then 
+                      this.status:=this.next
  
                     -- existuje => omezit masku viditelnosti a prohledat
                     else 
@@ -502,7 +503,7 @@ class private tentitysearch =
 
                       -- omezit masku viditelnosti
                       sv*tentityvisibleset:[etv_public,etv_protected]
-                    end if;
+                      end if;
 
                 -- o region v˜¨e
                 else
@@ -517,9 +518,7 @@ class private tentitysearch =
           when search_with  do
               -- nal‚zt prvn¡ p©¡pustnou polo‘ku
               if xcontext.region^.withtable<>nil then 
-                while windex<=xcontext.region^.withtable^:length
-                and ((xcontext.region^.withtable^[windex].mode<>twm_with)
-                or (xcontext.region^.withtable^[windex].typ<>twt_all)) loop 
+                while windex<=xcontext.region^.withtable^:length and xcontext.region^.withtable^[windex].mode<>twm_with loop 
                   succ windex; 
                   end loop;
                 end if;
@@ -527,14 +526,15 @@ class private tentitysearch =
               if xcontext.region^.withtable=nil or else windex>xcontext.region^.withtable^:length
 
                 -- prohledat nad©azen˜ kontext
-                then this.status:=search_context
+                then 
+                  this.status:=search_context
 
                 -- prohledat with tabulku
                 else
                   -- zavolat podprogram
                   ycontext:=sym_primary_context(xcontext.region^.withtable^[windex].entity.getcentity^);
                   this.status:=search_local;
-                  sv:=[etv_public];
+                  sv:=with_level_to_visibility[xcontext.region^.withtable^[windex].level];
 
                   -- p©¡¨tˆ se bude prohled vat dal¨¡ polo‘ka ve with-tabulce
                   this.next:=search_with;
@@ -806,7 +806,7 @@ procedure sym_is_used =
 -- True, je-li symbol WHAT withnut/usenut (v z vislosti na MODE/TYPE) v symbolu WHERE.                                                           
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=false;
+  result:=twl_none;
   -- Ondra 5.4.2002 : Hled n¡ nem  b˜t rekurzivn¡ vzhledem k nad©azen˜m entit m.
 {
   while where<>nil loop
@@ -817,7 +817,7 @@ begin
         -- Nefungovalo to s t¡m, tak jsem to zakomentoval
         if where.region^.withtable^[i].mode in _mode {and then (where^.withtab^[i].typ in _typ)} 
         and then where.region^.withtable^[i].entity.getcentity=what then
-          result:=true;
+          result:=where.region^.withtable^[i].level;
           return;
           end if;
         end loop;
@@ -997,7 +997,7 @@ begin
       psym:=context;
       while psym<>nil loop
         -- nalezen potomek => je vidˆt v¨e public a protected
-        if (psym^.etype=search^.etype) and sym_is_descendant(psym,search) then
+        if psym^.etype=search^.etype and sym_is_descendant(psym,search) then
           visibility:=tentityvisibleset:[etv_public,etv_protected];
           return;
           end if;
@@ -1007,11 +1007,18 @@ begin
       -- mohl by b˜t WITH/USE v CONTEXT nebo nˆkter‚m nad©azen‚m symbolu
       psym:=context;
       while psym<>nil loop
-        -- nalezen u‘ivatel => je vidˆt v¨e public
-        if sym_is_used(search,sym_primary_context(psym^),twithmodeset:[twm_use,twm_with],twithtypeset:[twt_all]) then
-          visibility:=tentityvisibleset:[etv_public];
-          return;
-          end if;
+        declare var
+          level    : t_with_level;               -- £rove¤ vazby
+
+        begin
+          -- nalezen u‘ivatel => je vidˆt v¨e public
+          level:=sym_is_used(search,sym_primary_context(psym^),[twm_use,twm_with]);
+          if level<>twl_none then
+            visibility:=with_level_to_visibility[level];
+            return;
+            end if;
+          end declare;
+
         psym:=psym^.context.entity;
         end loop;
 
@@ -1063,7 +1070,7 @@ var
   stred            : cc_warning_desc:range;
 
 begin
-  -- nen¡ to nastaven¡ pro v¨echny varov n¡ ?
+  -- nen¡ to nastaven¡ pro v¨echna varov n¡ ?
   if id=cc_warning_id_all
 
     -- ano => nastavit v¨echny
@@ -1085,8 +1092,9 @@ begin
           else kon:=stred;
           end if;
         until zac>=kon;
+
       if id<>cc_warning_desc[zac].id then
-        ce^.setwarning({CCERR=}000320,cw_unknown_option);
+        ce^.setwarning(context,{CCERR=}000320,cw_unknown_option);
         ce^.setparam(entityident_to_string(id));
         ce^.loadpos;
         end if;
@@ -1099,6 +1107,113 @@ begin
       end if;
   end sym_set_warning;
 
+
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_set_hint =
+-- Nastav¡ stav hintu pro danou entitu.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+var
+  zac              : cc_hint_desc:range;
+  kon              : cc_hint_desc:range;
+  stred            : cc_warning_desc:range;
+
+begin
+  -- nen¡ to nastaven¡ pro v¨echny hinty ?
+  if id=cc_hint_id_all
+
+    -- ano => nastavit v¨echny
+    then
+      if value
+        then context.entity^.compv.hints:=thintcodeset:full;
+        else context.entity^.compv.hints:=[];
+        end if;
+
+    -- ne => vyhledat konkr‚tn¡ hint
+    else
+      -- vyhledat
+      zac:=cc_hint_desc:first;
+      kon:=cc_hint_desc:last;
+      loop
+        stred:=(zac+kon) div 2;
+        if id>cc_hint_desc[stred].id
+          then zac:=stred+1;
+          else kon:=stred;
+          end if;
+        until zac>=kon;
+      if id<>cc_hint_desc[zac].id then
+        ce^.setwarning(context,{CCERR=}000320,cw_unknown_option);
+        ce^.setparam(entityident_to_string(id));
+        ce^.loadpos;
+        end if;
+
+      -- nastavit
+      if value
+        then bit_set(context.entity^.compv.hints,t_bit_index(cc_hint_desc[zac].hint:ord));
+        else bit_reset(context.entity^.compv.hints,t_bit_index(cc_hint_desc[zac].hint:ord));
+        end if;
+      end if;
+  end sym_set_hint;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_set_diag =
+-- Nastav¡ stav diagnostick‚ho hl ¨en¡ pro danou entitu.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+var
+  zac              : cc_diag_desc:range;
+  kon              : cc_diag_desc:range;
+  stred            : cc_diag_desc:range;
+
+begin
+  -- nen¡ to nastaven¡ pro v¨echna diagnostick  hl ¨en¡?
+  if id=cc_diag_id_all
+
+    -- ano => nastavit v¨echny
+    then
+      if value
+        then context.entity^.compv.diags:=tdiagcodeset:full;
+        else context.entity^.compv.diags:=[];
+        end if;
+
+    -- ne => vyhledat konkr‚tn¡ diagnostick‚ hl ¨en¡
+    else
+      -- vyhledat
+      zac:=cc_diag_desc:first;
+      kon:=cc_diag_desc:last;
+      loop
+        stred:=(zac+kon) div 2;
+        if id>cc_diag_desc[stred].id
+          then zac:=stred+1;
+          else kon:=stred;
+          end if;
+        until zac>=kon;
+      if id<>cc_diag_desc[zac].id then
+        ce^.setwarning(context,{CCERR=}000320,cw_unknown_option);
+        ce^.setparam(entityident_to_string(id));
+        ce^.loadpos;
+        end if;
+
+      -- nastavit
+      if value
+        then bit_set(context.entity^.compv.diags,t_bit_index(cc_diag_desc[zac].diag:ord));
+        else bit_reset(context.entity^.compv.diags,t_bit_index(cc_diag_desc[zac].diag:ord));
+        end if;
+      end if;
+  end sym_set_diag;
 
 
 ----------------------------------------------------------------------------------------------------

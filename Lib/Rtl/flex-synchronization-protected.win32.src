@@ -2,19 +2,21 @@
 -- kernel object
 ----------------------------------------------------------------------------------------------------
 type 
-  t_kernel_object  = t_handle;
+  t_kernel_object      = t_handle;
 
 const
-    rtl_invalid_kernel_object  : t_kernel_object = $FFFFFFFF;
+  rtl_invalid_kernel_object : t_kernel_object = $FFFFFFFF;
+
+
 
 ----------------------------------------------------------------------------------------------------
 -- mutex
 ----------------------------------------------------------------------------------------------------
 type
-  t_rtl_mutex      = t_kernel_object;
-
+  t_rtl_mutex          = t_kernel_object;
+                
 const
-    rtl_invalid_mutex  : t_rtl_mutex = rtl_invalid_kernel_object;
+  rtl_invalid_mutex    : t_rtl_mutex = rtl_invalid_kernel_object;
 
 
 
@@ -25,8 +27,8 @@ type
   t_rtl_semaphore      = t_kernel_object;
 
 const
-    rtl_invalid_semaphore  : t_rtl_semaphore = rtl_invalid_kernel_object;
-    rtl_nil_semaphore      : t_rtl_semaphore = 0;
+  rtl_invalid_semaphore: t_rtl_semaphore = rtl_invalid_kernel_object;
+  rtl_nil_semaphore    : t_rtl_semaphore = 0;
 
 
 
@@ -34,11 +36,11 @@ const
 -- event
 ----------------------------------------------------------------------------------------------------
 type
-  t_rtl_event      = t_kernel_object;
+  t_rtl_event          = t_kernel_object;
 
 const
-    rtl_invalid_event  : t_rtl_event = rtl_invalid_kernel_object;
-    rtl_nil_event      : t_rtl_event = 0;
+  rtl_invalid_event    : t_rtl_event = rtl_invalid_kernel_object;
+  rtl_nil_event        : t_rtl_event = 0;
 
 
 
@@ -46,13 +48,13 @@ const
 -- critical section
 ----------------------------------------------------------------------------------------------------
 type
-  t_rtl_critical   = record
-    lock_count             : t_rtl_native_signed;
-    lock_semaphore         : t_handle;
-    spin_count             : t_rtl_native_unsigned;
-    recursion_count        : t_rtl_native_signed;
-    owning_thread          : dword;
-    end record;
+  t_rtl_critical       = record
+      lock_count       : aliased t_rtl_native_signed;
+      lock_semaphore   : aliased t_handle;
+      spin_count       : t_rtl_native_unsigned;
+      recursion_count  : t_rtl_native_signed;
+      owning_thread    : dword;
+      end record;
 
 
 
@@ -60,104 +62,9 @@ type
 -- critical semaphore
 ----------------------------------------------------------------------------------------------------
 type
-  t_rtl_critisem = record
-    lock_count           : t_rtl_native_signed;
-    lock_semaphore       : t_handle;
-    spin_count           : t_rtl_native_unsigned;
-    max_in               : t_rtl_native_signed;
-    end record;
-
-
-
-----------------------------------------------------------------------------------------------------
--- ABA referecne counting pointer and item
-----------------------------------------------------------------------------------------------------
-type
-  t_rtl_abaref_item;
-  p_rtl_abaref_item = ^t_rtl_abaref_item for machine_pointer use true;
-
-  t_rtl_abaref_pointer = record
-    ptr            : p_rtl_abaref_item;          -- ukazatel
-    refcount       : t_rtl_signed16;             -- pocet threadu prave dereferencujicich ptr^.next
-                                                 -- pri zmene pointeru first se resetuje na 0 a hodnota se 
-                                                 -- jako zaporna prenasi na item.refcount
-    abacount       : t_rtl_unsigned16;           -- pocitadlo ktere stale roste a je modularni po 
-                                                 -- prime_smaller_than_16_bit_unsigned prvcich
-                                                 -- resi ABA' problem, pri pop ze stacku
-                                                   -- ptr je A
-                                                   -- prectu a^.next ktere se rovna X
-                                                   -- zastavim se
-                                                   -- jiny mezitim thread udela pop A, push B, push A'
-                                                   -- nyni je A'^.next = B
-                                                   -- takze moje jiz nactene X je spatne
-                                                   -- proto se pri kazde operaci zvedne ABAcount
-                                                 -- rotuje se na prvocislo aby se jeste snizila 
-                                                 -- pravdepodobnost next=next' and abacount=abacount'
-    end record;
-  p_rtl_abaref_pointer = ^t_rtl_abaref_pointer;
-
-  t_rtl_abaref_item = record                     -- pomocny record pro seznam polozek
-    next           : t_rtl_abaref_pointer;
-    refcount       : t_rtl_native_signed;        -- pomocne pocitadlo pri dereferencovani ptr^.next
-    data           : t_rtl_pointer;              -- ukazatel na samotne data
-    end record;
-
-
-
-----------------------------------------------------------------------------------------------------
--- nonblocking stack
-----------------------------------------------------------------------------------------------------
-type
-  t_rtl_sstack = record                          -- struktura stacku
-    first          : t_rtl_abaref_pointer;       -- ukazatel na prvni polozku zasobniku
-    waitable       : t_rtl_logical8;             -- priznak zda se ma cekat
-    reserve1       : t_rtl_logical8;
-    reserve2       : t_rtl_logical8;
-    reserve3       : t_rtl_logical8;
-    --is waitable
-      critisem     : t_rtl_critisem;             -- semafor pro cekani na prazdny stack
-                                                 -- pro pocet prvku mensi nez pocet ctecich 
-                                                 -- threadu blokujici ve smyslu prvku ktere se 
-                                                 -- jiz zacali cist
-    -- else
-      count        : t_rtl_native_signed         -- inverzni pocitadlo prvku
-                     for position use 12;        -- na stejnem offsxetu jako pocitadlo critisemu
-    -- end if waitable
-    end record;
-
-
-
-----------------------------------------------------------------------------------------------------
--- nonblocking queue
-----------------------------------------------------------------------------------------------------
-type
-  t_rtl_squeue = record                          -- struktura fronty
-    head           : t_rtl_abaref_pointer;       -- abaref pointer na zacatek fronty
-    tail           : t_rtl_abaref_pointer;       -- abaref pointer na konec fronty
-    waitable       : t_rtl_logical8;             -- priznak zda se ma cekat
-    reserve1       : t_rtl_logical8;
-    reserve2       : t_rtl_logical8;
-    reserve3       : t_rtl_logical8;
-    --is waitable
-      critisem     : t_rtl_critisem;             -- semafor pro cekani na prazdnou frontu
-                                                 -- pro pocet prvku mensi nez pocet ctecich 
-                                                 -- threadu blokujici ve smyslu prvku ktere se 
-                                                 -- jiz zacali cist
-    -- else
-      count        : t_rtl_native_signed         -- inverzni pocitadlo prvku
-                     for position use 20;        -- na stejnem offsxetu jako pocitadlo critisemu
-    -- end if waitable
-    end record;
-
-
-----------------------------------------------------------------------------------------------------
--- nonblocking singly linked list
-----------------------------------------------------------------------------------------------------
-type
-  t_rtl_slist = record                           -- struktura fronty
-    head           : t_rtl_abaref_pointer;       -- abaref pointer na zacatek listu
-    tail           : t_rtl_abaref_pointer;       -- abaref pointer na konec listu
-    end record;
-
-  t_rtl_slist_iterrator = t_rtl_abaref_pointer;
-
+  t_rtl_critisem       = record
+      lock_count       : aliased t_rtl_native_signed;
+      lock_semaphore   : aliased t_handle;
+      spin_count       : t_rtl_native_unsigned;
+      max_in           : t_rtl_native_signed;
+      end record;

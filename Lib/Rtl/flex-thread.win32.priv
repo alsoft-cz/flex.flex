@@ -17,7 +17,7 @@ type
     t_thread_sysTIBuservalue;
     p_thread_sysTIBuservalue = ^t_thread_sysTIBuservalue;
     t_thread_sysTIBuservalue = record
-      value        : t_rtl_native_unsigned;
+      value        : aliased t_rtl_native_unsigned;
       prev         : p_thread_sysTIBuservalue;
       end record;
 
@@ -28,7 +28,7 @@ type
       end record;
 
     t_thread_header = record
-      exceptions   : t_rtl_exceptions;
+      exceptions   : aliased t_rtl_exceptions;
       osthread     : t_thread_physical;
       stackheader  : t_rtl_stack_header;
       parentthread : p_thread_header;
@@ -53,7 +53,7 @@ var
 {system TSL}
     sthread_header : t_rtl_unsigned32;
 -- main thread task control block
-    mainthreadheader : t_thread_header;
+    mainthreadheader : aliased t_thread_header;
     thread_list_first : p_thread_header;
     thread_list_lock  : t_rtl_critical;
     thread_list_count : t_rtl_native_unsigned;
@@ -193,7 +193,7 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_create_thread_ref(
     threadheader   : in p_thread_header;
-    outthread_ref  : in out ref t_thread_ref)=
+    outthread_ref  : in out aliased t_thread_ref)=
 ----------------------------------------------------------------------------------------------------
 begin
   outthread_ref.threadheader:=threadheader;
@@ -312,21 +312,9 @@ begin
 procedure rtl_init_task_helper(
     thread_header  : p_thread_header)=
 ----------------------------------------------------------------------------------------------------
-#if #environment compiler_version;='4.0.3.3' then;
-begin
-  -- nastavit jako systemovou threadovou promennou
-  if not TlsSetValue(sthread_header,LPVOID(thread_header:unchecked)) then
-    raise tasking_error;
-    end if;
-  thread_header^.osthread.threadid:=t_thread_id(GetCurrentThreadId);
-  thread_header^.osthread.threadhandle:=OpenThread(THREAD_ALL_ACCESS,false,thread_header^.osthread.threadid);
-  if thread_header^.osthread.threadhandle=nil then 
-    raise tasking_error;
-    end if;
-#else;
 var
   prochandle   : t_handle;
-  threadhandle : t_handle;
+  threadhandle : aliased t_handle;
   dupresult    : BOOL;
 
 begin
@@ -340,7 +328,6 @@ begin
     if dupresult=0 or thread_header^.osthread.threadhandle=nil then 
     raise tasking_error;
     end if;
-#end if;
   end rtl_init_task_helper;
 
 ----------------------------------------------------------------------------------------------------
@@ -380,7 +367,7 @@ var
     stacpy         : t_thread_starter;
     threadheader   : p_thread_header;
     tibvalptr      : ^ t_rtl_native_unsigned;
-    sys_except_handler : t_rtl_exceptions_handler;
+    sys_except_handler : aliased t_rtl_exceptions_handler;
     unhandledx     : t_rtl_except_row;
 begin
   stacpy:=p_thread_starter(starter)^;
@@ -472,9 +459,10 @@ begin
 procedure rtl_start_thread =
 ----------------------------------------------------------------------------------------------------
 var
-  starter          : t_thread_starter;
+  starter          : aliased t_thread_starter;
   i                : DWORD;
   threadheader     : p_thread_header;
+
 begin 
   new threadheader;
   starter.userdata:=userdata;
@@ -508,6 +496,7 @@ var
   TBIPrev          : p_thread_sysTIBuservalue;
   unknown          : t_rtl_logical8:=true;
   ismain           : t_rtl_logical8:=true;
+
 begin
   threadheader:=rtl_get_current_thread_safe;
   if threadheader<>nil then
@@ -553,12 +542,8 @@ begin
     rtl_init_task_exceptions(^threadheader^.exceptions);
     rtl_init_task_helper(threadheader);
     rtl_init_task_header(ismain,false,threadheader,nil);
-#if #environment compiler_version;='4.0.3.3' then;
-    rtl_init_task_exceptions_win32_inject;
-#else;
     threadheader^.stackheader.seh_handler:=p_rtl_exceptions_handler(topstackspace);
     rtl_init_task_exceptions_win32(threadheader^.stackheader.seh_handler);
-#end if;
     end if;
   end rtl_register_task;
 
@@ -621,11 +606,7 @@ begin
     mov    fs:[t_winnt_tib.aruserpointer],eax
     #end asm;
   if dodiscard then
-#if #environment compiler_version;='4.0.3.3' then;
-    rtl_deinit_task_exceptions_win32_inject;
-#else;
     rtl_deinit_task_exceptions_win32(threadheader^.stackheader.seh_handler);
-#end if;
   #syntax asm;
     mov    eax,0
     #end asm;

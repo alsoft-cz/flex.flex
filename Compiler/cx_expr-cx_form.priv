@@ -119,7 +119,7 @@ begin
   if not t_is_sts(expr^.t,sts) then
     {%%X zp©esnit chybov‚ hl ¨en¡ }
     ce^.seterror({CCERR=}000042,code);
-    ce^.sethint(hint);
+    ce^.setinfo(hint);
     expr^.errpos;
     {%%RESUME ce^.raiseerror;}
     ce^.resumeerror;
@@ -142,7 +142,7 @@ begin
   if expr^.t.tview not in tview then
     {%%X zp©esnit chybov‚ hl ¨en¡ }
     ce^.seterror({CCERR=}000043,code);
-    ce^.sethint(hint);
+    ce^.setinfo(hint);
     expr^.errpos;
     {%%RESUME ce^.raiseerror;}
     ce^.resumeerror;
@@ -556,7 +556,7 @@ begin
               pdesc:=^pentity_overload(srch.psym)^.table^[i];
 
               -- zaj¡maj¡ n s jen bin rn¡ (ne)p©i©azovac¡ oper tory 
-              if (pdesc^.arity=toa_binary) and (pdesc^.assign=expr^.assign) then
+              if pdesc^.arity=toa_binary and pdesc^.assign=expr^.assign then
                 -- p©et¡‘en  procedura 
                 pproc:=pentity_subprogram(pdesc^.psym.getcentity);
 
@@ -1257,6 +1257,11 @@ begin
       -- t©¡da uzlu : hodnota 
       expr^.nclass:=nc_value;
 
+      -- %%TECH Pokud se zde nˆkdy kv–li p©ed v n¡ n vratov‚ hodnoty referenc¡ zmˆn¡ t©¡da uzlu na
+      -- [nc_var], tak se s t¡m mus¡ po‡¡tat v [a_form_ref]! Reference n vratov‚ hodnoty procedury
+      -- pochopitelnˆ nem  smysl. Zat¡m se v takov‚m p©¡padˆ v [a_form_ref] ohl s¡ intern¡ chyba,
+      -- ale je to pouze vedlej¨¡ efekt kontroly povolen¡ ALIASED p©¡stupu.
+
     -- procedura nem  n vratovou hodnotu 
     else
       -- t©¡da uzlu : nic 
@@ -1429,7 +1434,6 @@ begin
     -- %%X zp©esnit chybov‚ hl ¨en¡
     ce^.seterror({CCERR=}000052,ce_i_this);
     expr^.errpos;
-    {%%RESUME ce^.raiseerror;}
     ce^.resumeerror;
     end if;
 
@@ -1454,8 +1458,8 @@ procedure a_form_component_finalize (
 ----------------------------------------------------------------------------------------------------
 
     ------------------------------------------------------------------------------------------------
-    procedure createthis =
-    -- do EXPR^.SUB
+    procedure create_this =
+    -- Coby EXPR^.SUB dopln¡ uzel reprezentuj¡c¡ THIS.
     ------------------------------------------------------------------------------------------------
     begin
       -- vznikl novy uzel 
@@ -1463,7 +1467,7 @@ procedure a_form_component_finalize (
 
       -- form ln¡ kontrola 
       a_form_this(curr,pexpthis(expr^.sub),info);
-      end createthis;
+      end create_this;
 
 var
   ptyp             : pentity_type;               -- typ promˆnn‚                                
@@ -1478,7 +1482,6 @@ begin
     -- nedefinovan˜ symbol (zotaven¡ z chyby)
     when et_undef do
         -- chyba ji‘ byla hl ¨ena, jen p©esko‡it tento v˜raz
-        {%%RESUME}
         ce^.resumeerror;
 
     -- promˆnn 
@@ -1499,7 +1502,7 @@ begin
           expr^.nclass:=nc_var;
 
           -- doplnit THIS
-          createthis;
+          create_this;
 
         -- slo‘ka typu
         elsif (expr^.sub<>nil) and (expr^.sub^.nclass=nc_type)
@@ -1543,10 +1546,6 @@ begin
 
         -- form ln¡ kontrola £spˆ¨nˆ dokon‡ena
         expr^.zprac:=ep_form;
-
-    -- metapromˆnn  
-
-    -- alias 
 
     -- parametr procedury
     when et_param do
@@ -1597,7 +1596,7 @@ begin
               -- pokud nem me explicitnˆ uvedenu instanci
               -- a je-li to v t©¡dˆ, tak doplnit THIS
               if (expr^.sub=nil) and sym_check_container(curr.entity,et_class) then
-                createthis;
+                create_this;
                 end if;
 
           -- p©ed vat => t©¡da: procedura nebo nic podle dostupnosti instance
@@ -1611,7 +1610,7 @@ begin
                   -- ano => t©¡da: procedura + doplnit THIS
                   then
                     expr^.nclass:=nc_proc;
-                    createthis;
+                    create_this;
 
                   -- ne => t©¡da: nic
                   else
@@ -1720,7 +1719,7 @@ var
   srch             : tentitysearch;              -- nalezen˜ symbol
 
     ------------------------------------------------------------------------------------------------
-    procedure findinclass =
+    procedure find_in_class =
     -- Vyhled n¡ komponenty v t©¡dˆ.
     ------------------------------------------------------------------------------------------------
     var
@@ -1734,7 +1733,6 @@ var
       if sv=tentityvisibleset:[] then
         ce^.seterror({CCERR=}000054,ce_i_selector);
         expr^.errpos;
-        {%%RESUME ce^.raiseerror;}
         ce^.resumeerror;
         end if;
 
@@ -1744,13 +1742,13 @@ var
 
       -- vyhledat
       srch.find_local(sym_primary_context(expr^.sub^.t.getutype^),expr^.id^,sv);
-      end findinclass;
+      end find_in_class;
 
 
 
     ------------------------------------------------------------------------------------------------
-    procedure findinsymbol =
-    -- Vyhled n¡ komponenty v souvisej¡c¡m symbolu.
+    procedure find_in_entity =
+    -- Vyhled n¡ komponenty v souvisej¡c¡ entitˆ.
     ------------------------------------------------------------------------------------------------
     var
       sv           : tentityvisibleset;          -- povolen‚ £rovnˆ viditelnosti
@@ -1760,7 +1758,6 @@ var
       if expr^.sub^.ntype not in nodetypeset:[nt_component,nt_attrib] or else expr^.sub^.getsymbol=nil then
         ce^.seterror({CCERR=}000055,ce_i_selector);
         expr^.errpos;
-        {%%RESUME ce^.raiseerror;}
         ce^.resumeerror;
         end if;
 
@@ -1771,7 +1768,6 @@ var
       if sv=tentityvisibleset:[] then
         ce^.seterror({CCERR=}000056,ce_i_selector);
         expr^.errpos;
-        {%%RESUME ce^.raiseerror;}
         ce^.resumeerror;
         end if;
 
@@ -1780,8 +1776,8 @@ var
       -- P.X m–‘e b˜t nˆco jin‚ho ne‘ prost‚ X.
 
       -- vyhledat
-      srch.find_local(sym_primary_context(expr^.sub^.getsymbol^),expr^.id^,sv{[etv_public]});
-      end findinsymbol;
+      srch.find_local(sym_primary_context(expr^.sub^.getsymbol^),expr^.id^,sv);
+      end find_in_entity;
 
 begin
   -- form ln¡ kontrola podv˜razu 
@@ -1801,13 +1797,13 @@ begin
 
   -- vyhledat symbol (nen¡-li ji‘ ur‡en) 
   if expr^.s.psym=nil then
-    ----- %%TECH/%%LANG ----- Vyhled n¡ symbolu --------------------------
+    ----- %%TECH/%%LANG ----- Vyhled n¡ symbolu ----------------------------------------------------
     -- Symbol se hled  podle kontextu viditelnosti. Pokud pod aktu ln¡m uzlem 
     -- nen¡ jin˜ uzel, hled  se vzhledem k p©ekl dan‚mu prvku. Pokud je       
     -- uveden kontext (expr^.sub<>nil), ©¡d¡ se vyhled v n¡ typem podv˜razu.  
     --   Pro generick‚ podv˜razy nezb˜v  ne‘ ukon‡it form ln¡ kontrolu v˜razu 
     -- pro tento uzel.                                                        
-    ----------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
     if expr^.sub=nil
 
       -- nekvalifikovany identifikator 
@@ -1828,7 +1824,7 @@ begin
       else
         case expr^.sub^.t.tview
           -- beztypov˜ v˜raz
-          when tview_null do findinsymbol;
+          when tview_null do find_in_entity;
 
           -- Full view
           when tview_full do
@@ -1837,35 +1833,33 @@ begin
                 when dt_record    do srch.find_local(sym_primary_context(expr^.sub^.t.getutype^),expr^.id^,tentityvisibleset:[etv_public]);
 
                 -- t©¡da
-                when dt_class     do findinclass;
+                when dt_class     do find_in_class;
 
                 -- procedura
-                when dt_procedure do findinsymbol;
+                when dt_procedure do find_in_entity;
 
                 -- v ostatn¡ch p©¡padech nen¡ co hledat
                 when others do
                     ce^.seterror({CCERR=}000057,ce_i_selector);
-                    --%%TODO(LIB) ce^.sethint(formats(hint_prefix_component,nptostr(datatypename,ord(expr^.sub^.t.stype))));
+                    --%%TODO(LIB) ce^.setinfo(formats(hint_prefix_component,nptostr(datatypename,ord(expr^.sub^.t.stype))));
                     expr^.errpos;
-                    {%%RESUME ce^.raiseerror;}
                     ce^.resumeerror;
                 end case;
 
           -- Incomplete view
           when tview_incomplete do
-              if expr^.sub^.t.isclass{stype=dt_class}
+              if expr^.sub^.t.isclass
 
                 -- t©¡da, to je OK
                 then
-                  findinclass;
+                  find_in_class;
 
                 -- pro jin‚ typy to nelze
                 else
                   -- nen¡ co hledat
                   ce^.seterror({CCERR=}000058,ce_i_selector);
-                  ce^.sethint(hint_prefix_component_hidden);
+                  ce^.setinfo(hint_prefix_component_hidden);
                   expr^.errpos;
-                  {%%RESUME ce^.raiseerror;}
                   ce^.resumeerror;
                   end if;
 
@@ -1873,9 +1867,8 @@ begin
           when tview_partial, tview_unchecked do
               -- nen¡ co hledat
               ce^.seterror({CCERR=}000059,ce_i_selector);
-              ce^.sethint(hint_prefix_component_hidden);
+              ce^.setinfo(hint_prefix_component_hidden);
               expr^.errpos;
-              {%%RESUME ce^.raiseerror;}
               ce^.resumeerror;
 
           when others do verify(185,true);
@@ -1884,17 +1877,6 @@ begin
 
     -- kontrola vyhodnocen¡
     checkeval(curr,expr,srch,expr^.id,info);
-  {
-    Ondra 26.11.1999 : Star  verze. €inilo probl‚my vyhodnotit konstrukce typu:
-    if not checkeval(curr,expr,srch.psym,checklevel(srch.psym,info),expr^.id^,info) then return; end if;
-  }
-    {%%X a co odkazy na sebe sama bˆhem p©ekladu - t©eba uvnit© t©¡dy ? }
-    -- to se bude muset asi o¨et©it nˆjak zvl ¨Ÿ 
-{
-    if (    info.final and not checkeval(curr,srch.psym,checklevel(srch.psym){sd_declared},expr^.id^,info))
-    or (not info.final and not checkeval(curr,srch.psym,sd_forward,expr^.id^,info))
-    then return;
-}
     end if;
 
   -- symbol se nenalezl, nevad¡ zkus¡me p©¡¨tˆ 
@@ -2475,6 +2457,68 @@ procedure a_form_ref (
 with
   cx_phase;
 
+    ------------------------------------------------------------------------------------------------
+    procedure check_aliased (
+        sub        : in pexpnode) =              -- kontrolovan˜ podv˜raz
+    -- Kontrola, zda je povolen ALIASED p©¡stup k podv˜razu.
+    -- V p©¡padech, jako je p©etypov n¡, vol  rekurzivnˆ samo sebe.
+    ------------------------------------------------------------------------------------------------
+    begin
+      case sub^.ntype
+        -- komponenta
+        when nt_component do
+            verify(703,sub^.getsymbol=nil or else sub^.getsymbol^.etype<>et_var);
+            
+            -- na promˆnnou lze z¡skat referenci jen tehdy, je-li aliased
+            if not pentity_var(sub^.getsymbol)^.valiased then
+              ce^.seterror({CCERR=}000000,ce_i_reference);
+              expr^.errpos;
+              ce^.resumeerror;
+              end if;
+
+        -- index pole nebo ©etˆzce
+        when nt_index do
+            -- na slo‘ku pole nebo ©etˆzce lze z¡skat referenci jen tehdy, je-li aliased
+            if not sub^.sub^.t.getctype^.saliased then
+              ce^.seterror({CCERR=}000000,ce_i_reference);
+              expr^.errpos;
+              ce^.resumeerror;
+              end if;
+
+        -- dereference
+        when nt_deref do 
+            -- nic nedˆlat, reference je inverze dereference
+   
+        -- p©etypov n¡ 
+        when nt_typecast do 
+            check_aliased(sub^.sub^.next^.sub);
+
+        -- interface cast
+        when nt_interface_cast do 
+            -- nic nedˆlat, reference je v‘dy dovolena
+
+        -- THIS
+        when nt_this do 
+            -- nic nedˆlat, reference je v‘dy dovolena
+
+        -- atribut
+        when nt_attrib do
+            check_aliased(sub^.sub);
+
+          { Aha, a co takov‚ vˆci jako :unchechek, ‘e?
+            -- nelze z¡skat referenci na atribut, a to ani na dynamick˜, proto‘e obecnˆ
+            -- m–‘e b˜t vypo‡ten˜
+            ce^.seterror({CCERR=}000000,ce_i_reference);
+            expr^.errpos;
+            ce^.resumeerror;
+          }
+        -- pro ostatn¡ p©¡pady nem  reference smysl
+        -- %%TECH A‘ to tady zdechne na intern¡ chybu, tak viz t‚‘ pozn mka na konci [a_form_call]
+        -- ve v˜po‡tu t©¡dy uzlu.
+        when others do verify(704,true);
+        end case;
+      end check_aliased;
+
 var
   el               : pexpnode;                   -- podv˜raz
 
@@ -2553,6 +2597,11 @@ begin
 
     when others do verify(109,true);
     end case;
+
+  -- pro referenci na objekt zkontrolovat povolen¡ reference
+  if el^.nclass=nc_var then
+    check_aliased(el);
+    end if;
 
   -- vypo‡¡tat typ reference a t©¡du v˜razu
   x_set_ref_type(curr,expr);

@@ -96,7 +96,7 @@ type
       iek_logical_metaliteral;                   -- logick˜ metaliter l
       end enum;
 
-#if debug then;{%OFF}
+#if #declared debug; #and then; debug then;{%OFF}
 var
   timmclasstxt     : const array timmclass of t_char32str := [
       for ic_undef     use 'undef',
@@ -228,7 +228,7 @@ type
   -- informace o oper toru
   tooperinfo       = record
       lex          : cc_lexsym.lexsym;           -- odpov¡daj¡c¡ lexik ln¡ symbol
-      txt          : tshortident;                -- textov  reprezentace
+      txt          : aliased tshortident;        -- textov  reprezentace
       arity        : tooperarityset;             -- povolen  arita oper toru
       end record;
 
@@ -269,22 +269,22 @@ var
 ----------------------------------------------------------------------------------------------------
 var
   -- identifik tory p©eddefinovan˜ch objekt– 
-  id_flex          : const tshortident := 'FLEX';        -- jazykem definovan  run-time knihovna        
-  id_result        : const tshortident := 'RESULT';      -- identifik tor n vratov‚ hodnoty funkce      
+  id_flex          : const aliased tshortident := 'FLEX';        -- jazykem definovan  run-time knihovna        
+  id_result        : const aliased tshortident := 'RESULT';      -- identifik tor n vratov‚ hodnoty funkce      
 
   -- intern¡ identifik tory 
-  id_int_tag       : const tshortident := '@TAG';        -- identifik tor intern¡ slo‘ky t©¡dy @TAG     
-  id_int_status    : const tshortident := '@STATUS';     -- identifik tor intern¡ slo‘ky t©¡dy @STATUS  
-  id_compilation   : const tshortident := '@COMPILATION';-- identifik tor kompila‡n¡ jednotky       
-  id_init          : const tshortident := '@INIT';
-  id_entry         : const tshortident := '@ENTRY';
-  id_exit          : const tshortident := '@EXIT';
-  id_adjust        : const tshortident := '@ADJUST';
-  id_rollback      : const tshortident := '@ROLLBACK';
-  id_commit        : const tshortident := '@COMMIT';
-  id_int_temp      : const tshortident := '^TEMP_';      -- prefix identifik toru kompil trem gen. sym.
-  id_int_param     : const tshortident := '@PARAM';      -- parametr intern¡ metody typu (viz CA_TYPE)
-  id_int_forvar    : const tshortident := '@I';          -- ©¡d¡c¡ promˆnn  cyklu
+  id_int_tag       : const aliased tshortident := '@TAG';        -- identifik tor intern¡ slo‘ky t©¡dy @TAG     
+  id_int_status    : const aliased tshortident := '@STATUS';     -- identifik tor intern¡ slo‘ky t©¡dy @STATUS  
+  id_compilation   : const aliased tshortident := '@COMPILATION';-- identifik tor kompila‡n¡ jednotky       
+  id_init          : const aliased tshortident := '@INIT';
+  id_entry         : const aliased tshortident := '@ENTRY';
+  id_exit          : const aliased tshortident := '@EXIT';
+  id_adjust        : const aliased tshortident := '@ADJUST';
+  id_rollback      : const aliased tshortident := '@ROLLBACK';
+  id_commit        : const aliased tshortident := '@COMMIT';
+  id_int_temp      : const aliased tshortident := '^TEMP_';      -- prefix identifik toru kompil trem gen. sym.
+  id_int_param     : const aliased tshortident := '@PARAM';      -- parametr intern¡ metody typu (viz CA_TYPE)
+  id_int_forvar    : const aliased tshortident := '@I';          -- ©¡d¡c¡ promˆnn  cyklu
 
 const
   id_entry_lex     = 'ENTRY';                    -- identifik tor metody entry bez @            
@@ -303,6 +303,7 @@ type
   tentityvisible   = enum
       etv_public;                                -- viditeln˜ obecnˆ
       etv_protected;                             -- viditeln˜ pouze potomk–m
+      etv_supervised;                            -- viditeln˜ pouze supervisor–m
       etv_private;                               -- viditeln˜ pouze uvnit© deklarace
       end enum;
   tentityvisibleset= set of tentityvisible;
@@ -386,6 +387,10 @@ const
   mcs_global       = mcs_static+mcs_class;
   -- slo‘ky strukturovan˜ch objekt–
   mcs_offset       = memclassset:[mc_class,mc_record];
+
+type
+  -- p©¡znak, zda je mo‘n‚ z¡skat adresu promˆnn‚ (ALIASED)
+  t_mem_aliased    = protected t_logical;
 
 type
   -- typ speci ln¡ metody
@@ -490,25 +495,31 @@ type
   ---- tabulka pou‘it˜ch modul– ---
  
   -- re‘im vazby
-  twithmode    = enum
+  t_with_mode      = enum
       twm_use;                                   -- USE
       twm_with;                                  -- WITH
       end enum;
-  twithmodeset = set of twithmode;
+  t_with_mode_set  = set of t_with_mode;
 
-  -- typ vazby
-  twithtype    = enum
-      twt_partial;                               -- ‡ ste‡n 
-      twt_all;                                   -- £pln 
+  -- £rove¤ vazby
+  t_with_level     = enum
+      twl_none;                                  -- vazba nen¡ definov na, pouze pro [sym_is_used]
+      twl_normal;                                -- norm ln¡, zp©¡stup¤uje public slo‘ky
+      twl_supervised;                            -- supervizor, zp©¡stup¤uje public, protected a supervised slo‘ky
       end enum;
-  twithtypeset = set of twithtype;
-  
+
   -- tabulka pou‘it˜ch modul–
   twithtable   = ^string of record
-      mode     : twithmode;                      -- re‘im vazby
-      typ      : twithtype;                      -- typ vazby
+      mode     : t_with_mode;                    -- re‘im vazby
+      level    : t_with_level;                   -- £rove¤ vazby
       entity   : cc_ref.refentity;               -- symbol
       end record;
+
+var
+  -- tabulka pro konverzi £rovnˆ vazby na viditelnost
+  with_level_to_visibility : const array t_with_level of tentityvisibleset := [
+      for twl_normal     use [etv_public],
+      for twl_supervised use [etv_public,etv_protected,etv_supervised]];
 
 type
   -- deklarativn¡ region
@@ -1008,6 +1019,7 @@ type
   tentity_param    = tentity_value with record
       mode         : parammode;                  -- m¢d parametru
       pass         : parampass;                  -- zp–sob p©ed n¡ parametru
+      paliased     : t_mem_aliased;              -- povolen¡ aliased p©¡stupu
       size         : tunidata_size;              -- velikost (s p©ihl‚dnut¡m k zp–sobu p©ed n¡)
       num          : t_unsigned;                 -- po©ad¡ parametru
       end record;
@@ -1030,7 +1042,6 @@ type
   varflags         = enum
     --vf_persistent;                             -- persistentn¡ promˆnn 
     --vf_secure;                                 -- zabezpe‡en  promˆnn 
-      vf_;
       end enum;
   varflagset       = set of varflags;
 
@@ -1069,6 +1080,7 @@ type
       vflags       : varflagset;                 -- dal¨¡ p©¡znaky
       vmode        : varmode;                    -- m¢d p©¡stupu k promˆnn‚
       vaccess      : varaccess;                  -- determinace p©¡stupu
+      valiased     : t_mem_aliased;              -- p©¡znak, zda je mo‘n‚ z¡skat adresu promˆnn‚ (ALIASED)
       vimplements  : varimplements;              -- jakou "higher-order" konstrukci promˆnn  implementuje
       imp_param    : pentity_param;              -- souvisej¡c¡ parametr
       addr         : tunidata_addr;              -- adresa promenne
@@ -1283,7 +1295,7 @@ type
   poverloaddesc    = ^toverloaddesc;
 
   -- tabulka p©et¡‘en¡
-  toverloadtable   = string of toverloaddesc;
+  toverloadtable   = string of aliased toverloaddesc;
   poverloadtable   = ^toverloadtable;
 
   -- p©et¡‘en¡ nebo oper tor
@@ -1349,6 +1361,18 @@ type
       end enum;
   ttypeviewset     = set of ttypeview;
 
+{%OFF}
+var
+  ttypeviewtxt    : const array ttypeview of t_char32str := [
+      for tview_null            use 'null',
+      for tview_aggregate       use 'aggregate',
+      for tview_incomplete      use 'incomplete',
+      for tview_partial         use 'partial',
+      for tview_full            use 'full',
+      for tview_unchecked       use 'unchecked'];
+{%ON}
+
+type
   -- determinace kompatibility
   typecompat       = enum
       tc_norm;                                   -- bez omezen¡
@@ -1541,6 +1565,7 @@ type
       fp           : tfloatparams;               -- parametry re ln‚ho ‡¡sla
       -- specifikace typu s rozsahem
       srange       : cc_ref.reftype;             -- rozsah
+      saliased     : t_mem_aliased;              -- p©¡znak, zda je mo‘n‚ z¡skat adresu slo‘ky (ALIASED)
       -- specifikace typu string
     --lsize        : tunidata_size;              -- velikost d‚lky ©etˆzce
       -- specifikace typu pointer

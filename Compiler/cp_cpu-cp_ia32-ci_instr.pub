@@ -16,7 +16,9 @@ type
   t_code_byte      = {%%TODO protected}mod unsigned 8;
 
   -- fragment k¢du
-  t_code_array     = string of t_code_byte;
+  -- %%TODO(SLICE) To ALIASED je z plata, viz v¨emo‘n  "p_unsigned32(^inst.c[x]:unchecked)^" zral 
+  -- na p©edˆl n¡ na ©ez
+  t_code_array     = string of aliased t_code_byte;
   p_code_array     = ^t_code_array;
 
 
@@ -322,6 +324,8 @@ type
       ip_es;                                     -- ES segment override
       ip_fs;                                     -- FS segment override
       ip_gs;                                     -- GS segment override
+      ip_bnt;                                    -- Branch not taken
+      ip_btk;                                    -- Branch Taken
       end enum;
   iprefixset       = set of iprefix;
 
@@ -496,6 +500,7 @@ type
       ii_outsb;                                  -- Output String to Port
       ii_outsd;                                  -- Output String to Port
       ii_outsw;                                  -- Output String to Port
+      ii_pause;                                  -- Spin Loop Hint
       ii_pop;                                    -- Pop a Word from the Stack
       ii_popa;                                   -- Pop all General Registers
       ii_popad;                                  -- Pop all General Registers
@@ -830,6 +835,7 @@ var
       for ii_outsb     use 'OUTSB',
       for ii_outsd     use 'OUTSD',
       for ii_outsw     use 'OUTSW',
+      for ii_pause     use 'PAUSE',
       for ii_pop       use 'POP',
       for ii_popa      use 'POPA',
       for ii_popad     use 'POPAD',
@@ -1169,6 +1175,7 @@ var
       for ii_outsb     use [for kind use iik_normal, for cond use ic_ucond],
       for ii_outsd     use [for kind use iik_normal, for cond use ic_ucond],
       for ii_outsw     use [for kind use iik_normal, for cond use ic_ucond],
+      for ii_pause     use [for kind use iik_normal, for cond use ic_ucond],
       for ii_pop       use [for kind use iik_normal, for cond use ic_ucond],
       for ii_popa      use [for kind use iik_normal, for cond use ic_ucond],
       for ii_popad     use [for kind use iik_normal, for cond use ic_ucond],
@@ -1572,6 +1579,13 @@ type
       iic_cmov;                                  -- Conditional Move
       end enum;
 
+  -- predikce skoku
+  ijumpprediction  = enum                        
+      ijp_none;                                  -- nev¡ se
+      ijp_taken;                                 -- skok zpravidla nastane
+      ijp_not_taken;                             -- skok zpravidla nenastane
+      end enum;
+
 var
   -- k¢dov n¡ podm¡nek
   icondcode        : const array icond of t_code_byte := [
@@ -1663,7 +1677,10 @@ var
       for ip_ds    use 'ds:',
       for ip_es    use 'es:',
       for ip_fs    use 'fs:',
-      for ip_gs    use 'gs:'];
+      for ip_gs    use 'gs:',
+      for ip_bnt   use 'BNT',
+      for ip_btk   use 'BTK'];
+
 #end if;{%ON}
 
   -- k¢dov n¡ prefix–
@@ -1682,7 +1699,9 @@ var
       for ip_ds    use $3e,
       for ip_es    use $26,
       for ip_fs    use $64,
-      for ip_gs    use $65];
+      for ip_gs    use $65,
+      for ip_bnt   use $2E,
+      for ip_btk   use $3E];
 
 type
   ----- M¢dy operand– ------------------------------------------------------------------------------
@@ -1841,7 +1860,7 @@ var
   -- s implicitn¡m operandem.
 
 
-  iopcodemap       : const array 0..764 {%%ADD(INSTR)} of iopcode := [
+  iopcodemap       : const array 0..765 {%%ADD(INSTR)} of iopcode := [
       --- v¨eobecn‚ instrukce ---
       [for ii use ii_aaa      , for oc use [$37],        for ex use x_n, for op1 use op_null    , for op2 use op_null    , for op3 use op_null    , for p use $00],
       [for ii use ii_aad      , for oc use [$d5,$0a],    for ex use x_n, for op1 use op_null    , for op2 use op_null    , for op3 use op_null    , for p use $00],
@@ -2343,7 +2362,9 @@ var
       [for ii use ii_outsb    , for oc use [$6e],        for ex use x_n, for op1 use op_null    , for op2 use op_null    , for op3 use op_null    , for p use $00],
       [for ii use ii_outsw    , for oc use [$6f],        for ex use x_n, for op1 use op_null    , for op2 use op_null    , for op3 use op_null    , for p use $01],
       [for ii use ii_outsd    , for oc use [$6f],        for ex use x_n, for op1 use op_null    , for op2 use op_null    , for op3 use op_null    , for p use $10],
-                           
+
+      [for ii use ii_pause    , for oc use [$F3,$90],    for ex use x_n, for op1 use op_null    , for op2 use op_null    , for op3 use op_null    , for p use $00],
+                          
       [for ii use ii_pop      , for oc use [$8f],        for ex use x_0, for op1 use op_m16     , for op2 use op_null    , for op3 use op_null    , for p use $01],
       [for ii use ii_pop      , for oc use [$8f],        for ex use x_0, for op1 use op_m32     , for op2 use op_null    , for op3 use op_null    , for p use $10],
       [for ii use ii_pop      , for oc use [$58],        for ex use x_r, for op1 use op_r16     , for op2 use op_null    , for op3 use op_null    , for p use $01],
