@@ -1,0 +1,186 @@
+----------------------------------------------------------------------------------------------------
+module private ci_stack =
+-- P©eklada‡ Flexu.
+-- Spr va stacku.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 05.04.2002 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure allocstack (
+    inst           : in out icodeinst;           -- instance                          
+    info           : in igeninfo;                -- informace o pr–bˆhu generov n¡    
+    _size          : in t_unsigned32;            -- po‘adovan  velikost bloku         
+    pvar           : in pentity_var;             -- souvisej¡c¡ promˆnn               
+    typ            : in iblockstatus;            -- typ bloku                         
+    addr           : out timm32) =               -- adresa promˆnn‚                   
+-- Nalezne pro promˆnnou vhodn‚ um¡stˆn¡ na stacku.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base,
+  cc_base.cc_util;
+
+var
+  block            : pimemblock;                 -- p©idˆlen˜ blok pamˆti
+  size             : t_unsigned32;
+
+begin
+  -- zarovnat velikost bloku
+  addalign(size,0,_size,istackalign);
+
+  -- ur‡it pozici promˆnn‚
+  if size<=inst.layout.largest
+
+    -- vyu‘¡t nˆjak˜ voln˜ blok
+    then
+      unimplemented(123);
+
+    -- alokovat nov˜
+    else
+      -- alokovat pamˆŸ
+      new block;
+
+      -- adresa
+      if inst.layout.first=nil
+        then block^.ofs:=-t_signed32(size)-t_signed32(inst.layout.display);
+        else block^.ofs:=inst.layout.last^.ofs-t_signed32(size)-t_signed32(inst.layout.display);
+        end if;
+
+      -- za©adit
+      block^.prev:=inst.layout.last;
+      if inst.layout.last<>nil
+        then inst.layout.last^.next:=block;
+        else inst.layout.first:=block;
+        end if;
+      inst.layout.last:=block;
+      end if;
+
+  -- spole‡n‚ £daje
+  block^.pvar:=pvar;
+  block^.status:=typ;
+  block^.size:=size;
+  block^.ifrom:=info.iip;
+
+  -- p©edat adresu ven
+  addr:=signed_to_imm32(block^.ofs);
+  end allocstack;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure setvaraddr =
+-- Nalezne pro promˆnnou vhodn‚ um¡stˆn¡ na stacku.
+----------------------------------------------------------------------------------------------------
+var
+  size             : t_unsigned32;               -- zarovnan  velikost promˆnn‚
+
+begin
+  -- velikost promˆnn‚ (zarovnan )
+  size:=unidata_size_to_unsigned(pvar^.typ.getctype^.size);
+
+  -- alokovat
+  allocstack(inst,info,size,pvar,ibs_var,addr);
+  end setvaraddr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getvaraddr =
+-- Vr t¡ adresu promˆnn‚ (v p©¡padˆ pot©eby alokuje prostor na stacku)
+----------------------------------------------------------------------------------------------------
+var
+  block            : pimemblock;                 -- p©idˆlen˜ blok pamˆti
+  i                : t_unsigned;
+
+begin
+  if pvar^.pparam=nil
+
+    -- lok ln¡ promˆnn 
+    then
+      -- vyhledat
+      block:=inst.layout.first;
+      while (block<>nil) and ((block^.status<>ibs_var) or (block^.pvar<>pvar)) loop block:=block^.next; end loop;
+
+      if block<>nil
+        -- vr tit nalezenou adresu
+        then addr:=signed_to_imm32(block^.ofs)
+
+        -- promˆnn  je¨tˆ nem  p©i©azenu adresu => p©idˆlit
+        else
+          setvaraddr(inst,info,pvar,addr)
+          end if;
+
+    -- parametr
+    else
+      i:=inst.profile.par^:first;
+      while (i<=inst.profile.par^:length) and (inst.profile.par^[i].pparam<>pvar^.pparam) loop succ i; end loop;
+      verify(124,i>inst.profile.par^:length);
+      addr:=signed_to_imm32(inst.profile.par^[i].ofs);
+      end if;
+  end getvaraddr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure checkvaraddr =
+-- Vr t¡ adresu promˆnn‚ (je-li k dispozici, pak AVAIL=True).
+----------------------------------------------------------------------------------------------------
+var
+  block            : pimemblock;                 -- p©idˆlen˜ blok pamˆti
+  i                : t_unsigned;
+
+begin
+  if pvar^.pparam=nil
+
+    -- lok ln¡ promˆnn 
+    then
+      -- vyhledat
+      block:=inst.layout.first;
+      while (block<>nil) and ((block^.status<>ibs_var) or (block^.pvar<>pvar)) loop block:=block^.next; end loop;
+
+      if block<>nil
+
+        -- vr tit nalezenou adresu
+        then
+          addr:=signed_to_unidata_addr(block^.ofs);
+          size:=unsigned_to_unidata_size(block^.size);
+          avail:=true;
+
+        -- promˆnn  nem  p©i©azenu adresu
+        else
+          avail:=false
+          end if;
+
+    -- parametr
+    else
+      i:=inst.profile.par^:first;
+      while (i<=inst.profile.par^:length) and (inst.profile.par^[i].pparam<>pvar^.pparam) loop succ i; end loop;
+      verify(535,i>=inst.profile.par^:length);
+      addr:=signed_to_unidata_addr(inst.profile.par^[i].ofs);
+      size:=unsigned_to_unidata_size(inst.profile.par^[i].size);
+      end if;
+  end checkvaraddr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure alloctemp =
+-- Alokuje do‡asn˜ blok pamˆti na stacku.
+----------------------------------------------------------------------------------------------------
+begin
+  allocstack(inst,info,size,nil,ibs_temp,addr);
+  end alloctemp;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure freetemp =
+-- Uvoln¡ do‡asn˜ blok pamˆti.
+----------------------------------------------------------------------------------------------------
+begin
+  {%%X}
+  end freetemp;
+
+
+
+end ci_stack;

@@ -1,0 +1,217 @@
+----------------------------------------------------------------------------------------------------
+module private ci_rtl =
+-- P©eklada‡ Flexu.
+-- Vazba na run-time knihovnu.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 11.04.2002 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_var,
+  cc_base,
+  cc_base.cc_rtl,
+  ci_abi,
+  ci_struct,
+  ci_context,
+  ci_instr,
+  ci_stack,
+  ci_oper,
+  ci_relo,
+  ci_reg;
+
+----------------------------------------------------------------------------------------------------
+procedure i_create_xframe =
+-- Vytvo©¡ exception-frame.
+----------------------------------------------------------------------------------------------------
+var
+  frameofs         : timm32;                     -- offset exception-frame
+  context          : iexprcontext;               -- pr zdn˜ kontext
+
+begin
+  if not cfg_noruntime then
+    -- p©ipravit pr zdn˜ kontext
+    i_createcontext(context,lm_gen,nil);
+
+    -- alokovat blok pro exception-frame
+    alloctemp(inst,info,ixframe:size,frameofs);
+
+    -- p©edvypo‡¡tat offset polo‘ky HANDLER
+    framehandler:=frameofs+ixframe_handler;
+
+    -- adresa obsluhy: END - finalizace
+    addmovaddr(inst,info,framehandler,target);
+
+    -- ulo‘it adresu
+    addpushofs(inst,info,context,frameofs);
+
+    -- inicializovat zbytek
+    addcallrtl(inst,info,rtl_init_xframe);
+    end if;
+  end i_create_xframe;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_set_handler =
+-- Do aktu ln¡ho exception-frame p©i©ad¡ adresu exception-handleru.
+----------------------------------------------------------------------------------------------------
+begin
+  addmovaddr(inst,info,framehandler,target);
+  end i_set_handler;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_dispatch_special =
+-- Vol n¡ speci ln¡ metody. Na stacku o‡ek v  adresu instance.
+----------------------------------------------------------------------------------------------------
+begin
+  case spectype
+    when tst_init   do addcallrtl(inst,info,rtl_call_init);
+    when tst_entry  do addcallrtl(inst,info,rtl_call_entry);
+    when tst_exit   do addcallrtl(inst,info,rtl_call_exit);
+    when tst_adjust do addcallrtl(inst,info,rtl_call_adjust);
+    when others     do verify(408,true);
+    end case;
+  end i_dispatch_special;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_create_rcframe =
+-- Vyvo©¡ return-control frame.
+----------------------------------------------------------------------------------------------------
+var
+  opaction         : ioper;                      -- operand odpov¡daj¡c¡ poli Action
+  context          : iexprcontext;               -- pr zdn˜ kontext
+
+begin
+  -- zapamatovat si adresu nad©azen‚ho return-control framu
+  {save_rcframe:=info.rcframe;}
+
+  -- p©ipravit pr zdn˜ kontext
+  i_createcontext(context,lm_gen,nil);
+
+  -- alokovat blok pro return-control frame
+  alloctemp(inst,info,ircframe:size,info.rcframe);
+
+  -- p©ipravit operand s adresou pole Action
+  nullop(opaction,io_mem);
+  opaction.base.reg:=istackframereg[inst.frame];
+  opaction.disp:=info.rcframe;
+  opaction.size:=4;
+
+  -- k¢d akce nastavit na nulu
+  addii(inst,info,ii_mov,opaction,op_0,op0);
+
+  -- uvolnit operand
+  i_free(info,context,opaction);
+  end i_create_rcframe;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_set_rcframe_action =
+-- Do return-control framu dopln¡ £daje o po‘adovan‚ akci.
+----------------------------------------------------------------------------------------------------
+var
+  opaction         : ioper;                      -- operand odpov¡daj¡c¡ poli Action
+  opdest           : ioper;                      -- operand odpov¡daj¡c¡ poli Destination
+  opvalue          : ioper;                      -- ukl dan  hodnota pole
+  context          : iexprcontext;               -- pr zdn˜ kontext
+
+begin
+  -- p©ipravit pr zdn˜ kontext
+  i_createcontext(context,lm_gen,nil);
+
+  -- p©ipravit operand s adresou pole Action
+  nullop(opaction,io_mem);
+  opaction.base.reg:=istackframereg[inst.frame];
+  opaction.disp:=info.rcframe+ircframe_action;
+  opaction.size:=4;
+
+  -- p©ipravit operand s adresou pole Destination
+  nullop(opdest,io_mem);
+  opdest.base.reg:=istackframereg[inst.frame];
+  opdest.disp:=info.rcframe+ircframe_dest;
+  opdest.size:=4;
+
+  -- ulo‘it hodnotu Action
+  nullop(opvalue,io_imm);
+  opvalue.imm:=unsigned_to_imm32(action);
+  opvalue.size:=4;
+  addii(inst,info,ii_mov,opaction,opvalue,op0);
+  i_free(info,context,opvalue);
+
+  -- ulo‘it hodnotu Destination
+  nullop(opvalue,io_imm);
+  opvalue.abstarget:=target;
+  opvalue.size:=4;
+  addii(inst,info,ii_mov,opdest,opvalue,op0);
+  i_free(info,context,opvalue);
+
+  -- uvolnit operandy
+  i_free(info,context,opaction);
+  i_free(info,context,opdest);
+  end i_set_rcframe_action;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_process_rcframe =
+-- Provede p©¡kaz ulo‘en˜ v return-control framu.
+----------------------------------------------------------------------------------------------------
+var
+  tg_continue      : itarget;                    -- n vˆ¨t¡ pro skok na konec zpracov n¡
+  opaction         : ioper;                      -- operand odpov¡daj¡c¡ poli Action
+  opdest           : ioper;                      -- operand odpov¡daj¡c¡ poli Destination
+  context          : iexprcontext;               -- pr zdn˜ kontext
+
+begin
+  -- p©ipravit pr zdn˜ kontext
+  i_createcontext(context,lm_gen,nil);
+
+  -- alokovat n vˆ¨t¡ pro skok konec zpracov n¡ return-control framu
+  newtarget(info,tg_continue);
+
+  -- p©ipravit operand s adresou pole Action
+  nullop(opaction,io_mem);
+  opaction.base.reg:=istackframereg[inst.frame];
+  opaction.disp:=info.rcframe+ircframe_action;
+  opaction.size:=4;
+
+  -- p©ipravit operand s adresou pole Destination
+  nullop(opdest,io_mem);
+  opdest.base.reg:=istackframereg[inst.frame];
+  opdest.disp:=info.rcframe+ircframe_dest;
+  opdest.size:=4;
+
+  -- porovnat na jedni‡ku
+  addii(inst,info,ii_cmp,opaction,op_1,op0);
+
+  -- Action < 1 => nic se dˆlat nebude
+  addjump(inst,info,ic_b,tg_continue);
+
+  -- dekrementovat
+  addii(inst,info,ii_dec,opaction,op0,op0);
+
+  -- bylo Action > 1 => pokra‡ujeme d l
+  addjump(inst,info,ic_a,upper_end);
+
+  -- bylo Action = 1 => skok na adresu n vˆ¨t¡ ulo‘enou v Destination
+  addii(inst,info,ii_jmp,opdest,op0,op0);
+
+  -- dosadit c¡l skoku na toto m¡sto
+  settarget(info,tg_continue,getaddr(inst));
+
+  -- uvolnit operandy
+  i_free(info,context,opaction);
+  i_free(info,context,opdest);
+
+  -- obnovit adresu nad©azen‚ho return-control framu
+  {info.rcframe:=save_rcframe;}
+  end i_process_rcframe;
+
+
+
+end ci_rtl;

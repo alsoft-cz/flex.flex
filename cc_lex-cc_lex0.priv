@@ -1,0 +1,837 @@
+----------------------------------------------------------------------------------------------------
+module private cc_lex0 =
+-- P©eklada‡ Flexu.
+-- Lexik ln¡ analyz tor, oddˆlen¡ lexik ln¡ch element–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 11.07.1998 : Vytvo©il.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+#separate public cc_buffer;
+#separate private cc_buffer;
+-- Textov˜ buffer.
+-- %%X CC_BUFFER by mˆla b˜t generick  t©¡da, abych se vyvaroval pras ren p©i konverzi
+-- datov˜ch typ– (identifik tor/znakov˜ agreg t/textov  reprezentace)
+----------------------------------------------------------------------------------------------------
+
+var
+  -- buffer na identifik tory
+  buf_id           : {%%TODO(TASK) task} cc_buffer;
+  -- buffer na textov‚ reprezentace lexik ln¡ch element–
+  buf_txt          : {%%TODO(TASK) task} cc_buffer;
+  -- buffer na hodnoty znakov˜ch agreg t–
+  buf_str          : {%%TODO(TASK) task} cc_buffer;
+  -- pracovn¡ buffer na ‡ sti numerick˜ch liter l–
+  buf_num          : {%%TODO(TASK) task} cc_buffer;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure upcase (
+    c              : in lexchar)                 -- vstupn¡ znak
+    return lexchar =                             -- konvertovan˜ znak
+-- P©evede znaky "a".."z" na "A".."Z"
+----------------------------------------------------------------------------------------------------
+begin
+  if c>="a" and c<="z"
+    then result:ord:=c:ord-("a":ord-"A":ord)
+    else result:=c
+    end if;
+  end upcase;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure search_keyword  (
+    txt            : in tentityident;            -- textov  reprezentace kl¡‡ov‚ho slova
+    lex            : out lexsym) =               -- odpov¡daj¡c¡ lexik ln¡ element (kl¡‡ov‚ slovo)
+-- Vyhled n¡ kl¡‡ov‚ho slova podle jeho textov‚ reprezentace.
+----------------------------------------------------------------------------------------------------
+with
+  console;
+
+var
+  zac              : lexkeywords:range;
+  stred            : lexkeywords:range;
+  kon              : lexkeywords:range;
+
+begin
+  zac:=lexkeywords:first;
+  kon:=lexkeywords:last;
+  loop
+    stred:=(zac+kon) div 2;
+    if txt>lexkeywords[stred].txt
+      then zac:=stred+1
+      else kon:=stred
+      end if;
+    until zac>=kon;
+  if txt=lexkeywords[zac].txt
+    -- nalezeno
+    then lex:=lexkeywords[zac].lex
+    -- nenalezeno
+    else lex:=lex_nul
+    end if;
+  end search_keyword;
+
+                                          
+
+----------------------------------------------------------------------------------------------------
+procedure getui (
+    radix          : standard.conversions.t_radix;-- z klad ‡¡seln‚ soustavy
+    ui             : out tuniint;                -- p©eveden‚ ‡¡slo
+    default        : in tuniint) =               -- implicitn¡ hodnota
+-- P©evede ‡¡slo v BUF_NUM na univerz ln¡ integer.
+-- Pokud je buffer pr zdn˜, vr t¡ implicitn¡ hodnotu DEFAULT.
+----------------------------------------------------------------------------------------------------
+var
+  s                : p_char32ustr;               -- textov  reprezentace ‡¡sla
+  error            : t_signed;                   -- chyba v ‡¡sle
+
+begin
+  -- textov  reprezentace ‡¡sla
+  s{%%X viz pozn mka o genericitˆ CC_BUFFER}:unchecked:=buf_num.endtext;
+  if s^=''
+
+    -- nic, vr tit implicitn¡ hodnotu
+    then
+      ui:=default;
+
+    -- konvertovat
+    else
+      standard.conversions.string_to_unsigned(s^,radix,ui,error);
+      if error<>standard.conversions.conv_ok then
+        ce^.seterror({CCERR=}000000,ce_errnum);
+        ce^.loadtextpos;
+        end if;
+      end if;
+
+  -- ‡¡slo odstranit z bufferu, u‘ nebude pot©eba
+  buf_num.discardlast;
+  end getui;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getnum (
+    lex            : out lexsym;                 -- ziskany symbol
+    val            : out lexval;                 -- hodnota symbolu
+    append         : in t_logical) =             -- T-textovou reprezentaci p©idat k ji‘ existuj¡c¡
+-- Ziska z prectene hodnoty cislo.
+----------------------------------------------------------------------------------------------------
+var
+  c                : lexchar;                    -- znak ze vstupu
+  c1               : lexchar;                    -- znak ze vstupu
+  ui               : tuniint;                    -- hodnota ‡¡sla
+  radix            : standard.conversions.t_radix;-- ‡¡seln  soustava
+
+begin
+  -- p©ipravit buffer na textovou reprezentaci ‡¡sla
+  if not append then
+    buf_txt.newtext;
+    end if;
+
+  -- p©ipravit buffer na dekadickou ‡ st ‡¡sla
+  buf_num.newtext;
+
+  -- dekadick  ‡ st ‡¡sla
+  loop
+    -- p©e‡¡st znak
+    getchar(c);
+    if {%%TODO(IN) c not in ["0".."9","_"]} not (c>="0" and c<="9") and c<>"_" then break end if;
+
+    -- za©adit do bufferu textov‚ reprezentace
+    buf_txt.addchar(c);
+
+    -- za©adit do bufferu numerick‚ho liter lu
+    if c<>"_" then
+      buf_num.addchar(c);
+      end if;
+    end loop;
+
+  -- pod¡vat se o znak dop©edu
+  getchar(c1);
+  ungetchar;
+
+  ----- ‡¡slo v obecn‚ soustavˆ -----
+  if c="$" then
+    -- za©adit do bufferu textov‚ reprezentace
+    buf_txt.addchar(c);
+
+    -- ‡¡slo mus¡ za‡¡nat ‡¡slic¡
+    if {%%TODO(IN) c1 not in ["0".."9","a".."z","A".."Z"]} not ((c1>="0" and c1<="9") or (c1>="A" and c1<="Z") or (c1>="a" and c1<="z")) then
+      ce^.seterror({CCERR=}000078,ce_errnum);
+      ce^.loadtextpos;
+      getchar(c);
+      end if;
+
+    -- ur‡it ‡¡selnou soustavu
+    getui(10,ui,ui_radix_hex);
+    if ui<ui_radix_first or ui>ui_radix_last
+      then
+        ce^.seterror({CCERR=}000077,ce_radix);
+        ce^.loadtextpos;
+        radix:=36;
+      else
+        radix:=uniint_to_unsigned(ui);
+        end if;
+
+    -- p©ipravit buffer na vlastn¡ ‡¡slo
+    buf_num.newtext;
+
+    -- na‡¡st ‡¡slo
+    loop
+      -- p©e‡¡st znak
+      getchar(c);
+      if {%%TODO(IN) c not in ["0".."9","a".."z","A".."Z","_"]} not ((c>="0" and c<="9") or (c>="A" and c<="Z") or (c>="a" and c<="z") or c="_") then 
+        ungetchar;
+        break;
+        end if;
+
+      -- za©adit do bufferu textov‚ reprezentace
+      buf_txt.addchar(c);
+
+      -- za©adit do bufferu numerick‚ho liter lu
+      if c<>"_" then
+        buf_num.addchar(c);
+        end if;
+      end loop;
+
+    -- konvertovat ‡¡slo
+    getui(radix,val.ui,ui_0);
+
+    -- v˜sledn˜ lexik ln¡ element
+    lex:=lex_numi;
+
+  ----- re ln‚ ‡¡slo -----
+  elsif c="e" or c="E" or (c="." and c1>="0" and c1<="9") then
+    -- desetinn  ‡ st
+    if c="." then
+      -- za©adit desetinnou te‡ku do bufferu textov‚ reprezentace
+      buf_txt.addchar(c);
+
+      -- dekadick  ‡ st ‡¡sla
+      loop
+        -- p©e‡¡st znak
+        getchar(c);
+        if {%%TODO(IN) c not in ["0".."9","_"]} not (c>="0" and c<="9") and c<>"_" then break end if;
+
+        -- za©adit do bufferu textov‚ reprezentace
+        buf_txt.addchar(c);
+
+        -- za©adit do bufferu numerick‚ho liter lu
+        if c<>"_" then
+          buf_num.addchar(c);
+          end if;
+        end loop;
+      end if;
+
+    -- konvertovat desetinnou ‡ st
+    buf_num.discardlast;
+
+    -- exponent
+    if c="e" or c="E" then
+      -- za©adit zna‡ku exponentu do bufferu textov‚ reprezentace
+      buf_txt.addchar(c);
+
+      -- p©ipravit buffer na exponent
+      buf_num.newtext;
+
+      -- m–‘e n sledovat +/-
+      getchar(c);
+      if c="+" or c="-" then
+        -- za©adit znam‚nko do bufferu textov‚ reprezentace
+        buf_txt.addchar(c);
+
+        -- dal¨¡ znak
+        getchar(c);
+        end if;
+
+      -- mus¡ n sledovat ‡¡slice
+      ungetchar;
+      if not (c>="0" and c<="9") then
+        ce^.seterror({CCERR=}000075,ce_errnum);
+        ce^.loadtextpos;
+        end if;
+
+      -- hodnota exponentu
+      loop
+        -- p©e‡¡st znak
+        getchar(c);
+        if {%%TODO(IN) c not in ["0".."9","_"]} not (c>="0" and c<="9") and c<>"_" then break end if;
+
+        -- za©adit do bufferu textov‚ reprezentace
+        buf_txt.addchar(c);
+
+        -- za©adit do bufferu numerick‚ho liter lu
+        if c<>"_" then
+          buf_num.addchar(c);
+          end if;
+        end loop;
+
+      -- konvertovat exponent
+      end if;
+
+    -- v˜sledn˜ lexik ln¡ element
+    lex:=lex_numr;
+
+  ----- dekadick‚ ‡¡slo -----
+  else
+    -- poslednˆ p©e‡ten˜ znak vr tit zpˆt do vstupu
+    ungetchar;
+
+    -- konvertovat
+    getui(10,val.ui,ui_0);
+
+    -- v˜sledn˜ lexik ln¡ element
+    lex:=lex_numi;
+    end if;
+
+  -- z¡skat pointer na textovou reprezentaci ‡¡sla
+  if not append then
+    val.txt:=buf_txt.endtext;
+    end if;  
+  end getnum;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getcharencoding (
+    ui         : out tuniint) =                  -- ordin ln¡ hodnota znaku
+-- Ziska znak zapsan˜ sv˜m ordin ln¡m ‡¡slem.
+----------------------------------------------------------------------------------------------------
+var
+  ord              : lexval;                     -- ordin ln¡ ‡¡slo znaku
+  nlex             : lexsym;                     -- symbol ziskany pri vyhodnoceni cisla
+
+begin
+  -- p©e‡¡st ‡¡slo znaku
+  getnum(nlex,ord,true);
+
+  -- vejde se do jednoho znaku ?
+  if ord.ui<ui_unichar_first or ord.ui>ui_unichar_last then
+    ord.ui:=ui_0;
+    end if;
+
+  -- p©edat ven
+  ui:=ord.ui;
+  end getcharencoding;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getstr (
+    lex            : out lexsym;                 -- ziskany symbol
+    val            : out lexval;                 -- hodnota symbolu
+    isfc           : in t_logical;               -- T-FC je platn‚
+    fc             : in tunichar) =              -- prvn¡ znak agreg tu
+-- Ziska z prectene hodnoty retezec.
+-- Je-li ISFC=True, je ve FC ulo‘en prvn¡ znak agreg tu z¡skan˜ jinou cestou.
+----------------------------------------------------------------------------------------------------
+var
+  c                : lexchar;                    -- znak p©e‡ten˜ ze vstupu
+  uc               : tunichar;
+  ui               : tuniint;
+
+begin
+  -- p©ipravit buffer na znakov˜ agreg t    
+  buf_str.newtext;
+
+  -- nem me u‘ k dispozici prvn¡ znak ?
+  if isfc
+
+    -- ano => za©adit do znakov‚ho agreg tu
+    then
+      buf_str.addchar(lexchar(fc:unchecked));
+
+    -- ne => aspo¤ p©ipravit buffer na textovou reprezentaci
+    else
+      buf_txt.newtext;
+      end if;
+
+  loop
+    -- p©e‡¡st znak ze vstupu
+    getchar(c);
+
+    case c
+      -- ©etˆzec v apostrofech
+      when "'" do
+          -- ulo‘it do bufferu textov‚ reprezentace
+          buf_txt.addchar(c);
+
+          loop
+            -- p©e‡¡st znak
+            getchar(c);
+
+            -- ulo‘it do bufferu textov‚ reprezentace
+            buf_txt.addchar(c);
+
+            case c
+              -- konec © dku => chyba
+              when \10,\13,\0 do
+                  ce^.seterror({CCERR=}000083,ce_x_delim);
+                  ce^.loadtextpos;
+                  ungetchar;
+                  return;
+
+              -- nezobraziteln˜ znak => chyba
+              when \0..\31 do
+                  ce^.seterror({CCERR=}000000,ce_strelem);
+                  ce^.loadtextpos;
+
+              -- konec ©etˆzce v apostrofech nebo dvojit˜ apostrof
+              when "'" do
+                  -- co dal¨¡ znak ?
+                  getchar(c);
+                  if c="'"
+
+                    -- dva apostrofy za sebou => jeden ulo‘it do agreg tu
+                    then
+                      -- p©elo‘it (#representation)
+                      --%%X
+
+                      -- ulo‘it do bufferu znakov‚ho agreg tu
+                      buf_str.addchar(c);
+
+                    -- jen jeden apostrof => konec ©etˆzce (resp. t‚to jeho ‡ sti)
+                    else
+                      ungetchar;
+                      break;
+                      end if;
+
+              -- zobraziteln˜ znak
+              when others do
+                  -- p©elo‘it (#representation)
+                  --%%X
+
+                  -- ulo‘it do bufferu znakov‚ho agreg tu
+                  buf_str.addchar(c);
+
+              end case;
+            end loop;
+
+      -- ‡¡slo znaku
+      when "\" do
+          -- ulo‘it do bufferu textov‚ reprezentace
+          buf_txt.addchar(c);
+
+          -- z¡skat znak
+          getcharencoding(ui);
+
+          -- ulo‘it do bufferu znakov‚ho agreg tu (bez p©ekladu)
+          --%%X Tohle se mi v–bec nel¡b¡. Pot©ebuju proceduru UNICHAR_TO_LEXCHAR, jen‘e ji nem–‘u
+          -- deklarovat v CC_UNITYPE kam pat©¡, proto‘e tam nen¡ vidˆt LEXCHAR...
+          uc:=uniint_to_unichar(ui);
+          buf_str.addchar(lexchar(uc:unchecked));
+
+      -- nˆco jin‚ho => konec ©etˆzce
+      when others do
+          ungetchar;
+          break;
+      end case;
+    end loop;
+
+  -- z¡skat pointer na textovou reprezentaci a hodnotu znakov‚ho agreg tu
+  val.txt:=buf_txt.endtext;
+  val.str{%%X viz pozn mka o genericitˆ CC_BUFFER}:unchecked:=buf_str.endtext;
+
+  -- v˜sledn˜ lexik ln¡ element
+  lex:=lex_str;
+  end getstr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure comment =
+-- Preskoci komentar typu { }.
+----------------------------------------------------------------------------------------------------
+var
+  hloubka          : t_unsigned;                 -- hloubka vnoreni komentare
+  c                : lexchar;                    -- znak ze vstupu
+  pos              : lexposblock;
+
+begin
+{
+  pos.b.line:=src.sfile^.line[src.sfile^.znpos];
+  pos.b.col:=src.sfile^.col[src.sfile^.znpos];
+  pos.b.num:=src.sfile^.fi^.num;
+  pos.e:=pos.b;
+}
+  hloubka:=1;
+  loop
+    getchar(c);
+    --%%X scanchar("{","}",c);
+    if c="{" then succ hloubka;
+    elsif c="}" then pred hloubka;
+    elsif c=\0 then
+      ce^.seterror({CCERR=}000084,ce_comment);
+      ce^.setpos(pos);
+      ce^.raiseerror;
+      end if;
+    until hloubka=0;
+  end comment;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexsym =
+-- Z¡sk  ze vstupu jeden lexik ln¡ prvek.
+----------------------------------------------------------------------------------------------------
+with
+  console;
+
+var
+  c                : lexchar;                    -- p©e‡ten˜ znak
+  can_be_keyword   : t_logical;                  -- indikace, zda identifik tor m–‘e b˜t kl¡‡ov‚ slovo
+
+begin
+  length:=0;
+  loop
+    getchar(c);
+
+    -- ignorovat mezery pred symbolem
+    while c=" " loop
+      getchar(c);
+      end loop;
+
+    -- poznamenat si sou©adnice, na nich‘ element za‡¡n 
+    line:=lex_input^.znbuf[lex_input^.znpos].line;
+    col:=lex_input^.znbuf[lex_input^.znpos].col;
+
+    -- zpracovat
+    case c
+
+      -- identifik tor nebo kl¡‡ov‚ slovo
+      when "a".."z","A".."Z","_" do
+          -- %%X Kdy‘ je v identifik toru znak "_", tak to ur‡itˆ nen¡ kl¡‡ov‚ slovo.
+          -- Nezrychlilo by se tak testov n¡ ?
+
+          -- p©ipravit buffer na identifik tor a jeho textovou reprezentaci
+          buf_txt.newtext;
+          buf_id.newtext;
+
+          -- p©e‡¡st p¡smenn˜ prefix identifik toru
+          while (c>="a" and c<="z") or (c>="A" and c<="Z") loop
+            -- ulo‘it do bufferu textov‚ reprezentace
+            buf_txt.addchar(c);
+
+            -- ulo‘it do bufferu identifik toru
+            buf_id.addchar(upcase(c));
+
+            -- dal¨¡ znak
+            getchar(c);
+            end loop;
+
+          -- nepokra‡uje identifik tor je¨tˆ ?
+          if c="_" or (c>="0" and c<="9")
+
+            -- ano => p©e‡¡st zbytek
+            then
+              -- teƒ u‘ je jasn‚, ‘e to nebude kl¡‡ov‚ slovo
+              can_be_keyword:=false;
+
+              loop
+                -- ulo‘it do bufferu textov‚ reprezentace
+                buf_txt.addchar(c);
+
+                -- ulo‘it do bufferu identifik toru
+                buf_id.addchar(upcase(c));
+
+                -- dal¨¡ znak
+                getchar(c);
+                until not ((c>="a" and c<="z") or (c>="A" and c<="Z") or c="_" or (c>="0" and c<="9")) {%%TODO(IN): c not in ["a".."z","A".."Z","_","0".."9"]};
+            
+            -- ne => mohlo by to b˜t kl¡‡ov‚ slovo
+            else
+              can_be_keyword:=true;
+              end if;
+            
+          -- posledn¡ znak ji‘ pat©¡ do jin‚ho elementu
+          ungetchar;
+
+          -- z¡skat pointer na textovou reprezentaci a identifik tor
+          val.txt:=buf_txt.endtext;
+          val.id{%%X viz pozn mka o genericitˆ CC_BUFFER}:unchecked:=buf_id.endtext;
+
+          -- zkusit vyhledat v tabulce kl¡‡ov˜ch slov
+          if behaviorlist<>nil and then behaviorlist^.extproc<>nil
+            then behaviorlist^.extproc^(val.id^,lex,val);
+            else 
+              if can_be_keyword
+                then search_keyword(val.id^,lex);
+                else lex:=lex_nul;
+                end if;
+            end if;
+          if lex=lex_nul
+
+            -- je to identifik tor
+            then
+              lex:=lex_id;
+
+            -- je to kl¡‡ov‚ slovo, nabufferovan˜ identifik tor m–‘eme zase zahodit
+            else
+              val.id:=nil;
+              buf_id.discardlast;
+              end if;
+
+      -- ‡¡slo
+      when "0".."9","$" do
+          ungetchar;
+          getnum(lex,val,false);
+
+      -- znakov˜ liter l
+      when """ do 
+          -- p©ipravit buffer na textovou reprezentaci
+          buf_txt.newtext;
+
+          -- ulo‘it do bufferu textov‚ reprezentace
+          buf_txt.addchar(c);
+          
+          -- vlastn¡ znak
+          getchar(c);
+
+          -- ulo‘it do bufferu textov‚ reprezentace
+          buf_txt.addchar(c);
+
+          -- ulo‘it do hodnoty lexik ln¡ho symbolu
+          --%%X Tohle se mi v–bec nel¡b¡. Pot©ebuju proceduru LEXCHAR_TO_UNIINT, jen‘e ji nem–‘u
+          -- deklarovat v CC_UNITYPE kam pat©¡, proto‘e tam nen¡ vidˆt LEXCHAR...
+          val.ui:=unichar_to_uniint(tunichar(c:unchecked));
+          lex:=lex_char;
+
+          -- ukon‡ovac¡ uvozovka
+          getchar(c);
+          if c<>""" then
+            ce^.seterror({CCERR=}000228,ce_x_quotation);
+            ce^.loadtextpos;
+            {%%RESUME ce^.raiseerror;}
+            ungetchar;
+            end if;
+
+          -- ulo‘it do bufferu textov‚ reprezentace
+          buf_txt.addchar(c);
+
+          -- z¡skat pointer na textovou reprezentaci
+          val.txt:=buf_txt.endtext;
+
+      -- znakov˜ agreg t
+      when "'" do
+          ungetchar;
+          getstr(lex,val,false,uc_nil);
+
+      -- znakov˜ liter l nebo znakov˜ agreg t
+      when "\" do
+          -- p©ipravit buffer na textovou reprezentaci
+          buf_txt.newtext;
+
+          -- ulo‘it do bufferu textov‚ reprezentace
+          buf_txt.addchar(c);
+
+          -- p©e‡¡st k¢d znaku
+          getcharencoding(val.ui);
+
+          -- co je za‡ dal¨¡ znak ?
+          getchar(c);
+          ungetchar;
+          if c="\" or c="'"
+
+            -- pokra‡uje znakov˜ agreg t
+            then 
+              getstr(lex,val,true,uniint_to_unichar(val.ui));
+
+            -- byl to znakov˜ liter l
+            else
+              -- z¡skat pointer na textovou reprezentaci
+              val.txt:=buf_txt.endtext;
+
+              -- p©edat ven jako znakov˜ liter l
+              lex:=lex_char;
+              end if;
+
+      -- *
+      when "*" do lex:=lex_mul;
+
+      -- /
+      when "/" do lex:=lex_div;
+
+      -- +
+      when "+" do lex:=lex_add;
+
+      -- - nebo jedno© dkov˜ koment ©
+      when "-" do
+          getchar(c);
+          if c="-"
+
+            -- jedno© dkov˜ koment ©
+            then
+              --%%X scanchar(\13,\10,c);
+              loop
+                getchar(c);
+                until c=\13 or c=\10 or c=\0 {%%TODO(IN): c in [\13,\10,\0]};
+              if behaviorlist<>nil and then behaviorlist^.eol
+                then lex:=lex_eoln
+                else lex:=lex_nul
+                end if;
+
+            -- -
+            else
+              ungetchar;
+              lex:=lex_sub;
+              end if;
+
+      -- (
+      when "(" do lex:=lex_lpar;
+
+      -- )
+      when ")" do lex:=lex_rpar;
+
+      -- [
+      when "[" do lex:=lex_lbra;
+
+      -- ]
+      when "]" do lex:=lex_rbra;
+
+      -- :: := :
+      when ":" do
+          getchar(c);
+          case c
+            when ":" do lex:=lex_op1;
+            when "=" do lex:=lex_assign
+            when others do
+                ungetchar;
+                lex:=lex_col;
+            end case;
+
+      -- ;
+      when ";" do lex:=lex_scol;
+
+      -- ,
+      when "," do lex:=lex_comma;
+
+      -- .. .
+      when "." do
+          getchar(c);
+          if c="."
+            then lex:=lex_ddot;
+            else ungetchar; lex:=lex_dot;
+            end if;
+
+      -- =
+      when "=" do lex:=lex_eq;
+
+      -- <= <> <
+      when "<" do
+          getchar(c);
+          case c
+            when "=" do lex:=lex_le;
+            when ">" do lex:=lex_ne;
+            when others do
+                ungetchar;
+                lex:=lex_lt;
+            end case;
+
+      -- >= >
+      when ">" do
+          getchar(c);
+          if c="="
+            then lex:=lex_ge;
+            else ungetchar; lex:=lex_gt;
+            end if;
+
+      -- &
+      when "&" do lex:=lex_concat;
+
+      -- ^
+      when "^" do lex:=lex_ptr;
+
+      -- metap©¡kaz
+      when "#" do
+          -- p©ipravit buffer na identifik tor a jeho textovou reprezentaci
+          buf_txt.newtext;
+          buf_id.newtext;
+
+          -- p©e‡¡st cel˜ identifik tor
+          loop
+            -- ulo‘it do bufferu textov‚ reprezentace
+            buf_txt.addchar(c);
+
+            -- ulo‘it do bufferu identifik toru
+            buf_id.addchar(upcase(c));
+
+            -- dal¨¡ znak
+            getchar(c);
+            until not ((c>="a" and c<="z") or (c>="A" and c<="Z") or c="_" or (c>="0" and c<="9")) {%%TODO(IN): c not in ["a".."z","A".."Z","_","0".."9"]};
+
+          -- posledn¡ znak ji‘ pat©¡ do jin‚ho elementu
+          ungetchar;
+
+          -- z¡skat pointer na textovou reprezentaci a identifik tor
+          val.txt:=buf_txt.endtext;
+          val.id{%%X viz pozn mka o genericitˆ CC_BUFFER}:unchecked:=buf_id.endtext;
+
+          -- je to metaidentifik tor
+          lex:=lex_meta_id;
+         
+      -- lok ln¡ n vˆ¨t¡ v assembleru
+      when "@" do
+          -- p©ipravit buffer na identifik tor a jeho textovou reprezentaci
+          buf_txt.newtext;
+          buf_id.newtext;
+
+          -- p©e‡¡st cel˜ identifik tor
+          loop
+            -- ulo‘it do bufferu textov‚ reprezentace
+            buf_txt.addchar(c);
+
+            -- ulo‘it do bufferu identifik toru
+            buf_id.addchar(upcase(c));
+
+            -- dal¨¡ znak
+            getchar(c);
+            until not ((c>="a" and c<="z") or (c>="A" and c<="Z") or c="_" or (c>="0" and c<="9")) {%%TODO(IN): c not in ["a".."z","A".."Z","_","0".."9"]};
+
+          -- posledn¡ znak ji‘ pat©¡ do jin‚ho elementu
+          ungetchar;
+
+          -- z¡skat pointer na textovou reprezentaci a identifik tor
+          val.txt:=buf_txt.endtext;
+          val.id{%%X viz pozn mka o genericitˆ CC_BUFFER}:unchecked:=buf_id.endtext;
+
+          -- je to metaidentifik tor
+          lex:=lex_asm_label;
+
+      -- koment © { }
+      when "{" do
+          comment;
+
+      -- konec souboru
+      when \0 do
+          lex:=lex_eof;
+
+      -- znak "konec © dku"
+      when \13,\10,\12,\27 do
+          if behaviorlist<>nil and then behaviorlist^.eol
+            then lex:=lex_eoln
+            else lex:=lex_nul
+            end if;
+
+      -- ignorovan˜ znak
+      when \9,\26 do
+          lex:=lex_nul;
+
+      -- nep©¡pustn˜ znak
+      when others do
+          ce^.seterror({CCERR=}000086,ce_illegal_char);
+          ce^.loadtextpos;
+      end case;
+
+    until lex<>lex_nul {and then (src.doeoln or else lex<>lex_eoln)};
+
+  #if not #declared fip; then;
+    --if val.txt<>nil then write_line(lexcharstr_to_string(val.txt^)); end if;
+  #end if;
+  end getlexsym;
+{%ON}
+
+
+
+end cc_lex0;

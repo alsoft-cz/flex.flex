@@ -1,0 +1,191 @@
+----------------------------------------------------------------------------------------------------
+module private cd_attr =
+-- P©eklada‡ Flexu.
+-- Deklarace atribut–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 07.11.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_attr,
+  cd_create,
+  cx_expr,cx_expr.cx_def,cx_expr.cx_compile;
+
+----------------------------------------------------------------------------------------------------
+procedure p_attribute =
+-- Specifikace atribut–.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  id               : pentityident;               -- identifik tor atributu
+  expr             : pexpnode;                   -- v˜raz
+  pos              : lexposblock;                -- pozice deklarace
+  pattr            : pentity_attribute;          -- atribut
+  attr_context     : tcontext;                   -- kontext atributu
+  attr             : tattrformal;                -- form ln¡ atribut
+  eval             : tentityeval;
+  curr_attrib      : tcontext;                   -- atributov˜ kontext p©ekl dan‚ entity
+
+begin
+  loop
+    -- deklarace atributu
+    if checklex(curr,lex_attribute) then
+      -- identifik tor
+      getlex(curr,lex);
+      if lex<>lex_id then
+        ce^.seterror({CCERR=}000097,ce_x_id);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+      id:=getlexid;
+
+      -- nesm¡ to b˜t jazykem definovan˜ atribut
+      if islangattr(id^) then
+        ce^.seterror({CCERR=}000098,ce_langattr);
+        ce^.setparam(entityident_to_string(id^));
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+      -- z¡skat atributov˜ kontext
+      d_get_attribute_context(curr.entity^,curr_attrib);
+
+      -- nov  deklarace
+      d_create_without_name(curr_attrib,pentity(pattr),attr_context,et_attribute,id,pos);
+
+      -- :=
+      if followlex(curr,lex_assign) then
+        ce^.seterror({CCERR=}000099,ce_x_assign);
+        ce^.loadpos;
+        end if;
+
+      -- konstantn¡ v˜raz
+      x_vyraz(curr,expr,es_expr);
+      x_evaluate(curr,expr,ek_const,nil,eu_use,true,eval);
+      verify(277,eval<>ete_evaluated);
+
+      -- konec deklarace
+      d_end(pattr^,pos);
+
+    -- determinace atributu
+    elsif checklex(curr,lex_for) then
+      -- identifik tor atributu
+      a_attrid(curr,id);
+
+      -- pozice
+      getlexposall(pos,ll_curr);
+
+      -- mus¡ b˜t jazykem definovan˜ atribut
+      a_getlangattr(id^,attr);
+      if not islangattr(id^) then
+        ce^.seterror({CCERR=}000100,ce_x_langattrid);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+      -- USE
+      if followlex(curr,lex_use) then
+        ce^.seterror({CCERR=}000101,ce_x_use);
+        ce^.loadpos;
+        end if;
+
+      -- konstantn¡ v˜raz
+      x_vyraz(curr,expr,es_expr);
+      --x_evaluate(curr,expr,ek_const,nil,eu_use,true,eval);
+      --verify(278,eval<>se_evaluated);
+
+      -- dosadit hodnotu atributu
+      case attr
+        -- :ord
+        when atf_ord do
+            -- symbol mus¡ b˜t v˜‡tov˜ prvek
+            if curr.entity^.etype<>et_enum then
+              ce^.seterror({CCERR=}000102,ce_i_attr);
+              ce^.setparam(entityident_to_string(id^));
+              ce^.setpos(pos);
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+              end if;
+
+            -- dosadit
+            pentity_enum(curr.entity)^.attr_ord.setexpr(expr);
+
+        -- :size
+        when atf_size do
+            -- symbol mus¡ b˜t regul rn¡ typ
+            if not ((curr.entity^.etype in ets_type) and (pentity_type(curr.entity)^.stype in dts_regular)) then
+              ce^.seterror({CCERR=}000103,ce_i_attr);
+              ce^.setparam(entityident_to_string(id^));
+              ce^.setpos(pos);
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+              end if;
+
+            -- dosadit
+            pentity_type(curr.entity)^.attr_size.setexpr(expr);
+
+        -- :position
+        when atf_position do
+            -- symbol mus¡ b˜t slo‘ka t©¡dy nebo recordu
+            if not ((curr.entity^.etype=et_var) and (pentity_var(curr.entity)^.mclass in mcs_offset)) then
+              ce^.seterror({CCERR=}000104,ce_i_attr);
+              ce^.setparam(entityident_to_string(id^));
+              ce^.setpos(pos);
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+              end if;
+
+            -- dosadit
+            pentity_var(curr.entity)^.attr_position.setexpr(expr);
+
+        -- :alignment
+        when atf_alignment do
+            -- symbol mus¡ b˜t typ se slo‘kami
+            if not ((curr.entity^.etype in ets_type) and (pentity_type(curr.entity)^.stype in dts_component)) then
+              ce^.seterror({CCERR=}000105,ce_i_attr);
+              ce^.setparam(entityident_to_string(id^));
+              ce^.setpos(pos);
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+              end if;
+
+            -- dosadit
+            pentity_type(curr.entity)^.attr_align.setexpr(expr);
+
+        -- :machine_pointer
+        when atf_machine_pointer do
+            -- symbol mus¡ b˜t typ pointer
+            if not ((curr.entity^.etype in ets_type) and (pentity_type(curr.entity)^.stype in dts_pointer)) then
+              ce^.seterror({CCERR=}000106,ce_i_attr);
+              ce^.setparam(entityident_to_string(id^));
+              ce^.setpos(pos);
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+              end if;
+
+            -- dosadit
+            pentity_type(curr.entity)^.attr_mptr.setexpr(expr);
+
+        when others do
+            ce^.seterror({CCERR=}000107,ce_i_attr);
+            ce^.setparam(entityident_to_string(id^));
+            --%%TODO(LIB) ce^.sethint(formats(hint_attr_cant_redef,id));
+            ce^.setpos(pos);
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+        end case;
+
+    -- nic jin‚ho nen¡ specifikace atributu
+    else
+      break
+      end if;
+
+    end loop;
+  end p_attribute;
+
+
+
+end cd_attr;

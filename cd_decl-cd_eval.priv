@@ -1,0 +1,2848 @@
+----------------------------------------------------------------------------------------------------
+module private cd_eval =
+-- P©eklada‡ Flexu.
+-- Vyhodnocen¡ deklarac¡.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 20.09.2000 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_entity.cc_ref,
+  cx_expr,cx_expr.cx_def,cx_expr.cx_compile,
+  cd_create;
+
+use
+  cx_expr.cx_def,
+  cb_block,
+  cb_block.cb_compile,
+  cb_block.cb_def;
+
+#if dump then;
+var
+  -- pr–bˆh p©ekladu deklarace
+  tentitydeclaredtxt : array tentitydeclared of t_char32str := [
+      for etd_none        use 'none',
+      for etd_incomplete  use 'incomplete',
+      for etd_public      use 'public',
+      for etd_full        use 'full'];
+
+  -- vyhodnocen¡ symbolu
+  tentityevaltxt   : array tentityeval of t_char32str := [
+      for ete_none        use 'none',            
+      for ete_generic     use 'generic',         
+      for ete_evaluated   use 'evaluated',       
+      for ete_unevaluated use 'unevaluated'];
+#end if;
+
+type
+  tevalspecproc    = procedure (
+      curr         : in out tentity_type;        -- vyhodnocovan  entita
+      curr_context : in tcontext;                -- prim rn¡ kontext entity
+      final        : in t_logical);              -- T-v˜sledek mus¡ b˜t vyhodnocen
+  pevalspecproc    = ^tevalspecproc;
+
+var
+  e_spec_tab       : array tdatatype of pevalspecproc;
+
+
+----------------------------------------------------------------------------------------------------
+procedure arraysize (
+    item           : tunidata_size;              -- velikost prvku pole
+    lval           : tuniint;                    -- doln¡ mez
+    hval           : tuniint)                    -- horn¡ mez
+                   return tunidata_size =        -- velikost pole
+-- Vypo‡¡t  velikost pole. Nebere v £vahu zarovn n¡ prvk– pole.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=uniint_to_unidata_size(unidata_size_to_uniint(item)*(hval-lval+ui_1));
+  end arraysize;
+
+
+----------------------------------------------------------------------------------------------------
+procedure adjustvtable (
+    pclass         : in pentity_type;            -- t©¡da
+    resize         : in t_logical) =             -- T-chceme p©idat nˆjak˜ prvek
+-- Zajist¡, aby ‘e je alokov na virtu ln¡ tabulka a pop©¡padˆ ji realokuje.
+----------------------------------------------------------------------------------------------------
+const
+  vtableinit       = 5;
+  vtabledelta      = 20;
+
+var
+  pancestor        : pentity_type;           -- p©edek t©¡dy
+  _vtable          : pclass^.vtable:type;
+
+begin
+  -- byla u‘ virtu ln¡ tabulka alokov na ?
+  if pclass^.vtable=nil
+
+    -- ne
+    then
+      -- zkusit naj¡t p©edka s virtu ln¡ tabulkou
+      pancestor:=pentity_type(pclass^.ancestor.getuentity);
+      while (pancestor<>nil) and (pancestor^.vtable=nil) loop 
+        pancestor:=pentity_type(pancestor^.ancestor.getuentity); 
+        end loop;
+
+      -- na¨el se ?
+      if pancestor<>nil
+
+        -- ano => zkop¡rovat, resp. alokovat dostate‡nˆ velkou
+        then
+          new pclass^.vtable range pancestor^.vtable^:length+vtableinit;
+          pclass^.vtable^:length:=pancestor^.vtable^:length;
+
+        -- ne => alokovat v z kladn¡ velikosti
+        else
+          new pclass^.vtable range vtableinit;
+          end if;
+
+    -- ano
+    else
+      -- zajistit voln‚ m¡sto, pokud je to po‘adov no
+      if resize and then pclass^.vtable^:length=pclass^.vtable^:last then
+        --%%TODO(ADJUST) adjust pclass^.vtable range pclass^.vtable^:last+vtabledelta;
+        new _vtable range pclass^.vtable^:last+vtabledelta;
+        _vtable^:=pclass^.vtable^;
+        discard pclass^.vtable;
+        pclass^.vtable:=_vtable;
+        end if;
+      end if;
+  end adjustvtable;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure type_setsize (
+    curr           : in out tentity_type;        -- vyhodnocovan˜ typ
+    size           : in tunidata_size) =         -- vypo‡ten  velikost
+-- Dosad¡ do typu velikost.
+----------------------------------------------------------------------------------------------------
+var
+  ui               : tuniint;
+
+begin
+  if curr.attr_size.isset
+
+    -- ur‡ena explicitnˆ atributem
+    then
+      -- p©evz¡t z v˜razu velikost
+      x_const_int(pexpnode(curr.attr_size.getcexpr),ui);
+
+      -- mus¡ b˜t nez porn 
+      if ui<ui_0 then
+        ce^.seterror({ERRNUM=}000000,ce_i_attr_size);
+        curr.attr_size.errpos;
+        {%%RESUME ce^.raiseerror;}
+        curr.size:=size;
+        return;
+        end if;
+
+      -- dosadit
+      curr.size:=uniint_to_unidata_size(ui);
+
+      -- nen¡ to m‚nˆ, ne‘ implicitn¡ velikost ?
+      if curr.size<size then
+        ce^.seterror({ERRNUM=}000000,ce_i_attr_size);
+        curr.attr_size.errpos;
+        {%%RESUME ce^.raiseerror;}
+        curr.size:=size;
+        return;
+        end if;
+
+    -- ur‡ena implicitnˆ
+    else 
+      curr.size:=size;
+      end if;
+  end type_setsize;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure type_setalign (
+    curr           : in out tentity_type;        -- vyhodnocovan˜ typ
+    align          : in tunidata_size) =         -- zarovn n¡
+-- Dosad¡ do typu zarovn n¡.
+----------------------------------------------------------------------------------------------------
+var
+  ui               : tuniint;
+
+begin
+  if curr.attr_align.isset
+
+    -- ur‡eno explicitnˆ atributem
+    then
+      -- p©evz¡t z v˜razu zarovn n¡
+      x_const_int(pexpnode(curr.attr_align.getcexpr),ui);
+
+      -- mus¡ b˜t >=1
+      if ui<ui_1 then
+        ce^.seterror({ERRNUM=}000000,ce_i_attr_align);
+        curr.attr_align.errpos;
+        {%%RESUME ce^.raiseerror;}
+        curr.align:=align;
+        return;
+        end if;
+
+      -- dosadit
+      curr.align:=uniint_to_unidata_size(ui);
+
+    -- ur‡eno implicitnˆ
+    else
+      curr.align:=align;
+      end if;
+  end type_setalign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure report_unused (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Ohl s¡ varov n¡ pro ka‘dou nepou‘itou entitu uvnit© [curr].
+----------------------------------------------------------------------------------------------------
+var
+  p                : pentity;
+  region           : pregion;
+
+begin
+  if cw_unused_entity in curr.entity^.compv.warns then
+    -- v¨echny entity v tomto regionu
+    p:=curr.region^.entities.first;
+    while p<>nil loop
+      -- pokud nebyl pou‘it, ohl sit varov n¡
+      if (p^.stat_usage=0) and (p^.id<>nil) and not (etc_generated in p^.compile) then
+        ce^.setwarning({CCERR=}000000,cw_unused_entity);
+        ce^.setpos(p^.pos[etp_header]);
+        ce^.setparam(entityident_to_string(p^.id^));
+        end if;
+
+      -- dal¨¡ symbol
+      p:=p^.next;
+      end loop;
+    
+    -- v¨echny podregiony
+    region:=curr.region^.regions.first;
+    while region<>nil loop
+      -- zpracovat 
+      report_unused(sym_build_context(curr.entity,region));
+
+      -- dal¨¡ region
+      region:=region^.next;
+      end loop;
+    end if;
+  end report_unused;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_part =
+-- Zapo‡¡t  vyhodnocen¡ ‡ sti do celku a vr t¡ True, nen¡-li celek vyhodnocen.
+----------------------------------------------------------------------------------------------------
+begin
+  if (celek=ete_none)or (celek>cast) then celek:=cast; end if;
+  result:=celek<ete_evaluated;
+  end e_part;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_is_evaluated =
+-- True, odpov¡d -li zadan‚ vyhodnocen¡ stavu "vyhodnoceno".
+----------------------------------------------------------------------------------------------------
+begin
+  result:=e>=ete_evaluated;
+  end e_is_evaluated;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_check (
+    psym           : in pentity;                 -- p©ekl dan˜ prvek
+    pos            : in lexposblock;             -- referen‡n¡ pozice
+    level          : in tentitydeclared;         -- po‘adovan  £rove¤ deklarace
+    final          : in t_logical;               -- T-v˜sledek mus¡ b˜t vyhodnocen
+    e              : out tentityeval) =          -- zji¨tˆn‚ vyhodnocen¡
+-- Kontrola vyhodnocen¡ symbolu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‘adov  £rove¤ deklarace
+  if psym^.declared<level then
+    if final
+      -- symbol nen¡ deklarov n a mˆl by --> chyba
+      then
+        ce^.seterror({CCERR=}000248,ce_incomplete);
+        ce^.setparam(sym_get_qid(psym));
+        ce^.setpos(pos);
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+
+      -- zat¡m se nic nedˆje
+      else
+        if psym^.eval=ete_evaluated
+          then e:=ete_none;
+          else e:=psym^.eval;
+          end if;
+        return;
+        end if;
+    end if;
+
+  -- je¨tˆ se pokusit vyhodnotit nevyhodnocen˜ symbol
+  e_symbol(psym,pos,level,final);
+  if (psym^.eval=ete_evaluated) and (psym^.evaluated<level)
+    -- symbol je sice vyhodnocen, ale v ni‘¨¡ ne‘ po‘adovan‚ £rovni
+    then e:=ete_none
+    -- ostatn¡ p©¡pady p©evz¡t
+    else e:=psym^.eval;
+    end if;
+  end e_check;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_refexpr (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out refexpr;             -- v˜raz
+    kind           : in expkind;                 -- o‡ek van˜ druh v˜razu
+    typ            : in pentity_type;            -- po‘adovan˜ typ
+    usage          : in expusage;                -- pou‘it¡ v˜razu
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ referenci na v˜raz.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+  x                : pexpnode;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if expr.geteval>ete_none then return; end if;
+
+  if expr.getuexpr=nil
+    -- v˜raz nen¡ uveden (nevad¡, t©eba je to z mˆr)
+    then expr.seteval(ete_evaluated)
+    -- jinak ho vyhodnotit
+    else 
+      x:=pexpnode(expr.getcexpr);
+      x_evaluate(curr,x,kind,typ,usage,final,e);
+      expr.setexpr(x);
+      expr.seteval(e);
+      end if;
+  end e_refexpr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_refblock (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in out refblock;            -- v˜raz
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ referenci na v˜raz.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+  b                : cb_block.cb_def.pblnode;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if bl.geteval>ete_none then return; end if;
+
+  if bl.getublock=nil
+    -- v˜raz nen¡ uveden (nevad¡, t©eba je to z mˆr)
+    then bl.seteval(ete_evaluated)
+    -- jinak ho vyhodnotit
+    else 
+      b:=cb_block.cb_def.pblnode(bl.getcblock);
+      cb_block.cb_compile.b_evaluate(curr,b,final,e);
+      bl.setblock(b);
+      bl.seteval(e);
+      end if;
+  end e_refblock;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_reftype_check (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    ptyp           : in pentity_type;            -- kontrolovan˜ typ
+    tview          : in ttypeviewset;            -- povolen‚ typy pohled– na typ
+    dts            : in tdatatypeset;            -- povolen‚ datov‚ typy
+    allowclass     : in t_logical) =             -- T-povolit Incomplete view t©¡dy
+-- Kontrola, zda typ odpov¡d  zadan˜m po‘adavk–m.                             
+----------------------------------------------------------------------------------------------------
+var
+  t                : typeview;                   -- pohled na typ                               
+
+begin
+  -- sestavit si pohled na typ
+  t.init(curr,ptyp);
+
+  if allowclass {(tview_partial in tview) and (st_class in dts)} and t.isclass
+
+    -- Ondra 29.6.2001 : p©i povolen‚m Partial view povol¡me pro t©¡du i Incomplete view
+    then
+      -- nic nedˆlat
+
+    else
+      -- kontrola p©¡pustnosti pohledu 
+      if t.tview not in tview then
+        ce^.seterror({CCERR=}000249,ce_i_type);
+        --typ.errpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+      --Full view => kontrola p©¡pustnosti datov‚ho typu 
+      if t.tview=tview_full and t.stype not in dts then 
+        ce^.seterror({CCERR=}000250,ce_i_type);
+        --typ.errpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+      -- Incomplete view => typ mus¡ b˜t regul rn¡
+      if t.tview=tview_incomplete then t.getutype^.tkind:=tk_regular; end if;
+      end if;
+  end e_reftype_check;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_reftype (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    typ            : in out cc_ref.reftype;      -- typ
+    ekind          : in expkind;                 -- druh o‡ek van‚ho v˜razu
+    tview          : in ttypeviewset;            -- povolen‚ typy pohled– na typ
+    dts            : in tdatatypeset;            -- povolen‚ datov‚ typy
+    allowclass     : in t_logical;               -- T-povolit Incomplete view t©¡dy
+ -- declared       : in tentitydeclared;         -- po‘adovan  £rove¤ deklarace
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ referenci na typ.
+-- Pohled na typ mus¡ b˜t z TVIEW a datov˜ typ ve Full view mus¡ b˜t z DTS.
+-- Pokud je to Incomplete view, po‘aduje se, aby byl typ regul rn¡.
+-- Je-li ALLOWCLASS=True, pak je povoleno i Incomplete view na t©¡du.
+----------------------------------------------------------------------------------------------------
+var
+  ptyp             : pentity_type;
+  t                : typeview;
+
+begin
+  -- typ je¨tˆ nem me, ale zato m me v˜raz --> vyhodnotit
+  if typ.getutype=nil and then typ.getuexpr<>nil then
+    
+    -- vyhodnotit v˜raz
+    e_refexpr(curr,typ.getrefexpr^,ekind{ek_typename},nil,eu_formal,final);
+    if e_part(typ.e,typ.getrefexpr^.geteval) then return; end if;
+
+    -- p©evz¡t typ
+    x_get_type(curr,pexpnode(typ.getcexpr),ptyp);
+    typ.settype(ptyp);
+    end if;
+
+  -- zkontrolovat typ
+  if typ.getutype<>nil
+
+    -- je k dispozici
+    then
+      -- zkontrolovat zda typ odpov¡d  zadan˜m po‘adavk–m 
+      begin
+        e_reftype_check(curr,typ.getutype,tview,dts,allowclass);
+      catch
+        when resume_error, compiler_error do 
+            typ.errpos; 
+            raise;
+        end;
+
+    -- typ nem me, ale t©eba je to z mˆr
+    else
+      -- nic nedˆlat
+      end if;
+
+  -- vyhodnoceno
+  typ.seteval(ete_evaluated);
+
+{
+  -- zkontrolovat typ
+  if typ._t<>nil
+    -- je k dispozici
+    then
+      e_check(typ._t,typ.pos,declared,final,e);
+      if e_part(typ.e,e) then return; end if;
+
+    -- typ nem me, ale t©eba je to z mˆr
+    else typ.e:=ete_evaluated;
+}
+  end e_reftype;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_refimm (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    imm            : in out refimm;              -- hodnota
+    kind           : in expkind;                 -- o‡ek van˜ druh v˜razu
+    typ            : in pentity_type;            -- po‘adovan˜ typ
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ referenci na hodnotu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if imm.geteval>ete_none then return; end if;
+
+  -- vyhodnotit v˜raz
+  e_refexpr(curr,imm.getrefexpr^,kind,typ,eu_use,final);
+  if e_part(imm.e,imm.getrefexpr^.geteval) then return; end if;
+
+  -- p©evz¡t hodnotu
+  x_const_imm(pexpnode(imm.getcexpr),imm.getundefimm^);
+  end e_refimm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_refsymbol (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    sym            : in out refentity;           -- symbol
+    level          : in tentitydeclared;         -- po‘adovan˜ urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ referenci na symbol.
+----------------------------------------------------------------------------------------------------
+var
+  entity           : pentity;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if sym.e>ete_none then return; end if;
+
+  -- vyhodnotit v˜raz
+  if sym.getuentity=nil and then sym.getuexpr<>nil then
+    -- vyhodnotit v˜raz
+    e_refexpr(curr,sym.getrefexpr^,ek_sym,nil,eu_formal,final);
+    if e_part(sym.e,sym.getrefexpr^.geteval) then return; end if;
+
+    -- p©evz¡t symbol
+    x_get_symbol(pexpnode(sym.getcexpr),entity);
+    sym.setentity(entity);
+    end if;
+
+  if sym.getuentity<>nil
+
+    -- symbol je k dispozici
+    then
+      -- vyhodnotit symbol
+      {e_symbol(sym._s,sym.pos,level,final);}
+      if e_part(sym.e,sym.getuentity^.eval) then return; end if;
+
+    -- symbol nem me, ale t©eba je to z mˆr
+    else sym.e:=ete_evaluated;
+    end if;
+  end e_refsymbol;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_refsymbol_from_typename (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    sym            : in out refentity;           -- symbol
+    level          : in tentitydeclared;         -- po‘adovan˜ urove¤ vyhodnocen¡
+    tview          : in ttypeviewset;            -- povolen‚ typy pohled– na typ
+    dts            : in tdatatypeset;            -- povolen‚ datov‚ typy
+    allowclass     : in t_logical;               -- T-povolit Incomplete view t©¡dy
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ referenci na symbol zadan˜ jako jm‚no typu.
+----------------------------------------------------------------------------------------------------
+var
+  ptyp             : pentity_type;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if sym.geteval>ete_none then return end if;
+
+  -- vyhodnotit v˜raz
+  e_refexpr(curr,sym.getrefexpr^,ek_typename,nil,eu_formal,final);
+  if e_part(sym.e,sym.getrefexpr^.geteval) then return end if;
+
+  -- p©evz¡t symbol 
+  x_get_type(curr,pexpnode(sym.getcexpr),ptyp);
+  sym.setentity(ptyp);
+  if e_part(sym.e,ptyp^.eval) then return end if;
+
+  -- kontrolova zda typ odpov¡d  zadan˜m po‘adavk–m
+  begin
+    e_reftype_check(curr,ptyp,tview,dts,allowclass);
+  catch
+    when resume_error, compiler_error do 
+        sym.errpos; 
+        raise;
+    end;
+  end e_refsymbol_from_typename;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_ordinal : tevalspecproc =
+-- Vyhodnot¡ definici ordin ln¡ho typu SIGNED, UNSIGNED, LOGICAL, CHARACTER.
+----------------------------------------------------------------------------------------------------
+var
+  ui               : tuniint;                    -- v˜sledek (po‡et bit–)
+  size             : tunidata_size;              -- vypo‡ten  velikost
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- vyhodnotit v˜raz
+  e_refexpr(curr_context,curr.expr,ek_const_int,nil,eu_read,{%%X Ot zka: nem  zde b˜t EU_USE ??? }final);
+  if e_part(curr.seval,curr.expr.geteval) then return; end if;
+
+  -- na‡¡st hodnotu
+  x_const_int(pexpnode(curr.expr.getcexpr),ui);
+
+  -- zkontrolovat a doplnit meze
+  cpu^.getordparams1(curr.stype,uniint_to_unidata_bitsize(ui),size{curr.size},curr.lval,curr.hval);
+
+  -- doplnit velikost
+  type_setsize(curr,size);
+
+  -- dosadit velikost v bitech
+  curr.bits:=uniint_to_unidata_bitsize(ui);
+  end e_spec_ordinal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_enum : tevalspecproc =
+-- Vyhodnot¡ definici v˜‡tov‚ho typu.
+----------------------------------------------------------------------------------------------------
+var
+  hval             : tuniint;                    -- horn¡ mez
+  srch             : tentitysearch;              -- hled tko
+  size             : tunidata_size;              -- vypo‡ten  velikost
+  e                : tentityeval;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- slo‘ky
+  e_all(curr,etd_full,final,e);
+  if e_part(curr.seval,e) then return; end if;
+
+  -- ur‡it nejvy¨¨¡ ordin ln¡ hodnotu
+  -- %%X Optimalizace: Kdy‘ nen¡ uvedena specifikace reprezentace ‘ dn‚ho
+  -- v˜‡tov‚ho prvku, tak sta‡¡ vz¡t posledn¡ prvek z tabulky symbol–
+  hval:=ui_0;
+  srch.find_et_first(^curr,rc_primary,et_enum,[]);
+  while srch.psym<>nil loop
+    if pentity_enum(srch.psym)^.ordinal>hval then hval:=pentity_enum(srch.psym)^.ordinal; end if;
+    srch.find_et_next;
+    end loop;
+
+  -- meze typu
+  curr.lval:=ui_0;
+  curr.hval:=hval;
+
+  -- odvodit velikost typu
+  cpu^.getordparams2(dt_enum,curr.bits,size{curr.size},ui_0,hval);
+
+  -- doplnit velikost
+  type_setsize(curr,size);
+  end e_spec_enum;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_float : tevalspecproc =
+-- Vyhodnot¡ definici ordin ln¡ho typu SIGNED, UNSIGNED, LOGICAL, CHARACTER.
+----------------------------------------------------------------------------------------------------
+var
+  ui               : tuniint;                    -- v˜sledek
+  size             : tunidata_size;              -- vypo‡ten  velikost
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  case curr.dtype
+    -- delta definice
+    when fdt_delta      do
+        -- vyhodnotit v˜raz
+        e_refexpr(curr_context,curr.expr,ek_const_real,nil,eu_read,{%%X Ot zka: nem  zde b˜t EU_USE ??? }final);
+        if e_part(curr.seval,curr.expr.geteval) then return; end if;
+
+        -- na‡¡st hodnotu
+        x_const_real(pexpnode(curr.expr.getcexpr),curr.fp.fdelta);
+
+      {%%TODO(REAL)
+        -- mus¡ b˜t > 0
+        if curr.fp.fdelta<=ur_0 then
+          ce^.seterror({CCERR=}000251,ce_numrange);
+          ce^.sethint(hint_float_delta);
+          curr.expr.errpos;
+          ce^.resumeerror;
+          end if;
+      }
+
+    -- digits definice
+    when fdt_digits     do
+        -- vyhodnotit v˜raz
+        e_refexpr(curr_context,curr.expr,ek_const_int,nil,eu_read,{%%X Ot zka: nem  zde b˜t EU_USE ??? }final);
+        if e_part(curr.seval,curr.expr.geteval) then return; end if;
+
+        -- na‡¡st hodnotu
+        x_const_int(pexpnode(curr.expr.getcexpr),curr.fp.fdigits);
+
+        -- mus¡ b˜t >= 1
+        if curr.fp.fdigits<ui_1 then
+          ce^.seterror({CCERR=}000252,ce_numrange);
+          ce^.sethint(hint_float_digits);
+          curr.expr.errpos;
+          ce^.resumeerror;
+          end if;
+
+
+    when others do verify(235,true);
+    end case;
+
+  -- parametry typu
+  cpu^.getrealparams(curr.dtype,size{curr.size},curr.fp);
+
+  -- doplnit velikost
+  type_setsize(curr,size);
+  end e_spec_float;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_procedure : tevalspecproc =
+-- Vyhodnot¡ definici typu procedura/task/zpr va.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- parametry
+  e_all(curr,etd_full,final,e);
+  if e_part(curr.seval,e) then return; end if;
+{
+  -- vyhodnotit typ n vratov‚ hodnoty
+  e_reftype(curr,curr.rtype,ek_typename,ttypeviewset:[tview_partial,tview_full],dts_regular,{etd_full,}final);
+  if e_part(curr.seval,curr.rtype.geteval) then return; end if;
+}
+  end e_spec_procedure;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_array : tevalspecproc =
+-- Vyhodnot¡ definici typu (neomezen‚) pole.
+----------------------------------------------------------------------------------------------------
+var
+  rtype            : pentity_type;               -- typ rozsahu
+  rtype_context    : tcontext;                   -- kontext typu rozsahu
+  size             : tunidata_size;              -- vypo‡ten  velikost
+  e                : tentityeval;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- b zov˜ typ
+  e_reftype(curr_context,curr.base,ek_typename,ttypeviewset:[tview_partial,tview_full],dts_constrained,false,{etd_full,}final);
+  if e_part(curr.seval,curr.base.geteval) then return; end if;
+{
+  -- b zov˜ typ nesm¡ b˜t neomezen˜
+  if curr.base.getctype^.stype in dts_unconstrained then
+    ce^.seterror({CCERR=}000253,ce_i_basetype);
+    ce^.sethint(hint_array_base);
+    curr.base.errpos;
+    ce^.resumeerror;
+    end if;
+}
+  if curr.stype=dt_array
+
+    -- norm ln¡ pole
+    then
+      -- rozsah
+      e_reftype(curr_context,curr.srange,ek_rangetype,ttypeviewset:[tview_full],dts_ordinal,false,{etd_full,}final);
+      if e_part(curr.seval,curr.srange.geteval) then return; end if;
+
+      -- %%X A co zarovn n¡ prvku pole ?!
+
+      -- vypo‡¡tat d‚lku pole
+      size{curr.size}:=arraysize(curr.base.getctype^.size,curr.srange.getctype^.lval,curr.srange.getctype^.hval);
+
+    -- neomezen‚ pole
+    else
+      -- odvodit typ rozsahu
+      d_create_at_position(curr_context,pentity(rtype),rtype_context,et_type,nil,nil);
+
+      -- doplnit £daje
+      rtype^.tkind:=tk_regular;
+      rtype^.stype:=dt_unsigned;
+      cpu^.getdefaultord(dt_unsigned,rtype^.bits,rtype^.size,rtype^.lval,rtype^.hval);
+
+      -- konec deklarace
+      d_end_at_position(rtype^,nil,false);
+
+      -- dosadit jako typ rozsahu neomezen‚ho pole
+      curr.srange.settype(rtype);
+
+      -- velikost
+      size:=uds_0;
+
+      -- vyhodnoceno
+      curr.seval:=ete_evaluated;
+      end if;
+  -- %%X doplnit dal¨¡ kontroly !! 
+
+  -- doplnit velikost
+  type_setsize(curr,size);
+  end e_spec_array;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_string : tevalspecproc =
+-- Vyhodnot¡ definici typu (neomezen˜) ©etˆzec.
+----------------------------------------------------------------------------------------------------
+var
+  delka            : tuniint;                    -- po‡et prvk– ©etˆzce
+  isize            : tunidata_size;              -- d‚lka intern¡ ‡ sti ©etˆzce
+  base             : pentity_type;               -- b ze ©etˆzce
+  rtype            : pentity_type;               -- typ rozsahu
+  size             : tunidata_size;              -- vypo‡ten  velikost
+  e                : tentityeval;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- b zov˜ typ
+  e_reftype(curr_context,curr.base,ek_typename,ttypeviewset:[tview_partial,tview_full],dts_constrained,false,{etd_full,}final);
+  if e_part(curr.seval,curr.base.geteval) then return; end if;
+  base:=curr.base.getctype;
+{
+  -- b zov˜ typ nesm¡ b˜t neomezen˜
+  if base^.stype in dts_unconstrained then
+    ce^.seterror({CCERR=}000254,ce_i_basetype);
+    ce^.sethint(hint_string_base);
+    curr.base.errpos;
+    ce^.resumeerror;
+    end if;
+}
+  if curr.stype=dt_string
+
+    -- norm ln¡ ©etˆzec
+    then
+      -- d‚lka
+      e_refexpr(curr_context,curr.expr,ek_const_int,nil,eu_read,final);
+      if e_part(curr.seval,curr.expr.geteval) then return; end if;
+
+      -- d‚lka ©etˆzce ve znac¡ch
+      x_const_int(pexpnode(curr.expr.getcexpr),delka);
+
+      -- d‚lka mus¡ b˜t <= CPU^.MAXSTRHVAL a >= 1
+      if delka<ui_1 or delka>cpu^.maxstrhval then
+        ce^.seterror({CCERR=}000255,ce_numrange);
+        --%%TODO(LIB) ce^.sethint(formats(hint_string_range,linttostr(cpu^.maxstrhval,tuniint:size)));
+        curr.expr.errpos;
+        ce^.resumeerror;
+        end if;
+
+    -- neomezen‚ pole
+    else
+      delka:=ui_0;
+      end if;
+
+  -- parametry ©etˆzce
+  cpu^.getstrparams(curr.stype,size{curr.size},isize,base^.size,delka);
+
+  -- doplnit velikost
+  type_setsize(curr,size);
+
+  -- odvodit typ rozsahu
+  if curr.stype=dt_string
+    then t_derive_string_range(curr,isize,delka);
+    else t_derive_string_range(curr,isize,cpu^.maxstrhval);
+    end if;
+
+  -- vyhodnoceno
+  curr.seval:=ete_evaluated;
+
+  {%% doplnit dal¨¡ kontroly !! a jak˜ ?? }
+  end e_spec_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_record : tevalspecproc =
+-- Vyhodnot¡ definici typu record.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+  varofs           : tunidata_addr;              -- aktu ln¡ offset slo‘ky
+  maxofs           : tunidata_addr;              -- nejvy¨¨¡ dosa‘en˜ offset slo‘ky
+  srch             : tentitysearch;              -- hled tko
+  ui               : tuniint;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- slo‘ky
+  e_all(curr,etd_full,final,e);
+  if e_part(curr.seval,e) then return; end if;
+
+  -- ur‡it adresy slo‘ek
+  varofs:=curr.extofs;
+  maxofs:=varofs;
+  srch.find_et_first(^curr,rc_primary,et_var,[]);
+  while srch.psym<>nil loop
+    verify(240,pentity_var(srch.psym)^.mclass<>mc_record);
+
+    -- nen¡ pozice explicitnˆ specifikov na atributem ?
+    if pentity_var(srch.psym)^.attr_position.isset
+
+      -- ano => pou‘¡t
+      then
+        -- p©evz¡t hodnotu
+        x_const_int(pentity_var(srch.psym)^.attr_position.getcexpr,ui);
+
+        -- nastavit pozici
+        cpu^.forcelayoutrecitem(pentity_var(srch.psym),uniint_to_unidata_addr(ui),curr.align,varofs,maxofs);
+
+      -- ne => vypo‡¡tat automaticky
+      else
+        cpu^.layoutrecitem(pentity_var(srch.psym),curr.align,varofs,maxofs)
+        end if;
+    
+    -- dal¨¡ slo‘ka
+    srch.find_et_next;
+    end loop;
+
+  -- velikost recordu
+  type_setsize(curr,unidata_addr_to_size(maxofs));
+
+  -- vyhodnoceno
+  curr.seval:=ete_evaluated;
+  end e_spec_record;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_set : tevalspecproc =
+-- Vyhodnot¡ definici mno‘iny.
+----------------------------------------------------------------------------------------------------
+var
+  base             : pentity_type;               -- b zov˜ typ mno‘iny
+  items            : tuniint;                    -- po‡et prvk– mno‘iny
+  size             : tunidata_size;              -- vypo‡ten  velikost mno‘iny
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- b zov˜ typ
+  e_reftype(curr_context,curr.base,ek_typename,ttypeviewset:[tview_full],dts_ordinal,false,{etd_full,}final);
+  if e_part(curr.seval,curr.base.geteval) then return; end if;
+  base:=curr.base.getctype;
+
+  -- po‡et prvk– mno‘iny
+  items:=base^.hval-base^.lval+ui_1;
+
+  -- zjistit velikost mno‘iny
+  cpu^.getsetparams(items,size);
+
+  -- velikost recordu
+  type_setsize(curr,size);
+
+  -- vyhodnoceno
+  curr.seval:=ete_evaluated;
+  end e_spec_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_pointer : tevalspecproc =
+-- Vyhodnot¡ definici typu pointer.
+----------------------------------------------------------------------------------------------------
+var
+  base             : pentity_type;               -- b zov˜ typ
+  size             : tunidata_size;              -- vypo‡ten  velikost
+  ul               : tunilogical;
+  e                : tentityeval;
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- b zov˜ typ
+  e_reftype(curr_context,curr.base,ek_typename,ttypeviewset:[tview_incomplete,tview_partial,tview_full],dts_all-dts_internal,true,{etd_full,}final);
+  if e_part(curr.seval,curr.base.geteval) then return; end if;
+  base:=curr.base.getutype;
+
+  -- nen¡ po‘adov n strojov˜ pointer ?
+  if curr.attr_mptr.isset then
+    x_const_logical(curr.attr_mptr.getcexpr,ul);
+    if ul=ul_true then curr.pflags+ptrflagsset:[pf_machine]; end if;
+    end if;
+
+  -- ur‡it t©¡du pointeru
+  if (base<>nil) and (base^.tkind<>tk_unknown)
+
+    -- podle typu b ze
+    then
+      -- t©¡da pointeru
+      case base^.stype
+        when { tk_singular: } dt_procedure do curr.pclass:=pc_subprogram;
+        when { tk_singular: } dt_task      do curr.pclass:=pc_task;
+        when { tk_singular: } dt_message   do curr.pclass:=pc_message;
+        when { tk_regular:  } others       do curr.pclass:=pc_data;
+        end case;
+
+      -- pro pointery na nedatov‚ objekty plat¡ jist  omezen¡
+      if curr.pclass<>pc_data then
+        -- pointer na proceduru nesm¡ b˜t PROTECTED/CONST
+        if curr.paccess<>va_norm {pf_const in curr.pflags} then
+          ce^.seterror({CCERR=}000256,ce_i_const);
+          ce^.sethint(hint_ptrproc_no_const);
+          ce^.setpos(curr.pos[etp_def]);
+          {%%RESUME ce^.raiseerror;}
+          curr.paccess:=va_norm{curr.pflags-[pf_const]};
+          end if;
+
+        -- pointer na proceduru nesm¡ b˜t UNCHECKED
+        if curr.pbase=pb_unchecked then
+          ce^.seterror({CCERR=}000257,ce_i_const);
+          ce^.sethint(hint_ptrproc_no_unchecked);
+          ce^.setpos(curr.pos[etp_def]);
+          {%%RESUME ce^.raiseerror;}
+          curr.pbase:=pb_strict;
+          end if;
+        end if;
+
+    -- b ze nen¡ uvedena nebo nen¡ zn ma jej¡ t©¡da
+    else
+      verify(108,(base=nil) and (curr.pbase<>pb_unchecked));
+
+      -- t©¡da pointeru
+      curr.pclass:=pc_data;
+      end if;
+
+  -- strojov˜ pointer nesm¡ b˜t jen tak ledajak˜
+  if pf_machine in curr.pflags then
+    if not ((curr.pclass in ptrclassset:[pc_data,pc_subprogram]) 
+    and (curr.pbase in ptrbaseset:[pb_strict,pb_unchecked])) then
+      ce^.seterror({CCERR=}000258,ce_i_machineptr);
+      ce^.setpos(curr.pos[etp_def]);
+      {%%RESUME ce^.raiseerror;}
+      curr.pflags-ptrflagsset:[pf_machine];
+      end if;
+    end if;
+
+  -- pokud je uvedeno CLASS, mus¡ b˜t b zov˜ typ TAGGED
+  if (curr.pbase=pb_class) and not (tf_tagged in base^.tflags) then
+    ce^.seterror({CCERR=}000259,ce_i_basetype);
+    ce^.sethint(hint_ptr_tagged_base);
+    {%%RESUME ce^.raiseerror;}
+    curr.pbase:=pb_strict;
+    end if;
+
+  -- sestavit mno‘inu voliteln˜ch atribut–
+  if not (pf_machine in curr.pflags) then
+    t_getptrattrib(curr.pbase,curr.pclass,base,curr.pattrib);
+    end if;
+
+  -- velikost pointeru
+  cpu^.getptrsize({curr.pclass,curr.pbase,pf_machine in curr.pflags,}curr.pattrib,size{curr.size});
+
+  -- doplnit velikost
+  type_setsize(curr,size);
+
+  -- vyhodnoceno
+  curr.seval:=ete_evaluated;
+  end e_spec_pointer;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_tag : tevalspecproc =
+-- Vyhodnot¡ definici typu tag.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+  size             : tunidata_size;              -- vypo‡ten  velikost
+
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- velikost tagu (stejn  jako dynamick˜ atribut :tag)
+  cpu^.getrtattribsize(rta_tag,size{curr.size});
+
+  -- doplnit velikost
+  type_setsize(curr,size);
+
+  -- vyhodnoceno
+  curr.seval:=ete_evaluated;
+  end e_spec_tag;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_unitype : tevalspecproc =
+-- Vyhodnot¡ definici univerz ln¡ho typu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vyhodnocen¡ ji‘ jednou probˆhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- vyhodnoceno
+  curr.seval:=ete_evaluated;
+  end e_spec_unitype;
+
+
+
+{
+----------------------------------------------------------------------------------------------------
+procedure e_link (
+var curr           : in deflink;                 -- vyhodnocovan˜ odkaz
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ odkaz.
+----------------------------------------------------------------------------------------------------
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do curr.eval:=ete_evaluated;
+
+    -- --> full
+    when etd_full do
+        -- symbol
+        e_refsymbol(curr,curr.sym,etd_full,true);
+        if e_part(curr.eval,curr.sym.geteval) then return; end if;
+
+
+    when others do verify(156,true);
+    end case;
+  end e_link;
+}
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_var (
+    curr           : in out tentity_var;         -- vyhodnocovan  promˆnn 
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci promˆnn‚.
+----------------------------------------------------------------------------------------------------
+var
+  sts              : tdatatypeset;
+  ui               : tuniint;
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do curr.eval:=ete_evaluated;
+
+    -- --> full
+    when etd_full do
+        -- mno‘ina povolen˜ch typ– z vis¡ na m¢du p©¡stupu k promˆnn‚
+        case curr.vmode
+          when vm_direct do sts:=dts_constrained{+dts_class};
+          when vm_ref    do sts:=dts_regular{+dts_class};
+          when others    do verify(319,true);
+          end case;
+
+      {
+        -- povolen‚ pohledy na typ
+        tview:=ttypeviewset:[tview_partial,tview_full];
+
+        -- Ondra 29.6.2001 : pokud je promˆnn  instance t©¡dy, tak je povolen
+        -- i ne£pln˜ pohled na ty, aby bylo mo‘n‚ pou‘¡t typ t©¡dy v deklaraci
+        -- parametru metody t‚ sam‚ t©¡dy
+        -- %%X Nen¡ tohle n hodou z plata ??
+        if (curr.typ.getctype^.stype=dt_class) and (curr.vmode=vm_ref) then
+          tview+ttypeviewset:[tview_incomplete];
+          end if;
+      }
+
+        -- typ
+        e_reftype(curr_context,curr.typ,ek_typename,ttypeviewset:[tview_partial,tview_full],sts,true{curr.vmode=vm_ref},{etd_full,}true);
+        if e_part(curr.eval,curr.typ.geteval) then return; end if;
+
+        -- explicitnˆ ur‡en  pozice slo‘ky
+        if curr.attr_position.isset then
+          e_refexpr(curr_context,curr.attr_position,ek_const_int,nil,eu_use,true);
+          if e_part(curr.eval,curr.attr_position.e) then return; end if;
+
+          -- p©evz¡t z v˜razu pozici slo‘ky
+          x_const_int(curr.attr_position.getcexpr,ui);
+
+          -- mus¡ b˜t nez porn 
+          if uniint_sign(ui) then
+            ce^.seterror({ERRNUM=}000000,ce_i_attr_position);
+            curr.attr_position.errpos;
+            {%%RESUME ce^.raiseerror;}
+            end if;
+          end if;
+
+        -- po‡ te‡n¡ hodnota
+        if curr.init.getuexpr<>nil then
+          e_refimm(curr_context,curr.init,ek_const,curr.typ.getctype,true);
+          if e_part(curr.eval,curr.init.geteval) then return; end if;
+          end if;
+
+    when others do verify(157,true);
+    end case;
+  end e_var;
+
+
+
+------------------------------------------------------------------------------------------------------
+--procedure e_alias (
+--    curr           : in out tentity_alias;       -- vyhodnocovan˜ alias
+--    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+--    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+---- Vyhodnot¡ deklaraci aliasu.
+------------------------------------------------------------------------------------------------------
+--var
+--  psym             : pentity;
+--
+--begin
+--  unimplemented(62);
+--{
+--  case level
+--    -- --> incomplete
+--    when etd_incomplete  do curr.eval:=ete_evaluated;
+--
+--    -- --> full
+--    when etd_full do
+--        -- typ
+--        e_reftype(curr,curr.typ,ek_typename,etd_full,true);
+--        if e_part(curr.eval,curr.typ.geteval) then return; end if;
+--
+--        -- metoda pro z pis (IN)
+--        e_refsymbol(curr,curr.write,sd_specified,{ek_sym_var_proc,nil,}final);
+--        if e_part(curr.eval,curr.write.geteval) then return; end if;
+--
+--        -- kontrola symbolu
+--        psym:=curr.write.getcentity;
+--        case psym^.etype
+--          -- promˆnn 
+--          when et_var do
+--              -- nesm¡ b˜t konstantn¡
+--
+--              -- typy mus¡ b˜t kompatibiln¡
+--              {%%TECH Kontroluje se pro p©i©azen¡ ALIAS.IN:=value(ALIAS:type) }
+--              if not t_compatible(toc_assign,t_defview(pentity_var(psym)^.typ.getctype),t_defview(curr.typ.getctype),false) then
+--                ce^.seterror({CCERR=}000260,ce_aliastype);
+--                ce^.setpos(curr.write.pos);
+--                {%%RESUME ce^.raiseerror;}
+--                ce^.resumeerror;
+--                end if;
+--
+--
+--          -- procedura
+--          when et_proc  do
+--              {%%X mus¡ m¡t jeden parametr kompatibiln¡ho typu }
+--              unimplemented(33);
+--
+--
+--          -- jin˜ symbol je chyba
+--          when others do
+--              ce^.seterror({CCERR=}000261,ce_x_ex_sym_var_proc);
+--              ce^.setpos(curr.write.pos);
+--              {%%RESUME ce^.raiseerror;}
+--              ce^.resumeerror;
+--              --verify(102,false);
+--          end case;
+--
+--        -- metoda pro ‡ten¡ (OUT)
+--        e_refsymbol(curr,curr.read,sd_specified,{ek_sym_var_proc,nil,}final);
+--        if e_part(curr.eval,curr.read.geteval) then return; end if;
+--
+--        -- kontrola symbolu
+--        psym:=curr.write.getcentity;
+--        case psym^.etype
+--          -- promˆnn 
+--          when et_var do
+--              -- typy mus¡ b˜t kompatibiln¡
+--              {%%TECH Kontroluje se pro p©i©azen¡ var(ALIAS:type):=ALIAS.OUT }
+--              if not t_compatible(toc_assign,t_defview(curr.typ.getctype),t_defview(pentity_var(psym)^.typ.getctype),false) then
+--                ce^.seterror({CCERR=}000262,ce_aliastype);
+--                ce^.setpos(curr.read.pos);
+--                {%%RESUME ce^.raiseerror;}
+--                ce^.resumeerror;
+--                end if;
+--
+--
+--          -- procedura
+--          when et_proc  do
+--              {%%X nesm¡ m¡t ‘ dn‚ parametry, mus¡ vracet hodnotu kompatibiln¡ho typu }
+--              -- a co takhle REF parametr ? (resp. OUT)
+--              unimplemented(33);
+--
+--
+--          -- jin˜ symbol je chyba
+--          when others do
+--              ce^.seterror({CCERR=}000263,ce_x_ex_sym_var_proc);
+--              ce^.setpos(curr.read.pos);
+--              {%%RESUME ce^.raiseerror;}
+--              ce^.resumeerror;
+--              --verify(102,false);
+--          end case;
+--
+--
+--    when others do verify(158,true);
+--    end case;
+--}
+--  end e_alias;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_type_derived (
+    curr           : in out tentity_type;        -- vyhodnocovan˜ typ
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ odvozen˜ typ.
+----------------------------------------------------------------------------------------------------
+var
+  ancestor         : pentity_type;               -- p©edek
+  t                : typeview;                   -- pohled na p©edka
+  lval             : tuniint;                    -- nov‚ meze pole
+  hval             : tuniint;                    -- nov‚ meze pole
+  oldrange         : pentity_type;               -- p–vodn¡ typ rozsahu
+  newrange         : pentity_type;               -- nov˜ typ rozsahu
+  newrange_context : tcontext;                   -- prim rn¡ kontext nov‚ho rozsahu
+  pos              : lexposblock;                -- pozice rozsahu
+  size             : tunidata_size;              -- nov  velikost typu
+  isize            : tunidata_size;              -- velikost intern¡ ‡ sti ©etˆzce
+  delka            : tuniint;                    -- d‚lka ©etˆzce
+  e                : tentityeval;
+
+begin
+  -- vyhodnotit p©edka
+  e_refsymbol_from_typename(curr_context,curr.ancestor,etd_full,ttypeviewset:[tview_partial,tview_full],dts_singular+dts_regular-dts_class,false,final);
+  if e_part(curr.eval,curr.ancestor.geteval) then return; end if;
+
+  -- p©edek
+  ancestor:=pentity_type(curr.ancestor.getcentity);
+
+  -- zkonstruovat pohled na typ p©edka
+  t.init(curr_context,ancestor);
+
+  -- nesm¡ to b˜t Incomplete view ani Unchecked view
+  if t.tview in ttypeviewset:[tview_incomplete,tview_unchecked] then
+    ce^.seterror({CCERR=}000264,ce_i_derive);
+    ce^.sethint(hint_derive_full);
+    curr.ancestor.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- zkontrolovat druh typu, pokud je pro odvozovan˜ typ p©edvybr n
+  if (curr.tkind<>tk_unknown) and (curr.tkind<>ancestor^.tkind) then
+    ce^.seterror({CCERR=}000429,ce_i_derive);
+    if ancestor^.tkind=tk_regular
+      then ce^.sethint(hint_derive_regular);
+      else ce^.sethint(hint_derive_singular);
+      end if;
+    curr.ancestor.errpos;
+    ce^.resumeerror;
+    end if;
+
+  -- zkop¡rovat determinaci kompatibility, jestli se nezmˆnila
+  if (curr.compat=tc_norm) and (t.tview=tview_full) then curr.compat:=t.compat; end if;
+
+  -- zkop¡rovat z kladn¡ £daje, kter‚ se nemohly ur‡itˆ zmˆnit
+  curr.size    :=ancestor^.size;
+  curr.extofs  :=ancestor^.extofs{size}; -- EXTOFS se zmˆn¡ jen pro TD_EXTENSION
+  curr.tflags  :=ancestor^.tflags;
+  curr.align   :=ancestor^.align;
+
+  case curr.derive
+    -- trivi ln¡ derivace
+    when td_unconstrained     do
+        -- zkop¡rovat ostatn¡ £daje o typu
+        curr.seval   :=ancestor^.seval;
+        curr.tkind   :=ancestor^.tkind;
+        curr.stype   :=ancestor^.stype;
+        curr.lval    :=ancestor^.lval;
+        curr.hval    :=ancestor^.hval;
+        curr.bits    :=ancestor^.bits;
+        curr.intaritm:=ancestor^.intaritm;
+        curr.dtype   :=ancestor^.dtype;
+        curr.fp      :=ancestor^.fp;
+        curr.srange  :=ancestor^.srange;
+      --curr.lsize   :=ancestor^.lsize;
+        curr.pflags  :=ancestor^.pflags;
+        curr.pclass  :=ancestor^.pclass;
+        curr.pbase   :=ancestor^.pbase;
+        curr.pattrib :=ancestor^.pattrib;
+        curr.rflags  :=ancestor^.rflags;
+        curr.result  :=ancestor^.result;
+        curr.insize  :=ancestor^.insize;
+        curr.parcount:=ancestor^.parcount;
+        curr.base    :=ancestor^.base;
+        curr.srange  :=ancestor^.srange;
+
+        -- default view
+        curr.defview :=t.tview;
+
+
+    -- type constraint
+    when td_constrained       do
+        -- p©edek mus¡ b˜t Full view
+        if t.tview<>tview_full then
+          ce^.seterror({CCERR=}000265,ce_i_derive);
+          ce^.sethint(hint_derive_constraint);
+          curr.ancestor.errpos;
+          {%%RESUME ce^.raiseerror;}
+          ce^.resumeerror;
+          end if;
+
+        -- zkop¡rovat nˆkter‚ £daje
+        curr.seval   :=ancestor^.seval;
+        curr.tkind   :=ancestor^.tkind;
+        curr.stype   :=ancestor^.stype;
+
+        case t.stype
+          -- ordin ln¡ typy
+          when dt_signed, dt_unsigned, dt_char, dt_enum, dt_logical do
+              -- p©evz¡t z kladn¡ £daje
+              curr.bits    :=ancestor^.bits;
+              curr.intaritm:=ancestor^.intaritm;
+
+              -- vyhodnotit rozsah
+              e_refexpr(curr_context,curr.expr,ek_rangetype,ancestor,eu_read,final);
+              if e_part(curr.eval,curr.expr.geteval) then return; end if;
+
+              -- meze
+              x_const_range(curr.expr.getcexpr,curr.lval,curr.hval);
+
+
+          -- pole/neomezen‚ pole
+          -- Ondra 25.2.2002 : Zak z no odvozov n¡ od constrained pol¡
+          when {dt_array,} dt_uarray  do
+              -- pole je jistˆ omezen‚
+              curr.stype   :=dt_array;
+
+              -- p©evz¡t z kladn¡ £daje
+              curr.base    :=ancestor^.base;
+
+              -- %%TECH Tˆ‘k  finta: pro odvozen¡ nov‚ho typu rozsahu se       
+              -- pou‘ije mechanismus pro p©eklad deklarac¡. Ale mysl¡m, ‘e je
+              -- to naprosto v souladu s koncepc¡ Flexu - omezen¡ rozsahu
+              -- pole je vlastnˆ implicitn¡ deklarace typu rozsahu (stejnˆ
+              -- jako v norm ln¡ deklaraci pole) s implicitn¡m p©edkem.
+
+              -- pozice v˜razu
+              pexpnode(curr.expr.getcexpr)^.getpos(pos);
+
+              -- odvodit nov˜ typ rozsahu
+              d_create_at_position(curr_context,pentity(newrange),newrange_context,et_type,nil,pos);
+
+              -- ozna‡it typ za odvozen˜
+              newrange^.derive:=td_constrained;
+
+              -- p©i©adit p©edka a nov˜ rozsah
+              newrange^.ancestor.setentity(t.getrange(curr_context).getctype);
+              newrange^.expr.setexpr(curr.expr.getcexpr);
+
+              -- konec deklarace (a zde se rekurzivnˆ zavol  E_TYPE_DERIVED)
+              d_end_at_position(newrange^,pos,true);
+
+              -- dosadit nov˜ rozsah do pole
+              curr.srange.settype(newrange);
+
+              -- vypo‡¡tat d‚lku pole
+              size:=arraysize(curr.base.getctype^.size,curr.srange.getctype^.lval,curr.srange.getctype^.hval);
+
+              -- dosadit velikost typu
+              type_setsize(curr,size);
+
+
+          -- ©etˆzec/neomezen˜ ©etˆzec
+          -- Ondra 25.2.2002 : Zak z no odvozov n¡ od constrained string–
+          when {dt_string,} dt_ustring do
+              -- ©etˆzec je jistˆ omezen˜
+              curr.stype   :=dt_string;
+
+              -- p©evz¡t z kladn¡ £daje
+              curr.base    :=ancestor^.base;
+
+              -- d‚lka
+              e_refexpr(curr_context,curr.expr,ek_const_int,nil,eu_read,final);
+              if e_part(curr.seval,curr.expr.geteval) then return; end if;
+
+              -- d‚lka ©etˆzce ve znac¡ch
+              x_const_int(pexpnode(curr.expr.getcexpr),delka);
+
+              -- d‚lka mus¡ spadat do mez¡ p–vodn¡ho ©etˆzce
+              if delka<ancestor^.srange.getctype^.lval or delka>ancestor^.srange.getctype^.hval then
+                ce^.seterror({CCERR=}000266,ce_numrange);
+                curr.expr.errpos;
+                ce^.resumeerror;
+                end if;
+
+              -- parametry ©etˆzce
+              cpu^.getstrparams(curr.stype,size,isize,curr.base.getctype^.size,delka);
+
+              -- odvodit typ rozsahu
+              {%%X Zde se pro odvozen¡ typu rozsahu ©etˆzce pou‘¡v  jin˜ mechanismus, }
+              -- ne‘ pro odvozen¡ rozsahu pole. To je minim lnˆ divn‚.
+              t_derive_string_range(curr,isize,delka);
+
+              -- p©i©adit p©edka typu rozsahu
+              curr.srange.getctype^.ancestor.setentity(t.getrange(curr_context).getctype);
+
+              -- dosadit velikost typu
+              type_setsize(curr,size);
+              --unimplemented(86);
+
+
+          -- pro ostatn¡ typy nem  omezen¡ rozsahu smysl
+          when others do
+              ce^.seterror({CCERR=}000267,ce_i_derive);
+              ce^.sethint(hint_derive_constraint);
+              curr.ancestor.errpos;
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+          end case;
+
+        -- default view
+        curr.defview:=tview_full;
+
+
+    -- type extension/private extension,
+    when td_extension, td_private_extension do
+        -- v˜sledn˜ typ bude jistˆ regul rn¡
+        curr.tkind:=tk_regular;
+
+        -- vypo‡¡tat offset extension ‡ sti
+        curr.extofs:=unidata_size_to_addr(ancestor^.size);
+
+        case t.tview
+          -- Partial view => typ lze roz¨¡©it libovolnˆ
+          when tview_partial do
+              -- vyhodnotit specifikaci
+              verify(451,e_spec_tab[curr.stype]=nil);
+              e_spec_tab[curr.stype]^(curr,curr_context,final);
+              if e_part(curr.eval,curr.seval) then return; end if;
+
+
+          -- Full view => lze roz¨¡©it jen record recordem
+          when tview_full do
+              if (ancestor^.stype=dt_record) and (curr.stype=dt_record)
+
+                -- record -- record
+                then
+                  -- vyhodnotit specifikaci
+                  e_spec_record(curr,curr_context,final);
+                  if e_part(curr.eval,curr.seval) then return; end if;
+
+                -- jin‚ extension nejsou dovoleny
+                else
+                  ce^.seterror({CCERR=}000268,ce_i_extension);
+                  curr.ancestor.errpos;
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+
+
+          -- jin‚ typy pohled– na typ nelze roz¨¡©it
+          when others do
+              ce^.seterror({CCERR=}000269,ce_i_extension);
+              curr.ancestor.errpos;
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+          end case;
+
+        --unimplemented(86)
+
+    when others do verify(241,true);
+    end case;
+  end e_type_derived;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_type (
+    curr           : in out tentity_type;        -- vyhodnocovan˜ typ
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci typu.
+----------------------------------------------------------------------------------------------------
+var
+  i                : t_unsigned;
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do
+        -- pojmenovan˜ typ je automaticky tagged
+        if curr.id<>nil then curr.tflags+typeflagsset:[tf_tagged]; end if;
+
+        curr.eval:=ete_evaluated;
+
+
+    -- --> full
+    when etd_full do
+--      verify(17,(curr.stype=st_undef) and final);
+{
+        -- vyhodnotit statick‚ p©edky
+        for i in 1..curr.pcount loop
+          e_reftype(curr.context.entity^,curr.plist^[i],ek_typename,etd_full,final);
+          if e_part(curr.{s^.}eval,curr.plist^[i].geteval) then return; end if;
+          end loop;
+}
+        if curr.derive=td_root
+
+          -- vyhodnotit norm ln¡ typ
+          then
+            -- ur‡it/zkontrolovat t©¡du typu
+            case curr.tkind
+              -- dosud nezji¨tˆna
+              when tk_unknown do
+                  -- ur‡it z definice typu
+                  if curr.stype in dts_regular+dts_unitype
+                    then curr.tkind:=tk_regular;
+                    else curr.tkind:=tk_singular;
+                    end if;
+
+
+              -- regul rn¡
+              when tk_regular do
+                  -- pokud to nen¡ private extension (ta je zat¡m ST_UNDEF)
+                  if {(curr.derive<>td_private_extension)
+                  -- mus¡ tomu odpov¡dat i definice typu
+                  and} not (curr.stype in dts_regular) then
+                    ce^.seterror({CCERR=}000270,ce_i_typedef);
+                    if curr.derive=td_root
+                      then ce^.sethint(hint_type_regular);
+                      else {%%X};
+                      end if;
+                    ce^.setpos(curr.pos[etp_def]);
+                    {%%RESUME ce^.raiseerror;}
+                    ce^.resumeerror;
+                    end if;
+
+
+              -- singul rn¡
+              when tk_singular do
+                  -- odpov¡d  tomu i definice typu ?
+                  if not (curr.stype in dts_singular) then
+                    ce^.seterror({CCERR=}000271,ce_i_typedef);
+                    ce^.sethint(hint_type_singular);
+                    ce^.setpos(curr.pos[etp_def]);
+                    {%%RESUME ce^.raiseerror;}
+                    ce^.resumeerror;
+                    end if;
+
+              end case;
+
+            {%%TECH Zde se vyhodnocuj¡ v¨echy atributy, i kdy‘ nemaj¡ pro    }
+            -- dan˜ typ smysl. P©¡pustnost mˆl zajistit p©eklad atribut–.
+
+            -- vyhodnotit atributy
+            e_refexpr(curr_context,curr.attr_align,ek_const_int,nil,eu_use,true);
+            if e_part(curr.eval,curr.attr_align.geteval) then return; end if;
+            e_refexpr(curr_context,curr.attr_size,ek_const_int,nil,eu_use,true);
+            if e_part(curr.eval,curr.attr_size.geteval) then return; end if;
+            e_refexpr(curr_context,curr.attr_mptr,ek_const_logical,nil,eu_use,true);
+            if e_part(curr.eval,curr.attr_mptr.geteval) then return; end if;
+
+            -- zarovn n¡
+            type_setalign(curr,cpu^.defaultalign);
+
+            -- vyhodnotit specifikaci
+            verify(35,e_spec_tab[curr.stype]=nil);
+            e_spec_tab[curr.stype]^(curr,curr_context,final);
+            if e_part(curr.eval,curr.seval) then return; end if;
+
+          -- vyhodnotit odvozen˜ typ
+          else
+            e_type_derived(curr,curr_context,level,final);
+            end if;
+
+
+    when others do verify(159,true);
+    end case;
+  end e_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_const (
+    curr           : in out tentity_const;       -- vyhodnocovan  konstanta
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci konstanty.
+----------------------------------------------------------------------------------------------------
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do
+        if cf_typed in curr.cflags
+
+          -- konstanta s explicitnˆ uveden˜m typem
+          then
+            -- vyhodnotit typ
+            e_reftype(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.typ,ek_typename,ttypeviewset:[tview_incomplete,tview_full],dts_constrained-dts_class,true,{etd_incomplete,}final);
+            if e_part(curr.eval,curr.typ.geteval) then return; end if;
+
+          -- konstanta s implicitnˆ uveden˜m typem
+          else
+            curr.eval:=ete_evaluated
+            end if;
+
+
+    -- --> full
+    when etd_full do
+        if cf_typed in curr.cflags
+
+          -- konstanta s explicitnˆ uveden˜m typem
+          then
+            -- vyhodnotit typ
+            e_reftype(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.typ,ek_typename,ttypeviewset:[tview_full],dts_constrained-dts_class,false,{etd_full,}final);
+            if e_part(curr.eval,curr.typ.geteval) then return; end if;
+
+            -- vyhodnotit hodnotu
+            e_refimm(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.init,ek_const,curr.typ.getctype,final);
+            if e_part(curr.eval,curr.init.geteval) then return; end if;
+
+          -- konstanta s implicitnˆ uveden˜m typem
+          else
+            -- vyhodnotit hodnotu
+            e_refimm(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.init,ek_const,nil,final);
+            if e_part(curr.eval,curr.init.geteval) then return; end if;
+
+            -- p©evz¡t typ
+            -- %%X nem–‘u tady p©ij¡t o v˜raz ?
+            curr.typ.settype(pexpnode(curr.init.getcexpr)^.t.getutype);
+            end if;
+
+
+    when others do verify(160,true);
+    end case;
+  end e_const;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_enum (
+    curr           : in out tentity_enum;        -- vyhodnocovan  konstanta
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci prvku v˜‡tov‚ho typu.
+----------------------------------------------------------------------------------------------------
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do curr.eval:=ete_evaluated;
+
+    -- --> full
+    when etd_full do
+        -- m me k dispozici explicitnˆ p©edepsanou ordin ln¡ hodnotu ?
+        if curr.attr_ord.isset
+
+          -- ano => pou‘¡t
+          then
+            -- vyhodnotit atribut
+            e_refexpr(curr_context,curr.attr_ord,ek_const_int,nil,eu_use,true);
+            if e_part(curr.eval,curr.attr_ord.geteval) then return; end if;
+
+            -- p©evz¡t z v˜razu hodnotu
+            x_const_int(curr.attr_ord.getcexpr,curr.ordinal);
+
+          -- ne => default podle po©ad¡ prvku
+          else
+            curr.ordinal:=unsigned_to_uniint(curr.order);
+            end if;
+
+        -- ozna‡it za vyhodnocen‚
+        curr.eval:=ete_evaluated;
+
+
+    when others do verify(161,true);
+    end case;
+  end e_enum;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_code_body (
+    curr           : in out tentity_code;        -- vyhodnocovan  procedura
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnocen¡ tˆla podprogramu pro £rove¤ SD_FULL.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  -- lok ln¡ symboly
+  e_all(curr,etd_full,final,e);
+  if e_part(curr.eval,e) then return; end if;
+
+  -- p©¡kazy
+  e_refblock(curr_context,curr.bl,final);
+  if e_part(curr.eval,curr.bl.e) then return; end if;
+
+  -- vygenerovat varov n¡ pro nepou‘it‚ entity
+  report_unused(curr_context);
+  end e_code_body;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_special (
+    curr           : in out tentity_special;     -- vyhodnocovan  speci ln¡ metoda
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci speci ln¡ metody.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  case level
+    -- --> incomplete
+    when etd_none do
+        verify(577,etc_generated in curr.compile);
+        curr.eval:=ete_evaluated;
+
+
+    -- --> incomplete -- pouze pro intern¡ speci ln¡ metody
+    when etd_incomplete  do
+        verify(578,etc_generated not in curr.compile);
+
+        -- vyhodnotit typ speci ln¡ metody
+        e_reftype(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.typ,ek_typename,ttypeviewset:[tview_full],tdatatypeset:[dt_procedure],false,{etd_full,}false{final});
+        if e_part(curr.eval,curr.typ.e) then return; end if;
+
+
+    -- --> full
+    when etd_full do
+        -- kontrola typu procedury
+        if etc_generated in curr.compile then
+          t_checktype(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.typ.getctype);
+          end if;
+
+        -- vyhodnotit tˆlo
+        e_code_body(curr,curr_context,final);
+
+    when others do verify(162,true);
+    end case;
+  end e_special;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_subprogram (
+    curr           : in out tentity_subprogram;  -- vyhodnocovan  procedura
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci procedury, statick‚ a virtu ln¡ metody.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+  pclass           : pentity_type;           -- souvisej¡c¡ t©¡da
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do
+        -- typ procedury
+        e_reftype(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.typ,ek_typename,ttypeviewset:[tview_full],tdatatypeset:[dt_procedure],false,{etd_full,}false{final});
+        if e_part(curr.eval,curr.typ.geteval) then return; end if;
+
+        -- nen¡ to n hodou virtu ln¡ metoda ?
+        if curr.etype=et_virtual then
+          -- v ‡em je deklarovan  ?
+          if curr.context.entity^.etype=et_class
+
+            -- v t©¡dˆ => nemus¡ m¡t ©¡d¡c¡ parametry
+            then
+              -- pro zjednodu¨en¡: pointer na t©¡du
+              pclass:=pentity_type(curr.context.entity);
+
+              -- m  virtu ln¡ metoda ©¡d¡c¡ parametry
+              if rf_virtual in curr.typ.getctype^.rflags
+
+                -- ale m  => komplexn¡ vol n¡
+                then
+                  pentity_virtual(^curr)^.vcall:=tvct_complex;
+
+                  unimplemented(159);
+
+                -- nem  => jednoduch‚ vol n¡
+                else
+                  -- zp–sob vol n¡
+                  pentity_virtual(^curr)^.vcall:=tvct_simple_index;
+
+                  -- realokovat pamˆŸ
+                  adjustvtable(pclass,true);
+
+                  -- poznamenat do tabulky
+                  pclass^.vtable^ & pentity_subprogram(^curr);
+
+                  -- p©idˆlit index
+                  pentity_virtual(^curr)^.vindex:=pclass^.vtable^:length;
+                  end if;
+
+            -- v modulu, programu nebo kompila‡n¡ jednotce => mus¡ m¡t ©¡d¡c¡ parametry
+            else
+              -- typ mus¡ m¡t ©¡d¡c¡ parametry
+              if rf_virtual not in curr.typ.getctype^.rflags then
+                {%%X}
+                end if;
+
+              -- zp–sob vol n¡: komplexn¡
+              pentity_virtual(^curr)^.vcall:=tvct_complex;
+
+              unimplemented(160);
+              end if;
+
+          -- p©idˆlit slot ve virtu ln¡ tabulce
+          {%%X}
+          end if;
+
+    -- --> full
+    when etd_full do
+        -- kontrola typu procedury
+        t_checktype(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.typ.getctype);
+
+        -- vyhodnotit tˆlo
+        e_code_body(curr,curr_context,final);
+
+    when others do verify(163,true);
+    end case;
+  end e_subprogram;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_override (
+    curr           : in out tentity_override;    -- vyhodnocovan  procedura
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci p©et¡‘en¡ virtu ln¡ metody.
+----------------------------------------------------------------------------------------------------
+var
+  pvirt            : pentity_virtual;        -- souvisej¡c¡ virtu ln¡ metoda
+  pclass_v         : pentity_type;           -- t©¡da souvisej¡c¡ s virt. metodou
+  pclass_o         : pentity_type;           -- t©¡da souvisej¡c¡ s override
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do
+        -- p©etˆ‘ovan  virtu ln¡ metoda
+        e_refsymbol(curr_context,curr.virt,etd_incomplete,true);
+        if e_part(curr.eval,curr.virt.geteval) then return; end if;
+
+        -- pro zjednodu¨en¡: pointer na virtu ln¡ metodu
+        pvirt:=pentity_virtual(curr.virt.getcentity);
+
+        -- v ‡em byla p–vodn¡ virtu ln¡ metoda deklarov na ?
+        if pvirt^.context.entity^.etype=et_class
+
+          -- v t©¡dˆ
+          then
+            -- override mus¡ b˜t t‚‘ v t©¡dˆ
+            if curr.context.entity^.etype<>et_class then
+              {%%X}
+              end if;
+
+            -- pro zjednodu¨en¡: pointer na t©¡du
+            pclass_v:=pentity_type(pvirt^.context.entity);
+            pclass_o:=pentity_type(curr.context.entity);
+
+            -- aktu ln¡ t©¡da mus¡ b˜t potomkem t©¡dy s virtu ln¡ metodou
+            if not sym_is_descendant(pclass_o,pclass_v) then
+              {%%X}
+              end if;
+
+            -- m  virtu ln¡ metoda nˆjak‚ ©¡d¡c¡ parametry ?
+            if rf_virtual in pvirt^.typ.getctype^.rflags
+
+              -- ano
+              then
+                unimplemented(162);
+
+              -- ne
+              else
+                -- zajistit, aby byla virtu ln¡ tabulka korektnˆ alokovan 
+                adjustvtable(pclass_o,false);
+
+                -- nebyla u‘ metoda v t‚to t©¡dˆ jednou p©et¡‘ena ?
+                if pclass_o^.vtable^[pvirt^.vindex]<>nil then
+                  ce^.seterror({CCERR=}000430,ce_multioverride);
+                  ce^.setparam(sym_get_qid(pvirt));
+                  ce^.setpos(curr.pos[etp_header]);
+                  ce^.raiseerror;
+                  end if;
+
+                -- poznamenat do virtu ln¡ tabulky pointer na aktu ln¡ p©et¡‘en¡
+                pclass_o^.vtable^[pvirt^.vindex]:=pentity(^curr);
+                end if;
+
+          -- v modulu, programu ‡i kompila‡n¡ jednotce
+          else
+            -- override mus¡ b˜t t‚‘ v modulu, programu ‡i kompila‡n¡ jednotce
+            if not (curr.context.entity^.etype in ets_container-tentitytypeset:[et_class]) then
+              {%%X}
+              end if;
+
+            unimplemented(161);
+            end if;
+
+    -- --> full
+    when etd_full do
+        -- vyhodnotit tˆlo
+        e_code_body(curr,curr_context,final);
+
+    when others do verify(164,true);
+    end case;
+  end e_override;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_overload (
+    curr           : in out tentity_overload;    -- vyhodnocovan‚ p©et¡‘en¡
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci p©et¡‘en¡.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+  i                : toverloadtable:range;
+
+begin
+  case level
+
+    -- --> full
+    when etd_full do
+        -- na p©et¡‘en‚ procedury nejsou kladena skoro ‘ dn  omezen¡
+        for i in curr.table^:range loop
+          -- vyhodnotit odkaz
+          e_refsymbol(curr_context,curr.table^[i].psym,etd_incomplete,true);
+          if e_part(curr.eval,curr.table^[i].psym.geteval) then return; end if;
+          end loop;
+        curr.eval:=ete_evaluated;
+
+    when others do verify(274,true);
+    end case;
+  end e_overload;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_operator (
+    curr           : in out tentity_operator;    -- vyhodnocovan˜ oper tor
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci p©et¡‘en¡.
+----------------------------------------------------------------------------------------------------
+var
+  pproc            : pentity_procedure;          -- p©et¡‘en  procedura
+  ptyp             : pentity_type;               -- typ procedury
+  pparam           : pentity_param;              -- parametr
+  srch             : tentitysearch;              -- hled tko
+  e                : tentityeval;
+  i                : toverloadtable:range;
+
+begin
+  case level
+
+    -- --> full
+    when etd_full do
+        -- zkontrolovat p©¡pustnost p©et¡‘en˜ch procedur
+        for i in curr.table^:range loop
+          -- vyhodnotit odkaz
+          e_refsymbol(curr_context,curr.table^[i].psym,etd_incomplete,true);
+          if e_part(curr.eval,curr.table^[i].psym.geteval) then return; end if;
+
+          -- p©et¡‘en  procedura a jej¡ typ
+          pproc:=pentity_procedure(curr.table^[i].psym.getcentity);
+          ptyp:=pproc^.typ.getctype;
+
+          {%%X p©etˆ‘ovat metody zat¡m neum¡m }
+          if pproc^.instance<>tip_none then unimplemented(97); end if;
+
+          -- kolik m  parametr– ?
+          case ptyp^.parcount
+            -- jeden parametr
+            when 1 do
+                -- p©etˆ‘ovan˜ oper tor mus¡ b˜t un rn¡
+                if not (toa_unary in ooperinfo[curr.oop].arity) then
+                  ce^.seterror({CCERR=}000272,ce_operator_params);
+                  curr.table^[i].psym.errpos;
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+
+                -- poznamenat, ‘e je oper tor un rn¡
+                curr.table^[i].arity:=toa_unary;
+
+
+            -- dva parametry
+            when 2 do
+                -- p©etˆ‘ovan˜ oper tor mus¡ b˜t bin rn¡
+                if not (toa_binary in ooperinfo[curr.oop].arity) then
+                  ce^.seterror({CCERR=}000273,ce_operator_params);
+                  curr.table^[i].psym.errpos;
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+
+                -- nal‚zt druh˜ parametr
+                srch.find_et_first(ptyp,rc_primary,et_param,[]);
+                srch.find_et_next;
+                pparam:=pentity_param(srch.psym);
+                verify(279,pparam=nil);
+
+                -- nemˆl by b˜t UNCHECKED
+                if pparam^.pass=pp_unchecked then
+                  ce^.seterror({CCERR=}000274,ce_operator_pass2);
+                  curr.table^[i].psym.errpos;
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+
+                -- druh˜ parametr mus¡ b˜t IN
+                if pparam^.mode<>pm_in then
+                  ce^.seterror({CCERR=}000275,ce_operator_mode2);
+                  curr.table^[i].psym.errpos;
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+
+                -- poznamenat, ‘e je oper tor un rn¡
+                curr.table^[i].arity:=toa_binary;
+
+
+            -- v¡ce parametr– je jistˆ chyba, takov‚ oper tory nem me
+            when others do
+                ce^.seterror({CCERR=}000276,ce_operator_params);
+                curr.table^[i].psym.errpos;
+                {%%RESUME ce^.raiseerror;}
+                ce^.resumeerror;
+            end case;
+
+          -- nal‚zt prvn¡ parametr
+          srch.find_et_first(ptyp,rc_primary,et_param,[]);
+          pparam:=pentity_param(srch.psym);
+          verify(280,pparam=nil);
+
+          -- nemˆl by b˜t UNCHECKED
+          if pparam^.pass=pp_unchecked then
+            ce^.seterror({CCERR=}000277,ce_operator_pass1);
+            curr.table^[i].psym.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+          -- m  n vratovou hodnotu ?
+          if ptyp^.result=nil
+
+            -- ne
+            then
+              -- pak mus¡ b˜t prvn¡ parametr IN OUT, pro p©i©azen¡ lze i pouze OUT
+              if (curr.oop=oop_assign and then pparam^.mode not in parammodeset:[pm_out,pm_inout])
+              or (curr.oop<>oop_assign and then pparam^.mode<>pm_inout) then
+                ce^.seterror({CCERR=}000278,ce_operator_mode1);
+                curr.table^[i].psym.errpos;
+                {%%RESUME ce^.raiseerror;}
+                ce^.resumeerror;
+                end if;
+
+              -- poznamenat, ‘e je to zkr cen‚ p©i©azen¡
+              curr.table^[i].assign:=true;
+
+            -- ano
+            else
+              -- oper tor nesm¡ b˜t prost‚ p©i©azen¡
+              if curr.oop=oop_assign then
+                ce^.seterror({CCERR=}000279,ce_operator_noret);
+                curr.table^[i].psym.errpos;
+                {%%RESUME ce^.raiseerror;}
+                ce^.resumeerror;
+                end if;
+
+              -- pak mus¡ b˜t prvn¡ parametr IN
+              if pparam^.mode<>pm_in then
+                ce^.seterror({CCERR=}000280,ce_operator_mode1);
+                curr.table^[i].psym.errpos;
+                {%%RESUME ce^.raiseerror;}
+                ce^.resumeerror;
+                end if;
+
+              -- poznamenat, ‘e je to zkr cen‚ p©i©azen¡
+              curr.table^[i].assign:=false;
+              end if;
+          end loop;
+
+        -- vyhodnoceno
+        curr.eval:=ete_evaluated;
+
+
+    when others do verify(275,true);
+    end case;
+  end e_operator;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_module (
+    curr           : in out tentity_module;      -- vyhodnocovan˜ modul
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci modulu.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do curr.eval:=ete_evaluated;
+
+    -- --> public
+    when etd_public do
+        -- lok ln¡ symboly
+        e_all(curr,etd_incomplete,final,e);
+        if e_part(curr.eval,e) then return; end if;
+
+
+    -- --> full
+    when etd_full do
+        -- lok ln¡ symboly
+        e_all(curr,etd_full,final,e);
+        if e_part(curr.eval,e) then return; end if;
+
+
+    when others do verify(164,true);
+    end case;
+  end e_module;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_class (
+    curr           : in out tentity_type;         -- vyhodnocovan  t©¡da
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci t©¡dy.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+  varofs           : tunidata_addr;              -- aktu ln¡ offset v t©¡dˆ
+  maxofs           : tunidata_addr;              -- nejvy¨¨¡ dosa‘en˜ offset slo‘ky
+
+    ------------------------------------------------------------------------------------------------
+    procedure assignvaraddr (
+        context    : in tcontext) =              -- aktu ln¡ kontext
+    -- P©idˆlen¡ adres promˆnn˜m.
+    ------------------------------------------------------------------------------------------------
+    var
+      p            : pentity;                    -- zpracov van  entita
+      region       : pregion;                    -- zpracov van˜ kontext        
+
+    begin
+      -- zpracovat v¨echny symboly v tabulce symbol–
+      p:=context.region^.entities.first;
+      while p<>nil loop
+        -- promˆnn 
+        if p^.etype=et_var then
+          -- zaj¡mav‚ jsou jen promˆnn‚ t©¡dy
+          if pentity_var(p)^.mclass=mc_class then
+            cpu^.layoutrecitem(pentity_var(p),curr.align,varofs,maxofs);
+            end if;
+
+        -- metoda, mohla by obsahovat nˆjak‚ skryt‚ promˆnn‚ t©¡dy
+        elsif p^.etype in ets_subprogram then
+          assignvaraddr(sym_primary_context(p^));
+          end if;
+
+        -- dal¨¡ symbol
+        p:=p^.next;
+        end loop;
+    
+      -- zpracovat vno©en‚ regiony
+      region:=context.region^.regions.first;
+      while region<>nil loop
+        -- zpracovat
+        assignvaraddr(sym_build_context(context.entity,region));
+
+        -- dal¨¡ region
+        region:=region^.next;
+        end loop;
+      end assignvaraddr;
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do
+        curr.eval:=ete_evaluated;
+
+        -- t©¡da je automaticky tagged
+        curr.tflags+typeflagsset:[tf_tagged];
+
+        -- t©¡da je regul rn¡ typ
+        curr.tkind:=tk_regular;
+
+        -- vyhodnotit atributy
+        e_refexpr(curr_context,curr.attr_align,ek_const_int,nil,eu_use,true);
+        if e_part(curr.eval,curr.attr_align.geteval) then return; end if;
+
+        -- zarovn n¡
+        type_setalign(curr,cpu^.defaultalign);
+
+    -- --> public
+    when etd_public do
+        verify(600,tf_tagged not in curr.tflags);
+
+        -- lok ln¡ symboly
+        e_all(curr,etd_incomplete,final,e);
+        if e_part(curr.eval,e) then return; end if;
+
+    -- --> full
+    when etd_full do
+        -- lok ln¡ symboly
+        e_all(curr,etd_full,final,e);
+        if e_part(curr.eval,e) then return; end if;
+
+        -- vy©e¨it p©edka
+        if curr.ancestor.isset
+
+          -- m  p©edka => rezervovat pro nˆj m¡sto na za‡ tku t©¡dy
+          then 
+            varofs:=unidata_size_to_addr(pentity_type(curr.ancestor.getcentity)^.size)
+
+          -- nem  p©edka => rezervovat m¡sto pro tag
+          else
+            varofs:=unidata_size_to_addr(cpu^.classisize)
+            end if;
+
+        -- ur‡it zat¡m maxim ln¡ dosa‘en˜ offset
+        maxofs:=varofs;
+
+        -- p©idˆlit adresy promˆnn˜ch
+        assignvaraddr(curr_context);
+
+        -- ur‡it velikost t©¡dy
+        type_setsize(curr,unidata_addr_to_size(maxofs));
+
+    when others do verify(165,true);
+    end case;
+  end e_class;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_compile (
+    curr           : in out tentity_compile;     -- vyhodnocovan  kompila‡n¡ jednotka
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci kompila‡n¡ jednotky.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do curr.eval:=ete_evaluated;
+
+    -- --> full
+    when etd_full do
+        -- lok ln¡ symboly
+        e_all(curr,etd_full,final,e);
+        if e_part(curr.eval,e) then return; end if;
+
+
+    when others do verify(166,true);
+    end case;
+  end e_compile;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_program (
+    curr           : in out tentity_program;     -- vyhodnocovan˜ program
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci programu.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do curr.eval:=ete_evaluated;
+
+    -- --> full
+    when etd_full do
+        -- vyhodnotit tˆlo
+        e_code_body(curr,curr_context,final);
+
+    when others do verify(167,true);
+    end case;
+  end e_program;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_param (
+    curr           : in out tentity_param;       -- vyhodnocovan˜ parametr
+    curr_context   : in tcontext;                -- prim rn¡ kontext entity
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci parametru.
+----------------------------------------------------------------------------------------------------
+var
+  typ              : typeview;                   -- pohled na typ parametru
+
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do curr.eval:=ete_evaluated;
+
+    -- --> full
+    when etd_full do
+        -- typ parametru
+        e_reftype(curr.context{curr.context.entity^},curr.typ,ek_typename,ttypeviewset:[tview_incomplete,tview_partial,tview_full],dts_regular,true,{etd_incomplete,}final);
+        if e_part(curr.eval,curr.typ.geteval) then return; end if;
+
+        ----- %%TECH Dopo‡et volac¡ konvence -----------------------------
+        -- Volac¡ konvence parametru z–stane neur‡ena (PP_DEFAULT) pouze
+        -- v tˆchto p©¡padech:
+        --     1) IN parametr bez explicitnˆ ur‡en‚ volac¡ konvence,
+        --     2) n vratov  hodnota.
+        -- V obou p©¡padech se na tomto m¡stˆ p©ekvapivˆ nastav¡ spr vn 
+        -- volac¡ konvence -- zejm‚na u n vratov‚ hodnoty stoj¡ za pozornost,
+        -- ‘e se zcela spr vnˆ dopln¡ volac¡ konvence PP_VALUE pro jednoduch‚
+        -- typy, i kdy‘ se vlastnˆ jedn  o OUT parametr.
+        ------------------------------------------------------------------
+
+        -- dopo‡¡tat volac¡ konvenci
+        if curr.pass=pp_default then
+          if t_composite(curr_context,curr.typ.getctype)
+            -- kompozitn¡ typy se p©ed vaj¡ referenc¡
+            then curr.pass:=pp_ref
+            -- jednoduch‚ typy se p©ed vaj¡ hodnotou
+            else curr.pass:=pp_value;
+            end if;
+          end if;
+
+        -- sestavit pohled na typ parametru
+        if curr.typ.getutype=nil
+          then typ.initunchecked(curr.typ.getutype);
+          else typ.init(curr_context,curr.typ.getutype);
+          end if;
+
+        -- %%LANG S parametrem se p©ed vaj¡ n sleduj¡c¡ dynamick‚ atributy:
+        --   -- pro parametr typu t©¡da ‘ dn‚,
+        if t_is_stype(typ,dt_class) then
+          -- nic
+        --   -- pro class a virtual parametry atribut :tag, je-li typ
+        --      takov‚ho parametru unconstrained, pak taky :last,
+        elsif curr.pass in pps_tagged then
+          curr.rta_avail+rtattribset:[rta_tag];
+          if t_is_sts(typ,dts_unconstrained) then
+            curr.rta_avail+rtattribset:[rta_last];
+            end if;
+        --   -- pro beztypov˜ unchecked parametr atributy :tag a :size,
+        --   -- pro unchecked parametr s constrained typem atribut :tag,
+        --   -- pro unchecked parametr s unconstrained typem atributy :tag
+        --      :size (nikoliv :last!),
+        elsif curr.pass=pp_unchecked then
+          curr.rta_avail+rtattribset:[rta_tag];
+          if (typ.tview=tview_unchecked) or t_is_sts(typ,dts_unconstrained) then
+            curr.rta_avail+rtattribset:[rta_size];
+            end if;
+        --   -- pro libovoln˜ jin˜ parametr s unconstrained typem atribut
+        --      :last (nikoliv :size).
+        elsif t_is_sts(typ,dts_unconstrained) then
+          curr.rta_avail+rtattribset:[rta_last];
+          end if;
+
+        {%%X z plata: nen¡ udˆlan‚ dynamick‚ zji¨Ÿov n¡ RTA_USED }
+        curr.rta_used:=curr.rta_avail;
+
+{
+        -- bude se p©ed vat atribut :tag ?
+        if curr.pass in pps_tagged then curr.allrta+rtattribset:[rta_tag]; end if;
+        -- bude se p©ed vat atribut :size ?
+        if (curr.pass in pps_tagged) or ((curr.pass in pps_ref)
+        and t_unknownsize(curr,curr.typ.getutype)) then curr.allrta+rtattribset:[rta_size]; end if;
+        -- bude se p©ed vat atribut :last ?
+        if (curr.pass in pps_ref) and t_unknownsize(curr,curr.typ.getutype) then curr.allrta+rtattribset:[rta_last]; end if;
+}
+
+    when others do verify(168,true);
+    end case;
+  end e_param;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_message (
+    curr           : in out tentity_message;     -- vyhodnocovan  zpr va
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci zpr vy.
+----------------------------------------------------------------------------------------------------
+begin
+  case level
+    -- --> incomplete
+    when etd_incomplete  do curr.eval:=ete_evaluated;
+
+    -- --> full
+    when etd_full do
+        -- p©edek
+        e_refsymbol(curr.context{.entity^},curr.ancestor,etd_full,final);
+        if e_part(curr.eval,curr.ancestor.geteval) then return; end if;
+
+        -- typ zpr vy
+        e_reftype(curr.context{.entity^},curr.typ,ek_typename,ttypeviewset:[tview_full],tdatatypeset:[dt_message],false,{etd_incomplete,}final);
+        if e_part(curr.eval,curr.typ.geteval) then return; end if;
+
+        -- nen¡ pot©eba p©evz¡t typ od p©edka
+        if not curr.typ.isset then
+          verify(555,not curr.ancestor.isset);
+          curr.typ.settype(pentity_message(curr.ancestor.getcentity)^.typ.getctype);
+          end if;
+
+    when others do verify(233,true);
+    end case;
+
+  -- celkem nen¡ co vyhodnocovat
+  curr.eval:=ete_evaluated;
+  end e_message;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_label (
+    curr           : in out tentity_label;       -- vyhodnocovan‚ n vˆ¨t¡
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci n vˆ¨t¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- celkem nen¡ co vyhodnocovat
+  curr.eval:=ete_evaluated;
+  end e_label;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_template (
+    curr           : in out tentity_template;    -- vyhodnocovan  ¨ablona
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci n vˆ¨t¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- celkem nen¡ co vyhodnocovat
+  curr.eval:=ete_evaluated;
+  end e_template;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_tparam (
+    curr           : in out tentity_tparam;      -- vyhodnocovan˜ parametr ¨ablony
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci n vˆ¨t¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- celkem nen¡ co vyhodnocovat
+  curr.eval:=ete_evaluated;
+  end e_tparam;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_attribute (
+    curr           : in out tentity_attribute;   -- vyhodnocovan˜ atribut
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci atributu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- celkem nen¡ co vyhodnocovat
+  curr.eval:=ete_evaluated;
+  end e_attribute;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_undef (
+    curr           : in out tentity;             -- vyhodnocovan‚ n vˆ¨t¡
+    level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
+    final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
+-- Vyhodnot¡ deklaraci nedefinovan‚ho prvku.
+----------------------------------------------------------------------------------------------------
+begin
+  -- takov˜ prvek si jistˆ vymyslel p©eklada‡,
+  -- tak‘e ho lze pova‘ovat za vyhodnocen˜
+  curr.eval:=ete_evaluated;
+  end e_undef;
+
+
+
+#if dump then;
+var
+  elevel           : t_unsigned := 0;
+#end if;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_symbol =
+-- Vyhodnocen¡ jednoho symbolu.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base,cc_base.cc_debug;
+
+var
+  sym_context      : tcontext;                   -- context vyhodnocovan‚ho symbolu
+
+begin
+  -- symbol je pr vˆ vyhodnocov n (cirkul rn¡ reference)
+  if etc_evaluating in psym^.compile then return; end if;
+
+  -- symbol je nevyhodnotiteln˜
+  if psym^.eval=ete_unevaluated then return; end if;
+
+  -- symbol je v po‘adovan‚ £rovni ji‘ vyhodnocen
+  if (psym^.evaluated>level) or ((psym^.evaluated=level) and (psym^.eval=ete_evaluated)) then return; end if;
+
+  begin
+    -- symbol je vyhodnocov n
+    psym^.compile+tentitycompileset:[etc_evaluating];
+
+  #if dump then;
+    if opt_dump in psym^.compv.opts then
+      debug_dump({%%TODO(AGGREGATE) fillstr(' ',elevel)+}'e_symbol(' & sym_get_qid(psym) & '; ' & tentitydeclaredtxt[psym^.declared] & '): ' & tentitydeclaredtxt[psym^.evaluated] & ' (' & tentityevaltxt[psym^.eval] & ') --> ' & tentitydeclaredtxt[level]);
+      end if;
+    elevel+2;
+  #end if;
+
+    -- vypo‡¡tat kontext symbolu
+    sym_context:=sym_primary_context(psym^);
+
+    -- vyhodnotit podle typu symbolu
+    case psym^.etype
+      when et_undef     do e_undef(psym^,level,final);{psym^.eval:=ete_evaluated;}
+      when et_compile   do e_compile(pentity_compile(psym)^,sym_context,level,final);
+      when et_program   do e_program(pentity_program(psym)^,sym_context,level,final);
+      when et_module    do e_module(pentity_module(psym)^,level,final);
+      when et_special   do e_special(pentity_special(psym)^,sym_context,level,final);
+      when et_procedure do e_subprogram(pentity_subprogram(psym)^,sym_context,level,final);
+      when et_static    do e_subprogram(pentity_subprogram(psym)^,sym_context,level,final);
+      when et_virtual   do e_subprogram(pentity_subprogram(psym)^,sym_context,level,final);
+      when et_override  do e_override(pentity_override(psym)^,sym_context,level,final);
+      when et_overload  do e_overload(pentity_overload(psym)^,sym_context,level,final);
+      when et_operator  do e_operator(pentity_operator(psym)^,sym_context,level,final);
+      when et_var       do e_var(pentity_var(psym)^,sym_context,level,final);
+--    when et_alias     do e_alias(pentity_alias(psym)^,level,final);
+      when et_type      do e_type(pentity_type(psym)^,sym_context,level,final);
+      when et_class     do e_class(pentity_type(psym)^,sym_context,level,final);
+      when et_const     do e_const(pentity_const(psym)^,sym_context,level,final);
+      when et_enum      do e_enum(pentity_enum(psym)^,sym_context,level,final);
+      when et_param     do e_param(pentity_param(psym)^,sym_context,level,final);
+      when et_message   do e_message(pentity_message(psym)^,level,final);
+      when et_label     do e_label(pentity_label(psym)^,level,final);
+      when et_template  do e_template(pentity_template(psym)^,level,final);
+      when et_tparam    do e_tparam(pentity_tparam(psym)^,level,final);
+      when et_attribute do e_attribute(pentity_attribute(psym)^,level,final);
+      when others do verify(15,true);
+      end case;
+
+    -- povedlo se deklaraci vyhodnotit ?
+  #if dump then;
+    elevel-2;
+  #end if;
+    if psym^.eval=ete_evaluated
+      then psym^.evaluated:=level
+      else
+      #if dump then;
+        if opt_dump in psym^.compv.opts then debug_dump({%%TODO(AGGREGATE)fillstr(' ',elevel)+}'Failed.'); end if;
+      #end if;
+        end if;
+
+  catch
+    when resume_error do
+        -- symbol se nepoda©ilo vyhodnotit a nem  cenu to zkou¨et d l
+        psym^.eval:=ete_unevaluated;
+
+        -- chyba
+        ce^.seterror({CCERR=}000281,ce_unevaluated);
+        ce^.setparam(sym_get_qid(psym));
+        ce^.setpos(pos);
+        raise;
+
+  leave
+    -- konec vyhodnocov n¡ symbolu
+    psym^.compile-tentitycompileset:[etc_evaluating];
+    end;
+
+  -- jak to dopadlo ?
+  -- je po‘adov no uplne vyhodnoceni symbolu
+  if final
+  -- generick˜ symbol: nen¡ vyhodnocen
+  and (   (etc_generic     in psym^.compile and psym^.eval not in tentityevalset:[ete_evaluated,ete_generic])
+  -- statick˜ symbol:  nen¡ vyhodnocen
+       or (etc_generic not in psym^.compile and psym^.eval not in tentityevalset:[ete_evaluated]))
+  -- => chyba
+  then
+    -- symbol se nepoda©ilo vyhodnotit a nem  cenu to zkou¨et d l
+    psym^.eval:=ete_unevaluated;
+
+    -- chyba
+    ce^.seterror({CCERR=}000282,ce_unevaluated);
+    ce^.setparam(sym_get_qid(psym));
+    ce^.setpos(pos);
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  end e_symbol;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_all_context (
+    context        : in tcontext;                -- vyhodnocovan˜ kontext
+    level          : in tentitydeclared;         -- po‘adovan˜ urove¤ vyhodnocen¡
+    final          : in t_logical;               -- T-v˜sledek mus¡ b˜t vyhodnocen
+    e              : in out tentityeval) =       -- kumulativn¡ vyhodnocen¡
+-- Vyhodnocen¡ v¨ech prvk– obsa‘en˜ch v zadan‚m kontextu a v¨ech subkontextech. 
+----------------------------------------------------------------------------------------------------
+{with
+  standard,console;}
+  
+var
+  p                : pentity;                    -- vyhodnocovan  entita
+  ee               : tentityeval;                -- vyhodnocen¡ entity
+  ignore           : t_logical;                  -- ignorovan  n vratov  hodnota
+  region           : pregion;                    -- zpracov van˜ region
+
+begin
+  {write_line('---- begin --------');}
+  
+  -- vyhodnotit v¨echny symboly
+  p:=context.region^.entities.first;
+  while p<>nil loop
+    -- %%X pozor na cirkul rn¡ reference modul–
+
+    -- vyhodnotit symbol
+    if etc_generated not in p^.compile and p^.eval<>ete_unevaluated then
+      {if p^.id<>nil then write_line(entityident_to_string(p^.id^)) end if;}
+    
+      -- vyhodnotit
+      e_check(p,p^.pos[etp_header],level,final{true},ee);
+
+      -- zapo‡¡tat do celkov‚ho v˜sledku
+      ignore:=e_part(e,ee); 
+      -- n vratov  hodnota se ignoruje, entity vyhodnot¡me v‘dy v¨echny
+      end if;
+
+    -- dal¨¡ symbol
+    p:=p^.next;
+    end loop;
+
+  {write_line('---- end --------');}
+
+  -- zpracovat subkontexty
+  region:=context.region^.regions.first;
+  while region<>nil loop
+    -- zpracovat
+    e_all_context(sym_build_context(context.entity,region),level,final,e);
+
+    -- dal¨¡ region
+    region:=region^.next;
+    end loop;
+  end e_all_context; 
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_all =
+-- Vyhodnocen¡ v¨ech prvk– obsa‘en˜ch v pr vˆ p©ekl dan‚m prvku.
+----------------------------------------------------------------------------------------------------
+var
+  rcategory        : tregioncategory;            -- kategorie regionu   
+
+begin
+  -- p©edpoklad: vyhodnot¡ se £plnˆ v¨echno
+  e:=ete_evaluated;
+
+  -- zpracovat v¨echny regiony
+  for rcategory in tregioncategory loop
+    -- zpracovat region
+    if curr.regions[rcategory]<>nil then
+      e_all_context(sym_build_context(^curr,curr.regions[rcategory]),level,final,e);
+      end if;
+    end loop;
+  end e_all;
+
+
+
+----------------------------------------------------------------------------------------------------
+entry =
+-- Inicializace.
+----------------------------------------------------------------------------------------------------
+begin
+  e_spec_tab[dt_uniint    ]:=^e_spec_unitype;
+  e_spec_tab[dt_unireal   ]:=^e_spec_unitype;
+  e_spec_tab[dt_unilogical]:=^e_spec_unitype;
+  e_spec_tab[dt_unichar   ]:=^e_spec_unitype;
+  e_spec_tab[dt_uniarray  ]:=^e_spec_unitype;
+  e_spec_tab[dt_uninil    ]:=^e_spec_unitype;                         
+  e_spec_tab[dt_signed    ]:=^e_spec_ordinal;
+  e_spec_tab[dt_unsigned  ]:=^e_spec_ordinal;
+  e_spec_tab[dt_float     ]:=^e_spec_float;
+  e_spec_tab[dt_char      ]:=^e_spec_ordinal;
+  e_spec_tab[dt_logical   ]:=^e_spec_ordinal;
+  e_spec_tab[dt_enum      ]:=^e_spec_enum;
+  e_spec_tab[dt_string    ]:=^e_spec_string;
+  e_spec_tab[dt_ustring   ]:=^e_spec_string;
+  e_spec_tab[dt_array     ]:=^e_spec_array;
+  e_spec_tab[dt_uarray    ]:=^e_spec_array;
+  e_spec_tab[dt_record    ]:=^e_spec_record;
+  e_spec_tab[dt_set       ]:=^e_spec_set;
+  e_spec_tab[dt_pointer   ]:=^e_spec_pointer;
+  e_spec_tab[dt_tag       ]:=^e_spec_tag;
+  e_spec_tab[dt_message   ]:=^e_spec_procedure;
+  e_spec_tab[dt_procedure ]:=^e_spec_procedure;
+  e_spec_tab[dt_task      ]:=^e_spec_procedure;
+  end entry;              
+
+
+
+end cd_eval;

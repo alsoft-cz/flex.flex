@@ -1,0 +1,281 @@
+----------------------------------------------------------------------------------------------------
+module private cl_resolver =
+-- P©eklada‡ Flexu.
+-- Vyhodnocova‡ cross-referenc¡ a adres.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 12.04.2002 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+class private {%%TODO(ABSTRACT) abstract} linkresolver =
+-- Vyhodnocova‡ cross-referenc¡ a adres.
+----------------------------------------------------------------------------------------------------
+
+    with
+      cx_expr,
+      cx_expr.cx_imm;
+
+    ------------------------------------------------------------------------------------------------
+    static mark =
+    -- F ze 1: Ozna‡en¡ symbol– pro linkov n¡.
+    ------------------------------------------------------------------------------------------------
+
+    with
+      cc_base,
+      cc_base.cc_sym;
+
+        --------------------------------------------------------------------------------------------
+        procedure marktype =
+        -- Ozna‡en¡ typu/t©¡dy na vyhodnocen¡.
+        --------------------------------------------------------------------------------------------
+        var
+          ancestor : pentity_type;               -- p©edek vyhodnocovan‚ho typu
+          tst      : tspectype;                  -- speci ln¡ metoda
+
+        begin
+          verify(388,tf_tagged not in pentity_type(curr)^.tflags);
+
+          -- za©adit p©edka na vyhodnocen¡ (pokud je t‚‘ tagged)
+          if curr^.ancestor.isset then
+            pentity(ancestor):=curr^.ancestor.getcentity;
+            if tf_tagged in ancestor^.tflags then mark(ancestor); end if;
+            end if;
+
+          -- za©adit na vyhodnocen¡ v¨echny speci ln¡ metody
+          for tst in pentity_type(curr)^.stable:range loop
+            if pentity_type(curr)^.stable[tst].isset then
+              mark(pentity_type(curr)^.stable[tst].getcentity);
+              end if;
+            end loop;  
+
+          -- za©adit typ na vyhodnocen¡
+          this.typedesc.add(curr);
+          end marktype;
+
+    var
+      srch         : tentitysearch;              -- hled tko
+      i            : t_unsigned;
+
+    begin
+      -- ji‘ ozna‡en˜mi symboly se nezab˜vat
+      if curr^.linked<>ls_undef then return; end if;
+
+      -- ozna‡it symbol jako pou‘it˜
+      curr^.linked:=ls_used;
+
+      -- promˆnn 
+      if curr^.etype=et_var then
+        case pentity_var(curr)^.mclass
+          -- statick 
+          when mc_static do
+              -- za©adit do p©¡slu¨n‚ho datov‚ho segmentu
+              if pentity_var(curr)^.init.isset and not imm_isnil(pentity_var(curr)^.init.getimm^)
+                -- inicializovan  promˆnn 
+                then this.idata.add(curr)
+                -- neinicializovan  promˆnn 
+                else this.data.add(curr)
+                end if;
+
+          -- taskov 
+          when mc_task do unimplemented(1);
+
+          when others do verify(191,true);
+          end case;
+
+      -- prvek obsahuj¡c¡ k¢d
+      elsif curr^.etype in ets_code then
+        if (curr^.etype=et_procedure{in ets_subprog}) and (pentity_procedure{subprog}(curr)^.import<>nil)
+
+          -- extern¡ symbol
+          then
+            this.import.add(curr);
+
+          -- norm ln¡ symbol
+          else
+            verify(584,pentity_code(curr)^.codegen=nil);
+
+            -- symbol za©adit pro pozdˆj¨¡ vyhodnocen¡
+            this.code.add(curr);
+
+            -- trasovat tabulku relokac¡
+            this.trace(curr);
+            end if;
+
+      -- typ
+      elsif curr^.etype=et_type then
+        -- za©adit na vyhodnocen¡
+        marktype;
+
+      -- t©¡da
+      elsif curr^.etype=et_class then
+        -- za©adit na vyhodnocen¡
+        marktype;
+
+        -- za©adit na vyhodnocen¡ v¨echny metody z tabulky virtu ln¡ch metod
+        if pentity_type(curr)^.vtable<>nil then
+          for i in pentity_type(curr)^.vtable^:range loop
+            if pentity_type(curr)^.vtable^[i]<>nil then
+              mark(pentity_type(curr)^.vtable^[i]);
+              end if;
+            end loop;
+          end if;  
+      {
+        -- za©adit na vyhodnocen¡ v¨echny speci ln¡ metody
+        srch.find_et_first(curr,et_special,tesearchflagset:[]);
+        while srch.psym<>nil loop
+          mark(srch.psym);
+          srch.find_et_next;
+          end loop;
+      }
+      -- zpr va
+      elsif curr^.etype=et_message then
+        succ this.msgnum;
+        pentity_message(curr)^.num:=this.msgnum;
+        --unimplemented(3);
+
+      -- dal¨¡ prvky
+      elsif curr^.etype in ets_enclosed then
+        -- nic nedˆlat
+
+      -- nic jin‚ho tu nem  co dˆlat
+      else 
+        verify(32,true);
+        end if;
+    {
+      -- proj¡t lok ln¡ tabulku symbol–
+      p:=curr^.symtab;
+      while p<>nil loop
+        if p^.etype in ets_code+ets_enclosed{-[et_module]} then mark(p); end if;
+        p:=p^.next;
+        end loop;
+    }
+      end mark;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual link =
+    -- F ze 2: Vlastn¡ sestaven¡.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end link;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual info =
+    -- V˜pis souhrnn˜ch informac¡ do listingu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end info;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual getaddrbase =
+    -- Adresa, ke kter‚ se vztahuj¡ relokace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end getaddrbase;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual getentrypoint =
+    -- Entrypoint programu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end getentrypoint;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual checkseg =
+    -- True, pokud se m  zadan˜ segment zahrnout do EXE.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end checkseg;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual getsegbase =
+    -- B zov  adresa segmentu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end getsegbase;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual getsegtotal =
+    -- Celkov  velikost segmentu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end getsegtotal;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual writesegment =
+    -- Do v˜stupn¡ho souboru zap¡¨e zadan˜ segment.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end writesegment;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual trace = 
+    -- Projde tabulku relokac¡ symbolu CURR a pro ka‘d˜ symbol zavol¡ MARK.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end trace;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual linkimport =
+    -- P©¡prava pro linkov n¡ importovan˜ch funkc¡.
+    ------------------------------------------------------------------------------------------------
+    begin
+      end linkimport;
+    
+    end linkresolver;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure ffillz (
+    os             : in p_output_stream;
+    size           : in t_unsigned) =
+-- Zap¡¨e do souboru zadan˜ po‡et nulov˜ch byt–.                              
+----------------------------------------------------------------------------------------------------
+with
+  standard.numerics;
+
+var
+  -- v˜pl¤: nuly 
+  fill_zeros       : const array t_unsigned8 of t_unsigned8 := nil;
+                                               
+var
+  i                : t_unsigned;
+  j                : t_unsigned;
+
+begin
+  i:=size;
+  while i>0 loop
+    j:=min_unsigned(i,fill_zeros:size);
+    os^.writex(fill_zeros,j);
+    i-j;
+    end loop;
+  end ffillz;
+
+
+
+----------------------------------------------------------------------------------------------------
+#separate private cl_ia32;
+-- Vyhodnocova‡ cross-referenc¡ a adres: IA-32.
+----------------------------------------------------------------------------------------------------
+
+end cl_resolver;

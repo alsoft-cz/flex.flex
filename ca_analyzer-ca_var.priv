@@ -1,0 +1,357 @@
+----------------------------------------------------------------------------------------------------
+module private ca_var =
+-- P©eklada‡ Flexu.
+-- Generov n¡ v˜raz– pro inicializaci a finalizaci promˆnn˜ch.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 12.11.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_var,
+  cc_base,
+  cc_base.cc_sym,
+  cc_base.cc_type,
+  cc_attr,
+  cx_expr.cx_make,
+  cb_block,
+  cb_block.cb_make,
+  ca_util,
+  ca_type;
+
+type
+  -- operace nad promˆnnou (inicializace, vol n¡ ENTRY/EXIT)
+  ttraceop         = procedure (
+      curr         : in tcontext;                -- aktu ln¡ kontext  
+      list         : in out bllist;              -- kam se budou p©¡kazy ukl dat
+      binfo        : in out blinfo;              -- kontext
+      xinfo        : in out expinfo;             -- kontext
+      pvar         : in pentity_var);            -- promˆnn 
+  ptraceop         = ^ttraceop;
+
+----------------------------------------------------------------------------------------------------
+procedure list_append (
+    list           : in out bllist;              -- kam se budou p©¡kazy ukl dat
+    bl             : in pblnode) =               -- za©azovan˜ p©¡kaz
+-- Za©ad¡ p©¡kaz BL na konec seznamu p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+begin
+  -- za©adit
+  if list.first=nil
+    then list.first:=bl;
+    else list.last^.next:=bl;
+    end if;
+  list.last:=bl;
+  end list_append;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure traceop_init : ttraceop =
+-- Inicializace promˆnn‚.
+----------------------------------------------------------------------------------------------------
+var
+  x_imm            : pexpimm;                    -- po‡ te‡n¡ hodnota promˆnn‚
+  ptyp             : pentity_type;               -- typ promˆnn‚
+
+begin
+  -- pro zjednodu¨en¡ si zjistit typ promˆnn‚
+  ptyp:=pvar^.typ.getutype;
+
+  -- je k dispozici inicializa‡n¡ metoda pro tento typ ?
+  if (ptyp<>nil) and (ptyp^.tinit=ti_complex)  {ptyp^.stable[tst_init].isset and ((ptyp^.stype in dts_component) or (ptyp^.derive=td_private_extension))}
+
+    -- ano => pou‘¡t
+    then
+      verify(571,not ptyp^.stable[tst_init].isset);
+
+      -- zavolat metodu
+      a_list_append(list,
+        a_type_make_call(curr,binfo,xinfo,tst_init,ptyp^,
+          x_make_component_var(curr,xinfo,pvar)
+          )
+        );
+
+    -- ne => p©¡mo p©i©adit po‡ te‡n¡ hodnotu
+    else
+      -- m  promˆnn  po‡ te‡n¡ hodnotu ?
+      if pvar^.init.isset then
+        x_imm:=x_make_imm    (curr,xinfo,pvar^.typ.getutype,pvar^.init.getimm^,iek_none)
+
+      -- m  typ promˆnn‚ po‡ te‡n¡ hodnotu ?
+      elsif pvar^.typ.isset and pvar^.typ.getctype^.init.isset then
+        x_imm:=x_make_imm    (curr,xinfo,pvar^.typ.getutype,pvar^.typ.getctype^.init.getimm^,iek_none);
+
+      -- inicializovat na NIL
+      else
+        x_imm:=x_make_imm_nil(curr,xinfo,pvar^.typ.getutype);
+        end if;
+
+      -- PVAR := IMM
+      a_list_append(list,
+        b_make_cmd(curr,binfo,
+          x_make_op_assign(curr,xinfo,
+            x_make_component_var(curr,xinfo,pvar),
+            x_imm
+            )
+          )
+        );
+      end if;
+  end traceop_init;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure tracecheck_init =
+-- Kontrola, zda symbol PSYM obsahuje promˆnn‚ t©¡dy MCLASS, kter‚ je t©eba
+-- inicializovat pomoc¡ TRACEOP_INIT.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=mclass in psym^.tra_init;
+  end tracecheck_init;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure prefix_var : tprefixproc =
+-- Gener tor prefixu promˆnn .
+----------------------------------------------------------------------------------------------------
+begin
+  result:=x_make_component_var(curr,xinfo,pentity_var(_data));
+  end prefix_var;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure traceop_call_special (
+    curr           : in tcontext;                -- aktu ln¡ kontext   
+    list           : in out bllist;              -- kam se budou p©¡kazy ukl dat
+    binfo          : in blinfo;                  -- kontext
+    xinfo          : in expinfo;                 -- kontext
+    pvar           : in pentity_var;             -- promˆnn 
+    tst            : in tspectype) =             -- volan  speci ln¡ metoda
+-- Vol n¡ zadan‚ speci ln¡ metody
+----------------------------------------------------------------------------------------------------
+var
+  ptyp             : pentity_type;               -- typ promˆnn‚
+
+begin
+  -- pro zjednodu¨en¡ si zjistit typ promˆnn‚
+  ptyp:=pvar^.typ.getctype;
+
+  -- nen¡ to n hodou rovnou instance t©¡dy ?
+  if ptyp^.stype=dt_class
+
+    -- ano => volat p©¡mo po‘adovanou speci ln¡ metodu t©¡dy
+    then
+      case tst
+        when tst_entry  do a_type_class_entry (curr,^prefix_var,pvar,ptyp,list,binfo,xinfo);
+        when tst_exit   do a_type_class_exit  (curr,^prefix_var,pvar,ptyp,list,binfo,xinfo);
+        when tst_adjust do a_type_class_adjust(curr,^prefix_var,pvar,ptyp,list,binfo,xinfo);
+        when others do verify(614,true);
+        end case;
+
+    -- ne => volat po‘adovanou obaluj¡c¡ speci ln¡ metodu typu
+    else
+      verify(572,not t_contains_class(ptyp^) or not ptyp^.stable[tst].isset);
+
+      -- zavolat metodu
+      a_list_append(list,
+        a_type_make_call(curr,binfo,xinfo,tst,ptyp^,
+          x_make_component_var(curr,xinfo,pvar)
+          )
+        );
+      end if;
+  end traceop_call_special;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure traceop_entry : ttraceop =
+-- Vol n¡ ENTRY promˆnn‚.
+----------------------------------------------------------------------------------------------------
+begin
+   traceop_call_special(curr,list,binfo,xinfo,pvar,tst_entry);
+  end traceop_entry;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure tracecheck_entry =
+-- Kontrola, zda symbol PSYM obsahuje promˆnn‚ t©¡dy MCLASS, pro kter‚ je
+-- t©eba volat ENTRY pomoc¡ TRACEOP_ENTRY.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=mclass in psym^.tra_entry;
+  end tracecheck_entry;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure traceop_exit : ttraceop =
+-- Vol n¡ EXIT promˆnn‚.
+----------------------------------------------------------------------------------------------------
+begin
+  -- parametry se (nikdy) neexituj¡
+  if pvar^.pparam=nil then
+    traceop_call_special(curr,list,binfo,xinfo,pvar,tst_exit);
+    end if;
+  end traceop_exit;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure tracecheck_exit =
+-- Kontrola, zda symbol PSYM obsahuje promˆnn‚ t©¡dy MCLASS, pro kter‚ je
+-- t©eba volat EXIT pomoc¡ TRACEOP_EXIT.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=mclass in psym^.tra_exit;
+  end tracecheck_exit;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure traceop_adjust : ttraceop =
+-- Vol n¡ ADJUST promˆnn‚.
+----------------------------------------------------------------------------------------------------
+begin
+  traceop_call_special(curr,list,binfo,xinfo,pvar,tst_adjust);
+  end traceop_adjust;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure tracecheck_adjust =
+-- Kontrola, zda symbol PSYM obsahuje promˆnn‚ t©¡dy MCLASS, pro kter‚ je
+-- t©eba volat ADJUST pomoc¡ TRACEOP_adjust.
+----------------------------------------------------------------------------------------------------
+begin
+  -- %% podm¡nka je stejn  jako pro entry - je to spr vnˆ ? 
+  result:=mclass in psym^.tra_entry;
+  end tracecheck_adjust;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure trace (
+    curr           : in tcontext;                -- aktu ln¡ kontext  
+    list           : in out bllist;              -- kam se budou p©¡kazy ukl dat
+    binfo          : in out blinfo;              -- kontext
+    xinfo          : in out expinfo;             -- kontext
+    mclass         : in memclass;                -- pamˆŸov  t©¡da
+    recursive      : in t_logical;               -- T-prohled vat rekurzivnˆ
+    classonly      : in t_logical;               -- T-pouze promˆnn‚ obsahuj¡c¡ t©¡dy
+    op             : in ptraceop;                -- operace nad promˆnnou
+    check          : in ptracecheck) =           -- kontrola pamˆŸov‚ t©¡dy
+-- Vyhled  v tabulce symbol– v¨echny promˆnn‚ dan‚ pamˆŸov‚ t©¡dy a zavol 
+-- na nˆ metodu OP. Je-li RECURSIVE=True, prohled v  i vno©en‚ podprogramy;
+-- pro MCLASS=MC_STATIC i vno©en‚ t©¡dy.
+----------------------------------------------------------------------------------------------------
+var
+  psym             : pentity;
+  region           : pregion;
+
+begin
+  psym:=curr.region^.entities.first;
+  while psym<>nil loop
+
+    -- promˆnn  po‘adovan‚ pamˆŸov‚ t©¡dy
+    if (psym^.etype=et_var) and (pentity_var(psym)^.mclass=mclass)
+    -- a nen¡ to parametr (kromˆ OUT parametr–)
+    and ((pentity_var(psym)^.pparam=nil) or (pentity_var(psym)^.pparam^.mode=pm_out))
+    -- a je to t©¡da, je-li tak po‘adov no
+    and (not classonly or (pentity_var(psym)^.typ.isset and t_contains_class(pentity_var(psym)^.typ.getctype^))
+                         {(pentity_var(psym)^.typ.isset and (pentity_var(psym)^.typ.getctype^.ptype=et_class))})
+    -- a nen¡ to symbol generovan˜ kompil torem k technick˜ch £‡el–m
+    and not (etc_generated in psym^.compile)
+    -- => inicializovat
+    then
+      -- analyzovat typ promˆnn‚ (kromˆ t©¡d)
+      if pentity_var(psym)^.typ.isset and (pentity_var(psym)^.typ.getctype^.etype=et_type) then
+        a_type(pentity_var(psym)^.typ.getctype^);
+        end if;
+
+      -- prov‚st operaci
+      op^(curr,list,binfo,xinfo,pentity_var(psym));
+      end if;
+
+    -- rekurzivnˆ trasovat podprogramy
+    if recursive and (((psym^.etype in ets_subprogram) and check^(psym,mclass))
+    or ((mclass=mc_static) and (psym^.etype=et_class) and check^(psym,mclass))) then
+      trace(sym_primary_context(psym^),list,binfo,xinfo,mclass,recursive,classonly,op,check);
+      end if;
+
+    -- dal¨¡ symbol
+    psym:=psym^.next;
+{
+    -- dal¨¡ symbol
+    if recursive and (((psym^.etype in ets_subprogram) and check^(psym,mclass))
+    or ((mclass=mc_static) and (psym^.etype=et_class) and check^(psym,mclass)))
+
+      -- rekurzivnˆ trasovat podprogramy
+      then psym:=psym^.regions.std_region.entities.first
+
+      -- dal¨¡ symbol nebo n vrat na p©edchoz¡ £rove¤
+      else
+        while (psym^.next=nil) and (psym^.context.entity<>^curr) loop psym:=psym^.context.entity; end loop;
+        psym:=psym^.next;
+        end if;
+}
+    end loop;
+
+  -- trasovat vno©en‚ regiony
+  region:=curr.region^.regions.first;
+  while region<>nil loop
+    -- protrasovat
+    trace(sym_build_context(curr.entity,region),list,binfo,xinfo,mclass,recursive,classonly,op,check);
+    
+    -- dal¨¡ region
+    region:=region^.next;
+    end loop;
+  end trace;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_var_init =
+-- Vygeneruje p©¡kazy pro inicializaci promˆnn˜ch.
+-- Je-li CLASSONLY=True, inicializuje pouze instance t©¡d (nap©¡klad p©i
+-- MCLASS=MC_STATIC jsou ostatn¡ promˆnn‚ inicializovan‚ loaderem).
+----------------------------------------------------------------------------------------------------
+begin
+  trace(sym_primary_context(curr),list,binfo,xinfo,mclass,recursive,classonly,^traceop_init,^tracecheck_init);
+  end a_var_init;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_var_entry =
+-- Vygeneruje p©¡kazy na vol n¡ ENTRY promˆnn˜ch.
+----------------------------------------------------------------------------------------------------
+begin
+  trace(sym_primary_context(curr),list,binfo,xinfo,mclass,recursive,true,^traceop_entry,^tracecheck_entry);
+  end a_var_entry;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_var_exit =
+-- Vygeneruje p©¡kazy na vol n¡ EXIT promˆnn˜ch.
+----------------------------------------------------------------------------------------------------
+begin
+  trace(sym_primary_context(curr),list,binfo,xinfo,mclass,recursive,true,^traceop_exit,^tracecheck_exit);
+  end a_var_exit;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_var_adjust =
+-- Vygeneruje p©¡kazy na vol n¡ ADJUST promˆnn˜ch.
+----------------------------------------------------------------------------------------------------
+begin
+  trace(sym_primary_context(curr),list,binfo,xinfo,mclass,recursive,true,^traceop_adjust,^tracecheck_adjust);
+  end a_var_adjust;
+
+
+
+end ca_var;

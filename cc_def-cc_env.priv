@@ -1,0 +1,263 @@
+----------------------------------------------------------------------------------------------------
+module private cc_env =
+-- P©eklada‡.
+-- #environment promˆnn‚.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 22.02.2000 : Vytvo©il.
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_unitype,
+  cc_var,
+  cc_desc;
+
+type
+  -- popis #environment promˆnn‚
+  tenvvardesc      = record
+      txt          : tshortident;
+      env          : tenvvar;
+      end record;
+
+  -- hodnota #environment promˆnn‚
+  tenvval          = record
+      lex          : lexsym;                     -- odpov¡daj¡c¡ lexik ln¡ element
+      val          : lexval;                     -- hodnota
+      end record;
+
+var
+  -- tabulka #environment promˆnn˜ch
+  envvartab        : const array 0..28 of tenvvardesc := [
+      [for txt use 'COMPILER_NAME'                  , for env use env_compiler_name                  ],
+      [for txt use 'COMPILER_SUBTYPE'               , for env use env_compiler_subtype               ],
+      [for txt use 'COMPILER_TYPE'                  , for env use env_compiler_type                  ],
+      [for txt use 'COMPILER_VERSION'               , for env use env_compiler_version               ],
+      [for txt use 'COMPILE_DATE'                   , for env use env_compile_date                   ],
+      [for txt use 'COMPILE_LOCAL_DATE'             , for env use env_compile_local_date             ],
+      [for txt use 'COMPILE_LOCAL_TIME'             , for env use env_compile_local_time             ],
+      [for txt use 'COMPILE_TIME'                   , for env use env_compile_time                   ],
+      [for txt use 'HOST_MACHINE_ARCHITECTURE'      , for env use env_host_machine_architecture      ],
+      [for txt use 'HOST_MACHINE_BITS'              , for env use env_host_machine_bits              ],
+      [for txt use 'HOST_MACHINE_DIRECT_BYTEORDER'  , for env use env_host_machine_direct_byteorder  ],
+      [for txt use 'HOST_MACHINE_VERSION'           , for env use env_host_machine_version           ],
+      [for txt use 'HOST_OS_FAMILY'                 , for env use env_host_os_family                 ],
+      [for txt use 'HOST_OS_NAME'                   , for env use env_host_os_name                   ],
+      [for txt use 'HOST_OS_SUBSYSTEM_TYPE'         , for env use env_host_os_subsystem_type         ],
+      [for txt use 'HOST_OS_SUBSYSTEM_VERSION'      , for env use env_host_os_subsystem_version      ],
+      [for txt use 'HOST_OS_TYPE'                   , for env use env_host_os_type                   ],
+      [for txt use 'HOST_OS_VERSION'                , for env use env_host_os_version                ],
+      [for txt use 'LANGUAGE_VERSION'               , for env use env_language_version               ],
+      [for txt use 'TARGET_MACHINE_ARCHITECTURE'    , for env use env_target_machine_architecture    ],
+      [for txt use 'TARGET_MACHINE_BITS'            , for env use env_target_machine_bits            ],
+      [for txt use 'TARGET_MACHINE_DIRECT_BYTEORDER', for env use env_target_machine_direct_byteorder],
+      [for txt use 'TARGET_MACHINE_VERSION'         , for env use env_target_machine_version         ],
+      [for txt use 'TARGET_OS_FAMILY'               , for env use env_target_os_family               ],
+      [for txt use 'TARGET_OS_NAME'                 , for env use env_target_os_name                 ],
+      [for txt use 'TARGET_OS_SUBSYSTEM_TYPE'       , for env use env_target_os_subsystem_type       ],
+      [for txt use 'TARGET_OS_SUBSYSTEM_VERSION'    , for env use env_target_os_subsystem_version    ],
+      [for txt use 'TARGET_OS_TYPE'                 , for env use env_target_os_type                 ],
+      [for txt use 'TARGET_OS_VERSION'              , for env use env_target_os_version              ]];
+
+var
+  -- tabulka hodnot #environment promˆnn˜ch
+  envtab           : array tenvvar of tenvval := nil;
+
+----------------------------------------------------------------------------------------------------
+procedure env_search =
+-- P©evede identifik tor na #environment promˆnnou.
+----------------------------------------------------------------------------------------------------
+var
+  zac              : envvartab:range;
+  stred            : envvartab:range;
+  kon              : envvartab:range;
+
+begin
+  zac:=envvartab:first;
+  kon:=envvartab:last;
+  loop
+    stred:=(zac+kon) div 2;
+    if id>envvartab[stred].txt
+      then zac:=stred+1;
+      else kon:=stred;
+      end if;
+    until zac>=kon;
+  if id=envvartab[zac].txt
+    -- nalezeno
+    then env:=envvartab[zac].env;
+    -- nenalezeno
+    else env:=env_none;
+    end if;
+  end env_search;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure env_get_var =
+-- Hodnota zadan‚ #environment promˆnn‚.
+----------------------------------------------------------------------------------------------------
+begin
+  lex:=envtab[env].lex;
+  val:=envtab[env].val;
+  end env_get_var;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure env_init_var =
+-- Inicializace hodnot #environment promˆnn˜ch.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure setint (
+        env        : in tenvvar;
+        i          : in t_unsigned) =
+    -- P©i©ad¡ zadan‚ #environment promˆnn‚ ‡¡slo.
+    ------------------------------------------------------------------------------------------------
+    begin
+      envtab[env].lex:=lex_numi;
+      envtab[env].val.ui:=unsigned_to_uniint(i);
+      end setint;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure setlogical (
+        env        : in tenvvar;
+        b          : in t_logical) =
+    -- P©i©ad¡ zadan‚ #environment promˆnn‚ logickou hodnotu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if b
+        then envtab[env].lex:=lex_meta_true;
+        else envtab[env].lex:=lex_meta_false;
+        end if;
+      end setlogical;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure setstr (
+        env        : in tenvvar;
+        str        : in t_char32ustr) =
+    -- P©i©ad¡ zadan‚ #environment promˆnn‚ ©etˆzec.
+    ------------------------------------------------------------------------------------------------
+    var
+      i        : str:range:type;
+
+    begin
+      envtab[env].lex:=lex_str;
+
+      -- alokovat pamˆŸ
+      new envtab[env].val.str range str:length;
+
+      -- nacpat znaky do bufferu (s p©ekladem)
+      for i in str:range loop
+        --%%TODO(COMPATIBILITY) envtab[env].val.str^ & char_to_unichar(str[i]);
+        -- ^^ P©¡znak protected/private cel‚ho stringu se nesm¡ zohled¤ovat u z©etˆzen¡ s komponentou
+        succ envtab[env].val.str^:length;
+        envtab[env].val.str^[envtab[env].val.str^:length]:=char_to_unichar(str[i]);
+        end loop;
+      end setstr;
+
+
+
+begin
+  ---- £daje o jazyku ------------------------------------------------------------------------------
+  -- verze jazyka
+  setint(env_language_version           ,cc_desc.language_version);
+
+  ---- £daje o p©eklada‡i --------------------------------------------------------------------------
+  -- jm‚no p©eklada‡e
+  setstr(env_compiler_name              ,compdesc.c_name);
+
+  -- typ p©eklada‡e
+  setstr(env_compiler_type              ,compdesc.c_type);
+
+  -- subtyp p©eklada‡e
+  setstr(env_compiler_subtype           ,compdesc.c_subtype);
+
+  -- verze p©eklada‡e
+  setstr(env_compiler_version           ,compdesc.c_ver);
+
+  ---- £daje o tomto p©ekladu ----------------------------------------------------------------------
+  -- %%X Pozor, 2 chyby:
+  -- 1. GETDATE/GETTIME se dˆl  dvakr t
+  -- 2. UTC nen¡ tot‚‘ co GMT
+{%%TODO(LIB)
+  -- datum p©ekladu (UTC)
+  setstr(env_compile_date               ,datetostr(getgmtdate,df_iso8601));
+
+  -- ‡as p©ekladu (UTC)
+  setstr(env_compile_time               ,timetostr(getgmttime,tf_iso8601));
+
+  -- datum p©ekladu (lok ln¡)
+  setstr(env_compile_local_date         ,datetostr(getdate,df_iso8601));
+
+  -- ‡as p©ekladu (lok ln¡)
+  setstr(env_compile_local_time         ,timetostr(gettime,tf_iso8601));
+}
+  ---- parametry platformy na kter‚ bˆ‘¡ p©eklada‡ -------------------------------------------------
+  -- jm‚no opera‡n¡ho syst‚mu
+  setstr(env_host_os_name               ,sdbase_host.os_name);
+
+  -- skupina opera‡n¡ch syst‚mu (UNIX;WIN32)
+  setstr(env_host_os_family             ,os_family[sdbase_host.os_family]);
+
+  -- typ opera‡n¡ho syst‚mu (Linux/BSD;95/NT)
+  setstr(env_host_os_type               ,sdbase_host.os_type);
+
+  -- verze opera‡n¡ho syst‚mu
+  setstr(env_host_os_version            ,sdbase_host.os_version);
+
+  -- typ subsyst‚mu (driver/GUI/console)
+  setstr(env_host_os_subsystem_type     ,sdbase_host.os_subsystem_type);
+
+  -- verze subsyst‚mu
+  setstr(env_host_os_subsystem_version  ,sdbase_host.os_subsystem_version);
+
+  -- architektura po‡¡ta‡e (IA-32/AS400)
+  setstr(env_host_machine_architecture  ,machine_architecture[sdbase_host.machine_architecture]);
+
+  -- verze architektury (5-P16-P2)
+  setstr(env_host_machine_version       ,sdbase_host.machine_version);
+
+  -- ¨¡©ka slova v bitech (32,64,128)
+  setint(env_host_machine_bits          ,sdbase_host.machine_bits);
+
+  -- po©ad¡ byt–
+  setlogical(env_host_machine_direct_byteorder,sdbase_host.machine_direct_byteorder);
+
+  ---- parametry c¡lov‚ platformy ------------------------------------------------------------------
+  -- jm‚no opera‡n¡ho syst‚mu
+  setstr(env_target_os_name             ,sysdesc.os_name);
+
+  -- skupina opera‡n¡ch syst‚mu (UNIX;WIN32)
+  setstr(env_target_os_family           ,os_family[sysdesc.os_family]);
+
+  -- typ opera‡n¡ho syst‚mu (Linux/BSD;95/NT)
+  setstr(env_target_os_type             ,sysdesc.os_type);
+
+  -- verze opera‡n¡ho syst‚mu
+  setstr(env_target_os_version          ,sysdesc.os_version);
+
+  -- typ subsyst‚mu (driver/GUI/console)
+  setstr(env_target_os_subsystem_type   ,sysdesc.os_subsystem_type);
+
+  -- verze subsyst‚mu
+  setstr(env_target_os_subsystem_version,sysdesc.os_subsystem_version);
+
+  -- architektura po‡¡ta‡e (IA-32/AS400)
+  setstr(env_target_machine_architecture,machine_architecture[sysdesc.machine_architecture]);
+
+  -- verze architektury (5-P16-P2)
+  setstr(env_target_machine_version     ,sysdesc.machine_version);
+
+  -- ¨¡©ka slova v bitech (32,64,128)
+  setint(env_target_machine_bits        ,sysdesc.machine_bits);
+
+  -- po©ad¡ byt–
+  setlogical(env_target_machine_direct_byteorder,sysdesc.machine_direct_byteorder);
+  end env_init_var;
+
+
+
+end cc_env;

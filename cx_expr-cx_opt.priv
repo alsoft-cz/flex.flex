@@ -1,0 +1,3370 @@
+---------------------------------------------------------------------------------------------------
+module private cx_opt =
+-- P©eklada‡ Flexu.
+-- Optimalizace.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 17.09.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cx_util,cx_imm;
+
+type
+  -- optimaliza‡n¡ metoda
+  toperopt         = procedure (
+      curr         : in tcontext;                -- p©ekl dan˜ prvek
+      expr         : in out pexpoper;            -- oper tor
+      info         : in expinfo);                -- informace o pr–bˆhu anal˜zy
+  poperopt         = ^toperopt;
+
+  -- ©¡d¡c¡ tabulka optimalizace bin rn¡ch oper tor–
+  topertab         = array expopertype,tdatatype of poperopt;
+
+  -- optimaliza‡n¡ metoda
+  tunaryopt        = procedure (
+      curr         : in tcontext;                -- p©ekl dan˜ prvek
+      expr         : in out pexpunary;           -- oper tor
+      el           : in out pexpnode;            -- podv˜raz
+      result       : out pexpnode;               -- v˜sledn˜ uzel (zmˆnil-li se)
+      info         : in expinfo);                -- informace o pr–bˆhu anal˜zy
+  punaryopt        = ^tunaryopt;
+
+  -- ©¡d¡c¡ tabulka optimalizace bin rn¡ch oper tor–
+  tunarytab        = array expunarytype,tdatatype of punaryopt;
+
+var
+  opertab          : topertab;
+  unarytab         : tunarytab;
+
+var
+  -- z plata na chybu, kter  neumo‘¤uje do IN UNCHECKED parametru p©edat konstantu
+  __dts_u_logical  : tdatatypeset := dts_u_logical;
+  __dts_u_set      : tdatatypeset := dts_u_set;
+  __dts_u_string_dts_u_array : tdatatypeset := dts_u_string+dts_u_array;
+
+----------------------------------------------------------------------------------------------------
+procedure oset11 (
+    tab            : in out topertab;            -- ©¡d¡c¡ tabulka
+    op             : in expopertype;             -- oper tor
+    stype          : in tdatatype;               -- typ v˜razu
+    method         : in poperopt) =              -- metoda
+-- TAB[OP,EL,ER]:=METHOD.
+----------------------------------------------------------------------------------------------------
+begin
+  tab[op,stype]:=method;
+  end oset11;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure oset1s (
+    tab            : in out topertab;            -- ©¡d¡c¡ tabulka
+    op             : in expopertype;             -- oper tor
+    stype          : in tdatatypeset;            -- typ v˜razu
+    method         : in poperopt) =              -- metoda
+-- TAB[OP,EL,ER]:=METHOD.
+----------------------------------------------------------------------------------------------------
+var
+  j                : tdatatype;
+
+begin
+  for j in tdatatype loop
+    if j in stype then
+      tab[op,j]:=method;
+      end if;
+    end loop;
+  end oset1s;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure osetss (
+    tab            : in out topertab;            -- ©¡d¡c¡ tabulka
+    op             : in expopertypeset;          -- oper tor
+    stype          : in tdatatypeset;            -- typ v˜razu
+    method         : in poperopt) =              -- metoda
+-- TAB[OP,EL,ER]:=METHOD.
+----------------------------------------------------------------------------------------------------
+var
+  i                : expopertype;
+  j                : tdatatype;
+
+begin
+  for i in expopertype loop
+    if i in op then
+      for j in tdatatype loop
+        if j in stype then
+          tab[i,j]:=method;
+          end if;
+        end loop;
+      end if;
+    end loop;
+  end osetss;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure osets1 (
+    tab            : in out topertab;            -- ©¡d¡c¡ tabulka
+    op             : in expopertypeset;          -- oper tor
+    stype          : in tdatatype;               -- typ v˜razu
+    method         : in poperopt) =              -- metoda
+-- TAB[OP,EL,ER]:=METHOD.
+----------------------------------------------------------------------------------------------------
+var
+  i                : expopertype;
+
+begin
+  for i in expopertype loop
+    if i in op then
+      tab[i,stype]:=method;
+      end if;
+    end loop;
+  end osets1;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure uset11 (
+    tab            : in out tunarytab;           -- ©¡d¡c¡ tabulka
+    op             : in expunarytype;            -- oper tor
+    stype          : in tdatatype;               -- typ v˜razu
+    method         : in punaryopt) =             -- metoda
+-- TAB[OP,EL,ER]:=METHOD.
+----------------------------------------------------------------------------------------------------
+begin
+  tab[op,stype]:=method;
+  end uset11;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure usetss (
+    tab            : in out tunarytab;           -- ©¡d¡c¡ tabulka
+    op             : in expunarytypeset;         -- oper tor
+    stype          : in tdatatypeset;            -- typ v˜razu
+    method         : in punaryopt) =             -- metoda
+-- TAB[OP,EL,ER]:=METHOD.
+----------------------------------------------------------------------------------------------------
+var
+  i                : expunarytype;
+  j                : tdatatype;
+
+begin
+  for i in expunarytype loop
+    if i in op then
+      for j in tdatatype loop
+        if j in stype then
+          tab[i,j]:=method;
+          end if;
+        end loop;
+      end if;
+    end loop;
+  end usetss;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_sequence (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpoper;            -- v˜raz
+    all            : out t_logical;              -- T-optimalizov ny v¨echny operandy
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace sekvence operand–.
+----------------------------------------------------------------------------------------------------
+var
+  pexp             : pexpnode;                   -- p©edchoz¡ podv˜raz
+  cexp             : pexpnode;                   -- aktu ln¡ podv˜raz
+  nexp             : pexpnode;                   -- n sleduj¡c¡ podv˜raz
+
+begin
+  pexp:=nil;
+  cexp:=expr^.sub;
+  all:=true;
+  while cexp<>nil loop
+    -- podv˜raz osamostatnit
+    nexp:=cexp^.next;
+    cexp^.next:=nil;
+
+    -- optimalizovat
+    a_opt(curr,cexp,info);
+
+    -- povedla se optimalizace v˜razu ?
+    all:=all and (cexp^.zprac>=ep_opt);
+
+    -- podv˜raz za©adit
+    if pexp<>nil
+      then pexp^.next:=cexp
+      else expr^.sub:=cexp;
+      end if;
+    pexp:=cexp;
+    cexp:=nexp;
+    end loop;
+  end a_opt_sequence;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_finalize_sequence (
+    expr           : in out pexpoper) =          -- v˜raz
+-- Dokon‡en¡ optimalizace n- rn¡ho opr toru.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(474,expr^.sub=nil);
+
+  if expr^.sub^.next=nil
+
+    -- zbyl jen jeden operand
+    then
+      if expr^.assign and expr^.sub^.ntype not in nts_operator
+        -- zkr cen‚ p©i©azen¡ ze kter‚ho zbylo jen jm‚no => zru¨it cel˜ p©¡kaz
+        then expr:=nil
+        -- norm ln¡ oper tor => zru¨it oper tor a nahradit v˜sledkem
+        else pexpnode(expr):=expr^.sub
+        end if;
+
+    -- optimalizace £spˆ¨nˆ dokon‡ena
+    else expr^.zprac:=ep_opt;
+    end if;
+  end a_opt_finalize_sequence;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_reoptimize (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpnode;            -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Reoptimalizace v˜razu.
+----------------------------------------------------------------------------------------------------
+begin
+  expr^.zprac:=pred ep_opt;
+  a_opt(curr,expr,info);
+  end a_opt_reoptimize;
+
+
+
+-------- %%TECH P©erovn v n¡ bin rn¡ch oper tor– na n- rn¡ ---------------
+-- Optimalizace p©erovn v  bin rn¡ oper tory na n- rn¡. P©erovn v n¡ se ©¡d¡
+-- vlastnostmi oper tor– definovan˜mi v EXPOPERINFO. Aby mohl b˜t uzel
+-- p©erovn n, mus¡ spl¤ovat p©edpoklady dan‚ pou‘itou p©erovn vac¡
+-- procedurou.
+--
+-- P©¡klady:
+--
+--   Zdroj k                 Intern¡ tvar
+--   -------------------     ------------
+--   a and b and c           --> AND(a,b,c)
+--   (a and b) and c         --> AND(AND(a,b),c)
+--   a and (b and c)         --> AND(a,AND(b,c))
+--   (a and (b and c)) and d --> AND(AND(a,AND(b,c)),d)
+--   ((a and b) and c) and d --> AND(AND(AND(a,b),c),d)
+--
+-- %%X Ot zka k diskusi: Explicitn¡ uz vorkov n¡ zakazuje p©erovn n¡
+-- podv˜razu i pro asociativn¡ oper tory.
+--------------------------------------------------------------------------
+
+type
+  treorderproc     = procedure (
+      node         : in pexpnode;
+      param        : in unchecked)
+                   return t_logical;
+  preorderproc     = ^treorderproc;
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_reorder_type : treorderproc =
+-- Porovn vac¡ funkce pro A_OPT_REORDER.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=t_equalview(node^.t,typeview(param));
+  end a_opt_reorder_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_reorder_sts : treorderproc =
+-- Porovn vac¡ funkce pro A_OPT_REORDER.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=t_is_sts(node^.t,tdatatypeset(param));
+  end a_opt_reorder_sts;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_reorder (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpoper;            -- v˜raz
+    cmp            : in preorderproc;            -- porovn vac¡ funkce
+    param          : in unchecked;               -- parametr
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- P©erovn  v˜raz ve tvaru OP(OP(OP(a,b),c),d) na OP(a,b,c,d).
+-- P©erovn van‚ v˜razy mus¡ reprezentovat stejn˜ oper tor a vyhovovat
+-- porovn vac¡ funkci CMP.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure reorder (
+        node     : in pexpnode;                  -- p©erovn van˜ uzel
+        left     : in t_logical;                 -- T-lev˜ podstrom
+        f        : out pexpnode;                 -- v˜sledn˜ seznam operand– - prvn¡
+        l        : out pexpnode) =               -- v˜sledn˜ seznam operand– - posledn¡
+    -- P©erovn  jeden uzel. V˜sledn˜ seznam operand– ulo‘¡ do F, L.
+    ------------------------------------------------------------------------------------------------
+    var
+      b            : pexpnode;
+      c            : pexpnode;
+      el           : pexpnode;
+      er           : pexpnode;
+
+    begin
+      -- je to p©erovnateln˜ uzel ?
+      if not (
+      -- je to ten sam˜ oper tor
+      (node^.ntype=nt_operator) and (pexpoper(node)^.oper=expr^.oper)
+      -- a po© d je stejn‚ho typu
+      and cmp^(node,param){(node^.t.typ=expr^.t.typ)}
+      -- a je to lev˜ podstrom nebo je asociativn¡ nebo nen¡ uz vorkovan˜
+      and (left or (expoperinfo[expr^.oper].asoc=eoa_full) or nf_parenthesized not in node^.nflags)
+      {and nf_parenthesized not in node^.nflags}
+      ) then
+        f:=node;
+        l:=node;
+        return;
+        end if;
+
+      if pexpoper(node)^.arity=eoa_n
+        -- ji‘ je to n- rn¡ oper tor
+        then
+          f:=node^.sub;
+          l:=f;
+          while l^.next<>nil loop l:=l^.next; end loop;
+
+        -- p©erovnat
+        else
+          pexpoper(node)^.split(el,er);
+          reorder(el,true,f,b);
+          reorder(er,false,c,l);
+          b^.next:=c;
+          end if;
+      end reorder;
+
+var
+  f                : pexpnode;
+  l                : pexpnode;
+  b                : pexpnode;
+  c                : pexpnode;
+  el               : pexpnode;
+  er               : pexpnode;
+
+begin
+  -- ji‘ p©erovnan‚ operandy p©esko‡it
+  if expr^.arity=eoa_n then return; end if;
+
+  -- p©erovnat
+  expr^.split(el,er);
+  reorder(el,true,f,b);
+  reorder(er,false,c,l);
+  expr^.sub:=f;
+  b^.next:=c;
+
+  -- ozna‡it operand jako n- rn¡
+  expr^.arity:=eoa_n;
+  end a_opt_reorder;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_reorder_imm (
+    expr           : in out pexpoper) =          -- v˜raz
+-- P©erovn  konstantn¡ operandy na konec ©etˆzce.
+----------------------------------------------------------------------------------------------------
+var
+  mf               : pexpnode;                   -- prvn¡ konstantn¡ uzel
+  ml               : pexpnode;                   -- posledn¡ konstantn¡ uzel
+  vf               : pexpnode;                   -- prvn¡ promˆnn˜ uzel
+  vl               : pexpnode;                   -- posledn¡ promˆnn˜ uzel
+  x                : pexpnode;
+  y                : pexpnode;
+
+begin
+  mf:=nil; ml:=nil;
+  vf:=nil; vl:=nil;
+  x:=expr^.sub;
+
+  -- p©esko‡it po‡ te‡n¡ konstantu
+  if (expoperinfo[expr^.oper].com=eoc_pfull) and (x<>nil) and (x^.ntype=nt_imm) then
+    vf:=x;
+    vl:=x;
+    x:=x^.next;
+    vl^.next:=nil;
+    end if;
+
+  -- p©erovnat
+  while x<>nil loop
+    -- vy©adit ze seznamu
+    y:=x^.next;
+    x^.next:=nil;
+
+    -- za©adit
+    if x^.ntype=nt_imm
+      -- do seznamu konstant
+      then
+        if ml<>nil
+          then ml^.next:=x
+          else mf:=x;
+          end if;
+        ml:=x;
+
+      -- do seznamu promˆnn˜ch
+      else
+        if vl<>nil
+          then vl^.next:=x
+          else vf:=x;
+          end if;
+        vl:=x;
+        end if;
+
+    -- dal¨¡ operand
+    x:=y;
+    end loop;
+
+  -- sestavit
+  expr^.sub:=vf;
+  if mf<>nil then
+    if (expoperinfo[expr^.oper].com=eoc_pfull) and (vf<>nil) and (vf^.ntype=nt_imm)
+      -- konstanty za©adit za £vodn¡ konstantu
+      then
+        ml^.next:=vf^.next;
+        vf^.next:=mf;
+
+      -- konstanty za©adit na konec
+      else
+        if vl<>nil
+          then vl^.next:=mf
+          else expr^.sub:=mf;
+          end if;
+        end if;
+    end if;
+  end a_opt_reorder_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_iaritm : toperopt =
+-- Celo‡¡seln‚ aritmetick‚ operace.
+----------------------------------------------------------------------------------------------------
+
+----- %%TECH Postup p©i optimalizaci n- rn¡ch oper tor– ------------------
+-- Jako prvn¡ krok se pro komutativn¡ a asociativn¡ oper tory p©erovnaj¡
+-- konstantn¡ operandy na konec v˜razu.
+--   Optimaliz tor se d le sna‘¡ eliminovat sekvence konstantn¡ch podv˜raz–
+-- a dvojice s jedn¡m podv˜razem konstantn¡m a druh˜m promˆnn˜m. Optimalizace
+-- vyu‘¡v  vlastnost¡ oper tor–:
+-- Asociativita:
+--   -- neasociativn¡: Pro prvn¡ dvojici operand– "A op B op ..." se prov d¡
+--                     £pln  optimalizace, pro dal¨¡ operandy jen eliminace
+--                     operac¡ trivi ln¡ch vzhledem k v˜razu vpravo.
+--   -- asociativn¡:   Pro ka‘dou dvojici sousedn¡ch operand– (pro
+--                     jednoduchost se nebere ohled na komutativitu
+--                     a nezkou¨¡ se v¨ech n! permutac¡) se prov d¡ £pln 
+--                     optimalizace.
+--   -- p-asociativn¡: Podobnˆ jako v p©edchoz¡m p©¡padˆ se prov d¡
+--                     optimalizace po dvojic¡ch s vyt˜k n¡m oper toru p©ed
+--                     z vorku.
+-- Komutativita:
+--   -- nekomutativn¡: Nevyu‘¡v  se.
+--   -- komutativn¡:   Vyu‘¡v  se pouze pro sousedn¡ operady.
+--   -- p-komutativn¡:
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+    ------------------------------------------------------------------------------------------------
+    procedure opt (
+        el         : in pexpnode;                -- lev˜ podv˜raz
+        er         : in pexpnode;                -- prav˜ podv˜raz
+        A          : in out tuniint;             -- hodnota konstantn¡ho operandu
+        left       : in t_logical;               -- T- 0 + X, F- X + 0
+        first      : in t_logical;               -- T-jsou to prvn¡ dva operandy v ©adˆ
+        newexpr    : out pexpnode;               -- nov˜ v˜raz
+        all        : out t_logical) =            -- T-nov˜ v˜raz nahrazuje v¨e
+    -- jednostrann‚ optimalizace
+    ------------------------------------------------------------------------------------------------
+    var
+      x            : pexpnode;
+      ui           : tuniint;
+      i            : t_unsigned32;
+
+    begin
+      all:=false;
+      newexpr:=nil;
+
+      case expr^.oper
+        when op_add  do
+            -- X + 0 --> X
+            if a=ui_0 then
+              newexpr:=el;
+            -- X + 1 --> succ X
+            elsif a=ui_1 then
+              x_addunary(pexpunary(newexpr),expr,un_succ,first,el,info);
+              a_opt_reoptimize(curr,newexpr,info);
+            -- X + (-1) --> pred X
+            elsif a=ui_minus_1 then
+              x_addunary(pexpunary(newexpr),expr,un_pred,first,el,info);
+              a_opt_reoptimize(curr,newexpr,info);
+              end if;
+
+        when op_sub  do
+            if left
+              -- const - X
+              then
+                -- 0 - X -- > -X
+                if a=ui_0 then
+                  x_addunary(pexpunary(newexpr),expr,un_minus,false,er,info);
+                  a_opt_reoptimize(curr,newexpr,info);
+                  end if;
+              -- X - const
+              else
+                -- X - 0 --> X
+                if a=ui_0 then
+                  newexpr:=el;
+                -- X - 1 --> pred X
+                elsif a=ui_1 then
+                  if first then
+                    x_addunary(pexpunary(newexpr),expr,un_pred,first,el,info);
+                    a_opt_reoptimize(curr,newexpr,info);
+                    end if;
+                -- X - (-1) --> succ X
+                elsif a=ui_minus_1 then
+                  if first then
+                    x_addunary(pexpunary(newexpr),expr,un_succ,first,el,info);
+                    a_opt_reoptimize(curr,newexpr,info);
+                    end if;
+                  end if;
+                end if;
+
+        when op_mul  do
+            -- X * 0 --> 0
+            if a=ui_0 then
+              newexpr:=er;
+              all:=true;
+            -- X * 1 --> X
+            elsif a=ui_1 then
+              newexpr:=el;
+            -- X * (-1) --> -X
+            elsif a=ui_minus_1 then
+              x_addunary(pexpunary(newexpr),expr,un_minus,first,el,info);
+              a_opt_reoptimize(curr,newexpr,info);
+            -- X * 2^n -- > X shl n
+            elsif uniint_is_power2(a){uicmp2n(a,i)} then
+              ui:=unsigned_to_uniint(uniint_get_power2(a)); {uiload(ui,i);}
+              x_addop(curr,pexpoper(newexpr),expr,el,op_shl,first,ui,info);
+              a_opt_reoptimize(curr,newexpr,info);
+              --x_changeop(curr,expr,pexpimm(er),op_shl,ui,info);
+              end if;
+
+        when op_idiv do
+            if left
+              -- const - X
+              then
+                -- 0 div X --> 0
+                if a=ui_0 then
+                  newexpr:=el;
+                  all:=true;
+                  end if;
+              -- X - const
+              else
+                -- X div 0 --> chyba
+                if a=ui_0 then
+                  ce^.seterror({CCERR=}000284,ce_divzero);
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                -- X div 1 --> X
+                elsif a=ui_1 then
+                  newexpr:=el;
+                -- X div (-1) --> -X
+                elsif a=ui_minus_1 then
+                  x_addunary(pexpunary(newexpr),expr,un_minus,first,el,info);
+                  a_opt_reoptimize(curr,newexpr,info);
+                -- X div 2^n -- > X shr n
+                elsif uniint_is_power2(a){uicmp2n(a,i)} then
+                  ui:=unsigned_to_uniint(uniint_get_power2(a)); {uiload(i);}
+                  x_addop(curr,pexpoper(newexpr),expr,el,op_shr,first,ui,info);
+                  a_opt_reoptimize(curr,newexpr,info);
+                  --x_changeop(curr,expr,pexpimm(er),op_shr,ui,info);
+                  end if;
+                end if;
+
+        when op_imod do
+            if left
+              -- const - X
+              then
+                -- 0 mod X --> 0
+                if a=ui_0 then
+                  newexpr:=el;
+                  all:=true;
+                  end if;
+              -- X - const
+              else
+                -- X mod 0 --> chyba
+                if a=ui_0 then
+                  ce^.seterror({CCERR=}000285,ce_divzero);
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                -- X mod 1, X mod (-1) --> 0
+                elsif a=ui_1 or a=ui_minus_1 then
+                  x_addui(pexpimm(newexpr),expr,ui_0,info);
+                  all:=true;
+                -- X mod 2^n -- > X and (2^n - 1)
+                elsif uniint_is_power2(a){uicmp2n(a,i)} then
+                  ui:=a-ui_1; {uiloadp2(ui,i); uisub(ui,ui_1);}
+                  x_addop(curr,pexpoper(newexpr),expr,el,op_bitand,first,ui,info);
+                  a_opt_reoptimize(curr,newexpr,info);
+                  --x_changeop(curr,expr,pexpimm(er),op_bitand,ui,info);
+                  end if;
+                end if;
+
+        when op_shl  do
+            if left
+              -- const - X
+              then
+                -- 0 shl X --> 0
+                if a=ui_0 then
+                  newexpr:=el;
+                  all:=true;
+                  end if;
+              -- X - const
+              else
+                -- X shl 0 --> X
+                if a=ui_0 then
+                  newexpr:=el;
+                -- X shl B, B>=X:bits --> 0
+                elsif uniint_to_unidata_bitsize(a)>=expr^.t.getbits then
+                  x_addui(pexpimm(newexpr),expr,ui_0,info);
+                  all:=true;
+                  end if;
+                end if;
+
+        when op_shr  do
+            if left
+              -- const - X
+              then
+                -- 0 shr X --> 0
+                if a=ui_0 then
+                  newexpr:=el;
+                  all:=true;
+                  end if;
+              -- X - const
+              else
+                -- X shr 0 --> X
+                if a=ui_0 then
+                  newexpr:=el;
+                -- X shr B, B>=X:bits --> 0/2$11...11
+                elsif uniint_to_unidata_bitsize(a)>=expr^.t.getbits then
+                  if expr^.t.stype=dt_signed
+                    -- 2$11..11
+                    then
+                      i:=unidata_bitsize_to_unsigned(expr^.t.getbits);
+                      ui:=unsigned_to_uniint_power2(i)-ui_1;
+                      x_addui(pexpimm(newexpr),expr,ui,info);
+                    -- 0
+                    else x_addui(pexpimm(newexpr),expr,ui_0,info);
+                    end if;
+                  all:=true;
+                  end if;
+                end if;
+
+
+        -- %%X pro AND/OR/XOR jsou optimalizace ponˆkud problematick‚
+        -- vzhledem k mo‘n˜m kombinac¡m SIGNED/UNSIGNED
+        when op_bitand  do
+        {
+            -- sta‡¡ zkoumat X:bits doln¡ch bit– konstanty, ostatn¡ nemaj¡
+            -- na v˜sledek vliv (AND je vynuluje)
+            udtouint(pspecordinal(expr^.t.typ^.s)^.bits,i);
+            -- X and $FF --> X
+            if uimcpFF(b,i) then
+              newexpr:=el;
+            -- X and 0 --> 0
+            elsif uicmp00(b,i) then
+              -- prav˜ operand nemus¡ b˜t nutnˆ 0
+              -- (X and $100, kde X je typu BYTE)
+              x_addui(pexpimm(newexpr),oldexpr,ui_0,info);
+              end if;
+        }
+
+        when op_bitor do
+        {
+            udtouint(pspecordinal(expr^.t.typ^.s)^.bits,i);
+            -- X or $FF --> $FF
+            if uimcpFF(b,i) then
+              newexpr:=er;
+            -- X or 0 --> X
+            elsif uicmpz(b) then
+              newexpr:=el;
+              end if;
+        }
+
+        when op_bitxor  do
+        {
+            -- X xor $FF --> not X
+            -- X xor 0 --> X
+            if uicmpz(b) then
+              newexpr:=el;
+              end if;
+        }
+
+        when others do verify(39,true);
+        end case;
+      end opt;
+
+var
+  epp              : pexpnode;                   -- p©edchoz¡ podv˜raz
+  ep               : pexpnode;                   -- p©edchoz¡ podv˜raz
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  a                : tuniint;                    -- hodnoty operand–
+  b                : tuniint;                    -- hodnoty operand–
+  first            : t_logical;                  -- T-EL je skute‡nˆ prvn¡ (lev˜) operand
+  pfirst           : t_logical;                  -- T-p©edchoz¡ uzel byl skute‡nˆ prvn¡ (lev˜) op.
+  node             : pexpnode;                   -- nov˜ uzel
+  all              : t_logical;                  -- T-nahradit cel˜ v˜raz nov˜m uzlem
+  left             : t_logical;                  -- T-tvar 0 + X, F-tvar X + 0
+  x                : pexpnode;
+
+begin
+  -- p©erovnat na n- rn¡ vyj d©en¡
+  a_opt_reorder(curr,expr,^a_opt_reorder_type,expr^.t{.typ},info);
+
+  -- optimalizovat podv˜razy
+  a_opt_sequence(curr,expr,all,info);
+
+  -- povedla se optimalizace v¨ech operand– ?
+  if not all then return; end if;
+
+  -- p©erovnat konstantn¡ operandy (p-)komutativn¡ch
+  -- a (p-)asociativn¡ch operand–
+  if (expoperinfo[expr^.oper].com in expopercomset:[eoc_full,eoc_pfull])
+  and (expoperinfo[expr^.oper].asoc in expoperasocset:[eoa_full,eoa_pfull]) then
+    a_opt_reorder_imm(expr);
+    end if;
+
+  -- vyhodnotit konstantn¡ operandy
+  {%%X Kostra algoritmu je stejn  jako pro mno‘inov‚ oper tory, slou‡it do #define }
+  epp:=nil;
+  ep:=nil;
+  el:=expr^.sub;
+  pfirst:=false;
+  first:=true;
+  while el<>nil loop
+    -- poznamenat si n sleduj¡c¡ podv˜raz
+    er:=el^.next;
+
+    if el^.ntype=nt_imm then
+      -- na‡¡st hodnotu lev‚ho podv˜razu
+      load_uniint(pexpimm(el)^.imm,a);
+
+      --- vyhodnotit asociativn¡ a p-asociativn¡ oper tory ---
+      if (expoperinfo[expr^.oper].asoc in expoperasocset:[eoa_full,eoa_pfull])
+      --- a prvn¡ dvojici neasociativn¡ch oper tor– ---
+      or (first and (expoperinfo[expr^.oper].asoc=eoa_none)) then
+        -- zpracovat v¨echny prav‚ konstantn¡ operandy
+        while (er<>nil) and (er^.ntype=nt_imm) loop
+          -- na‡¡st hodnotu prav‚ho podv˜razu
+          load_uniint(pexpimm(er)^.imm,b);
+
+          -- vypo‡¡tat
+          case expr^.oper
+            when op_add  do a+b;
+            when op_sub  do
+                if first
+                  -- A - B - ... --> (A - B) - ...
+                  then a-b
+                  -- ... - A - B - ... --> ... - (A + B) - ...
+                  else a+b;
+                  end if;
+
+            when op_mul  do a*b;
+            when op_idiv do
+                -- nesm¡ se dˆlit nulou
+                if b=ui_0 then
+                  ce^.seterror({CCERR=}000286,ce_divzero);
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+                if first
+                  -- A div B div ... --> (A div B) div ...
+                  then a div b
+                  -- ... div A div B - ... --> ... div (A * B) div ...
+                  else a*b;
+                  end if;
+            when op_imod do
+                verify(132,not first);
+                {%%X Doplnit: X mod C1 mod C2, C1<C2 --> X mod C1 }
+                a mod b;
+
+            when op_shl  do
+                -- nesm¡ se shiftovat o z pornou hodnotu
+                if b<ui_0 then
+                  ce^.seterror({CCERR=}000287,ce_shift);
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+                if first
+                  -- A shl B shl ... --> (A shl B) shl ...
+                  then
+                    -- p©¡li¨ velk˜ shift
+                    if b>ui_precision then
+                      {%%X hl sit varov n¡ }
+                      end if;
+                    a shl b;
+                  -- ... shl A shl B shl ... --> ... shl (A + B) shl ...
+                  else a+b;
+                  end if;
+
+            when op_shr  do
+                -- nesm¡ se shiftovat o z pornou hodnotu
+                if b<ui_0 then
+                  ce^.seterror({CCERR=}000288,ce_shift);
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+                if first
+                  -- A shr B shr ... --> (A shr B) shr ...
+                  then
+                    -- p©¡li¨ velk˜ shift
+                    if b>ui_precision then
+                      {%%X hl sit varov n¡ }
+                      end if;
+                    a shr b;
+                  -- ... shr A shr B shr ... --> ... shr (A + B) shr ...
+                  else a+b;
+                  end if;
+
+            when op_bitand do a and b;
+            when op_bitor  do a or b;
+            when op_bitxor do a xor b;
+            when others    do verify(38,true);
+            end case;
+
+          -- dal¨¡ uzel
+          er:=er^.next;
+          end loop;
+
+        -- vytvo©it nov˜ uzel
+        {%%X T¡mto p©¡kazem se nastav¡ pozice NODE na cel˜ EXPR. }
+        x_addui(pexpimm(node),expr,a,info);
+
+        -- za©adit
+        if ep<>nil
+          then ep^.next:=node
+          else expr^.sub:=node;
+          end if;
+        node^.next:=er;
+        el:=node;
+        end if;
+
+      --- jednostrann  optimalizace ---
+      node:=nil; all:=false;
+      if first
+
+        -- typ 0 + X
+        then
+          if (el<>nil) and (er<>nil) then
+            -- pro komutativn¡ oper tory p©ehodit operandy
+            if expoperinfo[expr^.oper].com=eoc_full
+              then opt(er,el,a,false,true,node,all)
+              else opt(el,er,a,true,true,node,all);
+              end if;
+            end if;
+
+        -- typ X + 0
+        else
+          if (ep<>nil) and (el<>nil) then 
+            opt(ep,el,a,false,pfirst,node,all); 
+            end if;
+          end if;
+
+      -- za©adit nov˜ uzel
+      if node<>nil then
+        if all
+          -- nahradit cel˜ v˜raz
+          then
+            pexpnode(expr):=node;
+            goto k1;
+
+          -- za©adit
+          else
+            if first then expr^.sub:=node
+            elsif epp<>nil then epp^.next:=node
+            else expr^.sub:=node;
+            end if;
+            node^.next:=er;
+            end if;
+        end if;
+      end if;
+
+    -- dal¨¡ operand
+    epp:=ep;
+    ep:=el;
+    el:=er{el^.next};
+    pfirst:=first;
+    first:=false;
+    end loop;
+
+  -- dokon‡it optimalizaci n- rn¡ho oper toru
+  a_opt_finalize_sequence(expr);
+
+k1:
+  end a_opt_oper_iaritm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_ordinal_rel : toperopt =
+-- Ordin ln¡ rela‡n¡ operace.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+  a                : tuniint;                    -- hodnoty operand–
+  b                : tuniint;                    -- hodnoty operand–
+  vysl             : t_logical;                  -- v˜sledek porovn n¡
+  ui               : tuniint;
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  -- na‡¡st hodnotu lev‚ho podv˜razu
+  if el^.ntype=nt_imm then
+    load_uniint(pexpimm(el)^.imm,a);
+    end if;
+
+  -- na‡¡st hodnotu prav‚ho podv˜razu
+  if er^.ntype=nt_imm then
+    load_uniint(pexpimm(er)^.imm,b);
+    end if;
+
+  ----- oba operandy konstantn¡ ------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    -- vypo‡¡tat
+    imm_cmp(pexpimm(el)^.imm,pexpimm(er)^.imm,expoperinfo[expr^.oper].cmp,vysl);
+
+    -- ulo‘it konstantu
+    x_addul(pexpimm(newexpr),expr,logical_to_unilogical(vysl),info);
+
+  ----- lev˜ operand konstantn¡ ------------------------------------------
+  elsif (el^.ntype=nt_imm) then
+    {%%X dodˆlat }
+
+
+  ----- prav˜ operand konstantn¡ -----------------------------------------
+  elsif (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el,er)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_ordinal_rel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_logical_xor : toperopt =
+-- Logick  operace XOR.
+----------------------------------------------------------------------------------------------------
+var
+  pexp             : pexpnode;                   -- p©edchoz¡ podv˜raz
+  cexp             : pexpnode;                   -- aktu ln¡ podv˜raz
+  nexp             : pexpnode;                   -- n sleduj¡c¡ podv˜raz
+  uloper           : tunilogical;                -- hodnota operandu
+  ulresult         : tunilogical;                -- hodnota v˜sledku
+  found            : t_logical;                  -- T-ji‘ byl nalezen nˆjak˜ konstantn¡ operand
+  all              : t_logical;                  -- T-povedla se optimalizace v¨ech operand–
+
+begin
+  -- p©erovnat operandy
+  a_opt_reorder(curr,expr,^a_opt_reorder_sts,__dts_u_logical,info);
+
+  -- optimalizovat podv˜razy
+  a_opt_sequence(curr,expr,all,info);
+
+  -- povedla se optimalizace v¨ech operand– ?
+  if not all then return; end if;
+
+  -- zjednodu¨it ...
+  cexp:=expr^.sub;
+  pexp:=nil;
+  found:=false;
+  while cexp<>nil loop
+    -- poznamenat si n sleduj¡c¡ operand
+    nexp:=cexp^.next;
+
+    -- konstanta
+    if cexp^.ntype=nt_imm then
+      -- operand vy©adit
+      if pexp<>nil
+        then pexp^.next:=nexp
+        else expr^.sub:=nexp;
+        end if;
+
+      -- hodnota operandu
+      load_unilogical(pexpimm(cexp)^.imm,uloper);
+
+      -- zapo‡¡tat do v˜sledku
+      if found
+        -- nˆjak  dal¨¡ hodnota => p©ixorovat
+        then ulresult xor uloper
+        -- prvn¡ nalezen  konstantn¡ hodnota => pou‘¡t jako po‡ te‡n¡ hodnotu v˜sledku
+        else
+          ulresult:=uloper;
+          found:=true;
+          end if;
+      end if;
+
+    -- dal¨¡ operand
+    cexp:=nexp;
+    end loop;
+
+  -- ve v˜razu nezbyl ‘ dn˜ operand, nahradit konstantou ULRESULT
+  if expr^.sub=nil then
+    -- vytvo©it uzel
+    x_addul(pexpimm(cexp),expr,ulresult,info);
+
+    -- p©edat ven
+    expr:unchecked:=cexp;
+
+  -- ve v˜razu nˆco zbylo, p©ixorovat konstantn¡ meziv˜sledek (m me-li nˆjak˜)
+  elsif found then
+    x_addul(pexpimm(cexp),expr,ulresult,info);
+    cexp^.next:=expr^.sub;
+    expr^.sub:=cexp;
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+  end a_opt_oper_logical_xor;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_logical : toperopt =
+-- Logick‚ operace AND, OR, AND THEN, OR ELSE.
+----------------------------------------------------------------------------------------------------
+
+----- %%LANG Logick  konjunkce a disjunkce ---------------------------------------------------------
+-- Jazyk definuje dvˆ formy logick‚ konjunkce a disjunkce:
+--   -- standardn¡ (oper tory AND, OR): Program vyhodnocuje operandy
+--         zleva doprava (resp. v po©ad¡ nemaj¡c¡m vliv na v˜sledek), p©i‡em‘
+--         nen¡ definov no kolik operand– se s ohledem na aktu ln¡
+--         meziv˜sledek vyhodnot¡ - program m–‘e vyhodnotit v¨echny operandy
+--         i kdy‘ v˜sledek v˜razu je z©ejm˜ ji‘ po vyhodnocen¡ prvn¡ho
+--         z nich; stejnˆ tak se ale m–‘e chovat jako by to byla sekven‡n¡
+--         forma (v jednom programu se k vyhodnocen¡ r–zn˜ch v˜raz– mohou
+--         uplatnit dokonce obˆ strategie sou‡asnˆ).
+--   -- sekven‡n¡ (oper tory AND THEN, OR ELSE): Program vyhodnocuje oprandy
+--         zleva doprava dokud nen¡ jist˜ v˜sledek v˜razu (vyhodnotil v¨echny
+--         operandy nebo je meziv˜sledek False pro AND THEN resp. True pro
+--         OR ELSE). Operandy, kter‚ nemaj¡ vliv na v˜sledek (konstanty),
+--         se nevyhodnocuj¡.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure simplify (
+        seq        : in t_logical;               -- T-sekven‡n¡ forma
+        default    : in tunilogical) =           -- default hodnota formy
+    -- Optimalizuje n- rn¡ operandy AND, OR, AND THEN, OR ELSE.
+    -- Standardn¡ forma (SEQ=False):
+    --   Z v˜razu vypust¡ v¨echny operandy, kter‚ nemaj¡ vliv na v˜sledek
+    --   (maj¡ hodnotu NOT DEFAULT) a p©i nalezen¡ operandu s hodnotou
+    --   DEFAULT nahrad¡ cel˜ v˜raz t¡mto operandem.
+    -- Sekven‡n¡ forma (SEQ=True):
+    --   Z v˜razu vypust¡ v¨echny operandy, kter‚ nemaj¡ vliv na v˜sledek
+    --   (maj¡ hodnotu NOT DEFAULT) a p©i nalezen¡ operandu s hodnotou
+    --   DEFAULT vypust¡ z v˜razu v¨echny ostatn¡ operandy.
+    ------------------------------------------------------------------------------------------------
+    var
+      pexp         : pexpnode;                   -- p©edchoz¡ podv˜raz
+      cexp         : pexpnode;                   -- aktu ln¡ podv˜raz
+      nexp         : pexpnode;                   -- n sleduj¡c¡ podv˜raz
+      ub           : tunilogical;
+      ui           : tuniint;
+
+    begin
+      cexp:=expr^.sub;
+      pexp:=nil;
+      while cexp<>nil loop
+        -- poznamenat si n sleduj¡c¡ operand
+        nexp:=cexp^.next;
+
+        -- konstanta
+        if cexp^.ntype=nt_imm then
+          -- operand osamostatnit
+          cexp^.next:=nil;
+
+          -- hodnota operandu
+          load_unilogical(pexpimm(cexp)^.imm,ub);
+          if ub=default
+
+            -- UB=DEFAULT, ...
+            then
+              if seq
+                -- ... n sleduj¡c¡ podv˜razy ji‘ nemaj¡ vliv na v˜sledek
+                then -- ©etˆzec operand– je ji‘ p©eru¨en
+                -- ... nahradit j¡m cel˜ v˜raz
+                else expr^.sub:=cexp;
+                end if;
+              break;
+
+            -- UB=NOT DEFAULT, nem  vliv na v˜sledek => vypustit
+            else
+              if pexp<>nil
+                then pexp^.next:=nexp
+                else expr^.sub:=nexp;
+                end if;
+              end if;
+          end if;
+
+        -- dal¨¡ operand
+        cexp:=nexp;
+        end loop;
+
+      -- ve v˜razu nezbyl ‘ dn˜ operand, nahradit konstantou NOT DEFAULT
+      if expr^.sub=nil then
+        -- (v–bec nevad¡, ‘e se to ukl d  jako integer...)
+        x_addul(pexpimm(cexp),expr,not default,info);
+
+        -- p©edat ven
+        expr:unchecked:=cexp;
+
+      -- ve v˜razu zbyl jen jeden operand, nahradit j¡m cel˜ v˜raz
+      elsif expr^.sub^.next=nil then
+        -- nahradit
+        pexp:=expr;
+        pexpnode(expr):=expr^.sub;
+
+        -- typ by mˆl z–stat alespo¤ form lnˆ stejn˜
+        {%%X A co kdy‘ je to promˆnn˜ typu logical 8 a j  to nahrad¡m za logical 32 ?? }
+        expr^.t:=pexp^.t;
+        end if;
+      end simplify;
+
+var
+  all              : t_logical;                  -- T-povedla se optimalizace v¨ech operand–
+
+begin
+  -- p©erovnat operandy
+  a_opt_reorder(curr,expr,^a_opt_reorder_sts,__dts_u_logical,info);
+
+  -- optimalizovat podv˜razy
+  a_opt_sequence(curr,expr,all,info);
+
+  -- povedla se optimalizace v¨ech operand– ?
+  if not all then return; end if;
+
+  -- zjednodu¨it ...
+  simplify(expr^.oper in expopertypeset:[op_and_then,op_or_else],logical_to_unilogical(expr^.oper in expopertypeset:[op_or,op_or_else]));
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+  end a_opt_oper_logical;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_assign : toperopt =
+-- Optimalizace p©i©azen¡.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+
+begin
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+
+k1:
+  -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+  expr^.join(el,er)
+  end a_opt_oper_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_string_rel : toperopt =
+-- Rela‡n¡ operace nad ©etˆzci a poli.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+  vysl             : t_logical;                  -- v˜sledek porovn n¡
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  ----- oba operandy konstantn¡ ------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    -- vypo‡¡tat
+    imm_cmp(pexpimm(el)^.imm,pexpimm(er)^.imm,expoperinfo[expr^.oper].cmp,vysl);
+
+    -- ulo‘it konstantu
+    x_addul(pexpimm(newexpr),expr,logical_to_unilogical(vysl),info);
+
+  ----- lev˜ operand konstantn¡ ------------------------------------------
+  elsif (el^.ntype=nt_imm) then
+    {%%X dodˆlat }
+
+  ----- prav˜ operand konstantn¡ -----------------------------------------
+  elsif (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el,er)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_string_rel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_string_concat : toperopt =
+-- Spojov n¡ ©etˆzc– a pol¡.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  all              : t_logical;                  -- T-nahradit cel˜ v˜raz nov˜m uzlem
+
+begin
+  -- p©erovnat operandy
+  a_opt_reorder(curr,expr,^a_opt_reorder_sts,__dts_u_string_dts_u_array,info);
+
+  -- optimalizovat podv˜razy
+  a_opt_sequence(curr,expr,all,info);
+
+  -- povedla se optimalizace v¨ech operand– ?
+  if not all then return; end if;
+
+  {%% dodˆlat }
+
+  -- optimalizov no
+  a_opt_finalize_sequence(expr);
+  end a_opt_oper_string_concat;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_pointer_rel : toperopt =
+-- Rela‡n¡ operace nad pointery.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+  a                : tuniint;                    -- hodnoty operand–
+  b                : tuniint;                    -- hodnoty operand–
+  vysl             : t_logical;                  -- v˜sledek porovn n¡
+  ui               : tuniint;
+
+begin
+  newexpr:=nil;
+
+  verify(485,expr^.oper not in expopertypeset:[op_eq,op_ne]);
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  ---- oba operandy konstantn¡ -------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    -- vypo‡¡tat
+    imm_cmp(pexpimm(el)^.imm,pexpimm(er)^.imm,expoperinfo[expr^.oper].cmp,vysl);
+
+    -- ulo‘it konstantu
+    x_addul(pexpimm(newexpr),expr,logical_to_unilogical(vysl),info);
+
+  ----- lev˜ operand konstantn¡ ------------------------------------------
+  elsif (el^.ntype=nt_imm) then
+    -- prohodit operandy
+    x_swap(el,er);
+
+    {%%X dodˆlat }
+
+  ----- prav˜ operand konstantn¡ -----------------------------------------
+  elsif (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el,er)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_pointer_rel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_tag_rel : toperopt =
+-- Rela‡n¡ operace nad tagy.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+  a                : tuniint;                    -- hodnoty operand–
+  b                : tuniint;                    -- hodnoty operand–
+  vysl             : t_logical;                  -- v˜sledek porovn n¡
+  ui               : tuniint;
+
+begin
+  newexpr:=nil;
+
+  verify(485,expr^.oper not in expopertypeset:[op_eq,op_ne]);
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  ---- oba operandy konstantn¡ -------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    -- vypo‡¡tat
+    imm_cmp(pexpimm(el)^.imm,pexpimm(er)^.imm,expoperinfo[expr^.oper].cmp,vysl);
+
+    -- ulo‘it konstantu
+    x_addul(pexpimm(newexpr),expr,logical_to_unilogical(vysl),info);
+
+  ----- lev˜ operand konstantn¡ ------------------------------------------
+  elsif (el^.ntype=nt_imm) then
+    -- prohodit operandy
+    x_swap(el,er);
+
+    {%%X dodˆlat }
+    unimplemented(201);
+
+  ----- prav˜ operand konstantn¡ -----------------------------------------
+  elsif (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el,er)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_tag_rel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_record_rel : toperopt =
+-- Rela‡n¡ operace nad recordy.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+  a                : tuniint;                    -- hodnoty operand–
+  b                : tuniint;                    -- hodnoty operand–
+  vysl             : t_logical;                  -- v˜sledek porovn n¡
+  ui               : tuniint;
+
+begin
+  newexpr:=nil;
+
+  verify(485,expr^.oper not in expopertypeset:[op_eq,op_ne]);
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  ---- oba operandy konstantn¡ -------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    -- vypo‡¡tat
+    imm_cmp(pexpimm(el)^.imm,pexpimm(er)^.imm,expoperinfo[expr^.oper].cmp,vysl);
+
+    -- ulo‘it konstantu
+    x_addul(pexpimm(newexpr),expr,logical_to_unilogical(vysl),info);
+
+  ----- lev˜ operand konstantn¡ ------------------------------------------
+  elsif (el^.ntype=nt_imm) then
+    -- prohodit operandy
+    x_swap(el,er);
+
+    {%%X dodˆlat }
+    unimplemented(202);
+
+  ----- prav˜ operand konstantn¡ -----------------------------------------
+  elsif (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el,er)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_record_rel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_set : toperopt =
+-- Mno‘inov‚ operace.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+    ------------------------------------------------------------------------------------------------
+    procedure opt (
+        el       : in pexpnode;                  -- lev˜ podv˜raz
+        er       : in pexpnode;                  -- prav˜ podv˜raz
+        left     : in t_logical;                 -- T- [] + X, F- X + []
+        newexpr  : out pexpnode;                 -- nov˜ v˜raz
+        all      : out t_logical) =              -- T-nov˜ v˜raz nahrazuje v¨e
+    ------------------------------------------------------------------------------------------------
+    var
+      x            : pexpnode;
+
+    begin
+      all:=false;
+      newexpr:=nil;
+
+      case expr^.oper
+        -- sjednocen¡ mno‘in
+        when op_union do
+            -- S + [] --> S
+            if imm_isnil(pexpimm(er)^.imm) then
+              newexpr:=el;
+
+            -- S + EXPR:type:full --> S:type:full
+            elsif imm_isfullset(pexpimm(er)^.imm,expr^.t.getctype) then
+              newexpr:=er;
+              all:=true;
+              end if;
+
+        -- rozd¡l mno‘in
+        when op_diff  do
+            if left
+              -- const - S
+              then
+                -- [] - S --> []
+                if imm_isnil(pexpimm(el)^.imm) then
+                  newexpr:=el;
+                  all:=true;
+                  end if;
+
+              -- S - const
+              else
+                -- S - [] --> S
+                if imm_isnil(pexpimm(er)^.imm) then
+                  newexpr:=el;
+                -- S - EXPR:type:full --> []
+                elsif imm_isfullset(pexpimm(er)^.imm,expr^.t.getctype) then
+                  x_add_imm(pexpimm(newexpr),er,info);
+                  store_set(pexpimm(newexpr)^.imm);
+                  all:=true;
+                  end if;
+                end if;
+
+        -- pr–nik mno‘in
+        when op_isect do
+            -- S * [] --> []
+            if imm_isnil(pexpimm(er)^.imm) then
+              newexpr:=er;
+              all:=true;
+
+            -- S * EXPR:type:full --> S
+            elsif imm_isfullset(pexpimm(er)^.imm,expr^.t.getctype) then
+              newexpr:=el;
+              end if;
+
+        when others do verify(453,true);
+        end case;
+      end opt;
+
+var
+  all              : t_logical;                  -- T-nahradit cel˜ v˜raz nov˜m uzlem
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  ep               : pexpnode;                   -- p©edchoz¡ podv˜raz
+  epp              : pexpnode;                   -- p©edchoz¡ podv˜raz
+  first            : t_logical;                  -- T-EL je skute‡nˆ prvn¡ (lev˜) operand
+  node             : pexpnode;                   -- nov˜ uzel
+  left             : t_logical;                  -- T-tvar 0 + X, F-tvar X + 0
+
+begin
+  -- p©erovnat operandy
+  a_opt_reorder(curr,expr,^a_opt_reorder_sts,__dts_u_set,info);
+
+  -- optimalizovat podv˜razy
+  a_opt_sequence(curr,expr,all,info);
+
+  -- povedla se optimalizace v¨ech operand– ?
+  if not all then return; end if;
+
+  -- p©erovnat konstantn¡ operandy (p-)komutativn¡ch
+  -- a (p-)asociativn¡ch operand–
+  if (expoperinfo[expr^.oper].com in expopercomset:[eoc_full,eoc_pfull])
+  and (expoperinfo[expr^.oper].asoc in expoperasocset:[eoa_full,eoa_pfull]) then
+    a_opt_reorder_imm(expr);
+    end if;
+
+  -- vyhodnotit konstantn¡ operandy
+  {%%X Kostra algoritmu je stejn  jako pro celo‡¡seln‚ oper tory, slou‡it do #define }
+  epp:=nil;
+  ep:=nil;
+  el:=expr^.sub;
+  first:=true;
+  while el<>nil loop
+    -- poznamenat si n sleduj¡c¡ podv˜raz
+    er:=el^.next;
+
+    if el^.ntype=nt_imm then
+      --- vyhodnotit asociativn¡ a p-asociativn¡ oper tory ---
+      if (expoperinfo[expr^.oper].asoc in expoperasocset:[eoa_full,eoa_pfull]
+      --- a prvn¡ dvojici neasociativn¡ch oper tor– ---
+      or (first and expoperinfo[expr^.oper].asoc=eoa_none))
+      --- a je k dispozici alespo¤ jeden prav˜ konstantn¡ operand ---
+      and er<>nil and er^.ntype=nt_imm then
+        -- vytvo©it nov˜ uzel
+        x_add_imm(pexpimm(node),expr,info);
+
+        -- zkop¡rovat do nˆj p©¡mou hodnotu na lev‚ stranˆ
+        store_imm(pexpimm(node)^.imm,pexpimm(el)^.imm);
+
+        -- zpracovat v¨echny prav‚ konstantn¡ operandy
+        while (er<>nil) and (er^.ntype=nt_imm) loop
+          -- vypo‡¡tat
+          case expr^.oper
+            -- sjednocen¡ mno‘in
+            when op_union do imm_union(pexpimm(node)^.imm,pexpimm(er)^.imm);
+
+            -- rozd¡l mno‘in
+            when op_diff  do imm_diff(pexpimm(node)^.imm,pexpimm(er)^.imm);
+
+            -- pr–nik mno‘in
+            when op_isect do unimplemented(146);
+
+            when others   do verify(452,true);
+            end case;
+
+          -- dal¨¡ uzel
+          er:=er^.next;
+          end loop;
+
+        -- vytvo©it nov˜ uzel
+
+        {%%X T¡mto p©¡kazem se nastav¡ pozice NODE na cel˜ EXPR. }
+        --x_addui(pexpimm(node),expr,a,info);
+
+        -- za©adit
+        if ep<>nil
+          then ep^.next:=node
+          else expr^.sub:=node;
+          end if;
+        node^.next:=er;
+        el:=node;
+        end if;
+
+      --- jednostrann  optimalizace ---
+      node:=nil; all:=false;
+      if first
+        -- typ [] + S
+        then
+          if (el<>nil) and (er<>nil) then
+            -- pro komutativn¡ oper tory p©ehodit operandy
+            if expoperinfo[expr^.oper].com=eoc_full
+              then opt(er,el,false,node,all)
+              else opt(el,er,true,node,all);
+              end if;
+            end if;
+
+        -- typ S + []
+        else
+          if (ep<>nil) and (el<>nil) then opt(ep,el,false,node,all); end if;
+          end if;
+
+      -- za©adit nov˜ uzel
+      if node<>nil then
+        if all
+          -- nahradit cel˜ v˜raz
+          then
+            -- nen¡ to zkr cen‚ p©i©azen¡ ?
+            if expr^.assign
+
+              -- ano => zmˆnit na norm ln¡ p©i©azen¡
+              then
+                -- zmˆnit na p©i©azen¡
+                expr^.oper:=op_assign;
+                expr^.arity:=eoa_2;
+
+                -- doplnit prav˜ operand
+                expr^.sub^.next:=node;
+
+                -- a konec (prov‚st finalizaci)
+                break;
+
+              -- ne => nahradit cel˜ v˜raz
+              else
+                -- nahradit
+                pexpnode(expr):=node;
+
+                -- a konec (finalizaci neprov dˆt)
+                goto k1;
+                end if;
+
+          -- za©adit
+          else
+            if first then expr^.sub:=node
+            elsif epp<>nil then epp^.next:=node
+            else expr^.sub:=node;
+            end if;
+            node^.next:=er;
+            end if;
+        end if;
+      end if;
+
+    -- dal¨¡ operand
+    epp:=ep;
+    ep:=el;
+    el:=er{el^.next};
+    first:=false;
+    end loop;
+
+  -- optimalizov no
+  a_opt_finalize_sequence(expr);
+
+k1:
+  end a_opt_oper_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_set_rel : toperopt =
+-- Mno‘inov‚ rela‡n¡ operace.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  ---- oba operandy konstantn¡ -------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+
+  ----- lev˜ operand konstantn¡ ------------------------------------------
+  elsif (el^.ntype=nt_imm) then
+    {%%X dodˆlat }
+
+  ----- prav˜ operand konstantn¡ -----------------------------------------
+  elsif (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el,er)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_set_rel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_in_set : toperopt =
+-- Mno‘inov‚ operace.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  ---- oba operandy konstantn¡ -------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+
+  ----- lev˜ operand konstantn¡ ------------------------------------------
+  elsif (el^.ntype=nt_imm) then
+    {%%X dodˆlat }
+
+  ----- prav˜ operand konstantn¡ -----------------------------------------
+  elsif (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el,er)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_in_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_compare_partial : toperopt =
+-- Porovn n¡ operand– s Partial view na jejich typy.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  ---- oba operandy konstantn¡ -------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    {%%X dodˆlat }
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el,er)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_compare_partial;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_operator (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpoper;            -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace oper toru.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  m                : poperopt;                   -- optimaliza‡n¡ metoda
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  all              : t_logical;
+
+begin
+  -- operandy
+  expr^.get(el,er);
+
+  -- speci ln¡ p©¡pad: porovn n¡ typ–
+  if (el^.nclass=nc_type) and (er^.nclass=nc_type) then
+    unimplemented(156);
+
+  -- speci ln¡ p©¡pad: V˜raz IN Jm‚no typu
+  elsif (expr^.oper in expopertypeset:[op_in,op_notin]) and (er^.nclass=nc_type) then
+    unimplemented(157);
+
+  -- speci ln¡ p©¡pad: porovn n¡ s Partial view na typy operand–
+  elsif (expr^.oper in expopertypeset:[op_eq,op_ne]) and (el^.t.tview=tview_partial)
+  and (er^.t.tview=tview_partial) then
+    a_opt_oper_compare_partial(curr,expr,info);
+
+  -- ostatn¡ p©¡pady: podle pohledu na typ v˜sledky
+  else
+    case expr^.t.tview
+      -- Full view
+      when tview_full      do
+          -- zvolit optimaliza‡n¡ metodu
+          m:=opertab[expr^.oper,x_resolve_opdtype(expr,false){expr^.t.stype}];
+          verify(131,m=nil);
+
+          -- optimalizovat
+          m^(curr,expr,info);
+
+      -- Partial view
+      when tview_partial,
+      -- Unchecked view
+      tview_unchecked do
+          -- optimalizovat operandy
+          a_opt_sequence(curr,expr,all,info);
+          if not all then return; end if;
+
+          {%%X co se s t¡m d  jin‚ho dˆlat ??? }
+
+          -- optimalizace £spˆ¨nˆ dokon‡ena
+          expr^.zprac:=ep_opt;
+
+      when others do verify(184,true);
+      end case;
+    end if;
+  end a_opt_operator;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_unary_iaritm : tunaryopt =
+-- Celo‡¡seln‚ un rn¡ aritmetick‚ operace.
+----------------------------------------------------------------------------------------------------
+var
+  a                : tuniint;                    -- hodnota operadu
+
+begin
+  -- p©edpoklad, uzel se nezmˆn¡
+  result:=nil;
+
+  ----- operand konstantn¡ -----------------------------------------------
+  if el^.ntype=nt_imm then
+    -- na‡¡st hodnotu podv˜razu
+    load_uniint(pexpimm(el)^.imm,a);
+
+    -- vypo‡¡tat
+    case expr^.oper
+      when un_plus   do { nic nedˆlat };
+      {%%X a co v p©¡padˆ $80..00 ? }
+      when un_minus  do -a;
+      {%%X a co v p©¡padˆ $80..00 ? }
+      when un_abs    do abs a;
+      when un_succ   do succ a;
+      when un_pred   do pred a;
+      {%%X kolik bit– se m  invertovat, kdy‘ je ‡¡slo z porn‚ ? }
+      when un_bitnot do not a;
+      when others    do verify(45,true);
+      end case;
+
+    -- ulo‘it hodnotu
+    store_ordinal(pexpimm(el)^.imm,a);
+
+    -- typ v˜sledeku
+    el^.t:=expr^.t;
+
+    -- p©edat v˜sledek
+    result:=el;
+
+  ----- operand nekonstantn¡ ---------------------------------------------
+  else
+    case expr^.oper
+      when un_plus   do result:=el;
+      when un_minus  do { nic nedˆlat };
+      when un_not    do { nic nedˆlat };
+      when un_abs    do { nic nedˆlat };
+      when un_succ   do { nic nedˆlat };
+      when un_pred   do { nic nedˆlat };
+      when un_bitnot do { nic nedˆlat };
+      when others    do verify(44,true);
+      end case;
+    end if;
+  end a_opt_unary_iaritm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_unary_logical : tunaryopt =
+-- Logick‚ un rn¡ operace.
+----------------------------------------------------------------------------------------------------
+var
+  a                : tuniint;                    -- hodnota operadu
+
+begin
+  -- p©edpoklad, uzel se nezmˆn¡
+  result:=nil;
+
+  ----- operand konstantn¡ -----------------------------------------------
+  if el^.ntype=nt_imm then
+    -- na‡¡st hodnotu podv˜razu
+    load_uniint(pexpimm(el)^.imm,a);
+
+    -- vypo‡¡tat
+    case expr^.oper
+      -- negace
+      when un_not    do
+          if a=ui_0
+            then a:=ui_1;
+            else a:=ui_0;
+            end if;
+
+
+      -- n sledn¡k
+      when un_succ   do
+          -- n sledn¡ka lze vypo‡¡tat jen z False
+          if a<>ui_0 then
+            ce^.seterror({CCERR=}000444,ce_resultrange);
+            expr^.errpos;
+            ce^.raiseerror;
+            end if;
+
+          -- prov‚st operaci
+          a:=ui_1;
+
+      -- p©edch–dce
+      when un_pred   do
+          -- p©edch–dce lze vypo‡¡tat jen z False
+          if a<>ui_1 then
+            ce^.seterror({CCERR=}000445,ce_resultrange);
+            expr^.errpos;
+            ce^.raiseerror;
+            end if;
+
+          -- prov‚st operaci
+          a:=ui_0;
+
+      when others do verify(537,true);
+      end case;
+
+    -- ulo‘it hodnotu
+    store_ordinal(pexpimm(el)^.imm,a);
+
+    -- typ v˜sledeku
+    el^.t:=expr^.t;
+
+    -- p©edat v˜sledek
+    result:=el;
+
+  ----- operand nekonstantn¡ ---------------------------------------------
+  else
+    case expr^.oper
+      when un_not    do { nic nedˆlat };
+      when un_succ   do { nic nedˆlat };
+      when un_pred   do { nic nedˆlat };
+      when others do verify(536,true);
+      end case;
+    end if;
+  end a_opt_unary_logical;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_unary (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpunary;           -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace un rn¡ho oper toru.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+  m                : punaryopt;                  -- optimaliza‡n¡ metoda
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el);
+
+  -- optimalizace podv˜razu
+  a_opt(curr,el,info);
+
+  -- povedla se optimalizace podv˜razu
+  if el^.zprac<ep_opt then goto k1; end if;
+
+  -- zvolit optimaliza‡n¡ metodu
+  m:=unarytab[expr^.oper,expr^.t.stype];
+
+  -- optimalizovat
+  if m<>nil then
+    m^(curr,expr,el,newexpr,info);
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy (nezmˆnil-li se nad©azen˜ uzel)
+    then expr^.join(el)
+    -- p©evz¡t nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_unary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_component (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpcomponent;       -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace komponenty.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  change           : t_logical;                  -- T-zmˆnila se reprezentace konstanty
+  x                : pexpnode;
+
+begin
+  -- optimalizace podv˜razu
+  if expr^.sub<>nil then
+    -- optimalizace podv˜razu
+    a_opt(curr,expr^.sub,info);
+
+    -- povedla se optimalizace podv˜razu ?
+    if expr^.sub^.zprac<ep_opt then goto k1; end if;
+    end if;
+
+  -- zjistit o symbolu r–zn‚ zaj¡mav‚ £daje
+  verify(68,expr^.s.psym=nil);
+  case expr^.s.psym^.etype
+    -- promˆnn 
+    when et_var do
+        -- selektor konstantn¡ slo‘ky
+        if (expr^.sub<>nil) and (expr^.sub^.ntype=nt_imm) then
+          unimplemented(147);
+          end if;
+
+    -- konstanta
+    when et_const do
+        -- odvodit nov˜ uzel
+        derivenode(x,expr,info,nt_imm);
+
+        -- p©evz¡t hodnotu konstanty
+        store_imm(pexpimm(x)^.imm,pentity_const(expr^.s.psym)^.init.getimm()^);
+        --verifyx(532,(pexpimm(x)^.imm.ic=ic_set and pexpimm(x)^.imm.sitems^.lcount>pexpimm(x)^.imm.sitems^.lsize)
+        --         or (pexpimm(x)^.imm.ic=ic_array and pexpimm(x)^.imm.aitems^.lcount>pexpimm(x)^.imm.aitems^.lsize)
+        --         or (pexpimm(x)^.imm.ic=ic_record and pexpimm(x)^.imm.ritems^.lcount>pexpimm(x)^.imm.ritems^.lsize),pexpimm(x)^.pos);
+
+        -- p©i typov‚ kontrole mohlo doj¡t ke zmˆnˆ typu, prom¡tnout
+        {%%X Opravdu ? V‘dyŸ typy nemˆn¡m ! }
+        --imm_settype(curr,pexpimm(x)^.imm,pdefconst(expr^.s.psym)^.typ.getctype,x^.t,change);
+
+        -- t©¡da uzlu: hodnota
+        x^.nclass:=nc_value;
+
+        -- p©edat ven;
+        pexpnode(expr):=x;
+
+
+    -- prvek v˜‡tov‚ho typu
+    when et_enum do
+        -- odvodit nov˜ uzel
+        derivenode(x,expr,info,nt_imm);
+
+        -- hodnota konstanty
+        store_ordinal(pexpimm(x)^.imm,pentity_enum(expr^.s.psym)^.ordinal);
+
+        -- p©i typov‚ kontrole mohlo doj¡t ke zmˆnˆ typu, prom¡tnout
+        {%%X Opravdu ? V‘dyŸ typy nemˆn¡m ! }
+        --imm_settype(pexpimm(x)^.imm,pdefenum(expr^.s.psym)^.typ,x^.t.typ,change);
+
+        -- t©¡da uzlu: hodnota
+        x^.nclass:=nc_value;
+
+        pexpnode(expr):=x;
+
+    -- typ/t©¡da
+    when et_type, et_class do { nic nedˆlat };
+
+    -- procedura
+    when et_procedure do { nic nedˆlat };
+
+    -- statick  metoda
+    when et_static do { nic nedˆlat };
+
+    -- virtu ln¡ metoda
+    when et_virtual do { nic nedˆlat };
+
+    -- task
+    when et_task do { nic nedˆlat };
+
+    -- zpr va
+    when et_message do { nic nedˆlat };
+
+    -- modul
+    when et_module do { nic nedˆlat };
+
+    -- program
+    when et_program do { nic nedˆlat };
+
+    -- parametr procedury
+    when et_param do { nic nedˆlat };
+
+    when others do verify(21,true);
+    end case;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+
+k1:
+  end a_opt_component;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_imm (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpimm;             -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace p©¡m‚ hodnoty.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+begin
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+
+k1:
+  end a_opt_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_list (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexplist;            -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace prefixu a seznamu argument–.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny argumenty
+  el               : pexpnode;                   -- prefix
+  arglist          : pexpitem;                   -- seznam skute‡n‚ parametry
+  arg              : pexpitem;                   -- skute‡n˜ parametr
+
+begin
+  -- oddˆlit prefix a argumenty
+  expr^.split(el,arglist);
+
+  ----- %%TECH -------------------------------------------------------------------------------------
+  -- Optimalizaci mohu prov‚st nez visle pro prefix i pro v¨echny argumenty,
+  -- tak‘e se p©¡padn‚ nevyhodnocen¡ detekuje a‘ po zpracov n¡ v¨ech
+  -- podv˜raz–.
+  -- Srovnej s CX_TYPE.A_TYPE_CALL, CX_FORM.A_FORM_LIST.
+  --------------------------------------------------------------------------------------------------
+
+  -- optimalizace jm‚na procedury
+  a_opt(curr,el,info);
+  vyhodnoceno:=el^.zprac=ep_opt;
+
+  -- optimalizace skute‡n˜ch parametr–
+  arg:=arglist;
+  while arg<>nil loop
+    -- optimalizovat
+    if arg^.sub<>nil then
+      a_opt(curr,arg^.sub,info);
+      vyhodnoceno:=vyhodnoceno and (arg^.sub^.zprac=ep_opt);
+      end if;
+
+    -- dal¨¡ parametr
+    arg:=pexpitem(arg^.next);
+    end loop;
+
+  -- poda©ilo se optimalizovat jm‚no procedury a skute‡n‚ parametry ?
+  if not vyhodnoceno then goto k1; end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+
+k1:
+  -- slou‡it prefix a argumenty
+  expr^.join(el,arglist);
+  end a_opt_list;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_call (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexplist;            -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace vol n¡ procedury.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vol n¡ se chov  jako prefix se seznamem argument–
+  a_opt_list(curr,expr,info);
+  end a_opt_call;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_range (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexprange;           -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace rozsahu.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  a                : tuniint;                    -- hodnoty operand–
+  b                : tuniint;                    -- hodnoty operand–
+
+begin
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  -- na‡¡st hodnotu lev‚ho podv˜razu
+  if el^.ntype=nt_imm then
+    load_uniint(pexpimm(el)^.imm,a);
+    end if;
+
+  -- na‡¡st hodnotu prav‚ho podv˜razu
+  if er^.ntype=nt_imm then
+    load_uniint(pexpimm(er)^.imm,b);
+    end if;
+
+  -- oba operandy konstantn¡
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    -- A > B => Null range
+    if a>b then expr^.rkind:=erk_null
+
+    -- A = B =>
+    elsif a=b then expr^.rkind:=erk_single
+
+    -- nelze nic ©¡ct
+    else expr^.rkind:=erk_static;
+    end if;
+
+  -- lev˜ operand konstantn¡
+  elsif el^.ntype=nt_imm then
+    -- A > ER:LAST => Null range
+    if a>er^.t.gethval then expr^.rkind:=erk_null end if;
+
+  -- prav˜ operand konstantn¡
+  elsif er^.ntype=nt_imm then
+    -- B < EL:FIRST => Null range
+    if b<el^.t.getlval then expr^.rkind:=erk_null end if;
+
+  -- oba operandy promˆnn‚
+  else
+    -- EL:FIRST > ER:LAST => Null range
+    if el^.t.getlval>er^.t.gethval then expr^.rkind:=erk_null end if;
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+
+k1:
+  -- slou‡it podv˜razy
+  expr^.join(el,er)
+  end a_opt_range;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_index (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpindex;           -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace indexu pole.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+
+begin
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  -- finalizovat index
+--  a_final();
+
+  -- konstantn¡ index
+  if er^.ntype=nt_imm then
+    {%%X};
+    -- vybrat prvek konstantn¡ho pole
+    if el^.ntype=nt_imm then
+{
+    -- vybrat prvek konstruktoru agreg tu s konstantn¡mi pozicemi parametr–
+    elsif ... then
+
+    -- vyh zet z konstruktoru agreg tu irelevantn¡ prvky
+    elsif ... then
+      end if;
+}
+    end if;
+
+  -- rozsah
+  elsif er^.ntype=nt_range then
+    case pexprange(er)^.rkind
+      -- nulov˜ rozsah
+      when erk_null     do
+          ce^.setwarning({CCERR=}000289,cw_null_slice);
+          er^.errpos;
+      end case;
+
+  -- typ
+  elsif er^.nclass=nc_type then
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+
+k1:
+  -- slou‡it podv˜razy
+  expr^.join(el,er)
+  end a_opt_index;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_ref (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpref;             -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace reference.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz
+
+begin
+  -- rozdˆlit podv˜razy
+  expr^.split(el);
+
+  -- optimalizace podv˜razu
+  a_opt(curr,el,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if el^.zprac<ep_opt then goto k1; end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+
+k1:
+  -- slou‡it podv˜razy
+  expr^.join(el)
+  end a_opt_ref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_deref (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpderef;           -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace dereference.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz
+
+begin
+  -- rozdˆlit podv˜razy
+  expr^.split(el);
+
+  -- optimalizace podv˜razu
+  a_opt(curr,el,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if el^.zprac<ep_opt then goto k1; end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+
+k1:
+  -- slou‡it podv˜razy
+  expr^.join(el)
+  end a_opt_deref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_attrib (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpattrib;          -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace atributu.
+----------------------------------------------------------------------------------------------------
+with
+  cc_attr;
+
+label k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz
+  arglist          : pexpitem;                   -- argumenty
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+--range            : typeview;                   -- typ rozsahu
+  -- %%X Pozor, ©etˆzec by mˆl b˜t spr vnˆ neomezen˜
+  s                : t_char32str;
+  ui               : tuniint;
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,arglist);
+
+  -- optimalizace podv˜razu
+  a_opt(curr,el,info);
+
+  -- optimalizace argument–
+  while arglist<>nil loop
+    unimplemented(52);
+    end loop;
+
+  -- povedla se optimalizace podv˜raz– ?
+  if el^.zprac<ep_opt then goto k1; end if;
+
+  if expr^.atf=atf_none
+
+    -- u‘ivatelem definovan˜ atribut
+    then
+      unimplemented(53);
+
+    -- jazykem definovan˜ atribut
+    else
+      -- vyhodnotit statick˜ atribut
+      if expr^.aclass=atc_static then
+        case expr^.ata
+          -- :size
+          when ata_type_size do
+              x_addui(pexpimm(newexpr),expr,unidata_size_to_uniint(el^.t.getsize),info);
+
+          -- :position
+          when ata_var_position  do
+              x_addui(pexpimm(newexpr),expr,unidata_addr_to_uniint(pentity_var(pexpcomponent(el)^.s.psym)^.addr),info);
+
+          -- :true
+          when ata_logical_true  do x_addul(pexpimm(newexpr),expr,ul_true ,info);
+
+          -- :false
+          when ata_logical_false do x_addul(pexpimm(newexpr),expr,ul_false,info);
+
+          -- :length
+          when ata_array_length  do x_addui(pexpimm(newexpr),expr,el^.t.getrange(curr).getlength,info);
+          when ata_string_length do 
+              verify(541,el^.ntype<>nt_imm);
+              imm_get_length(pexpimm(el)^.imm,ui);
+              x_addui(pexpimm(newexpr),expr,ui,info);
+
+          -- :first
+          when ata_string_first, ata_array_first do x_addui(pexpimm(newexpr),expr,el^.t.getrange(curr).getlval,info);
+          when ata_ord_first     do x_addui(pexpimm(newexpr),expr,el^.t.getlval,info);
+
+          -- :last
+          when ata_string_last, ata_array_last do x_addui(pexpimm(newexpr),expr,el^.t.getrange(curr).gethval,info);
+          when ata_ord_last      do x_addui(pexpimm(newexpr),expr,el^.t.gethval,info);
+
+          -- :ord
+          when ata_ord_ord       do
+              load_uniint(pexpimm(el)^.imm,ui);
+              x_addui(pexpimm(newexpr),expr,ui,info);
+
+          -- :bits
+          when ata_ord_bits      do
+              x_addui(pexpimm(newexpr),expr,unidata_bitsize_to_uniint(el^.t.getbits),info);
+
+          -- :type
+          when ata_type_type     do { ponechat beze zmˆny };
+
+          -- :base
+          when ata_type_base     do { ponechat beze zmˆny };
+
+          -- :tag
+          when ata_type_tag      do { ponechat beze zmˆny };
+
+          -- :range
+          when ata_array_range   do { ponechat beze zmˆny };
+          when ata_string_range  do { ponechat beze zmˆny };
+
+          -- :ancestor
+          when ata_type_ancestor do { ponechat beze zmˆny };
+          when ata_module_ancestor do { ponechat beze zmˆny };
+
+          -- :root_ancestor
+          when ata_type_root_ancestor do { ponechat beze zmˆny };
+          when ata_module_root_ancestor do { ponechat beze zmˆny };
+
+          -- :image
+          when ata_imm_ord_image do
+              load_image(pexpimm(el)^.imm,el^.t,s);
+              x_addsysstr(pexpimm(newexpr),expr,s,info);
+
+          -- :full
+          when ata_set_full do
+              x_add_imm(pexpimm(newexpr),expr,info);
+              store_set(pexpimm(newexpr)^.imm);
+              store_set_items_range(pexpimm(newexpr)^.imm,expr^.t.getbase(curr).getlval,expr^.t.getbase(curr).gethval);
+
+          -- :unchecked
+       -- when ata_var_unchecked do { ponechat beze zmˆny };
+
+          when others do verify(115,true);
+          end case;
+        end if;
+      end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- slou‡it podv˜razy
+    then expr^.join(el,arglist)
+    -- nov˜ v˜raz
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_attrib;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_typecast (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexplist;            -- v˜raz
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace p©etypov n¡.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  arg              : pexpitem;                   -- argument
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+  change           : t_logical;                  -- T-zmˆnila se intern¡ reprezentace
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,arg);
+
+  -- optimalizace podv˜raz–
+  a_opt(curr,el,info);
+  a_opt(curr,arg^.sub,info);
+
+  -- povedla se optimalizace podv˜raz– ?
+  if (el^.zprac<ep_opt) or (arg^.sub^.zprac<ep_opt) then goto k1; end if;
+
+  -- skute‡n˜ prav˜ podv˜raz
+  er:=arg^.sub;
+
+  -- konstantn¡ v˜raz
+  if er^.ntype=nt_imm then
+    -- odvodit nov˜ uzel
+    derivenode(newexpr,expr,info,nt_imm);
+
+    -- t©¡da uzlu
+    newexpr^.nclass:=nc_value;
+
+    -- hodnota
+    pexpimm(newexpr)^.imm:=pexpimm(er)^.imm;
+
+    -- konvertovat
+    imm_settype(curr,pexpimm(newexpr)^.imm,er^.t,newexpr^.t,change);
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr<>nil
+    then newexpr^.zprac:=ep_opt
+    else expr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr<>nil
+    -- p©edat nov˜ v˜raz
+    then pexpnode(expr):=newexpr
+    -- slou‡it podv˜razy
+    else expr^.join(el,arg);
+    end if;
+  end a_opt_typecast;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_aggregate (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpaggregate;       -- agreg t
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace agreg tu.
+----------------------------------------------------------------------------------------------------
+with
+  cx_phase;
+
+label k1;
+
+var
+  arglist          : pexpitem;                   -- slo‘ky
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny slo‘ky
+  xtyp             : typeview;                   -- typ slo‘ky
+  ctyp             : typeview;                   -- typ v˜bˆru
+
+    ------------------------------------------------------------------------------------------------
+    procedure finalize_items (
+        immcount   : out t_unsigned) =           -- po‡et konstantn¡ch slo‘ek
+    -- Optimalizace a finalizace v¨ech slo‘ek agreg tu.
+    ------------------------------------------------------------------------------------------------
+    var
+      xel          : pexpnode;                   -- podv˜razy slo‘ky
+      xer          : pexpnode;                   -- podv˜razy slo‘ky
+      cexp         : pexpitem;                   -- aktu ln¡ slo‘ka
+
+    begin
+      cexp:=arglist;
+      vyhodnoceno:=true;
+      while cexp<>nil loop
+        -- rozdˆlit podv˜razy
+        cexp^.split(xel,xer);
+
+        -- optimalizovat v˜bˆr
+        if cexp^.itype=ei_choice then
+          x_phase_next(curr,xer,ctyp,eu_use,ep_final,info);
+          vyhodnoceno:=vyhodnoceno and (xer^.zprac>=ep_final);
+          end if;
+
+        -- optimalizovat slo‘ku
+        x_phase_next(curr,xel,xtyp,eu_use,ep_final,info);
+        vyhodnoceno:=vyhodnoceno and (xel^.zprac>=ep_final);
+
+        -- slou‡it podv˜razy
+        cexp^.join(xel,xer);
+
+        -- zapo‡¡tat konstantn¡ slo‘ku
+        if ((cexp^.itype=ei_expr) and (xel^.ntype=nt_imm))
+        or ((cexp^.itype=ei_choice) and (xel^.ntype=nt_imm) and (xer^.ntype=nt_imm)) then
+          succ immcount;
+          end if;
+
+        -- dal¨¡ slo‘ka
+        cexp:=pexpitem(cexp^.next);
+        end loop;
+      end finalize_items;
+
+
+
+var
+  el               : pexpnode;                   -- prefix
+  xel              : pexpnode;                   -- podv˜razy slo‘ky
+  xer              : pexpnode;                   -- podv˜razy slo‘ky
+  newexpr          : pexpnode;                   -- nov˜ v˜raz
+  pexp             : pexpitem;                   -- p©edchoz¡ slo‘ka
+  cexp             : pexpitem;                   -- aktu ln¡ slo‘ka
+  nexp             : pexpitem;                   -- n sleduj¡c¡ slo‘ka
+  index            : tuniint;                    -- index pozi‡n¡ slo‘ky
+  ui1              : tuniint;                    -- hodnota agreg tu mno‘iny
+  ui2              : tuniint;                    -- hodnota agreg tu mno‘iny
+  immcount         : t_unsigned;                 -- po‡et konstantn¡ch slo‘ek agreg tu
+
+begin
+  newexpr:=nil;
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,arglist);
+
+  -- optimalizovat prefix
+  if el<>nil then
+    -- optimalizovat
+    a_opt(curr,el,info);
+
+    -- poda©ilo se optimalizovat podv˜raz ?
+    if not (el^.zprac>=ep_opt) then goto k1; end if;
+    end if;
+
+  -- optimalizovat slo‘ky a transformovat agreg t v z vislosti na jeho typu
+  case expr^.t.stype
+    -- record
+    when dt_record do
+        -- optimalizovat a finalizovat v¨echny slo‘ky
+        cexp:=arglist;
+        vyhodnoceno:=true;
+        while cexp<>nil loop
+          -- rozdˆlit podv˜razy
+          cexp^.split(xel,xer);
+
+          -- typ slo‘ky
+          if cexp^.sym=nil
+            then xtyp:=nulltype
+            else xtyp.init(curr,pentity_var(cexp^.sym)^.typ.getctype);
+            end if;
+
+          -- optimalizovat slo‘ku
+          x_phase_next(curr,xel,xtyp,eu_use,ep_final,info);
+          vyhodnoceno:=vyhodnoceno and (xel^.zprac>=ep_final);
+
+          -- slou‡it podv˜razy
+          cexp^.join(xel,xer);
+
+          -- dal¨¡ slo‘ka
+          cexp:=pexpitem(cexp^.next);
+          end loop;
+        if not vyhodnoceno then goto k1; end if;
+
+        -- vytvo©it statickou ¨ablonu agreg tu pole
+        store_record(expr^.imm);
+
+        -- zpracovat v¨echny slo‘ky
+        pexp:=nil;
+        cexp:=arglist;
+        while cexp<>nil loop
+          -- p©ipravit si dal¨¡ slo‘ku
+          nexp:=pexpitem(cexp^.next);
+
+          -- podv˜razy
+          cexp^.get(xel,xer);
+
+          -- optimalizovat slo‘ku
+          case cexp^.itype
+            -- pozi‡n¡ nebo kl¡‡ov 
+            when ei_expr,ei_ident do
+                -- p©¡m  hodnota
+                if xel^.ntype=nt_imm then
+                  -- zahrnout do agreg tu
+                  store_record_item(expr^.imm,pentity_var(cexp^.sym),pexpimm(xel)^.imm);
+
+                  -- slo‘ku vyhodit z agreg tu
+                  cexp:=nil;
+                  end if;
+
+            -- OTHERS
+            when ei_others do
+                -- p©¡m  hodnota
+                if xel^.ntype=nt_imm then
+                  -- zahrnout do agreg tu
+                  store_record_others(expr^.imm,pexpimm(xel)^.imm);
+
+                  -- slo‘ku vyhodit z agreg tu
+                  cexp:=nil;
+                  end if;
+
+            when others do verify(448,true);
+            end case;
+
+          -- slo‘ka mohla zmizet nebo se jinak zmˆnit => poskl dat zpˆt
+          if cexp=nil
+            then
+              if pexp<>nil
+                then pexp^.next:=nexp
+                else arglist:=nexp;
+                end if;
+            else
+              cexp^.next:=nexp;
+              if pexp<>nil
+                then pexp^.next:=cexp
+                else arglist:=cexp;
+                end if;
+              pexp:=cexp;
+              end if;
+
+          -- dal¨¡ slo‘ka
+          cexp:=nexp;
+          end loop;
+
+    -- pole, ©etˆzec
+    when dt_array,dt_uarray,dt_string,dt_ustring do
+        -- vypo‡¡tat typ slo‘ky
+        xtyp:=expr^.t.getbase(curr);
+
+        -- vypo‡¡tat typ v˜bˆru
+        ctyp:=expr^.t.getrange(curr);
+
+        -- optimalizovat a finalizovat v¨echny slo‘ky
+        finalize_items(immcount);
+        if not vyhodnoceno then goto k1; end if;
+
+        -- vytvo©it statickou ¨ablonu agreg tu pole
+        store_array(expr^.imm,immcount);
+
+        -- naplnit po‡ te‡n¡ index pozi‡n¡ slo‘ky
+        index:=ctyp.getlval;
+
+        -- zpracovat v¨echny slo‘ky
+        pexp:=nil;
+        cexp:=arglist;
+        while cexp<>nil loop
+          -- p©ipravit si dal¨¡ slo‘ku
+          nexp:=pexpitem(cexp^.next);
+
+          -- podv˜razy
+          cexp^.get(xel,xer);
+
+          -- optimalizovat slo‘ku
+          case cexp^.itype
+            -- pozi‡n¡
+            when ei_expr   do
+                -- nep©ekro‡il index mez pole ?
+                if index>ctyp.gethval then
+                  ce^.seterror({CCERR=}000290,ce_toomanyitems);
+                  cexp^.errpos;
+                  {%%X ce^.raiseerror};
+                  ce^.resumeerror;
+                  end if;
+
+                -- p©¡m  hodnota
+                if xel^.ntype=nt_imm then
+                  -- zahrnout do agreg tu
+                  store_array_item(expr^.imm,index,pexpimm(xel)^.imm);
+
+                  -- slo‘ku vyhodit z agreg tu
+                  cexp:=nil;
+                  end if;
+
+                -- inkrementovat index pozi‡n¡ slo‘ky
+                index+ui_1;
+
+            -- kl¡‡ov 
+            when ei_choice do
+                -- v˜raz je p©¡m  hodnota, ok, co v˜bˆr ?
+                if xel^.ntype=nt_imm then
+                  -- p©¡m  hodnota
+                  if xer^.ntype=nt_imm then
+                    -- zahrnout do agreg tu
+                    load_uniint(pexpimm(xer)^.imm,ui1);
+                    store_array_item(expr^.imm,ui1,pexpimm(xel)^.imm);
+
+                    -- slo‘ku vyhodit z agreg tu
+                    cexp:=nil;
+
+                  -- rozsah, jak˜ ?
+                  elsif xer^.ntype=nt_range then
+                    -- konstantn¡ singul rn¡ rozsah
+                    if pexprange(xer)^.rkind=erk_single then
+                      verify(456,(xer^.sub=nil) or (xer^.sub^.ntype<>nt_imm) or (xer^.sub^.next=nil) or (xer^.sub^.next^.ntype<>nt_imm));
+
+                      -- zahrnout do agreg tu
+                      load_uniint(pexpimm(xer^.sub)^.imm,ui1);
+                      store_array_item(expr^.imm,ui1,pexpimm(xel)^.imm);
+
+                      -- slo‘ku vyhodit z agreg tu
+                      cexp:=nil;
+
+                    -- konstantn¡ rozsah
+                    elsif pexprange(xer)^.rkind=erk_static then
+                      verify(457,(xer^.sub=nil) or (xer^.sub^.ntype<>nt_imm) or (xer^.sub^.next=nil) or (xer^.sub^.next^.ntype<>nt_imm));
+
+                      -- zahrnout do agreg tu
+                      load_uniint(pexpimm(xer^.sub)^.imm,ui1);
+                      load_uniint(pexpimm(xer^.sub^.next)^.imm,ui2);
+                      store_array_items_range(expr^.imm,ui1,ui2,pexpimm(xel)^.imm);
+
+                      -- slo‘ku vyhodit z agreg tu
+                      cexp:=nil;
+
+                    -- pr zdn˜ rozsah
+                    elsif pexprange(xer)^.rkind=erk_null then
+                      -- nic nedˆlat, jen vyhodit slo‘ku z agreg tu
+                      cexp:=nil;
+                      end if;
+                    end if;
+                  end if;
+                --unimplemented(95);
+
+            -- OTHERS
+            when ei_others do
+                -- p©¡m  hodnota
+                if xel^.ntype=nt_imm then
+                  -- zahrnout do agreg tu
+                  store_array_others(expr^.imm,pexpimm(xel)^.imm);
+
+                  -- slo‘ku vyhodit z agreg tu
+                  cexp:=nil;
+                  end if;
+
+            when others do verify(256,true);
+            end case;
+
+          -- slo‘ka mohla zmizet nebo se jinak zmˆnit => poskl dat zpˆt
+          if cexp=nil
+            then
+              if pexp<>nil
+                then pexp^.next:=nexp
+                else arglist:=nexp;
+                end if;
+            else
+              cexp^.next:=nexp;
+              if pexp<>nil
+                then pexp^.next:=cexp
+                else arglist:=cexp;
+                end if;
+              end if;
+
+          -- dal¨¡ slo‘ka
+          cexp:=nexp;
+          end loop;
+
+    -- mno‘ina
+    when dt_set do
+        -- vypo‡¡tat typ slo‘ky
+        xtyp:=expr^.t.getbase(curr);
+
+        -- optimalizovat a finalizovat v¨echny slo‘ky
+        finalize_items(immcount);
+        if not vyhodnoceno then goto k1; end if;
+
+        -- vytvo©it statickou ¨ablonu agreg tu mno‘iny
+        store_set(expr^.imm);
+
+        -- zpracovat v¨echny slo‘ky
+        pexp:=nil;
+        cexp:=arglist;
+        while cexp<>nil loop
+          -- p©ipravit si dal¨¡ slo‘ku
+          nexp:=pexpitem(cexp^.next);
+
+          -- podv˜razy
+          cexp^.get(xel,xer);
+
+          -- optimalizovat slo‘ku
+          verify(435,cexp^.itype<>ei_expr);
+
+          -- p©¡m  hodnota
+          if xel^.ntype=nt_imm then
+            -- ulo‘it hodnotu
+            load_uniint(pexpimm(xel)^.imm,ui1);
+            store_set_item(expr^.imm,ui1);
+
+            -- slo‘ku vynechat z agreg tu
+            cexp:=nil;
+
+          -- konstantn¡ rozsah
+          elsif (xel^.ntype=nt_range) and (pexprange(xel)^.rkind in erks_const) then
+            verify(437,(xel^.sub=nil) or (xel^.sub^.next=nil) or (xel^.sub^.ntype<>nt_imm) or (xel^.sub^.next^.ntype<>nt_imm));
+
+            -- ulo‘it hodnotu
+            load_uniint(pexpimm(xel^.sub)^.imm,ui1);
+            load_uniint(pexpimm(xel^.sub^.next)^.imm,ui2);
+            store_set_items_range(expr^.imm,ui1,ui2);
+
+            -- slo‘ku vynechat z agreg tu
+            cexp:=nil;
+
+          -- nulov˜ rozsah
+          elsif (xel^.ntype=nt_range) and (pexprange(xel)^.rkind=erk_null) then
+            -- slo‘ku prostˆ vynechat
+            cexp:=nil;
+
+          -- typ
+          elsif xel^.nclass=nc_type then
+            -- ulo‘it hodnotu
+            store_set_items_range(expr^.imm,xel^.t.getlval,xel^.t.gethval);
+
+            -- slo‘ku vynechat z agreg tu
+            cexp:=nil;
+            end if;
+
+          -- slo‘ka mohla zmizet nebo se jinak zmˆnit => poskl dat zpˆt
+          if cexp=nil
+            then
+              if pexp<>nil
+                then pexp^.next:=nexp
+                else arglist:=nexp;
+                end if;
+            else
+              cexp^.next:=nexp;
+              if pexp<>nil
+                then pexp^.next:=cexp
+                else arglist:=cexp;
+                end if;
+              end if;
+
+          -- dal¨¡ slo‘ka
+          cexp:=nexp;
+          end loop;
+
+        --unimplemented(91);
+
+    when others do verify(255,true);
+    end case;
+
+  -- v agreg tu nic nezbylo => je konstantn¡
+  if arglist=nil then
+    -- odvodit nov˜ uzel
+    derivenode(newexpr,expr,info,nt_imm);
+
+    -- t©¡da uzlu
+    newexpr^.nclass:=nc_value;
+
+    -- hodnota
+    pexpimm(newexpr)^.imm:=expr^.imm;
+    end if;
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  if newexpr<>nil
+    then newexpr^.zprac:=ep_opt
+    else expr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr<>nil
+    -- p©edat nov˜ v˜raz
+    then pexpnode(expr):=newexpr
+    -- slou‡it podv˜razy
+    else expr^.join(el,arglist);
+    end if;
+  end a_opt_aggregate;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_message (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexplist;            -- zpr va
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace odesl n¡/p©ijet¡ zpr vy.
+----------------------------------------------------------------------------------------------------
+begin
+  -- odesl n¡/p©ijet¡ zpr vy se chov  jako prefix se seznamem argument–
+  a_opt_list(curr,expr,info);
+  end a_opt_message;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_this (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpthis;            -- zpr va
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Optimalizace THIS.
+----------------------------------------------------------------------------------------------------
+begin
+  -- nen¡ co optimalizovat
+
+  -- optimalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_opt;
+  end a_opt_this;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt =
+-- Optimalizace v˜razu.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+begin
+  verify(6,expr=nil);
+
+  -- zpracov vat jen v˜razy z bezprost©ednˆ p©edchoz¡ f ze
+  if expr^.zprac<>pred ep_opt then goto k1; end if;
+
+  -- optimalizovat v˜raz
+  case expr^.ntype
+    -- oper tor
+    when nt_operator  do a_opt_operator(curr,pexpoper(expr),info);
+
+    -- un rn¡ oper tor
+    when nt_unary     do a_opt_unary(curr,pexpunary(expr),info);
+
+    -- komponenta
+    when nt_component do a_opt_component(curr,pexpcomponent(expr),info);
+
+    -- p©¡m  hodnota
+    when nt_imm       do a_opt_imm(curr,pexpimm(expr),info);
+
+    -- vol n¡ procedury
+    when nt_call      do a_opt_call(curr,pexplist(expr),info);
+
+    -- rozsah
+    when nt_range     do a_opt_range(curr,pexprange(expr),info);
+
+    -- index pole
+    when nt_index     do a_opt_index(curr,pexpindex(expr),info);
+
+    -- reference
+    when nt_ref       do a_opt_ref(curr,pexpref(expr),info);
+
+    -- dereference
+    when nt_deref     do a_opt_deref(curr,pexpderef(expr),info);
+
+    -- atribut
+    when nt_attrib    do a_opt_attrib(curr,pexpattrib(expr),info);
+
+    -- p©etypov n¡
+    when nt_typecast  do a_opt_typecast(curr,pexplist(expr),info);
+
+    -- agreg t
+    when nt_aggregate do a_opt_aggregate(curr,pexpaggregate(expr),info);
+
+    -- odesl n¡ zpr vy
+    when nt_send      do a_opt_message(curr,pexplist(expr),info);
+
+    -- p©ijet¡ zpr vy
+    when nt_accept    do a_opt_message(curr,pexplist(expr),info);
+
+    -- THIS
+    when nt_this      do a_opt_this(curr,pexpthis(expr),info);
+
+    -- jin‚ symboly tu nemaj¡ co dˆlat
+    when others       do verify(7,true);
+    end case;
+
+k1:
+  end a_opt;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure initopertab =
+-- Inicializace ©¡d¡c¡ tabulky optimalizace bin rn¡ch oper tor–.
+----------------------------------------------------------------------------------------------------
+begin
+  -- celo‡¡seln‚ aritmetick‚ operace
+  --oset1s(opertab,op_add,sts_u_integer,^a_opt_oper_iaritm_add);
+  osetss(opertab,expopertypeset:[op_add,op_sub,op_mul,op_div,op_idiv,op_imod,op_shl,op_shr,op_bitand,op_bitor,op_bitxor],dts_u_integer,^a_opt_oper_iaritm);
+
+  -- ordin ln¡ rela‡n¡ operace
+  osetss(opertab,expopertypeset:[op_eq,op_ne,op_lt,op_le,op_gt,op_ge],dts_u_ordinal,^a_opt_oper_ordinal_rel);
+
+  -- logick‚ operace
+  osetss(opertab,expopertypeset:[op_and,op_or,op_and_then,op_or_else],dts_u_logical,^a_opt_oper_logical);
+  oset1s(opertab,op_xor,dts_u_logical,^a_opt_oper_logical_xor);
+
+  -- p©i©azen¡
+  oset1s(opertab,op_assign,dts_all,^a_opt_oper_assign);
+
+  -- ©etˆzcov‚ rela‡n¡ operace
+  osetss(opertab,expopertypeset:[op_eq,op_ne,op_lt,op_le,op_gt,op_ge],dts_u_string+dts_u_array,^a_opt_oper_string_rel);
+
+  -- spojov n¡ ©etˆzc–
+  osetss(opertab,expopertypeset:[op_concat],dts_u_string+dts_u_array,^a_opt_oper_string_concat);
+
+  -- porovn n¡ pointer–
+  osetss(opertab,expopertypeset:[op_eq,op_ne{,op_lt,op_le,op_gt,op_ge}],dts_pointer,^a_opt_oper_pointer_rel);
+
+  -- porovn n¡ tag–
+  osetss(opertab,expopertypeset:[op_eq,op_ne,op_lt,op_le,op_gt,op_ge],dts_tag,^a_opt_oper_tag_rel);
+
+  -- mno‘inov‚ operace
+  osetss(opertab,expopertypeset:[op_union,op_diff,op_isect],dts_u_set,^a_opt_oper_set);
+
+  -- mno‘inov‚ rela‡n¡ operace
+  osetss(opertab,expopertypeset:[op_eq,op_ne,op_lt,op_le,op_gt,op_ge],dts_u_set,^a_opt_oper_set_rel);
+
+  -- porovn n¡ record–
+  osets1(opertab,expopertypeset:[op_eq,op_ne],dt_record,^a_opt_oper_record_rel);
+
+  -- oper tory IN a NOT IN
+  osetss(opertab,expopertypeset:[op_in,op_notin],dts_u_set,^a_opt_oper_in_set);
+  end initopertab;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure initunarytab =
+-- Inicializace ©¡d¡c¡ tabulky optimalizace un rn¡ch oper tor–.
+----------------------------------------------------------------------------------------------------
+begin
+  -- celo‡¡seln‚ aritmetick‚ operace
+  usetss(unarytab,expunarytypeset:[un_plus,un_minus,un_succ,un_pred,un_not,un_bitnot,un_abs],dts_u_integer,^a_opt_unary_iaritm);
+
+  -- v˜‡tov‚ un rn¡ operace
+  usetss(unarytab,expunarytypeset:[un_succ,un_pred],dts_enum,^a_opt_unary_iaritm);
+
+  -- logick‚ operace
+  usetss(unarytab,expunarytypeset:[un_succ,un_pred,un_not],dts_u_logical,^a_opt_unary_logical);
+  end initunarytab;
+
+
+
+----------------------------------------------------------------------------------------------------
+entry =
+-- Inicializace
+----------------------------------------------------------------------------------------------------
+begin
+  initopertab;
+  initunarytab;
+  end entry;
+
+
+
+end cx_opt;

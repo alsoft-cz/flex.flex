@@ -1,0 +1,226 @@
+----------------------------------------------------------------------------------------------------
+module private ci_relo =
+-- P©eklada‡ Flexu.
+-- Vyhodnocov n¡ relokac¡.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 05.04.2002 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure adjust_r (
+    inst           : in out icodeinst) =
+----------------------------------------------------------------------------------------------------
+var
+  r                : inst.r:type;
+
+begin
+  if inst.r=nil then 
+    new inst.r range ireloinit;
+  elsif inst.r^:length=inst.r^:last then
+    --%%TODO(ADJUST) adjust inst.r range inst.r^:last+irelodelta;
+    new r range inst.r^:last*2{+irelodelta};
+    r^:=inst.r^;
+    discard inst.r;
+    inst.r:=r;
+    end if;
+  end adjust_r;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure adjust_u (
+    info           : in out igeninfo) =
+----------------------------------------------------------------------------------------------------
+var
+  u                : info.unres:type;
+
+begin
+  if info.unres=nil then 
+    new info.unres range iunresinit;
+  elsif info.unres^:length=info.unres^:last then
+    --%%TODO(ADJUST) adjust info.unres range info.unres^:last+iunresdelta;
+    new u range info.unres^:last*2{+iunresdelta};
+    u^:=info.unres^;
+    discard info.unres;
+    info.unres:=u;
+    end if;
+  end adjust_u;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure adjust_t (
+    info           : in out igeninfo) =
+----------------------------------------------------------------------------------------------------
+var
+  t                : info.target:type;
+
+begin
+  if info.target=nil then 
+    new info.target range itargetinit;
+  elsif info.target^:length=info.target^:last then
+    --%%TODO(ADJUST) adjust info.target range info.target^:last+itargetdelta;
+    new t range info.target^:last*2{+itargetdelta};
+    t^:=info.target^;
+    discard info.target;
+    info.target:=t;
+    end if;
+  end adjust_t;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure addrelo =
+-- Dopln¡ relokaci.
+----------------------------------------------------------------------------------------------------
+var
+  chyba            : t_logical;
+  _relo            : inst.r^:base;
+
+begin
+  verify(552,_rtype=irt_symbol and then pentity(_psym)^.etype=et_type and then tf_tagged not in pentity_type(_psym)^.tflags);
+
+  -- (re)alokovat pamˆŸ
+  adjust_r(inst);
+
+  -- doplnit relokaci
+  _relo.rtype   :=_rtype;
+  _relo.psym    :=_psym;
+  _relo.pexpr   :=_pexpr;
+  _relo.nextip  :=_nextip;
+  _relo.disp    :=_disp;
+  _relo.absolute:=_absolute;
+  inst.r^ & _relo; {%%TODO(AGGREGATE)}
+  end addrelo;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure addunres =
+-- Dopln¡ lok ln¡ relokaci.
+----------------------------------------------------------------------------------------------------
+var
+  _unres           : info.unres^:base;
+
+begin
+  -- (re)alokovat pamˆŸ
+  adjust_u(info);
+
+  -- poznamenat relokaci
+  _unres.target:=target;
+  _unres.nextip:=nextip;
+  _unres.disp:=disp;
+  _unres.len:=_len;
+  _unres.absolute:=absolute;
+  info.unres^ & _unres;
+  end addunres;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure newtarget =
+-- Alokuje c¡l skoku.
+----------------------------------------------------------------------------------------------------
+begin
+  -- (re)alokovat pamˆŸ
+  adjust_t(info);
+
+  -- alokovat ‡¡slo c¡le
+  info.target^ & iunknownaddr;
+  target:=info.target^:length;
+  end newtarget;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure settarget =
+-- P©i©ad¡ adresu c¡le skoku.
+----------------------------------------------------------------------------------------------------
+with
+  standard.conversions,
+  cc_base,cc_base.cc_debug;
+
+begin
+  verify(95,(target<1) or (target>info.target^:length) or (info.target^[target]<>iunknownaddr));
+  info.target^[target]:=addr;
+#if dump then;
+  if opt_dump_code in info.compv.opts then debug_dump('label ' & unsigned_to_string(target) & ':'); end if;
+#end if;
+  end settarget;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure gettarget =
+-- Zjist¡ adresu c¡le skoku.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(93,(target<1) or (target>info.target^:length));
+  addr:=info.target^[target];
+  end gettarget;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure localresolve =
+-- Vyhodnot¡ lok ln¡ relokace.
+----------------------------------------------------------------------------------------------------
+with
+  cc_def.cc_codes,
+  cc_def.cc_var;
+
+var
+  i                : t_unsigned;
+  ofs              : tuniint;
+  ui               : tuniint;
+
+begin
+  --return;
+
+  -- nen¡ co ©esit
+  if info.unres=nil then return; end if;
+
+  -- vyhodnotit lok ln¡ relokace
+  if info.unres^:length>0 then 
+    for i in info.unres^:range loop
+      -- %%X Tady by se zcela spr vnˆ mˆlo dˆlat SETADDR, takhle se nov  hodnota
+      -- nep©i‡te k t‚ nule co u‘ v instrukci je (co kdyby to nebyla nula, ‘e).
+
+      -- vypo‡¡tat skute‡n˜ offset
+      ofs:=unsigned_to_uniint(info.target^[info.unres^[i].target]);
+      if not info.unres^[i].absolute then
+        ofs-unsigned_to_uniint(info.unres^[i].nextip);
+        end if;
+
+      -- %%X Z plata, opravit.
+      if info.unres^[i].len=0 then
+        info.unres^[i].len:=4;
+        end if;
+
+      -- vejde se ?
+      verify(232,{%%TODO(IN) info.unres.list^[i].len not in [1,2,4]}
+                 info.unres^[i].len<>1 and info.unres^[i].len<>2 and info.unres^[i].len<>4);
+      if uniint_test_shrink(ofs,info.unres^[i].len,true) then
+        ce^.seterror({CCERR=}000382,ce_g_invalid);
+        ce^.raiseerror;
+        end if;
+
+      -- ulo‘it %%TODO(SLICE)
+      case info.unres^[i].len
+        when 1 do p_signed8 (^inst.c^[info.unres^[i].disp+1]:unchecked)^:=p_signed8 (^ofs:unchecked)^;
+        when 2 do p_signed16(^inst.c^[info.unres^[i].disp+1]:unchecked)^:=p_signed16(^ofs:unchecked)^;
+        when 4 do p_signed32(^inst.c^[info.unres^[i].disp+1]:unchecked)^:=p_signed32(^ofs:unchecked)^;
+        when others do verify(231,true);
+        end case;
+
+      -- pro absolutn¡ odkaz generovat je¨tˆ glob ln¡ relokaci
+      if info.unres^[i].absolute then
+        addrelo(inst,irt_symbol,^curr,nil,info.unres^[i].nextip,info.unres^[i].disp,info.unres^[i].absolute);
+        end if;
+      end loop;
+    end if;
+  end localresolve;
+
+
+
+end ci_relo;

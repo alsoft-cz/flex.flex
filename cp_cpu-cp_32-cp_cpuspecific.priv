@@ -1,0 +1,765 @@
+----------------------------------------------------------------------------------------------------
+class private cp_cpuspecific =
+-- P©eklada‡ Flexu.
+-- Obecn  unifika‡n¡ vazba procesorovˆ z visl˜ch charakteristik na p©eklada‡.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 25.03.2002 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_codes,
+  cc_def.cc_var,
+  cp_cpu.cp_32.cp_def;
+
+----------------------------------------------------------------------------------------------------
+override getordparams1 =
+-- Z velikosti ‡¡sla v bitech odvod¡ dal¨¡ strojovˆ z visl‚ hodnoty.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level;
+
+use
+  advanced.low_level.bit_operations;
+
+var
+  x                : t_unsigned32;
+
+begin
+  -- je to p©¡pustn  velikost ‡¡sla
+  if bits<>udb_8 and bits<>udb_16 and bits<>udb_32 and bits<>udb_64 then
+    ce^.seterror({CCERR=}000383,ce_im_numsize);
+    ce^.sethint(hint_im_numsize);
+    {%%POS}
+    ce^.raiseerror;
+    end if;
+
+  -- odvodit velikost
+  size:=unidata_bits_to_bytes(bits);
+
+  -- odvodit meze
+  if stype=dt_logical
+
+    -- logick˜ typ m  fixn¡ meze
+    then
+      lval:=cpu32_logical_lval;
+      hval:=cpu32_logical_hval;
+
+    -- ostatn¡ ordin ln¡ typy maj¡ meze podle po‡tu bit–
+    else
+      x:=unidata_bitsize_to_unsigned(bits); {%%TODO(???)}
+      x div 8;
+      x:=t_unsigned(bit_operations.bit_search_first_one(x));
+      lval:=cpu32_intrange[{bit_search_first_one(}x {%%TODO(???) div 8)},stype=dt_signed,1];
+      hval:=cpu32_intrange[{bit_search_first_one(}x {%%TODO(???) div 8)},stype=dt_signed,2];
+      end if;
+  end getordparams1;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getordparams2 =
+-- Z mez¡ ‡¡sla odvod¡ dal¨¡ strojovˆ z visl‚ hodnoty.
+----------------------------------------------------------------------------------------------------
+var
+  i                : t_unsigned;
+
+begin
+  -- naj¡t nejmen¨¡ mo‘n˜ rozsah
+  i:=cpu32_intrange:first;
+  while i<=cpu32_intrange:last and (lval<cpu32_intrange[i,stype=dt_signed,1]
+  or hval>cpu32_intrange[i,stype=dt_signed,2]) loop succ i; end loop;
+  verify(69,i>cpu32_intrange:last);
+
+  -- velikost v bytech
+  size:=unsigned_to_unidata_size(i*2+(i=0):ord);
+
+  -- velikost v bitech
+  bits:=unidata_bytes_to_bits(size);
+  end getordparams2;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getrealparams =
+-- Z delta/digits odvod¡ dal¨¡ strojovˆ z visl‚ hodnoty. Delta/digits
+-- je zad no pouze p©ibli‘nˆ a bude zmˆnˆno.
+----------------------------------------------------------------------------------------------------
+var
+  fp               : tfptype;
+
+begin
+{%%TODO(REAL)
+  case stype
+    -- delta definice
+    when fdt_delta      do
+        fp:=fp:first;
+        while (fp<fp:last) and urcmpl(params.delta,cpu32_fpparams[fp].delta) loop succ fp; end loop;
+        if (fp=fp:last) and urcmpl(params.delta,cpu32_fpparams[fp].delta) then
+          ce^.seterror({CCERR=}000384,ce_im_delta);
+          {%%POS}
+          ce^.raiseerror;
+          end if;
+
+
+    -- digits definice
+    when fdt_digits     do
+        fp:=fp:first;
+        while (fp<fp:last) and uicmpg(params.digits,cpu32_fpparams[fp].digits) loop succ fp; end loop;
+        if (fp=fp:last) and uicmpg(params.digits,cpu32_fpparams[fp].digits) then
+          ce^.seterror({CCERR=}000385,ce_im_digits);
+          {%%POS}
+          ce^.raiseerror;
+          end if;
+
+
+    when others do verify(237,true);
+    end case;
+}
+
+  -- velikost ‡¡sla v bytech
+  size:=cpu32_fpsize[fp];
+
+  -- dal¨¡ parametry
+  params:=cpu32_fpparams[fp];
+  end getrealparams;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getstrparams =
+-- Z velikosti ©etˆzce odvod¡ velikost.
+----------------------------------------------------------------------------------------------------
+var
+  dsize            : tunidata_size;
+
+begin
+  -- velikost datov‚ ‡ sti ©etˆzce
+  dsize:=uniint_to_unidata_size(hval)*bsize;
+
+  -- velikost intern¡ ‡ sti ©etˆzce
+  isize:=ud_lstrisize32;
+
+  -- velikost cel‚ho ©etˆzce
+  size:=dsize+isize;
+
+  -- nen¡ to moc ?
+  if size>cpu32_maxtypesize then
+    ce^.seterror({CCERR=}000386,ce_im_typesize);
+    ce^.sethint({%%TODO(LIB) formats(}hint_im_typesize{%%TODO(LIB) ,linttostr(cpu32_maxtypesize,tunidata:size))});
+    {%%POS}
+    ce^.raiseerror;
+    end if;
+  end getstrparams;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getstrmaxhval =
+-- Maxim ln¡ horn¡ mez ©etˆzce podle velikosti prvku.
+----------------------------------------------------------------------------------------------------
+var
+  size             : tunidata_size;
+
+begin
+  maxhval:=unidata_size_to_uniint((cpu32_maxtypesize-ud_lstrisize32) div bsize);
+  end getstrmaxhval;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getsetparams =
+-- Z po‡tu prvk– mno‘iny odvod¡ jej¡ velikost.
+----------------------------------------------------------------------------------------------------
+begin
+  -- size := (items + bits_per_byte - 1) div bits_per_byte
+  size:=unidata_bits_to_bytes(uniint_to_unidata_bitsize(items));
+
+  -- nen¡ to moc ?
+  if size>cpu32_maxtypesize then
+    ce^.seterror({CCERR=}000387,ce_im_typesize);
+    ce^.sethint({%%TODO(LIB) formats(}hint_im_typesize{%%TODO(LIB),linttostr(cpu32_maxtypesize,tunidata:size))});
+    {%%POS}
+    ce^.raiseerror;
+    end if;
+  end getsetparams;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getdefaultord =
+-- Parametry implicitn¡ho celo‡¡seln‚ho typu.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level;
+
+use
+  advanced.low_level.bit_operations;
+
+var
+  x                : t_unsigned;
+
+begin
+  case stype
+    -- celo‡¡seln˜
+    when dt_signed,dt_unsigned do
+        -- velikost ‡¡sla v bitech
+        bits:=unidata_bytes_to_bits(unsigned_to_unidata_size(ldefint32));
+
+        -- velikost ‡¡sla v bytech
+        size:=unsigned_to_unidata_size(ldefint32);
+
+        -- meze
+        x:=ldefint32; {%%TODO(???) }
+        x:=t_unsigned(bit_operations.bit_search_first_one(x));
+        lval:=cpu32_intrange[x{%%TODO(???) bitsfl(ldefint32)},stype=dt_signed,1];
+        hval:=cpu32_intrange[x{%%TODO(???) bitsfl(ldefint32)},stype=dt_signed,2];
+
+
+    -- znakov˜
+    when dt_char do
+        -- velikost znaku v bitech
+        bits:=unidata_bytes_to_bits(unsigned_to_unidata_size(ldefchar32));
+
+        -- velikost znaku v bytech
+        size:=unsigned_to_unidata_size(ldefchar32);
+
+        -- meze
+        x:=ldefchar32; {%%TODO(???) }
+        x:=t_unsigned(bit_operations.bit_search_first_one(x));
+        lval:=cpu32_intrange[x{%%TODO(???) bitsfl(ldefchar32)},false,1];
+        hval:=cpu32_intrange[x{%%TODO(???) bitsfl(ldefchar32)},false,2];
+
+
+    -- logick˜
+    when dt_logical     do
+        -- velikost logicalu v bitech
+        bits:=udb_1;
+
+        -- velikost logicalu v bytech
+        size:=unsigned_to_unidata_size(ldeflogical32);
+
+        -- meze
+        lval:=cpu32_logical_lval;
+        hval:=cpu32_logical_hval;
+
+    end case;
+  end getdefaultord;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getdefaultreal =
+-- Parametry implicitn¡ho re ln‚ho typu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- velikost ‡¡sla v bytech
+  size:=cpu32_fpsize[cpu32_defaultfp];
+
+  -- dal¨¡ parametry
+  params:=cpu32_fpparams[cpu32_defaultfp];
+  end getdefaultreal;
+
+
+
+----------------------------------------------------------------------------------------------------
+override layoutrecitem =
+-- Um¡stˆn¡ jedn‚ polo‘ky v recordu/t©¡dˆ.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vypo‡¡tat zarovnanou adresu promˆnn‚
+  unidata_addr_align_by_size(varofs,align);
+
+  -- adresa promˆnn‚
+  item^.addr:=varofs;
+
+  -- posunout aktu ln¡ offset
+  varofs+unidata_size_to_addr(item^.typ.getctype^.size);
+
+  -- upravit maxim ln¡ dosa‘en˜ offset
+  if varofs>maxofs then
+    maxofs:=varofs;
+    end if;
+  end layoutrecitem;
+
+
+
+----------------------------------------------------------------------------------------------------
+override forcelayoutrecitem =
+-- P©edep¡¨e um¡stˆn¡ jedn‚ polo‘ky v recordu/t©¡dˆ na zadanou pozici
+----------------------------------------------------------------------------------------------------
+begin
+  -- adresa promˆnn‚
+  item^.addr:=pos;
+
+  -- aktu ln¡ offset nastavit za pr vˆ um¡stˆnou polo‘ku
+  varofs:=pos;
+  varofs+unidata_size_to_addr(item^.typ.getctype^.size);
+
+  -- upravit maxim ln¡ dosa‘en˜ offset
+  if varofs>maxofs then
+    maxofs:=varofs;
+    end if;
+  end forcelayoutrecitem;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getptrsize =
+-- Velikost pointeru.
+----------------------------------------------------------------------------------------------------
+var
+  attrib           : rtattrib{ptrattrib};
+
+begin
+  -- z kladn¡ velikost
+  size:=cpu32_ptrsize0;
+
+  -- velikost dodate‡n˜ch atribut–
+  for attrib in rtattrib loop
+    if attrib in pattrib then 
+      size+cpu32_rtattribsize[attrib]; 
+      end if;
+    end loop;
+{
+  if machine
+    then size:=cpu32_machineptrsize;
+    else size:=cpu32_ptrsize[pclass,pbase];
+    end if;
+}
+  end getptrsize;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getrtattribsize =
+-- Velikost dynamick‚ho atributu.
+----------------------------------------------------------------------------------------------------
+begin
+  size:=cpu32_rtattribsize[rta];
+  end getrtattribsize;
+
+
+
+----------------------------------------------------------------------------------------------------
+override bytestobits =
+-- P©evod bytu na bity (co kdyby se vyskytl 10-bitov˜ po‡¡ta‡, ‘e).
+----------------------------------------------------------------------------------------------------
+begin
+  bits:=unidata_bytes_to_bits(bytes);
+  end bytestobits;
+
+
+
+----------------------------------------------------------------------------------------------------
+override immtobinary =
+-- P©evede p©¡mou hodnotu do bin rn¡ho tvaru.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level;
+
+use
+  advanced.low_level.bit_operations,
+  advanced.low_level.unchecked_memory_access;
+
+var
+  ofs              : t_unsigned32;               -- aktu ln¡ offset v generovan‚m poli
+  base             : pentity_type;               -- typ b ze
+  basesize         : t_unsigned32;               -- velikost b ze
+
+    ------------------------------------------------------------------------------------------------
+    procedure fillstruct (
+        dest       : out unchecked;              -- c¡lov‚ pole
+        count      : in t_unsigned;              -- po‡et prvk– pole
+        src        : in unchecked;               -- zdrojov‚ pole
+        size       : in t_unsigned) =            -- velikost
+    -- Vypln¡ pole DEST o COUNT prvc¡ch velikosti SIZE konstantou SRC.
+    ------------------------------------------------------------------------------------------------
+    with
+      advanced,
+      advanced.low_level,
+      advanced.low_level.unchecked_memory_access;
+
+    var
+      i            : t_unsigned;
+
+    begin
+      for i in 1..count loop
+        memory_copy(src,t_unsigned8array(dest)[(i-1)*size],size);
+        end loop;
+      end fillstruct;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure fillrange (
+        val        : in timm_value;              -- hodnota
+        lval       : in tuniint;                 -- doln¡ mez rozsahu
+        hval       : in tuniint) =               -- horn¡ mez rozsahu
+    -- Vypln¡ rozsah polo‘ek zadanou hodnotou.
+    ------------------------------------------------------------------------------------------------
+    var
+      ui           : tuniint;
+      k            : t_unsigned32;
+
+    begin
+      -- hodnota prvku
+      immtobinary(val,base,t_unsigned8array(bin)[ofs],base^.size);
+
+      -- zduplikovat pro cel˜ rozsah
+      if hval>lval then
+        -- d‚lka £seku
+        ui:=hval-lval;
+        k:=uniint_to_unsigned(ui);
+
+        -- vypnit
+        fillstruct(t_unsigned8array(bin)[ofs+basesize],k,t_unsigned8array(bin)[ofs],basesize);
+
+        -- dal¨¡ prvek
+        ofs+basesize*k;
+        end if;
+
+      -- dal¨¡ prvek
+      ofs+basesize;
+      end fillrange;
+
+var
+  a                : tuniint;
+  b                : tuniint;
+  c                : tuniint;
+  i                : t_unsigned;
+
+begin
+  -- konvertovat
+  case imm.ic
+    -- cel‚ ‡¡slo
+    when ic_ordinal   do 
+        verify(585,unidata_size_to_unsigned(binsize)<>1 and unidata_size_to_unsigned(binsize)<>2 and unidata_size_to_unsigned(binsize)<>4{%%TODO(SET) not in [1,2,4]});
+        uniint_store(imm.ui,bin,{%%X}unidata_size_to_unsigned(binsize));
+
+    -- re ln‚ ‡¡slo
+    when ic_real      do unimplemented(96);
+
+    -- kondenzovan‚ pole
+    when ic_condensed do
+        --unimplemented(96);
+        ofs:=0;
+
+        -- intern¡ ‡ st ©etˆzce
+        if ptyp^.stype in dts_string then
+          uniint_store(unsigned_to_uniint(imm.citems.len),bin,lstrisize32);
+          ofs+lstrisize32;
+          end if;
+
+        -- typ b ze
+        base:=ptyp^.base.getctype;
+
+        -- velikost b ze
+        basesize:=unidata_size_to_unsigned(base^.size);
+        verify(586,basesize<>1 and basesize<>2 and basesize<>4 {%%TODO(SET) not in [1,2,4]});
+
+        -- hodnoty prvk–
+        verify(587,lstrisize32*(ptyp^.stype in dts_string):ord+imm.citems.len*basesize>unidata_size_to_unsigned(binsize));
+        i:=0;
+        while i<imm.citems.isize*imm.citems.len loop
+          uniint_load(a,imm.citems.items^[i],imm.citems.isize,base^.stype=dt_signed);
+          uniint_store(a,t_unsigned8array(bin)[ofs],basesize);
+          i+imm.citems.isize;
+          ofs+basesize;
+          end loop;
+
+
+    -- agreg t pole
+    when ic_array     do
+        ofs:=0;
+
+        -- intern¡ ‡ st ©etˆzce
+        if ptyp^.stype in dts_string then
+          if imm.aitems^.list=nil or else imm.aitems^.list^:length=0
+            -- pole je pr zdn‚ => ©etˆzec je pr zdn˜
+            then a:=ui_0;
+            -- v poli nˆco je => vz¡t posledn¡ HVAL
+            -- (pole je vzestupnˆ set©¡dˆn‚ podle rozsah–)
+            else a:=imm.aitems^.list^[imm.aitems^.list^:length].hval;
+            end if;
+          uniint_store(a,bin,lstrisize32);
+          ofs+lstrisize32;
+          end if;
+
+        -- typ b ze
+        base:=ptyp^.base.getctype;
+
+        -- velikost b ze
+        basesize:=unidata_size_to_unsigned(base^.size);
+
+        -- p©ipravit doln¡ mez o jedni‡ku ni‘¨¡ (v z pˆt¡ se to oprav¡)
+        a:=ptyp^.srange.getctype^.lval-ui_1; {%%X nem–‘e tady doj¡t k ne‘ douc¡mu podte‡en¡ ? }
+
+        -- zpracovat v¨echny uveden‚ intervaly a mezery mezi nimi vyplnit hodnotou OTHERS
+        if imm.aitems^.list<>nil then
+          for i in imm.aitems^.list^:range loop
+            -- vyplnit OTHERS hodnotou
+            a+ui_1;
+            if a<imm.aitems^.list^[i].lval then
+              b:=imm.aitems^.list^[i].lval-ui_1;
+              fillrange(imm.aitems^.othersval,a,b);
+              end if;
+
+            -- hodnota prvku
+            a:=imm.aitems^.list^[i].hval;
+            fillrange(imm.aitems^.list^[i].val,imm.aitems^.list^[i].lval,a);
+            end loop;
+          end if;
+
+        -- zbytek za posledn¡m intervalem do konce pole dovyplnit hodnotou OTHERS
+        if ptyp^.stype not in dts_string then
+          b:=ptyp^.srange.getctype^.hval;
+          if a<b then
+            a+ui_1;
+            fillrange(imm.aitems^.othersval,a,b);
+            end if;
+          end if;
+
+        --unimplemented(96);
+
+
+    -- agreg t recordu
+    when ic_record    do
+        -- zpracovat v¨echny polo‘ky
+        if imm.ritems^.list<>nil then
+          for i in imm.ritems^.list^:range loop
+            -- typ slo‘ky
+            base:=imm.ritems^.list^[i].item^.typ.getctype;
+            
+            -- offset
+            ofs:=unidata_addr_to_unsigned(imm.ritems^.list^[i].item^.addr);
+
+            -- ulo‘it hodnotu
+            immtobinary(imm.ritems^.list^[i].val,base,t_unsigned8array(bin)[ofs],base^.size);
+            end loop;
+          end if;
+        --unimplemented(96);
+
+
+    -- agreg t mno‘iny
+    when ic_set       do
+        --unimplemented(135);
+
+        -- typ b ze
+        base:=ptyp^.base.getctype;
+
+        -- zpracovat v¨echny intervaly
+        --%%X verify(529,imm.sitems^.lcount>imm.sitems^.lsize);
+        if imm.sitems^.list<>nil then
+          for i in imm.sitems^.list^:range loop
+            a:=imm.sitems^.list^[i].lval-base^.lval;
+            b:=imm.sitems^.list^[i].hval-base^.lval;
+            while a<=b loop
+              --uitouint(a,index);
+              bit_operations.bit_set(bin,bit_operations.t_bit_index(uniint_to_unsigned(a)));
+              a+ui_1;
+              end loop;
+            end loop;
+          end if;
+
+    -- NIL
+    when ic_nil do unchecked_memory_access.memory_fill_zero(bin,unidata_size_to_unsigned(binsize));
+
+    when others do verify(262,true);
+    end case;
+  end immtobinary;
+
+
+
+----------------------------------------------------------------------------------------------------
+override getimmstoragesize =
+-- Minim ln¡ velikost prostoru pro ulo‘en¡ konstanty do EXE.
+-- (Pro ©etˆzce sta‡¡ rezervovat jen tolik pamˆti, kolik je pot©eba na
+-- v¨echny prvky a :length; pro ostatn¡ typy je t©eba alokovat
+-- ptyp^.size bytu prostoru)
+----------------------------------------------------------------------------------------------------
+var
+  isize            : tunidata_size;              -- pro kompatibilitu parametru
+  hval             : tuniint;                    -- po‡et prvk– ©etˆzce
+
+    ------------------------------------------------------------------------------------------------
+    procedure compute_hval =
+    -- Vypo‡¡t  po‡et prvk– pole.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zjistit po‡et prvk–
+      case imm.ic
+        -- kondenzovan˜ tvar
+        when ic_condensed do hval:=unsigned_to_uniint(imm.citems.len);
+
+        -- agreg tn¡ tvar
+        when ic_array do
+            if imm.aitems^.list=nil or else imm.aitems^.list^:length=0
+              -- pole je pr zdn‚ => ©etˆzec je pr zdn˜
+              then hval:=ui_0;
+              -- v poli nˆco je => vz¡t posledn¡ HVAL
+              -- (pole je vzestupnˆ set©¡dˆn‚ podle rozsah–)
+              else
+                hval:=imm.aitems^.list^[imm.aitems^.list^:length].hval;
+                end if;
+
+        when others do verify(264,true);
+        end case;
+      end compute_hval;
+
+begin
+  case ptyp^.stype
+    -- ©etˆzce se ukl daj¡ v minim ln¡m tvaru
+    -- (je¨tˆ by se daly ukl dat null-terminated...)
+    when dt_string, dt_ustring do
+        -- zjistit po‡et prvk–
+        compute_hval;
+
+        -- vypo‡¡tat odpov¡daj¡c¡ velikost ©etˆzce
+        getstrparams(ptyp^.stype,size,isize,ptyp^.base.getctype^.size,hval);
+
+
+    -- univerz ln¡ pole
+    when dt_uniarray do
+        -- zjistit velikost b ze
+        size:=ptyp^.base.getctype^.size;
+
+        -- zjistit po‡et prvk–
+        compute_hval;
+
+        -- dopo‡¡tat velikost pole podle po‡tu prvk–
+        size*uniint_to_unidata_size(hval)
+
+    -- ostatn¡ typy v pln‚ velikosti
+    when others do
+        verify(588,ptyp^.stype in dts_unitype);
+        size:=ptyp^.size;
+
+    end case;
+  end getimmstoragesize;
+{
+begin
+  if ptyp^.stype in dts_string
+
+    -- ©etˆzce se ukl daj¡ v minim ln¡m tvaru
+    -- (je¨tˆ by se daly ukl dat null-terminated...)
+    then
+      -- zjistit po‡et prvk–
+      case imm.ic
+        -- kondenzovan˜ tvar
+        when ic_condensed do hval:=unsigned_to_uniint(imm.citems.len);
+
+        -- agreg tn¡ tvar
+        when ic_array do
+            if imm.aitems^.list=nil or else imm.aitems^.list^:length=0
+              -- pole je pr zdn‚ => ©etˆzec je pr zdn˜
+              then hval:=ui_0;
+              -- v poli nˆco je => vz¡t posledn¡ HVAL
+              -- (pole je vzestupnˆ set©¡dˆn‚ podle rozsah–)
+              else
+                hval:=imm.aitems^.list^[imm.aitems^.list^:length].hval;
+                end if;
+
+        when others do verify(264,true);
+        end case;
+
+      -- vypo‡¡tat odpov¡daj¡c¡ velikost ©etˆzce
+      getstrparams(ptyp^.stype,size,isize,ptyp^.base.getctype^.size,hval);
+
+    -- ostatn¡ typy v pln‚ velikosti
+    else 
+      size:=ptyp^.size;
+      end if;
+  end getimmstoragesize;
+}
+
+
+{
+----------------------------------------------------------------------------------------------------
+override setstackframe =
+-- Nastav¡ typ stackframe procedury.
+----------------------------------------------------------------------------------------------------
+var
+  frame            : istackframe;      -- typ stackframe
+
+begin
+  -- nem  ji‘ p©i©azen typ stackframe ?
+  if i_getstackframe(proc^)<>isf_default then
+    ce^.seterror({CCERR=}000388,ce_stackframeset);
+    ce^.setparam(symqident(proc));
+    {%%POS}
+    ce^.raiseerror;
+    end if;
+
+  -- ur‡it typ stackframe
+  i_idtostackframe(id,frame);
+  if frame=isf_default then
+    ce^.seterror({CCERR=}000389,ce_i_stackframe);
+    ce^.setparam(id);
+    {%%POS}
+    ce^.raiseerror;
+    end if;
+
+  -- p©i©adit konvenci
+  i_setstackframe(proc^,frame);
+  end setstackframe;
+}
+
+
+----------------------------------------------------------------------------------------------------
+override unidata_addr_to_hex_string =
+-- P©evod UNIDATA_ADDR na hexadecim ln¡ z pis v d‚lce podporovan‚ t¡mto CPU.
+----------------------------------------------------------------------------------------------------
+with
+  standard.conversions;
+
+begin
+  result:=unsigned_to_radix_string(imm32_to_unsigned(unidata_addr_to_imm32(ud)),16);
+  end unidata_addr_to_hex_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+override unidata_size_to_hex_string =
+-- P©evod UNIDATA_SIZE na hexadecim ln¡ z pis v d‚lce podporovan‚ t¡mto CPU.
+----------------------------------------------------------------------------------------------------
+with
+  standard.conversions;
+
+begin
+  result:=unsigned_to_radix_string(imm32_to_unsigned(unidata_size_to_imm32(ud)),16);
+  end unidata_size_to_hex_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+entry =
+-- Inicializace.
+----------------------------------------------------------------------------------------------------
+begin
+  -- maxim ln¡ velikost ©etˆzce
+  maxstrhval:=cpu32_string_hval;
+
+  -- velikost intern¡ ‡ sti ©etˆzce
+  strisize:=cpu32_string_isize;
+
+  -- implicitn¡ zarovn n¡
+  defaultalign:=cpu32_defaultalign;
+
+  -- velikost intern¡ ‡ sti t©¡dy
+  classisize:=cpu32_classisize;
+
+  -- offsety intern¡ch ‡ st¡ t©¡dy
+  class_tag:=imm32_to_unidata_addr(cpu32_class_tag);
+  class_status:=imm32_to_unidata_addr(cpu32_class_status);
+
+  -- stavy
+  status_none:=imm32_to_uniint(cpu32_status_none);
+  status_inited:=imm32_to_uniint(cpu32_status_inited);
+  end entry;
+
+
+
+end cp_cpuspecific;

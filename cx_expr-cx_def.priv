@@ -1,0 +1,1519 @@
+----------------------------------------------------------------------------------------------------
+module private {cx_expr.}cx_def =
+-- P©eklada‡ Flexu.
+-- Definice stromov‚ho tvaru v˜razu a z kladn¡ operace.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 19.06.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+class private expinfo =
+-- informace o pr–bˆhu anal˜zy
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static init =
+    -- Inicializace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      phase:=ep_syntax;
+      pass2:=_pass2;
+    --generic:=false;
+      typ:=_typ;
+      final:=_final;
+      end init;
+
+    end expinfo;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure newnode =
+-- Vytvo©en¡ nov‚ho uzlu stromu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat pamˆŸ
+  case ntype
+    when nt_operator  do new pexpoper(node);
+    when nt_unary     do new pexpunary(node);
+    when nt_component do new pexpcomponent(node);
+    when nt_imm       do new pexpimm(node);
+    when nt_range     do new pexprange(node);
+    when nt_list      do new pexplist(node);
+    when nt_item      do new pexpitem(node);
+    when nt_index     do new pexpindex(node);
+    when nt_ref       do new pexpref(node);
+    when nt_deref     do new pexpderef(node);
+    when nt_attrib    do new pexpattrib(node);
+    when nt_aggregate do new pexpaggregate(node);
+    when nt_callspec  do new pexpcallspec(node);
+    when nt_this      do new pexpthis(node);
+    when nt_current   do new pexpcurrent(node);
+    when nt_call      do new pexplist(node);
+    when nt_typecast  do new pexplist(node);
+    --%%TECH NT_NONE se pou‘¡v  pro reprezentaci nezparsovateln˜ch v˜raz–
+    when nt_none      do new pexpnode(node);
+    when others       do verify(12,true);
+    end case;
+
+  -- inicializovat
+  node^.ntype:=ntype;
+  node^.org:=info.phase;
+  node^.zprac:=info.phase;
+  end newnode;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure newnodex =
+-- Jako NEWNODE, ale £rove¤ zpracov n¡ uzlu (EXPNODE.ZPRAC) nastav¡ na
+-- minimum.
+----------------------------------------------------------------------------------------------------
+begin
+  newnode(node,info,ntype);
+  node^.zprac:=node^.zprac:first;
+  end newnodex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure newtree =
+-- Vytvo©en¡ nov‚ho podstromu.
+----------------------------------------------------------------------------------------------------
+var
+  p                : pexpnode;                   -- nov˜ uzel
+
+begin
+  -- vytvo©it uzel
+  newnode(p,info,ntype);
+
+  -- za©adit do stromu
+  p^.sub:=node;
+  node:=p;
+  end newtree;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure derivenode =
+-- Podle dodan‚ho uzlu odvod¡ nov˜ uzel.                                  
+-- P©evezme typ, druh z©etˆzen¡, pozici a p©¡znaky. Dynamick‚ atributy se nep©eb¡raj¡.                                                               }
+----------------------------------------------------------------------------------------------------
+begin
+  -- vytvo©it uzel 
+  newnode(node,info,ntype);
+
+  -- p©evz¡t nˆkter‚ atributy 
+  node^.t:=srcnode^.t;
+  node^.concatkind:=srcnode^.concatkind;
+  node^.nflags:=srcnode^.nflags;
+
+  -- p©evz¡t pozici                          
+  srcnode^.getpos(node^.pos);
+  end derivenode;
+  
+
+
+----------------------------------------------------------------------------------------------------
+procedure lextobinaryoper =
+-- P©evede lexik ln¡ symbol na bin rn¡ oper tor
+----------------------------------------------------------------------------------------------------
+begin
+  case lex
+    -- p©i©azen¡
+    when lex_assign     do result:=op_assign;
+
+    -- multiplika‡n¡ oper tory
+    when lex_mul        do result:=op_mul;
+    when lex_div        do result:=op_div;
+    when lex_idiv       do result:=op_idiv;
+    when lex_imod       do result:=op_imod;
+    when lex_shl        do result:=op_shl;
+    when lex_shr        do result:=op_shr;
+
+    -- adi‡n¡ oper tory
+    when lex_add        do result:=op_add;
+    when lex_sub        do result:=op_sub;
+    when lex_concat     do result:=op_concat;
+
+    -- rela‡n¡ oper tory
+    when lex_eq         do result:=op_eq;
+    when lex_ne         do result:=op_ne;
+    when lex_lt         do result:=op_lt;
+    when lex_le         do result:=op_le;
+    when lex_gt         do result:=op_gt;
+    when lex_ge         do result:=op_ge;
+    when lex_in         do result:=op_in;
+    when lex_not        do result:=op_notin;
+
+    -- logick‚ oper tory
+    when lex_and        do result:=op_and;
+    when lex_or         do result:=op_or;
+    when lex_xor        do result:=op_xor;
+    when lex_then       do result:=op_and_then;
+    when lex_else       do result:=op_or_else;
+
+    -- jin‚ oper tory nezn m
+    when others         do result:=op_none;
+    end case;
+  end lextobinaryoper;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure lextounaryoper =
+-- P©evede lexik ln¡ symbol na un rn¡ oper tor.
+----------------------------------------------------------------------------------------------------
+begin
+  case lex
+    -- un rn¡ oper tory s nejvy¨¨¡ prioritou
+    when lex_not        do result:=un_not;
+    when lex_abs        do result:=un_abs;
+    when lex_succ       do result:=un_succ;
+    when lex_pred       do result:=un_pred;
+
+    -- un rn¡ adi‡n¡ oper tory
+    when lex_add        do result:=un_plus;
+    when lex_sub        do result:=un_minus;
+
+    -- jin‚ oper tory nezn m
+    when others         do result:=un_none;
+    end case;
+  end lextounaryoper;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure setid (
+    id             : out pentityident;           -- novˆ vytvo©en˜ identifik tor
+    _id            : in tentityident) =          -- p©i©azovan˜ identifik tor
+-- Dosad¡ identifik tor.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat pamˆŸ
+  new id range _id:length;
+
+  -- p©i©adit identifik tor
+  id^:=_id;
+  end setid;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expnode =
+-- Uzel
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static newtype =
+    -- Vytvo©¡ do‡asn˜ typ a dopln¡ do nˆj implicitn¡ hodnoty.
+    ------------------------------------------------------------------------------------------------
+    with
+      cd_decl,cd_decl.cd_create;
+
+    var
+      p            : pentity_type;               -- typ
+      p_context    : tcontext;                   -- kontext 
+
+    begin
+      -- vytvo©it do‡asn˜ typ
+      d_create_temporary_type(curr,p,p_context,stype,size);
+
+      -- konec deklarace
+      d_end_temporary_type(p^);
+
+      -- a pohled na nˆj
+      t.init(curr,p);
+      end newtype;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static settype =
+    -- P©i©ad¡ v˜razu typ.
+    ------------------------------------------------------------------------------------------------
+    begin
+      t.init(curr,ptyp);
+      end settype;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static settypeunchecked =
+    -- P©i©ad¡ v˜razu Unchecked view typu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      t.initunchecked(ptyp);
+      end settypeunchecked;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static setunchecked =
+    -- P©i©ad¡ typ v˜razu UNCHECKED.
+    ------------------------------------------------------------------------------------------------
+    begin
+      t:=ptyp;
+      t.setunchecked;
+      end setunchecked;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual gettype =
+    -- INDEX-t˜ typ uzlu
+    ------------------------------------------------------------------------------------------------
+    begin
+      verify(287,index<>0);
+      typ:=^t;
+      end gettype;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual gettypecount =
+    -- Po‡et typ– uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=1;
+      end gettypecount;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual getsymbol =
+    -- Symbol souvisej¡c¡ s uzlem (je-li nˆjak˜).
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=nil;
+      end getsymbol;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static loadpos =
+    -- Nastav¡ pozici uzlu podle pozice posledn¡ho symbolu.
+    ------------------------------------------------------------------------------------------------
+    use
+      cc_lex;
+
+    begin
+      if np_begin in npos then cc_lex.getlexpos(pos.b,level,false); end if;
+      if np_end in npos then cc_lex.getlexpos(pos.e,level,true); end if;
+      end loadpos;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static setpos =
+    -- Nastav¡ pozici uzlu podle dodan‚ pozice.
+    ------------------------------------------------------------------------------------------------
+    begin
+      pos:=_pos;
+      end setpos;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static setpospart =
+    -- Nastav¡ pozici uzlu podle dodan‚ pozice symbolu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if np_begin in npos then pos.b:=_pos; end if;
+      if np_end in npos then pos.e:=_pos; end if;
+      end setpospart;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static getpos =
+    -- Zjist¡ pozici v˜razu.
+    ------------------------------------------------------------------------------------------------
+    use
+      cc_lex;
+
+    var
+      p                : pexpnode;
+      __pos            : lexposblock;
+
+    begin
+      -- %%X Ne¨lo by tenhle algoritmus nˆjak optimalizovat ?
+      -- Nap©¡klad vˆdˆt, ‘e nem  smysl prohled vat nˆjak‚ podstromy ?
+      _pos.b:=pos.b;
+      _pos.e:=pos.e;
+      p:=sub;
+      while p<>nil loop
+        p^.getpos(__pos);
+        if cc_lex.cmplexposb(__pos.b,_pos.b) then _pos.b:=__pos.b; end if;
+        if cc_lex.cmplexposa(__pos.e,_pos.e) then _pos.e:=__pos.e; end if;
+        p:=p^.next;
+        end loop;
+      end getpos;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static errpos =
+    -- Dosad¡ pozici v˜razu do posledn¡ho chybov‚ho hl ¨en¡.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_def.cc_var;
+      
+    var
+      _pos             : lexposblock;
+
+    begin
+      getpos(_pos);
+      ce^.setpos(_pos);
+      end errpos;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    var
+      rta          : rtattrib;
+
+    begin
+      if concatkind<>nck_unknown
+        then result:="<" & nodeconcatkindtxt[concatkind] & ">";
+        else result:='';
+        end if;
+      if rta_avail<>rtattribset:[] then
+        result & "<";
+        for rta in rtattrib loop
+          if rta in rta_avail then
+            if rta in rta_used
+              then result & '+:' & rtattribtxt[rta] & ",";
+              else result & '-:' & rtattribtxt[rta] & ",";
+              end if;
+            end if;
+          end loop;
+        result[result:length]:=">";
+        end if;
+      end dump;
+
+    end expnode;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expambiguous =
+-- Uzel s nejednozna‡nˆ ur‡en˜m typem
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static addtype =
+    -- Do tabulku typ– p©id  zadan˜ typ (i kdyby byl redundantn¡).
+    ------------------------------------------------------------------------------------------------
+    type
+      p_machine_pointer = ^unchecked for machine_pointer use true;
+
+    var
+      _tlist       : tlist:type;
+      x            : ^tlist^:base;
+
+    begin
+      if not set0 {tlist=nil or else tlist^:length=0}
+
+        -- nult˜ typ se ukl d  jinak
+        then
+          t:=typ;
+          el0:=el;
+          er0:=er;
+          psym0:=psym;
+          set0:=true;
+
+        -- ostatn¡ typy do pole
+        else
+          -- realokovat pamˆŸ
+          if tlist=nil then
+            new tlist range tlistinit;
+          elsif tlist^:length=tlist^:last then
+            --%%TODO(ADJUST) adjust tlist range tlist^:last+tlistdelta;
+            new _tlist range tlist^:last+tlistdelta;
+            _tlist^:=tlist^;
+            discard tlist;
+            tlist:=_tlist;
+            end if;
+
+          -- doplnit £daje %%TODO(AGGREGATE) %%TODO(STRING_ADJUST)        
+          new x;
+          x^.t:=typ;
+          x^.el:=el;
+          x^.er:=er;
+          x^.psym:=psym;
+          tlist^ & x^;
+          discard p_machine_pointer(x);
+          end if;
+      end addtype;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure checktype =
+    -- True, m -li v˜raz p©i©azen typ, se kter˜m souvis¡ zadan˜ symbol.
+    ------------------------------------------------------------------------------------------------
+    var
+      i            : tlist^:range:type;
+      
+    begin
+      result:=false;
+
+      -- odpov¡d  hned pro nult˜ typ
+      if set0 and psym0=psym then
+        result:=true;
+
+      -- zkoumat d l
+      elsif tlist<>nil then
+        for i in tlist^:range loop
+          if tlist^[i].psym=psym then
+            result:=true;
+            return;
+            end if;
+          end loop;
+        end if;
+      end checktype;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override gettype =
+    -- INDEX-t˜ typ uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if index=0
+        then typ:=^t
+        else 
+          verify(286,(tlist=nil) or else (index>tlist^:length));
+          typ:=^tlist^[index].t;
+          end if;
+      end gettype;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static gettypeinfo =
+    -- INDEX-t˜ typ uzlu v‡etnˆ dopl¤kov˜ch informac¡.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if index=0
+        then
+          typ:=^t;
+          eli:=el0;
+          eri:=er0;
+          psym:=psym0;
+        else
+          verify(295,(tlist=nil) or else (index>tlist^:length));
+          typ:=^tlist^[index].t;
+          eli:=tlist^[index].el;
+          eri:=tlist^[index].er;
+          psym:=tlist^[index].psym;
+          end if;
+      end gettypeinfo;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static gettypesym =
+    -- Symbol souvisej¡c¡ s INDEX-t˜m typem uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if index=0
+        then psym:=psym0
+        else
+          verify(298,(tlist=nil) or else (index>tlist^:length));
+          psym:=tlist^[index].psym;
+          end if;
+      end gettypesym;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static gettypeorigin =
+    -- Zdrojov‚ typy souvisej¡c¡ s INDEX-t˜m typem uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if index=0
+        then
+          eli:=el0;
+          eri:=er0;
+        else
+          verify(300,(tlist=nil) or else (index>tlist^:length));
+          eli:=tlist^[index].el;
+          eri:=tlist^[index].er;
+          end if;
+      end gettypeorigin;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override gettypecount =
+    -- Po‡et typ– uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=(set0=true):ord;
+      if tlist<>nil then
+        result+tlist^:length;
+        end if;
+      end gettypecount;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static resolve =
+    -- Zvol¡ INDEX-t˜ typ jako definitivn¡.
+    ------------------------------------------------------------------------------------------------
+    begin
+      verify(288,index>0 and then (tlist=nil or else index>tlist^:length));
+
+      -- zkop¡rovat
+      if index>0 then
+        t:=tlist^[index].t;
+        el0:=tlist^[index].el;
+        er0:=tlist^[index].er;
+        psym0:=tlist^[index].psym;
+        end if;
+
+      -- zru¨it seznam typ–
+      discard tlist;
+
+      -- vyhodnoceno
+      resolved:=true;
+      end resolve;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static isresolved =
+    -- True, m -li uzel p©i©azen definitivn¡ typ.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=resolved;
+      end isresolved;
+
+    end expambiguous;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expnoper =
+-- Obecn˜ oper tor
+----------------------------------------------------------------------------------------------------
+
+    end expnoper;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expoper =
+-- Oper tor
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static setoper =
+    -- Dosad¡ do uzlu oper tor.
+    ------------------------------------------------------------------------------------------------
+    begin
+      oper:=_oper;
+      assign:=_assign;
+      end setoper;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static split =
+    -- Oddˆl¡ podv˜razy od oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      er:=sub^.next;
+      el^.next:=nil;
+      sub:=nil;
+      end split;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static join =
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    begin
+      sub:=el;
+      el^.next:=er;
+      end join;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get =
+    -- Vr t¡ podv˜razy oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      er:=sub^.next;
+      end get;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO(ANCESTOR) result:=this:ancestor.dump;
+
+      -- oper tor
+      result & expopertxt[oper];
+      if assign then 
+        result & ' (:=)'; 
+        end if;
+      end dump;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- Inicializace
+    ------------------------------------------------------------------------------------------------
+    begin
+      arity:=eoa_2;
+      end entry;
+
+    end expoper;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expunary =
+-- Un rn¡ oper tor
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static setoper =
+    -- Dosad¡ do uzlu oper tor.
+    ------------------------------------------------------------------------------------------------
+    begin
+      oper:=_oper;
+      assign:=_assign;
+      end setoper;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static split =
+    -- Oddˆl¡ podv˜raz od oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      sub:=nil;
+      end split;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static join =
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    begin
+      sub:=el;
+      sub^.next:=nil;
+      end join;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get =
+    -- Vr t¡ podv˜raz oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      end get;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO(ANCESTOR) result:=this:ancestor.dump;
+
+      -- oper tor
+      result & expunarytxt[oper];
+      if assign then result & ' (:=)'; end if;
+      end dump;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- Inicializace
+    ------------------------------------------------------------------------------------------------
+    begin
+      arity:=eoa_1;
+      end entry;
+
+    end expunary;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expcomponent =
+-- Komponenta
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static setid =
+    -- Dosad¡ do komponenty jej¡ identifik tor.
+    ------------------------------------------------------------------------------------------------
+    begin
+      current module.setid(id,_id);
+      end setid;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override getsymbol =
+    -- Symbol souvisej¡c¡ s uzlem (je-li nˆjak˜).
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=s.psym;
+      end getsymbol;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- komponenta
+      if id=nil
+        then result:='?'
+        else
+          --%%TODO(ANCESTOR) result:=this:ancestor.dump;
+          if sub=nil
+            then result & entityident_to_string(id^);
+            else result & "." & entityident_to_string(id^);
+            end if;
+          end if;
+      end dump;
+
+    end expcomponent;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expimm =
+-- P©¡m  hodnota (konstanta)
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    with
+      cx_imm;
+
+    var
+   {%%TODO(LIB)
+      x                : treal;
+   }
+      s                : t_char32str;
+
+    begin
+      --TODO(ANCESTOR) result:=this:ancestor.dump;
+
+      case imm.ic
+        -- ordinalni hodnota
+        when ic_ordinal   do {%%TODO(LIB) result & linttostr(imm.ui,luniint)};
+
+        -- realne cislo
+        when ic_real      do
+          {%%TODO(LIB)
+            urtox(imm.ur,x);
+            result & floattostr(x);
+          }
+        -- kondenzovan‚ pole
+        when ic_condensed do
+            load_sysstr(imm,s);
+            result & "'" & s & "'";
+
+        -- agreg t pole
+        when ic_array     do result & '<array>';
+
+        -- agreg t recordu
+        when ic_record    do result & '<record>';
+
+        -- agreg t mno‘iny
+        when ic_set       do result & '<set>';
+
+        -- NIL
+        when ic_nil       do result & 'NIL';
+
+    --  -- bin
+    --  when ic_bin       do result & '<binary>';
+
+    --  -- relo
+    --  when ic_relo      do result & '<symbol>';
+
+        when others       do verify(258,true);
+        end case;
+      end dump;
+
+    end expimm;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private exprange =
+-- Rozsah
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static split =
+    -- Oddˆl¡ podv˜razy od oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      er:=sub^.next;
+      el^.next:=nil;
+      sub:=nil;
+      end split;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static join =
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    begin
+      sub:=el;
+      el^.next:=er;
+      end join;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get =
+    -- Vr t¡ podv˜razy oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      er:=sub^.next;
+      end get;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO(ANCESTOR) result:=this:ancestor.dump;
+
+      -- rozsah
+      result & '..';
+      end dump;
+
+    end exprange;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private explist =
+-- Seznam v˜raz–
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static split =
+    -- Oddˆl¡ prefix a argumenty.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if qualified
+        then
+          el:=sub;
+          arglist:=pexpitem(sub^.next);
+          el^.next:=nil;
+          sub:=nil;
+        else
+          el:=nil;
+          arglist:=pexpitem(sub);
+          sub:=nil;
+          end if;
+      end split;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static join =
+    -- Slou‡¡ prefix a argumenty.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if qualified
+        then
+          sub:=el;
+          el^.next:=arglist;
+        else
+          verify(218,el<>nil);
+          sub:=arglist;
+          end if;
+      end join;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get =
+    -- Vr t¡ prefix a argumenty.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if qualified
+        then
+          el:=sub;
+          arglist:=pexpitem(sub^.next);
+        else
+          el:=nil;
+          arglist:=pexpitem(sub);
+          end if;
+      end get;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static getarglist =
+    -- Vr t¡ argumenty.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if qualified
+        then arglist:=pexpitem(sub^.next)
+        else arglist:=pexpitem(sub);
+        end if;
+      end getarglist;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO(ANCESTOR) result:=this:ancestor.dump;
+      if qualified
+        then result & ': ( )';
+        else result & '( )';
+        end if;
+      end dump;
+
+    end explist;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expitem =
+-- Polo‘ka seznamu v˜raz–
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static setid =
+    -- Dosad¡ do polo‘ky jej¡ identifik tor.
+    ------------------------------------------------------------------------------------------------
+    begin
+      current module.setid(id,_id);
+      end setid;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override getsymbol =
+    -- Symbol souvisej¡c¡ s uzlem (je-li nˆjak˜).
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=sym;
+      end getsymbol;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static split =
+    -- Oddˆl¡ podv˜razy od oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      er:=sub^.next;
+      el^.next:=nil;
+      sub:=nil;
+      end split;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static join =
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    begin
+      sub:=el;
+      el^.next:=er;
+      end join;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get =
+    -- Vr t¡ podv˜razy oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      er:=sub^.next;
+      end get;
+
+
+
+    ----------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ----------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO(ANCESTOR) result:=this:ancestor.dump;
+      case itype
+        when ei_empty  do result & '<implicitni>';
+        when ei_expr   do ;
+        when ei_ident  do result & 'for ' & entityident_to_string(id^) & ' use';
+        when ei_choice do result & 'for .. use';
+        when ei_others do result & 'for others use';
+        when others    do verify(217,true);
+        end case;
+      end dump;
+
+    end expitem;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expindex =
+-- Selektor pole
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static split =
+    -- Oddˆl¡ podv˜razy od oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      er:=sub^.next;
+      el^.next:=nil;
+      sub:=nil;
+      end split;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static join =
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    begin
+      sub:=el;
+      el^.next:=er;
+      end join;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get =
+    -- Vr t¡ podv˜razy oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      er:=sub^.next;
+      end get;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    -------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO(ANCESTOR) result:=this:ancestor.dump & '[ ]';
+      end dump;
+
+    end expindex;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expref =
+-- Reference
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static split =
+    -- Oddˆl¡ podv˜raz od oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      sub:=nil;
+      end split;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static join =
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    begin
+      sub:=el;
+      sub^.next:=nil;
+      end join;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get =
+    -- Vr t¡ podv˜raz oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      end get;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO(ANCESTOR) result:=this:ancestor.dump;
+
+      -- oper tor
+      result:='(ref) ^' & result;
+      end dump;
+
+    end expref;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expderef =
+-- Dereference
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static split =
+    -- Oddˆl¡ podv˜raz od oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      sub:=nil;
+      end split;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static join =
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    begin
+      sub:=el;
+      sub^.next:=nil;
+      end join;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get =
+    -- Vr t¡ podv˜raz oper toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      el:=sub;
+      end get;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO(ANCESTOR) result:=this:ancestor.dump;
+
+      -- oper tor
+      result & '^ (deref)';
+      end dump;
+
+    end expderef;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expattrib =
+-- Atribut
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static setid =
+    -- Dosad¡ identifik tor atributu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      current module.setid(id,_id);
+      end setid;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override getsymbol =
+    -- Symbol souvisej¡c¡ s uzlem (je-li nˆjak˜).
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=xsym;
+      end getsymbol;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if id=nil
+        then result:=':?';
+        else result:=":" & entityident_to_string(id^);
+        end if;
+      result & ' (' & tattrclasstxt[aclass] & ")";
+      end dump;
+
+    end expattrib;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expaggregate =
+-- Agreg t
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if qualified
+        then result:='type : [ ]'
+        else result:='anonymous : [ ]';
+        end if;
+      end dump;
+
+    end expaggregate;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expcallspec =
+-- Vol n¡ speci ln¡ metody
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:='call ' & entityident_to_string(tspectypetxt[spectype]);
+      end dump;
+
+    end expcallspec;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expthis =
+-- THIS
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:='THIS';
+      end dump;
+
+    end expthis;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private expcurrent =
+-- CURRENT
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:='CURRENT';
+      end dump;
+
+    end expcurrent;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure dumptree =
+-- Dump stromu na obrazovku.                                                  
+----------------------------------------------------------------------------------------------------
+with
+  standard.conversions;
+
+use
+  cc_debug;
+
+var
+  cont             : set of t_unsigned8;         -- pro kter‚ urovnˆ kreslit pokra‡ovac¡ ‡ ry
+
+    ------------------------------------------------------------------------------------------------
+    procedure dump (
+        level      : in t_unsigned8;             -- uroven vnoreni
+        _expr      : in pexpnode) =              -- vyraz
+    -- Vypis rozlozeneho vyrazu.
+    ------------------------------------------------------------------------------------------------
+    with
+      advanced,
+      advanced.low_level,
+      advanced.low_level.bit_operations;
+
+        --------------------------------------------------------------------------------------------
+        procedure gettypedesc (
+            t      : in typeview;
+            eli    : in typeindex;
+            eri    : in typeindex;
+            psym   : in pentity)
+            return t_char32str =
+        --------------------------------------------------------------------------------------------
+        var
+          p            : pentity_type;
+
+        begin
+          case t.tview
+            when tview_null       do result:='';
+            when tview_aggregate  do result:='(aggregate)';
+            when tview_incomplete do result:='(incomplete)';
+            when tview_partial    do result:='(partial)';
+            when tview_full       do
+                result:='';
+                if t.stype<>dt_undef then
+                  -- jm‚no typu
+                  p:=t.getutype;
+                  if (p<>nil) and (p^.id<>nil)
+                    then result:=entityident_to_string(p^.id^)
+                    else
+                      result:=tdatatypetxt[t.stype];
+                      if t.stype in dts_ordinal then
+                        result & " " & unsigned_to_string(unidata_bitsize_to_unsigned(t.getbits));
+                      elsif t.stype=dt_string then
+                        result & " " & unsigned_to_string(uniint_to_unsigned(t.getctype()^.srange.getctype()^.hval));
+                        end if;
+                      end if;
+                  end if;
+            when tview_unchecked  do result:=':unchecked';
+            when others           do result:='';
+            end case;
+
+          if (eli<>0) or (eri<>0) then
+            result & ', [' & unsigned_to_string(eli) & "," & unsigned_to_string(eri) & "]";
+            end if;
+
+          if (psym<>nil) and (psym^.id<>nil) then
+            result & ', ' & entityident_to_string(psym^.id^);
+            end if;
+          end gettypedesc;
+
+    var
+      i            : t_unsigned8;
+      s            : t_char32str;
+      prefix       : t_char32str;
+      pt           : ptypeview;
+      eli          : typeindex;
+      eri          : typeindex;
+      psym         : pentity;
+      expr         : pexpnode;
+
+    begin
+      expr:=_expr;
+      while expr<>nil loop
+        s:='';
+        -- zobrazit hrany grafu 
+        if level>0 then
+          for i in 1..level-1 loop
+            if i in cont
+              then s & '³ '
+              else s & '  ';
+              end if;
+            end loop;
+          end if;
+
+        if level>0
+          then prefix:=s & '  '
+          else prefix:=s;
+          end if;
+        if expr^.sub<>nil
+          then prefix & '³   '
+          else prefix & '    ';
+          end if;
+
+        if level>0 then
+          if expr^.next<>nil
+            then
+              s & 'ÃÄ';
+              --%%TODO(UNION) sjednocen¡ mno‘in pro T:size>4 je¨tˆ neum¡me
+              --cont+cont:type:[level];
+              bit_set(cont,t_bit_index(level));
+            else
+              s & 'ÀÄ';
+              --%%TODO(UNION) rozd¡l mno‘in pro T:size>4 je¨tˆ neum¡me
+              --cont-cont:type:[level];
+              bit_reset(cont,t_bit_index(level));
+              end if;
+          end if;
+        s & 'o ';
+
+        -- zobrazit z klad uzel
+        s & expr^.dump;
+
+        -- uzel s jednozna‡n˜m typem
+        if expr^.ntype not in nts_ambiguous then
+          s & ', ' & gettypedesc(expr^.t,0,0,nil);
+
+        -- potenci lnˆ nejednozna‡n˜ uzel s jedn¡m typem
+        elsif pexpambiguous(expr)^.gettypecount=1 then
+          pexpambiguous(expr)^.gettypeinfo(0,pt,eli,eri,psym);
+          s & ', ' & gettypedesc(pt^,eli,eri,psym);
+          end if;
+
+        cc_debug.debug_dump(s);
+
+        -- uzel s nejednozna‡n˜m typem
+        if (expr^.ntype in nts_ambiguous) and (pexpambiguous(expr)^.gettypecount>1) then
+          for i in 0..pexpambiguous(expr)^.gettypecount-1 loop
+            pexpambiguous(expr)^.gettypeinfo(i,pt,eli,eri,psym);
+            cc_debug.debug_dump(prefix & unsigned_to_string(i) & ': ' & gettypedesc(pt^,eli,eri,psym));
+            end loop;
+          end if;
+
+        -- zobrazit podgraf 
+        dump(level+1,expr^.sub);
+
+        -- prejit na sousedni uzel 
+        expr:=expr^.next;
+        end loop;
+      end dump;
+
+begin
+  cont:=cont:full;
+  dump(0,expr_);
+  end dumptree;
+
+
+
+end cx_def;

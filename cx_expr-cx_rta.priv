@@ -1,0 +1,455 @@
+----------------------------------------------------------------------------------------------------
+module private cx_rta =
+-- P©eklada‡ Flexu.
+-- V˜bˆr dynamick˜ch atribut– pro r–zn‚ typy uzl–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 01.03.2002 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_attr;
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_provided_attributes =
+-- Pro zadan˜ uzel napln¡ mno‘inu dynamick˜ch atribut–, kter‚ je schopen
+-- poskytnout sv‚mu kontextu.
+----------------------------------------------------------------------------------------------------
+var
+  pvar             : pentity_var;                -- souvisej¡c¡ promˆnn 
+  partyp           : typeview;
+
+begin
+  case expr^.ntype
+    -- komponenta
+    when nt_component do
+        -- souvisej¡c¡ symbol
+        pentity(pvar):=pexpcomponent(expr)^.s.psym;
+        verify(520,pvar=nil);
+
+        -- zaj¡maj¡ n s jen promˆnn‚
+        if expr^.nclass in ncs_value and pvar^.etype=et_var then
+          -- %%LANG Komponenta m–‘e m¡t dynamick‚ atributy pokud spl¤uje
+          -- n sleduj¡c¡:
+          --   -- je to parametr typu t©¡da, pak m  dynamick‚ atributy :tag
+          --      a :size (mus¡ se o¨et©it takhle explicitnˆ, proto‘e pro
+          --      parametry typu t©¡da se dynamick‚ atributy neuv dˆj¡),
+          if (pvar^.pparam<>nil) and t_is_stype(expr^.t,dt_class) then
+            expr^.rta_avail+rtattribset:[rta_size];
+            expr^.rta_avail+rtattribset:[rta_tag];
+
+          --   -- je to parametr, pak m  dynamick‚ atributy parametru,
+          elsif pvar^.pparam<>nil then
+            expr^.rta_avail:=pvar^.pparam^.rta_avail;
+
+          --   -- promˆnn  typu t©¡da => :tag (jen :tag, u promˆnn‚ lze
+          --      velikost staticky zjistit.
+          elsif t_is_sts(expr^.t,dts_class) then
+            expr^.rta_avail+rtattribset:[rta_tag];
+            end if;
+
+          --   -- ref promˆnn  constrained typu => :tag,
+          --   -- ref promˆnn  unconstrained typu => :size, :last, :tag.
+          {%%X Ref promˆnn‚ nejsou v t‚to verzi podporov ny }
+
+
+        {
+          --   -- unchecked parametr bez uveden‚ho typu => :size, :tag,
+          if (pvar^.pparam<>nil) and (pvar^.pparam^.pass=pp_unchecked) and not pvar^.pparam^.typ.isset then
+            expr^.rta_avail+[rta_size];
+            expr^.rta_avail+[rta_tag];
+
+          --   -- unchecked parametr s uveden˜m constrained typem => :tag,
+          --   -- unchecked parametr s uveden˜m unconstrained typem => :size,
+          --      :last, :tag
+          elsif (pvar^.pparam<>nil) and (pvar^.pparam^.pass=pp_unchecked)
+          and pvar^.pparam^.typ.isset then
+            expr^.rta_avail+[rta_tag];
+            if t_is_sts(expr^.t,dts_unconstrained) then
+              expr^.rta_avail+[rta_size];
+              expr^.rta_avail+[rta_last];
+              end if;
+
+          --   -- class/virtual parametr constrained typu => :size, :tag,
+          --   -- class/virtual parametr unconstrained typu => :size, :last,
+          --      :tag,
+          elsif (pvar^.pparam<>nil) and (pvar^.pparam^.pass in [pp_class,pp_virtual]) then
+            expr^.rta_avail+[rta_size];
+            expr^.rta_avail+[rta_tag];
+            if t_is_sts(expr^.t,dts_unconstrained) then
+              expr^.rta_avail+[rta_last];
+              end if;
+        }
+          end if;
+
+
+    -- selektor pole
+    when nt_index do
+        -- zaj¡maj¡ n s jen hodnoty
+        if expr^.nclass in ncs_value then
+          -- %%LANG Prvek pole typu t©¡da m  dynamick˜ atribut :tag.
+          if t_is_sts(expr^.t,dts_class) then
+            expr^.rta_avail+rtattribset:[rta_tag];
+            end if;
+          end if;
+
+
+    -- reference
+    when nt_ref do
+        -- zaj¡maj¡ n s jen hodnoty
+        if expr^.nclass in ncs_value then
+          -- %%LANG Reference m–‘e m¡t v¨echny dynamick‚ atributy, kter‚
+          -- obsahuje v˜sledn˜ typ pointer. Ten je p©eb¡r n od referencovan‚ho
+          -- podv˜razu.
+          expr^.rta_avail:=expr^.t.getpattrib;
+          end if;
+
+
+    -- dereference
+    when nt_deref do
+        -- zaj¡maj¡ n s jen hodnoty
+        if expr^.nclass in ncs_value then
+          -- %%LANG Dereference m–‘e m¡t v¨echny dynamick‚ atributy, kter‚
+          -- definuje typ dereferencovan‚ho pointeru. Dereference pointeru na
+          -- t©¡du nav¡c zp©¡stup¤uje atributy :tag a :size.
+          expr^.rta_avail:=expr^.sub^.t.getpattrib;
+          if t_is_stype(expr^.sub^.t.getbase(curr),dt_class) then
+            expr^.rta_avail+rtattribset:[rta_size];
+            expr^.rta_avail+rtattribset:[rta_tag];
+            end if;
+          end if;
+
+
+    -- oper tor
+    when nt_operator do
+        -- zaj¡maj¡ n s jen hodnoty
+        if expr^.nclass in ncs_value then
+          -- %%LANG Oper tor z©etˆzen¡ s unconstrained typem v˜sledku m 
+          -- dynamick‚ atributy :size a :last.
+          if (pexpoper(expr)^.oper=op_concat) and t_is_stype(expr^.t,dt_uarray) then
+            expr^.rta_avail+rtattribset:[rta_size];
+            expr^.rta_avail+rtattribset:[rta_last];
+            end if;
+          end if;
+
+
+    -- this
+    when nt_this do
+        -- zaj¡maj¡ n s jen hodnoty
+        if expr^.nclass in ncs_value then
+          -- %%LANG THIS odkazuj¡c¡ na instanci t©¡dy m  dynamick‚ atributy
+          -- :size a :tag.
+          if t_is_stype(expr^.t,dt_class) then
+            expr^.rta_avail+rtattribset:[rta_size];
+            expr^.rta_avail+rtattribset:[rta_tag];
+            end if;
+          end if;
+
+
+    -- p©etypov n¡
+    when nt_typecast do
+        -- zaj¡maj¡ n s jen hodnoty
+        if expr^.nclass in ncs_value then
+          -- %%LANG P©etypov n¡ objektu, kter˜ m  dynamick‚ atributy :size nebo
+          -- :last, na unconstrained typ m  atributy :size a :last.
+          if t_is_sts(expr^.t,dts_unconstrained) and (expr^.sub^.next^.rta_avail*rtattribset:[rta_size,rta_last]<>rtattribset:[]) then
+            expr^.rta_avail+rtattribset:[rta_size];
+            expr^.rta_avail+rtattribset:[rta_last];
+            end if;
+          end if;
+
+
+    -- atribut
+    when nt_attrib do
+        -- zaj¡maj¡ n s jen hodnoty
+        if expr^.nclass in ncs_value then
+          -- %%LANG Atribut :unchecked aplikovan˜ na objekt, kter˜ m  dynamick‚
+          -- atributy :size nebo :last, m  dynamick˜ atribut :size
+          if (pexpattrib(expr)^.ata=ata_var_unchecked) and (expr^.sub^.rta_avail*rtattribset:[rta_size,rta_last]<>rtattribset:[]) then
+            expr^.rta_avail+rtattribset:[rta_size];
+            end if;
+          end if;
+
+
+    -- u ostatn¡ch typ– uzl– nemaj¡ dynamick‚ atributy smysl
+    end case;
+  end x_rta_provided_attributes;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_require_attribute =
+-- Ovˆ©¡, zda je zadan˜ v˜raz schopen poskytnout po‘adovan˜ dynamick˜ atribut
+-- sv‚mu kontextu a za©ad¡ jej do mno‘iny pou‘it˜ch dynamick˜ch atribut–.
+-- Procedura uspˆje i v situaci, kdy po‘adovan˜ atribut sice nen¡ k dispozici,
+-- ale je k dispozici jin˜ atribut, ze kter‚ho je po‘adovan˜ odvoditeln˜.
+-- Pokud po‘adovan˜ atribut nen¡ k dispozici, zp–sob¡ chybu.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+var
+  rta              : rtattrib;
+
+begin
+  rta:=_rta;
+
+  -- nen¡-li v mno‘inˆ dostupn˜ch, zkusit jin˜, ze kter‚ho je odvoditeln˜
+  if rta not in expr^.rta_avail then
+    case rta
+      -- :size
+      when rta_size     do
+          -- %%LANG Dynamick˜ atribut :size je odvoditeln˜ z :last a pro
+          -- constrained typy i z:tag
+          if rta_last in expr^.rta_avail then 
+            rta:=rta_last
+          elsif t_is_sts(expr^.t,dts_constrained) and (rta_tag in expr^.rta_avail) then 
+            rta:=rta_tag; 
+            end if;
+
+      -- :last
+      when rta_last     do
+          -- %%LANG Dynamick˜ atribut :last je odvoditeln˜ poze ze :size. Na
+          -- rozd¡l od :last ho nelze odvodit z :tag, proto‘e ten nemus¡
+          -- nutnˆ reprezentovat constrained typ.
+          if rta_size in expr^.rta_avail then 
+            rta:=rta_size; 
+            end if;
+
+      -- ostatn¡ atributy nelze odvozovat
+      end case;
+    end if;
+
+  -- je v mno‘inˆ dostupn˜ch atribut– ?
+  if rta not in expr^.rta_avail then
+    ce^.seterror({CCERR=}000447,ce_nortattr);
+    ce^.setparam(rtattribtxt[rta]);
+    expr^.errpos;
+    ce^.resumeerror;
+    end if;
+
+  -- je¨tˆ nebyl pou‘it ?
+  if rta not in expr^.rta_used then
+    -- za©adit mezi pou‘it‚
+    --%%TODO(UNION) zat¡m neum¡me sjednocen¡ mno‘in
+    --expr^.rta_used+rtattribset:[rta];
+    bit_set(expr^.rta_used,t_bit_index(rta:ord));
+
+    -- pro¨¡©it do podv˜razu
+    case expr^.ntype
+      -- atribut
+      when nt_attrib    do
+          if rta in rtattribset:[rta_size,rta_last] then
+            x_rta_require_attribute(curr,expr^.sub,rta);
+            end if;
+
+      -- p©etypov n¡
+      when nt_typecast  do
+          if rta in rtattribset:[rta_size,rta_last] then
+            x_rta_require_attribute(curr,expr^.sub^.next,rta);
+            end if;
+
+      -- U ostatn¡ch typ– uzl– nen¡ pot©eba nic pro¨i©ovat. Je pravda, ‘e
+      -- sice takov‚ z©etˆzen¡ m–‘e m¡t jako podv˜raz opˆt z©etˆzen¡, to se
+      -- ale o¨et©¡ p©i postupn‚m trasov n¡ stromu zdola nahoru v typov‚
+      -- kontrole vol n¡m X_RTA_CHECK_ATTRIBUTE. Zde se skute‡nˆ jedn  jen o
+      -- pro¨¡©en¡ jednoho jednin‚ho fyzick‚ho dynamick‚ho atribut z ni‘¨¡ch
+      -- pater stromu v˜¨ a ne o zaji¨tˆn¡ existence hodnot, kter‚ na v˜po‡et
+      -- takov‚ho atributu vedou.
+      end case;
+    end if;
+  end x_rta_require_attribute;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_check_attributes =
+-- Ovˆ©¡, zda podv˜razy zadan‚ho uzlu maj¡ v¨echny pot©ebn‚ dynamick‚
+-- atributy.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜razy
+  er               : pexpnode;                   -- podv˜razy
+  arg              : pexpitem;                   -- argument vol n¡ procedury
+
+begin
+  case expr^.ntype
+    -- oper tor
+    when nt_operator do
+        verify(521,pexpoper(expr)^.arity<>eoa_2);
+
+        -- zaj¡maj¡ n s jen hodnoty
+        if expr^.nclass in ncs_value then
+          -- z¡skat podv˜razy
+          pexpoper(expr)^.get(el,er);
+
+          case pexpoper(expr)^.oper
+            -- p©i©azen¡
+            when op_assign do
+                -- %%LANG Mus¡ b˜t splnˆno:
+                --   -- je-li v˜raz na lev‚ stranˆ beztypov˜ unchecked objekt,
+                --      ‡i je-li pod n¡m unconstrained typ (tj. v˜raz je
+                --      atribut :unchecked), mus¡ m¡t atribut :size,
+                if (el^.t.tview=tview_unchecked) and ((el^.t.getutype=nil)
+                or ((el^.ntype=nt_attrib) and t_is_sts(el^.sub^.t,dts_unconstrained))) then
+                  x_rta_require_attribute(curr,el,rta_size);
+                --   -- je-li v˜raz na lev‚ stranˆ unconstrained typu, mus¡ m¡t
+                --      atribut :last,
+                elsif t_is_sts(el^.t,dts_unconstrained) then
+                  x_rta_require_attribute(curr,el,rta_last);
+                  end if;
+                --   -- je-li v˜raz na prav‚ stranˆ beztypov˜ unchecked objekt,
+                --      ‡i je-li pod n¡m unconstrained typ (tj. v˜raz je
+                --      atribut :unchecked), mus¡ m¡t atribut :size,
+                if (er^.t.tview=tview_unchecked) and ((er^.t.getutype=nil)
+                or ((er^.ntype=nt_attrib) and t_is_sts(er^.sub^.t,dts_unconstrained))) then
+                  x_rta_require_attribute(curr,er,rta_size);
+                --   -- je-li v˜raz na prav‚ stranˆ unconstrained array a nen¡
+                --      p©¡m  hodnota, mus¡ m¡t atribut :last.
+                elsif t_is_stype(er^.t,dt_uarray) and (er^.ntype<>nt_imm) then
+                  x_rta_require_attribute(curr,er,rta_last);
+                  end if;
+
+
+            -- z©etˆzen¡
+            when op_concat do
+                -- %%LANG Mus¡ b˜t splnˆno:
+                --   -- je-li to p©i©azovac¡ oper tor a lev˜ operand je
+                --      unconstrained typu a nen¡ s m o sobˆ p©i©azovac¡
+                --      oper tor, pak mus¡ m¡t atribut :last,
+                --   -- lev˜ operand typu unconstrained array mus¡ m¡t atribut
+                --      :last.
+                if pexpoper(expr)^.assign and ((el^.ntype<>nt_operator) or not pexpoper(el)^.assign)
+                and t_is_sts(el^.t,dts_unconstrained) then
+                  x_rta_require_attribute(curr,el,rta_last);
+                elsif t_is_stype(el^.t,dt_uarray) then
+                  x_rta_require_attribute(curr,el,rta_last);
+                  end if;
+                --   -- prav˜ operand typu unconstrained array mus¡ m¡t atribut
+                --      :last.
+                if t_is_stype(er^.t,dt_uarray) then
+                  x_rta_require_attribute(curr,er,rta_last);
+                  end if;
+
+
+            -- porovn n¡
+            when op_eq, op_ne do
+                -- %%LANG Mus¡ b˜t splnˆno:
+                --   -- operand typu unconstrained array mus¡ m¡t atribut :last
+                if t_is_stype(el^.t,dt_uarray) then
+                  x_rta_require_attribute(curr,el,rta_last);
+                  end if;
+                if t_is_stype(er^.t,dt_uarray) then
+                  x_rta_require_attribute(curr,er,rta_last);
+                  end if;
+
+
+            -- pro ostatn¡ operandy nejsou dynamick‚ atributy pot©eba
+            end case;
+          end if;
+
+
+    -- vol n¡ procedury
+    when nt_call do
+        -- %%LANG Pro ka‘d˜ form ln¡ parametr, kter˜ m  nˆjak‚ dynamick‚
+        -- atributy, mus¡ skute‡n˜ atribut buƒ t‚‘ m¡t tyto dynamick‚
+        -- atributy, nebo mus¡ b˜t staticky vypo‡¡tateln‚.
+        pexplist(expr)^.get(el,arg);
+        while arg<>nil loop
+          verify(522,pentity_param(arg^.sym)^.rta_used-rtattribset:[rta_size,rta_last,rta_tag]<>rtattribset:[]);
+
+          -- :tag
+          if (rta_tag in pentity_param(arg^.sym)^.rta_used) and x_rta_is_available(arg^.sub,rta_tag) then
+            x_rta_require_attribute(curr,arg^.sub,rta_tag);
+            end if;
+
+          -- :size
+          if rta_size in pentity_param(arg^.sym)^.rta_used then
+            -- m -li :size => pou‘¡t
+            if x_rta_is_available(arg^.sub,rta_size) then
+              x_rta_require_attribute(curr,arg^.sub,rta_size);
+
+            -- m -li :last => pou‘¡t
+            elsif x_rta_is_available(arg^.sub,rta_last) then
+              x_rta_require_attribute(curr,arg^.sub,rta_last);
+
+            -- m -li tag a je-li constrained typu => pou‘¡t
+            elsif x_rta_is_available(arg^.sub,rta_tag) and t_is_sts(arg^.sub^.t,dts_constrained) then
+              x_rta_require_attribute(curr,arg^.sub,rta_tag);
+
+            -- nem  nic => mus¡ b˜t constrained nebo univerz ln¡ nebo s utajenou strukturou
+            elsif not t_is_sts(arg^.sub^.t,dts_constrained+dts_unitype)
+            and (arg^.sub^.t.tview<>tview_partial) then
+              ce^.seterror({CCERR=}000448,ce_nortattr);
+              ce^.setparam(rtattribtxt[rta_size]);
+              arg^.sub^.errpos;
+              ce^.resumeerror;
+              end if;
+            end if;
+
+          -- :last
+          if rta_last in pentity_param(arg^.sym)^.rta_used then
+            -- m -li :last => pou‘¡t
+            if x_rta_is_available(arg^.sub,rta_last) then
+              x_rta_require_attribute(curr,arg^.sub,rta_last);
+
+            -- m -li :size => pou‘¡t
+            elsif x_rta_is_available(arg^.sub,rta_size) then
+              x_rta_require_attribute(curr,arg^.sub,rta_size);
+
+            -- m -li tag a je-li constrained typu => pou‘¡t
+            elsif x_rta_is_available(arg^.sub,rta_tag) and t_is_sts(arg^.sub^.t,dts_constrained) then
+              x_rta_require_attribute(curr,arg^.sub,rta_tag);
+
+            -- nem  nic => mus¡ b˜t constrained nebo univerz ln¡ nebo s utajenou strukturou
+            elsif not t_is_sts(arg^.sub^.t,dts_constrained+dts_unitype)
+            and (arg^.sub^.t.tview<>tview_partial) then
+              ce^.seterror({CCERR=}000449,ce_nortattr);
+              ce^.setparam(rtattribtxt[rta_last]);
+              arg^.sub^.errpos;
+              ce^.resumeerror;
+              end if;
+            end if;
+
+          -- dal¨¡ parametr
+          arg:=pexpitem(arg^.next);
+          end loop;
+
+
+    -- index pole
+    when nt_index do
+        -- %%LANG Unconstrained array m–‘e (ale nemus¡) m¡t atribut :last,
+        -- podle kter‚ho se validuje hodnota indexu.
+        if t_is_stype(expr^.sub^.t,dt_uarray) and x_rta_is_available(expr^.sub,rta_last) then
+          x_rta_require_attribute(curr,expr^.sub,rta_last);
+          end if;
+
+
+    -- pro ostatn¡ typy uzl– se nic nevynucuje
+    end case;
+  end x_rta_check_attributes;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_is_available =
+-- True, jestli‘e zadan˜ v˜raz poskytuje uveden˜ dynamick˜ atribut.
+----------------------------------------------------------------------------------------------------
+begin
+  case rta
+    -- :size
+    when rta_size do result:=rtattribset:[rta_size,rta_last,rta_tag]*expr^.rta_avail<>rtattribset:[];
+                                     {%%X ^^^^^^^ A co unconstrained typy ? To snad nejde, ne ? }
+
+    -- :last
+    when rta_last do result:=rtattribset:[rta_size,rta_last]*expr^.rta_avail<>rtattribset:[];
+
+    -- pro ostatn¡ atributy nen¡ definov na zastupitelnost
+    when others do result:=rta in expr^.rta_avail;
+    end case;
+  end x_rta_is_available;
+
+
+
+end cx_rta;

@@ -1,0 +1,462 @@
+----- %%TECH Pr ce se seznamem v˜bˆr– --------------------------------------------------------------
+-- Vzhledek k tomu, ‘e Delphi neum¡ textov‚ substituce, mus¡ b˜t pr ce se
+-- seznamem v˜bˆr– ©e¨ena jako $INCLUDE a jednotliv‚ varianty algoritmu se
+-- vol¡ pomoc¡ direktiv:
+--    CC_CHOICE_CASE    - varianty v CASE
+--    CC_CHOICE_ARRAY   - agreg t pole/©etˆzce
+--    CC_CHOICE_SET     - agreg t mno‘iny
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure choice_extend =
+-- Roz¨¡©¡ CLIST o COUNT polo‘ek (pokud je to pot©eba).                       
+----------------------------------------------------------------------------------------------------
+var
+  _list            : clist.list:type;
+
+begin
+  if clist.list=nil then
+    new clist.list range count;
+  elsif clist.list^:length+count>clist.list^:last then
+    --%%TODO(ADJUST) adjust clist.list range clist.list^:length+count;
+    new _list range clist.list^:length+count;
+    _list^:=clist.list^;
+    discard clist.list;
+    clist.list:=_list;
+    end if;
+  end choice_extend;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure choice_add_single =
+-- Vlo‘¡ do seznamu optimalizovan˜ch v˜bˆr– jednu hodnotu.                    
+----------------------------------------------------------------------------------------------------
+use
+  advanced,
+  advanced.low_level,
+  advanced.low_level.unchecked_memory_access;
+
+var
+  ui1      : tuniint;
+  ui2      : tuniint;
+  i        : t_unsigned;
+  _x       : clist.list^:base;
+
+    ------------------------------------------------------------------------------------------------
+    procedure prepend_clist =
+    -- %%TODO(CONCAT) Na za‡ tek ©etˆzce CLIST vlo‘¡ prvek _X.
+    ------------------------------------------------------------------------------------------------
+    var
+      i            : clist.list^:range:type;
+
+    begin
+      succ clist.list^:length;
+      for i in reverse clist.list^:first..clist.list^:last-1 loop
+        clist.list^[i+1]:=clist.list^[i];
+        end loop;
+      clist.list^[1]:=_x;
+      end prepend_clist;
+
+begin
+  -- £plnˆ prvn¡ hodnota 
+  if clist.list=nil or else clist.list^:length=0 then
+    -- realokovat pamˆŸ 
+    choice_extend(clist,1);
+
+    -- p©idat jako prvn¡ prvek %%TODO(AGGREGATE)
+    _x.lval:=ui;
+    _x.hval:=ui;
+  #if cc_choice=CC_CHOICE_ARRAY then;
+    _x.val:=imm;
+  #end if;
+    clist.list^ & _x;
+
+  -- p©ed prvn¡m intervalem (ost©e men¨¡) 
+  elsif ui<clist.list^[1].lval then
+  #if cc_choice<>cc_choice_array then;
+    -- vypo‡¡tat [1].LVAL-1 
+    ui1:=clist.list^[1].lval-ui_1;
+
+    if ui1=ui
+
+      -- tˆsnˆ p©ed prvn¡m intervalem => prodlou‘it interval 
+      then
+        clist.list^[1].lval:=ui;
+
+      -- jinak p©idat dal¨¡ interval 
+      else #end if;
+        -- realokovat pamˆŸ 
+        choice_extend(clist,1);
+
+        -- p©idat jako prvn¡ %%TODO(AGGREGATE) 
+        _x.lval:=ui;
+        _x.hval:=ui;
+      #if cc_choice=cc_choice_array then;
+        _x.val:=imm;
+      #end if;
+        prepend_clist; --%%TODO(CONCAT) clist.list^:=_x & clist.list^;
+      #if cc_choice<>cc_choice_array then;
+        end if;
+      #end if;
+
+  -- za posledn¡m intervalem (ost©e vˆt¨¡) 
+  elsif ui>clist.list^[clist.list^:length].hval then
+  #if cc_choice<>cc_choice_array then;
+    -- vypo‡¡tat [last].HVAL+1 
+    ui1:=clist.list^[clist.list^:length].hval+ui_1;
+
+    if ui1=ui
+
+      -- tˆsnˆ za posledn¡m intervalem => prodlou‘it 
+      then
+        clist.list^[clist.list^:length].hval:=ui;
+
+      -- jinak p©idat dal¨¡ interval 
+      else #end if;
+        -- realokovat pamˆŸ 
+        choice_extend(clist,1);
+
+        -- p©idat jako posledn¡ %%TODO(AGGREGATE) 
+        _x.lval:=ui;
+        _x.hval:=ui;
+      #if cc_choice=cc_choice_array then;
+        _x.val:=imm;
+      #end if;
+        clist.list^ & _x;
+      #if cc_choice<>cc_choice_array then;
+        end if;
+      #end if;
+
+  -- nˆkde mezi
+  else
+    -- p©id van  hodnota pat©¡ do nˆkter‚ho z ji‘ existuj¡c¡ch interval–
+    -- nebo mezi nˆkter‚ dva existuj¡c¡ intervaly
+    i:=1;
+    loop
+      -- spad  do tohoto intervalu ?
+      if ui>=clist.list^[i].lval and ui<=clist.list^[i].hval then
+        -- ohl sit varov n¡
+        --%%X CURR nem me k dispozici... Co s t¡m ?  if cw_duplicate_choice in curr.compv.warns then begin
+          ce^.setwarning({CCERR=}000230,cw_duplicate_choice);
+          -- %%X Zobrazovat, kter˜ v˜bˆr je duplicitn¡; ce^.setparam(...);
+        #if cc_choice=cc_choice_case then;
+          choice^.errpos;
+        #end if;
+          --end if;
+
+        -- a konec
+        break;
+
+      -- teƒ je hodnota jistˆ nad horn¡ mez¡ (jinak by se zpracovala
+      -- v minul‚ iteraci) a jistˆ to nen¡ posledn¡ interval (jinak by se
+      -- zpracovala jako v˜jima je¨tˆ p©ed touto vˆtv¡ IF), tak‘e sta‡¡
+      -- testovat proti doln¡ mezi n sleduj¡c¡ho intervalu, jestli nele‘¡
+      -- mezi I-t˜m a I+1-n¡m intervalem.
+      elsif ui<clist.list^[i+1].lval then
+      #if cc_choice<>cc_choice_array then;
+        -- vypo‡¡tat [I].HVAL+1 a [I+1].LVAL-1
+        ui1:=clist.list^[i].hval+ui_1;
+        ui2:=clist.list^[i+1].lval-ui_1;
+
+        -- vypl¤uje p©esnˆ mezeru mezi intervaly I a I+1 ?
+        if ui1=ui2 then
+          -- slou‡it I-t˜ a I+1-n¡ interval %%TODO(SLICE)
+          clist.list^[i].hval:=clist.list^[i+1].hval;
+          advanced.low_level.unchecked_memory_access.memory_copy(clist.list^[i+2],clist.list^[i+1],(clist.list^:length-(i+1))*clist.list^[1]:size);
+          pred clist.list^:length;
+
+        -- je tˆsnˆ nad horn¡ mez¡ I-t‚ho intervalu ?
+        elsif ui1=ui then
+          -- prodlou‘it I-t˜ interval
+          clist.list^[i].hval:=ui;
+
+        -- je tˆsnˆ pod doln¡ mez¡ I+1-n¡ho intervalu ?
+        elsif ui2=ui then
+          -- prodlou‘it I+1-n¡ interval
+          clist.list^[i+1].lval:=ui;
+
+        -- ‘ dn  p©¡zniv  situace, mus¡me p©idat interval
+        else #end if;
+          -- realokovat pamˆŸ
+          choice_extend(clist,1);
+
+          -- posunout %%TODO(SLICE)
+          advanced.low_level.unchecked_memory_access.memory_copy(clist.list^[i+1],clist.list^[i+2],(clist.list^:length-i)*clist.list^[1]:size);
+          succ clist.list^:length;
+
+          -- vlo‘it na m¡sto I+1-n¡ho v˜bˆru
+          clist.list^[i+1].lval:=ui;
+          clist.list^[i+1].hval:=ui;
+        #if cc_choice=cc_choice_array then;
+          clist.list^[i+1].val:=imm;
+        #else;
+          end if;
+        #end if;
+
+        -- a konec 
+        break;
+        end if;
+
+      -- dal¨¡ interval 
+      succ i;
+      end loop;
+    end if;
+  end choice_add_single;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure choice_add_range =
+-- Vlo‘¡ do seznamu optimalizovan˜ch v˜bˆr– rozsah hodnot.                    
+----------------------------------------------------------------------------------------------------
+use
+  advanced,
+  advanced.low_level,
+  advanced.low_level.unchecked_memory_access;
+
+    ------------------------------------------------------------------------------------------------
+    procedure delint (
+        a          : in t_unsigned;              -- doln¡ index posloupnosti ru¨en˜ch interval–
+        b          : in t_unsigned) =            -- horn¡ index posloupnosti ru¨en˜ch interval–
+    -- Zru¨¡ intervaly v rozsahu A..B.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- %%TODO(SLICE) 
+      advanced.low_level.unchecked_memory_access.memory_copy(clist.list^[b+1],clist.list^[a],(clist.list^:length-b)*clist.list^[1]:size);
+      clist.list^:length-(b-a+1);
+      end delint;
+
+type
+  -- pozice meze p©id van‚ho intervalu v–‡i existuj¡c¡m interval–m
+  tboundarypos     = enum
+      tbp_between;                               -- mezi dvˆma intervaly
+      tbp_inside;                                -- uvnit© intervalu
+      tbp_attached;                              -- tˆsnˆ u intervalu
+      end enum;
+  tboundaryposset  = set of tboundarypos;
+
+var
+  ui1              : tuniint;
+  ui2              : tuniint;
+  i                : t_unsigned;
+  j                : t_unsigned;
+  lval_pos         : tboundarypos;               -- pozice doln¡ meze v–‡i existuj¡c¡m int.
+  hval_pos         : tboundarypos;               -- pozice horn¡ meze v–‡i existuj¡c¡m int.
+  _x               : clist.list^:base;
+
+    ------------------------------------------------------------------------------------------------
+    procedure prepend_clist =
+    -- %%TODO(CONCAT) Na za‡ tek ©etˆzce CLIST vlo‘¡ prvek _X.
+    ------------------------------------------------------------------------------------------------
+    var
+      i            : clist.list^:range:type;
+
+    begin
+      succ clist.list^:length;
+      for i in reverse clist.list^:first..clist.list^:last-1 loop
+        clist.list^[i+1]:=clist.list^[i];
+        end loop;
+      clist.list^[1]:=_x;
+      end prepend_clist;
+
+begin
+  -- £plnˆ prvn¡ hodnota 
+  if clist.list=nil or else clist.list^:length=0 then
+    -- realokovat pamˆŸ 
+    choice_extend(clist,1);
+
+    -- p©idat jako prvn¡ prvek 
+    _x.lval:=lval;
+    _x.hval:=hval;
+  #if cc_choice=cc_choice_array then;
+    _x.val:=imm;
+  #end if;
+    clist.list^ & _x;
+
+  -- p©ed prvn¡m intervalem (ost©e men¨¡) 
+  elsif hval<clist.list^[1].lval then
+  #if cc_choice<>cc_choice_array then;
+    -- vypo‡¡tat [1].LVAL-1 
+    ui1:=clist.list^[1].lval-ui_1;
+
+    if ui1=hval
+
+      -- tˆsnˆ p©ed prvn¡m intervalem => prodlou‘it 
+      then
+        clist.list^[1].lval:=lval;
+
+      -- jinak p©idat dal¨¡ interval 
+      else #end if;
+        -- realokovat pamˆŸ 
+        choice_extend(clist,1);
+
+        -- p©idat jako prvn¡ %%TODO(AGGREGATE) 
+        _x.lval:=lval;
+        _x.hval:=hval;
+      #if cc_choice=cc_choice_array then;
+        _x.val:=imm;
+      #end if;
+        prepend_clist; --%%TODO(CONCAT) clist.list^:=_x & clist.list^;
+      #if cc_choice<>cc_choice_array then;
+        end if;
+      #end if;
+
+  -- za posledn¡m intervalem (ost©e vˆt¨¡) 
+  elsif lval>clist.list^[clist.list^:length].hval then
+  #if cc_choice<>cc_choice_array then;
+    -- vypo‡¡tat [last].HVAL+1 
+    ui1:=clist.list^[clist.list^:length].hval+ui_1;
+
+    if ui1=lval
+
+      -- tˆsnˆ za posledn¡m intervalem => prodlou‘it 
+      then
+        clist.list^[clist.list^:length].hval:=hval;
+
+      -- jinak p©idat dal¨¡ interval 
+      else #end if; 
+        -- realokovat pamˆŸ 
+        choice_extend(clist,1);
+
+        -- p©idat jako posledn¡ %%TODO(AGGREGATE) 
+        _x.lval:=lval;
+        _x.hval:=hval;
+      #if cc_choice=cc_choice_array then;
+        _x.val:=imm;
+      #end if;
+        clist.list^ & _x;
+      #if cc_choice<>cc_choice_array then;
+        end if;
+      #end if;
+
+  -- nˆkde mezi
+  else
+  #if cc_choice=cc_choice_array then;
+    unimplemented(131);
+  #else;
+    -- zjistit, kde le‘¡ doln¡ mez p©id van‚ho intervalu
+    i:=1;
+    ui1:=lval-ui_1;
+    loop
+      -- le‘¡ p©ed t¡mto intervalem
+      if lval<clist.list^[i].lval then
+        lval_pos:=tbp_between;
+        break;
+
+      -- le‘¡ v tomto intervalu
+      elsif lval<=clist.list^[i].hval then
+        lval_pos:=tbp_inside;
+        break;
+
+      -- le‘¡ tˆsnˆ za t¡mto intervalem
+      elsif ui1=clist.list^[i].hval then
+        lval_pos:=tbp_attached;
+        break;
+        end if;
+
+      -- dal¨¡ interval
+      succ i;
+      verify(533,i>clist.list^:length);
+      end loop;
+
+    -- zjistit, kde le‘¡ horn¡ mez p©id van‚ho intervalu
+    j:=clist.list^:length;
+    ui1:=hval-ui_1;
+    loop
+      -- le‘¡ za t¡mto intervalem
+      if hval>clist.list^[j].hval then
+        hval_pos:=tbp_between;
+        break;
+
+      -- le‘¡ v tomto intervalu
+      elsif hval>=clist.list^[j].lval then
+        hval_pos:=tbp_inside;
+        break;
+
+      -- le‘¡ tˆsnˆ p©ed t¡mto intervalem
+      elsif ui1=clist.list^[i].lval then
+        hval_pos:=tbp_attached;
+        break;
+        end if;
+
+      -- dal¨¡ interval
+      pred j;
+      verify(534,j=0);
+      end loop;
+
+    -- ka‘d  mez intervalu le‘¡ v nˆjak‚m jin‚m intervalu
+    if (lval_pos=tbp_inside) and (hval_pos=tbp_inside) then
+      -- zahrnuje v¡ce interval– ?
+      if j>i then
+        -- horn¡ mez J-t‚ho intervalu p©evz¡t do I-t‚ho
+        clist.list^[i].hval:=clist.list^[j].hval;
+
+        -- zru¨it (I+1)-n¡ a‘ J-t˜ interval
+        delint(i+1,j);
+        end if;
+
+    -- ka‘d  mez le‘¡ tˆsnˆ vedle jin‚ho intervalu
+    elsif ((lval_pos=tbp_attached) and (hval_pos=tbp_attached))
+    -- nebo lev  le‘¡ tˆsnˆ vedle a prav  uvnit©
+    or ((lval_pos=tbp_attached) and (hval_pos=tbp_inside))
+    -- nebo prav  le‘¡ tˆsnˆ vedle a lev  uvnit©
+    or ((lval_pos=tbp_inside) and (hval_pos=tbp_attached))
+    then
+      -- horn¡ mez J-t‚ho intervalu p©evz¡t do I-t‚ho
+      clist.list^[i].hval:=clist.list^[j].hval;
+
+      -- zru¨it (I+1)-n¡ a‘ J-t˜ interval
+      delint(i+1,j);
+
+    -- cel˜ interval spad  mezi dva intervaly
+    elsif (lval_pos=tbp_between) and (hval_pos=tbp_between) and (i=j+1) then
+      -- realokovat pamˆŸ
+      choice_extend(clist,1);
+
+      -- udˆlat m¡sto v prvn¡ polo‘ce
+      advanced.low_level.unchecked_memory_access.memory_copy(clist.list^[i],clist.list^[i+1],(clist.list^:length-i+1)*clist.list^[1]:size);
+      succ clist.list^:length;
+
+      -- p©idat interval
+      clist.list^[i].lval:=lval;
+      clist.list^[i].hval:=hval;
+
+    -- cel˜ interval obklopuje jeden ‡i v¡ce interval–
+    elsif (lval_pos=tbp_between) and (hval_pos=tbp_between) and (i<=j) then
+      -- prodlou‘it interval            
+      clist.list^[i].lval:=lval;
+      clist.list^[i].hval:=hval;
+
+      -- zru¨it (I+1)-n¡ a‘ J-t˜ interval
+      if i<j then
+        delint(i+1,j);
+        end if;
+
+    -- lev  mez le‘¡ tˆsnˆ za ‡i uvnit© intervalu, prav  mezi
+    elsif (lval_pos in tboundaryposset:[tbp_inside,tbp_attached]) and (hval_pos=tbp_between) then
+      -- prodlou‘it I-t˜ interval
+      clist.list^[i].hval:=hval;
+
+      -- zru¨it (I+1)-n¡ a‘ J-t˜ interval
+      if j>i then
+        delint(i+1,j);
+        end if;
+
+    -- prav  mez le‘¡ tˆsnˆ p©ed ‡i uvnit© intervalu, lev  mezi
+    elsif (lval_pos=tbp_between) and (hval_pos in tboundaryposset:[tbp_inside,tbp_attached]) then
+      -- prodlou‘it J-t˜ interval
+      clist.list^[j].lval:=lval;
+
+      -- zru¨it I-t˜ a‘ (J-1)-n¡ interval
+      if j>i then
+        delint(i,j-1);
+        end if;
+
+    -- jin‚ p©¡pady nemohou nastat
+    else 
+      verify(459,true);
+      end if;
+  #end if;
+    end if;
+  end choice_add_range;

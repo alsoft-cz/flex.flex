@@ -1,0 +1,887 @@
+----------------------------------------------------------------------------------------------------
+module private cb_form =
+-- P©eklada‡ Flexu.
+-- Form ln¡ kontrola bloku p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 01.10.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cd_decl,cd_decl.cd_eval;
+
+type
+  -- kontext p©¡kazu
+  blcontext        = record
+      inmsg        : t_logical;                  -- T-p©¡kaz je obsa‘en v obsluze zpr vy
+      inloop       : t_logical;                  -- T-p©¡kaz je obsa‘en v cyklu
+      incatch      : t_logical;                  -- T-p©¡kaz je obsa‘en v ‡ sti CATCH
+      end record;
+
+----- %%TECH ---------------------------------------------------------------------------------------
+-- Nep©edpokl d  se ru¨en¡ nebo vytv ©en¡ nov˜ch uzl– stromu.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_node (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblnode;                 -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo);             -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola jednoho uzlu.
+----------------------------------------------------------------------------------------------------
+
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_sequence (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    list           : in bllist;                  -- prvn¡ uzel sekvence
+    all            : out t_logical;              -- T-v¨echny p©¡kazy zkontrolov ny
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola posloupnosti p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+var
+  p                : pblnode;
+
+begin
+  -- optimistick˜ p©edpoklad
+  all:=true;
+
+  -- ozna‡it v¨echny n vˆ¨t¡ jako p©¡stup‚
+  {%%X Optimalizovat: prov dˆt jen pro bloky, }
+  -- ve kter˜ch skute‡nˆ nˆjak‚ n vˆ¨t¡ je.
+  p:=list.first;
+  while p<>nil loop
+    if p^.btype=bt_label then pbllabel(p)^.plabel^.reachable:=true; end if;
+    p:=p^.next;
+    end loop;
+
+  -- form ln¡ kontrola v¨ech p©¡kaz–
+  p:=list.first;
+  while p<>nil loop
+    -- form ln¡ kontrola p©¡kazu
+    b_form_node(curr,p,context,info);
+
+    -- povedla se form ln¡ kontrola ?
+    if p^.zprac<bp_form then all:=false; end if;
+
+    -- dal¨¡ p©¡kaz
+    p:=p^.next;
+    end loop;
+
+  -- ozna‡it v¨echny n vˆ¨t¡ jako nep©¡stupn‚
+  p:=list.first;
+  while p<>nil loop
+    if p^.btype=bt_label then
+      pbllabel(p)^.plabel^.reachable:=false;
+      end if;
+    p:=p^.next;
+    end loop;
+  end b_form_sequence;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_cmd (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblcmd;                  -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©i©azovac¡ho p©¡kazu.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  -- vyhodnodit v˜raz
+  x_evaluate(curr,bl^.expr,ek_assign,nil,eu_none,info.final,e);
+  {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+  if e_part(info.eval,e) then return; end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_cmd;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_break (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblbreak;                -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu BREAK.
+----------------------------------------------------------------------------------------------------
+begin
+  -- break sm¡ b˜t jen v cyklu
+  if not context.inloop then
+    ce^.seterror({CCERR=}000295,ce_i_break);
+    ce^.sethint(hint_break);
+    bl^.errpos(bp_begin);
+    {%%X ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_break;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_return (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblreturn;               -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu RETURN.
+----------------------------------------------------------------------------------------------------
+begin
+  -- nen¡ co kontrolovat
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_return;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_raise (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblraise;                -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu RAISE.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  -- je uvedeno jm‚no zpr vy ?
+  if bl^.msg<>nil
+
+    -- je uvedeno
+    then
+      x_evaluate(curr,bl^.msg,ek_context_send,nil,eu_none,info.final,e);
+      if e_part(info.eval,e) then return; end if;
+
+    -- nen¡ uvedeno => mus¡ to b˜t v ‡ sti CATCH
+    else
+      if not context.incatch then
+        ce^.seterror({CCERR=}000296,ce_i_raise);
+        ce^.sethint(hint_raise);
+        bl^.errpos(bp_begin);
+        {%%X ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+      end if;
+
+  -- je uvedeno jm‚no tasku ?
+  if bl^.dest<>nil then
+    unimplemented(303);
+    end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_raise;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_send (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblsend;                 -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu SEND.
+----------------------------------------------------------------------------------------------------
+begin
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_send;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_goto (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblgoto;                 -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu GOTO.
+----------------------------------------------------------------------------------------------------
+begin
+  ----- %%TECH Princip kontroly spr vnosti GOTO ----------------------------------------------------
+  -- Na za‡ tku vyhodnocen¡ posloupnosti p©¡kazu (B_FORM_SEQUENCE) se u v¨ech
+  -- n vˆ¨t¡ nastav¡ p©¡znak REACHABLE. P©i ukon‡en¡ kontroly sekvence se
+  -- opˆt v¨echny p©¡znaky shod¡.
+  --   V kontrole GOTO se pak jen testuje, zda odkazovan‚ n vˆ¨t¡ je dostupn‚
+  -- ‡i nikoliv. Nedostupn‚ n vˆ¨t¡ znamen  nepovolen˜ skok do vno©en‚
+  -- posloupnosti (vnit©ek cyklu, IF, skok mezi sekcemi (CATCH, LEAVE) apod.)
+  --
+  -- %%X Mˆlo by se to p©edˆlat. Ten p©¡znak REACHABLE je pˆkn  z plata, je
+  -- to provozn¡ informace, kter  nem  v popisu entity co dˆlat. Lep¨¡ by bylo
+  -- sestavovat lok ln¡ seznam dostupn˜ch n vˆ¨t¡.
+  --------------------------------------------------------------------------------------------------
+
+  -- n vˆ¨t¡ mus¡ b˜t um¡stˆno
+  if not bl^.plabel^.placed then
+    ce^.seterror({CCERR=}000297,ce_badlabel);
+    --%%TODO(LIB) ce^.sethint(formats(hint_label_not_placed,bl^.plabel^.id^));
+    bl^.errpos(bp_begin);
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+
+  -- n vˆ¨t¡ mus¡ b˜t p©¡stupn‚
+  if not bl^.plabel^.reachable then
+    ce^.seterror({CCERR=}000298,ce_badlabel);
+    ce^.sethint(hint_bad_label);
+    bl^.errpos(bp_begin);
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_goto;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_new (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblnew;                  -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu NEW.
+----------------------------------------------------------------------------------------------------
+var
+  ptyp             : pentity_type;               -- typ promˆnn‚
+  e                : tentityeval;
+
+begin
+  -- vyhodnodit v˜raz
+  x_evaluate(curr,bl^.xvar,ek_var_pointer,nil,eu_write,info.final,e);
+  {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+  if e_part(info.eval,e) then return; end if;
+
+  -- budeme pot©ebovat typ promˆnn‚
+  ptyp:=bl^.xvar^.t.getctype;
+  verify(442,ptyp^.stype<>dt_pointer);
+
+  -- kontrola p©¡stupu
+  case ptyp^.paccess
+    -- bez omezen¡
+    when va_norm do { nic nedˆlat };
+
+    -- PROTECTED
+    when va_protected do
+        unimplemented(139);
+
+
+    -- CONST
+    when va_const do
+        ce^.seterror({CCERR=}000299,ce_i_varaccess);
+        bl^.xvar^.errpos;
+        ce^.resumeerror;
+
+
+    when others do verify(443,true);
+    end case;
+
+  -- je uveden TAG ?
+  if bl^.xtag<>nil then
+    -- pointer mus¡ b˜t CLASS
+    if ptyp^.pbase<>pb_class then
+      ce^.seterror({CCERR=}000300,ce_noclassptr);
+      bl^.xtag^.errpos;
+      ce^.resumeerror;
+      end if;
+
+    -- vyhodnotit
+    x_evaluate(curr,bl^.xtag,ek_expr_tag,nil,eu_use,info.final,e);
+    {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+    if e_part(info.eval,e) then return; end if;
+    end if;
+
+  -- je uveden RANGE ?
+  if bl^.xrange<>nil
+
+    -- ano je
+    then
+      -- je to ^uchecked
+      if (ptyp^.pbase=pb_unchecked) and not ptyp^.base.isset then
+        x_evaluate(curr,bl^.xrange,ek_expr_integer,nil,eu_use,info.final,e);
+        {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+        if e_part(info.eval,e) then return; end if;
+
+      -- je to ^neomezen‚ pole/©etˆzec
+      elsif ptyp^.base.getctype^.stype in dts_unconstrained then
+        x_evaluate(curr,bl^.xrange,ek_expr_integer,ptyp^.base.getctype^.srange.getctype,eu_use,info.final,e);
+        {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+        if e_part(info.eval,e) then return; end if;
+
+      -- nic jin‚ho nem–‘e m¡t RANGE
+      else
+        ce^.seterror({CCERR=}000301,ce_nounconstrainedptr);
+        bl^.xrange^.errpos;
+        ce^.resumeerror;
+        end if;
+
+      {%%LANG pokud je sou‡asnˆ uvedeno TAG, mus¡ b˜t unconstrained }
+
+    -- ne => nesm¡ to b˜t ^neomezen‚ pole/©etˆzec nebo ^unchecked
+    else
+      --%%LANG nevad¡, pokud je sou‡asnˆ uvedeno TAG, mus¡ b˜t ale constrained
+      --%%X Tohle zkontrolovat, nˆjak mi to nen¡ jasn‚
+      if bl^.xtag=nil and ((ptyp^.pbase=pb_unchecked and not ptyp^.base.isset)
+      or ptyp^.base.getctype^.stype in dts_unconstrained) then
+        ce^.seterror({CCERR=}000302,ce_sizenotknown);
+        bl^.xvar^.errpos;
+        ce^.resumeerror;
+        end if;
+      end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_new;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_discard (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pbldiscard;              -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu DISCARD.
+----------------------------------------------------------------------------------------------------
+var
+  e                : tentityeval;
+
+begin
+  -- vyhodnodit v˜raz
+  x_evaluate(curr,bl^.xvar,ek_var_pointer,nil,eu_change,info.final,e);
+  {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+  if e_part(info.eval,e) then return; end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_delay (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pbldelay;                -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu DELAY.
+----------------------------------------------------------------------------------------------------
+begin
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_delay;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_if (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblif;                   -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu IF.
+----------------------------------------------------------------------------------------------------
+var
+  sub              : pblif_cond;                 -- vˆtve IF
+  all              : t_logical;                  -- vyhodnocen¡ bloku
+  allx             : t_logical;                  -- vyhodnocen¡ bloku
+  e                : tentityeval;
+
+begin
+  -- optimistick˜ p©edpoklad
+  all:=true;
+
+  -- form ln¡ kontrola v¨ech vˆtv¡
+  sub:=pblif_cond(bl^.sub.first);
+  while sub<>nil loop
+    verify(98,sub^.btype<>bt_if_cond);
+
+    -- kontrola podm¡nky
+    if sub^.cond<>nil then
+      x_evaluate(curr,sub^.cond,ek_cond,nil,eu_read,info.final,e);
+      {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+      if e_part(info.eval,e) then return; end if;
+      end if;
+
+    -- kontrola bloku
+    b_form_sequence(curr,sub^.sub,allx,context,info);
+    all:=all and allx;
+
+    -- dal¨¡ vˆtev
+    sub:=pblif_cond(sub^.next);
+    end loop;
+
+  -- povedla se form ln¡ kontrola v¨ech vˆtv¡ ?
+  if not all then return; end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_if;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_loop (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblloop;                 -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu LOOP.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : blcontext;                  -- nov˜ kontext
+  all              : t_logical;                  -- vyhodnocen¡ bloku
+  e                : tentityeval;
+
+begin
+  -- p©ipravit nov˜ kontext
+  newcontext:=context;
+  newcontext.inloop:=true;
+
+  -- vyhodnotit blok
+  b_form_sequence(curr,bl^.sub,all,newcontext,info);
+
+  -- vyhodnotit podm¡nku
+  if bl^.cond<>nil then
+    -- vyhodnodit v˜raz
+    x_evaluate(curr,bl^.cond,ek_cond,nil,eu_read,info.final,e);
+    {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+    if e_part(info.eval,e) then return; end if;
+    end if;
+
+  -- vyhodnotil se blok ?
+  if not all then return; end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_loop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_for (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblfor;                  -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu FOR.
+----------------------------------------------------------------------------------------------------
+use
+  cc_base,cc_base.cc_sym;
+
+var
+  newcontext       : blcontext;                  -- nov˜ kontext
+--xvar             : pentity_var;                -- ©¡d¡c¡ promˆnn  cyklu
+  all              : t_logical;                  -- vyhodnocen¡ bloku
+--e                : tentityeval;
+
+begin
+  -- p©ipravit nov˜ kontext
+  newcontext:=context;
+  newcontext.inloop:=true;
+
+  -- ©¡d¡c¡ promˆnn  i rozsah jsou ji‘ vyhodnoceny
+
+{ Ondra 10.12.2002 : P–vodn¡ verze bez implicitn¡ deklarace promˆnn‚:
+
+  -- vyhodnotit jm‚no ©¡d¡c¡ promˆnn‚
+  x_evaluate(curr,bl^.xvar,ek_var_ordinal,nil,eu_write,true,e);
+  {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+  if e_part(info.eval,e) then return; end if;
+
+  -- ©¡d¡c¡ promˆnn  cyklu mus¡ b˜t lok ln¡ v p©ekl dan‚m prvku
+  x_get_symbol(bl^.xvar,pentity(xvar));
+  if xvar^.context.entity<>^curr then
+    ce^.seterror({CCERR=}000303,ce_i_looppar);
+    bl^.xvar^.errpos;
+    ce^.resumeerror;
+    end if;
+
+  -- ©¡d¡c¡ promˆnn  cyklu nesm¡ b˜t parametr procedury
+  if xvar^.pparam<>nil then
+    ce^.seterror({CCERR=}000304,ce_i_looppar);
+    bl^.xvar^.errpos;
+    ce^.resumeerror;
+    end if;
+
+  -- ©¡d¡c¡ promˆnn  cyklu nem–‘e m¡t jen tak ledajakou pamˆŸovou t©¡du
+  verify(413,not (curr.entity^.etype in ets_subprogram+tentitytypeset:[et_program]));
+  if ((curr.entity^.etype=et_program) and (xvar^.mclass<>mc_static))
+  or ((curr.entity^.etype in ets_subprogram) and (xvar^.mclass<>mc_auto)) then
+    ce^.seterror({CCERR=}000305,ce_i_looppar);
+    bl^.xvar^.errpos;
+    ce^.resumeerror;
+    end if;
+
+  -- vyhodnotit rozsah
+  if bl^.xrange<>nil then
+    x_evaluate(curr,bl^.xrange,ek_range,xvar^.typ.getctype,eu_read,true,e);
+    -- %%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok
+    if e_part(info.eval,e) then return; end if;
+    end if;
+}
+
+  -- vyhodnotit blok
+  b_form_sequence(cc_base.cc_sym.sym_build_context(curr.entity,bl^.for_region){curr},bl^.sub,all,newcontext,info);
+
+  -- vyhodnotil se blok ?
+  if not all then return; end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_for;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_while (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblwhile;                -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu WHILE.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : blcontext;                  -- nov˜ kontext
+  all              : t_logical;                  -- vyhodnocen¡ bloku
+  e                : tentityeval;
+
+begin
+  -- p©ipravit nov˜ kontext
+  newcontext:=context;
+  newcontext.inloop:=true;
+
+  -- vyhodnotit podm¡nku
+  x_evaluate(curr,bl^.cond,ek_cond,nil,eu_read,info.final,e);
+  {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+  if e_part(info.eval,e) then return; end if;
+
+  -- vyhodnotit blok
+  b_form_sequence(curr,bl^.sub,all,newcontext,info);
+
+  -- vyhodnotil se blok ?
+  if not all then return; end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_while;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_case (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblcase;                 -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu CASE
+----------------------------------------------------------------------------------------------------
+var
+  blwhen           : pblwhen_c;                  -- vˆtev CASE
+  all              : t_logical;                  -- T-v¨echny p©¡kazy zkontrolov ny
+  e                : tentityeval;
+  i                : t_unsigned;
+  allx             : t_logical;
+
+begin
+  -- vyhodnotit ©¡d¡c¡ v˜raz
+  x_evaluate(curr,bl^.expr,ek_expr_ordinal,nil,eu_read,true,e);
+  {%%X Nˆjak˜ divn˜: jeden p©¡kaz by nemˆl m¡t vliv na cel˜ blok }
+  if e_part(info.eval,e) then return; end if;
+
+  -- zpracovat v¨echny v˜bˆry
+  all:=true;
+  blwhen:=pblwhen_c(bl^.sub.first);
+  while blwhen<>nil loop
+    case blwhen^.ctype
+      -- seznam v˜bˆr–
+      when bct_choice do
+          verify(418,blwhen^.list=nil or else blwhen^.list^:length=0);
+          for i in blwhen^.list^:range loop
+            x_evaluate(curr,blwhen^.list^[i],ek_context_case,bl^.expr^.t.getctype,eu_use,info.final,e);
+            if e_part(info.eval,e) then return; end if;
+            end loop;
+
+
+      -- OTHERS
+      when bct_others do -- nic nedˆlat
+
+      when others do verify(419,true);
+      end case;
+
+    -- form ln¡ kontrola p©¡kaz–
+    b_form_sequence(curr,blwhen^.sub,allx,context,info);
+    all:=all and allx;
+
+    -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+    if all then blwhen^.zprac:=bp_form; end if;
+
+    -- dal¨¡ WHEN
+    blwhen:=pblwhen_c(blwhen^.next);
+    end loop;
+
+  {%%TECH Zbytek form ln¡ kontroly (kontroly v˜bˆr–) se nestandardnˆ prov d¡ }
+  -- bˆhem optimalizace. Je to z toho d–vodu, ‘e se tak stejn‚ datov‚
+  -- struktury mohou vypo‡¡t vat jen jednou a z rove¤ lze optimalizovat.
+
+  -- povedla se form ln¡ kontrola v¨ech p©¡kaz– ?
+  if not all then return; end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_case;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_accept (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblaccept;               -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola p©¡kazu ACCEPT
+----------------------------------------------------------------------------------------------------
+begin
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_accept;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_catch (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    list           : in bllist;                  -- p©¡kaz
+    all            : out t_logical;              -- T-v¨echny p©¡kazy zkontrolov ny
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola ‡ sti CATCH.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : blcontext;                  -- nov˜ kontext
+  e                : tentityeval;
+  i                : t_unsigned;
+  blwhen           : pblwhen_m;
+  allx             : t_logical;
+
+begin
+  --unimplemented(12);
+
+  -- p©ipravit nov˜ kontext
+  newcontext:=context;
+  newcontext.incatch:=true;
+
+  -- zpracovat v¨echny v˜bˆry
+  all:=true;
+  blwhen:=pblwhen_m(list.first);
+  while blwhen<>nil loop
+    case blwhen^.ctype
+      -- seznam jmen v˜jimek
+      when bct_choice do
+          verify(311,blwhen^.list=nil or else blwhen^.list^:length=0);
+          for i in blwhen^.list^:range loop
+            x_evaluate(curr,blwhen^.list^[i],ek_context_accept,nil,eu_use,info.final,e);
+            if e_part(info.eval,e) then return; end if;
+            end loop;
+
+
+      -- OTHERS
+      when bct_others do -- nic nedˆlat
+
+      when others do verify(308,true);
+      end case;
+
+    -- form ln¡ kontrola p©¡kaz–
+    b_form_sequence(curr,blwhen^.sub,allx,newcontext,info);
+    all:=all and allx;
+
+    -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+    if all then blwhen^.zprac:=bp_form; end if;
+
+    -- dal¨¡ WHEN
+    blwhen:=pblwhen_m(blwhen^.next);
+    end loop;
+  end b_form_catch;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_block (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pblblock;                -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola bloku p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : blcontext;                  -- nov˜ kontext
+  all1             : t_logical;                  -- zpracov n¡ p©¡kazov‚ ‡ sti
+  all2             : t_logical;                  -- zpracov n¡ ‡ sti CATCH
+  all3             : t_logical;                  -- zpracov n¡ ‡ sti LEAVE
+
+begin
+  -- p©ipravit nov˜ kontext
+  newcontext:=context;
+  newcontext.incatch:=false;
+
+  -- p©¡kazov  ‡ st
+  b_form_sequence(curr,bl^.sub,all1,newcontext,info);
+
+  -- ‡ st CATCH
+  b_form_catch(curr,bl^.bcatch,all2,newcontext,info);
+
+  -- ‡ st LEAVE
+  b_form_sequence(curr,bl^.bleave,all3,newcontext,info);
+
+  -- povedla se form ln¡ kontrola v¨ech vˆtv¡  ?
+  if not (all1 and all2 and all3) then return; end if;
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_block;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_label (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pbllabel;                -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola n vˆ¨t¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- nen¡ moc co kontrolovat
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_label;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_asm (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in pbllabel;                -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in out blinfo) =            -- informace o pr–bˆhu anal˜zy
+-- Form ln¡ kontrola inline assembleru.
+----------------------------------------------------------------------------------------------------
+begin
+  -- nen¡ moc co kontrolovat
+
+  -- form ln¡ kontrola p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_form;
+  end b_form_asm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form_node =
+-- Form ln¡ kontrola jednoho uzlu.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(22,bl=nil);
+
+  -- jednou zkontrolovan‚ p©¡kazy p©esko‡it
+  if bl^.zprac<>pred bp_form then return end if;
+
+  -- zkontrolovat v˜raz
+  case bl^.btype
+    -- p©i©azovac¡ p©¡kaz
+    when bt_cmd         do b_form_cmd(curr,pblcmd(bl),context,info);
+
+    -- p©¡kaz BREAK
+    when bt_break       do b_form_break(curr,pblbreak(bl),context,info);
+
+    -- p©¡kaz RETURN
+    when bt_return      do b_form_return(curr,pblreturn(bl),context,info);
+
+    -- p©¡kaz RAISE
+    when bt_raise       do b_form_raise(curr,pblraise(bl),context,info);
+
+    -- p©¡kaz SEND
+    when bt_send        do b_form_send(curr,pblsend(bl),context,info);
+
+    -- p©¡kaz GOTO
+    when bt_goto        do b_form_goto(curr,pblgoto(bl),context,info);
+
+    -- p©¡kaz NEW
+    when bt_new         do b_form_new(curr,pblnew(bl),context,info);
+
+    -- p©¡kaz DISCARD
+    when bt_discard     do b_form_discard(curr,pbldiscard(bl),context,info);
+
+    -- p©¡kaz DELAY
+    when bt_delay       do b_form_delay(curr,pbldelay(bl),context,info);
+
+    -- p©¡kaz IF
+    when bt_if          do b_form_if(curr,pblif(bl),context,info);
+
+    -- p©¡kaz LOOP
+    when bt_loop        do b_form_loop(curr,pblloop(bl),context,info);
+
+    -- p©¡kaz FOR
+    when bt_for         do b_form_for(curr,pblfor(bl),context,info);
+
+    -- p©¡kaz WHILE
+    when bt_while       do b_form_while(curr,pblwhile(bl),context,info);
+
+    -- p©¡kaz CASE
+    when bt_case        do b_form_case(curr,pblcase(bl),context,info);
+
+    -- p©¡kaz ACCEPT
+    when bt_accept      do b_form_accept(curr,pblaccept(bl),context,info);
+
+    -- blok p©¡kazu
+    when bt_block       do b_form_block(curr,pblblock(bl),context,info);
+
+    -- n vˆ¨t¡
+    when bt_label       do b_form_label(curr,pbllabel(bl),context,info);
+
+    -- k¢d v assembleru
+    when bt_asm         do b_form_asm(curr,pbllabel(bl),context,info);
+
+    -- jin‚ symboly tu nemaj¡ co dˆlat
+    when others do verify(23,true);
+    end case;
+  end b_form_node;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_form =
+-- Form ln¡ kontrola bloku p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+var
+  context          : blcontext;
+
+begin
+  -- prov‚st form ln¡ kontrolu
+  b_form_node(curr,bl,context,info);
+  end b_form;
+
+
+
+end cb_form;

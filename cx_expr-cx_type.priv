@@ -1,0 +1,1269 @@
+----------------------------------------------------------------------------------------------------
+module private cx_type =
+-- P©eklada‡ Flexu.
+-- Typov  kontrola v˜razu.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 10.09.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cx_resolve,cx_util,cx_rta;
+
+  
+
+----------------------------------------------------------------------------------------------------
+procedure x_check_assign (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    el             : in pexpnode;                -- lev  strana p©i©azen¡
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Testuje, zda na lev‚ stranˆ p©i©azen¡ je promˆnn .
+----------------------------------------------------------------------------------------------------
+begin
+  -- na lev‚ stranˆ je vno©en‚ p©i©azen¡, ji‘ je zkontrolov no
+  if (el^.ntype in nodetypeset:[nt_operator,nt_unary])
+  and pexpnoper(el)^.assign then
+    return;
+    end if; 
+
+  -- na lev‚ stranˆ mus¡ b˜t promˆnn 
+  if el^.nclass<>nc_var then
+    ce^.seterror({CCERR=}000004,ce_lvar);
+    el^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  end x_check_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_overloaded (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpnode;            -- v˜raz
+    poper          : in pentity_subprogram;      -- p©et¡‘en˜ oper tor
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- P©evede v˜raz na p©et¡‘en˜ oper tor.
+----------------------------------------------------------------------------------------------------
+with
+  cx_phase;
+  
+var
+  info2            : expinfo;                    -- simulovan‚ informace o pr–bˆhu anal˜zy
+  call             : pexplist;                   -- vol n¡ procedury
+  name             : pexpcomponent;              -- jm‚no procedury
+  arg              : pexpitem;                   -- agrument
+  last             : pexpnode;
+  cexp             : pexpnode;
+  nexp             : pexpnode;
+
+begin
+  -- jm‚no procedury 
+  newnode(pexpnode(name),info,nt_component);
+  name^.id:=poper^.id;
+  name^.s.set_entity(poper);
+  name^.t.init(curr,poper^.typ.getctype);
+  name^.nclass:=nc_proc;
+
+  -- ostatn¡ uzly se vytv ©ej¡ jakoby od po‡ te‡n¡ f ze 
+  info2:=info;
+  info2.phase:=succ(ep_syntax);
+
+  -- vol n¡ 
+  newnodex(pexpnode(call),info2,nt_list);
+  call^.sub:=name;
+
+  -- argumenty 
+  last:=call^.sub;
+  cexp:=expr^.sub;
+  while cexp<>nil loop
+    -- poznamenat si dal¨¡ operand 
+    nexp:=cexp^.next;
+
+    -- vy©adit operand ze seznamu 
+    cexp^.next:=nil;
+
+    -- argument 
+    newnodex(pexpnode(arg),info2,nt_item);
+    arg^.itype:=ei_expr;
+    arg^.sub:=cexp;
+
+    -- za©adit argument 
+    last^.next:=arg;
+    last:=arg;
+
+    -- dal¨¡ operand 
+    cexp:=nexp;
+    end loop;
+
+  -- p©edat ven 
+  expr:=call;
+
+  -- prov‚st v¨echny f ze 
+  x_phase_prev(curr,expr,ptyp,{nem  v˜znam:}eu_none,info);
+  if expr^.zprac<info.phase then return; end if;
+  end a_type_overloaded;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_operator_lang (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpoper;            -- v˜raz
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola jazykem definovan‚ho oper toru.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+    ------------------------------------------------------------------------------------------------
+    procedure c_type (
+        curr       : in tcontext;                -- p©ekl dan˜ prvek
+        expr       : in out pexpnode;            -- v˜raz
+        ptyp       : in typeview;                -- po‘adovan˜ typ v˜razu
+        info       : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+    -- Typov  kontrola v˜razu p©i z©etˆzen¡.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zjistit zp–sob z©etˆzen¡ 
+      x_getconcatkind(curr,expr,ptyp,expr^.concatkind);
+
+      -- prov‚st typovou kontrolu se spr vn˜m typem 
+      case expr^.concatkind
+        -- substring nebo subpole 
+        when nck_substring, nck_subarray do a_type(curr,expr,ptyp,info);
+
+        -- komponenta
+        when nck_component do a_type(curr,expr,ptyp.getbase(curr),info);
+
+        when others do verify(371,true);
+        end case;
+      end c_type;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  res              : typeview;                   -- typ v˜sledku
+  _                : t_logical;
+
+begin
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  -- up©esnit oper tor 
+  x_refine_binary(expr^.oper,el^.t,er^.t,expr^.oper);
+
+  if expr^.assign
+
+    -- p©i©azen¡ 
+    then
+      -- typov  kontrola lev‚ho operandu 
+      a_type(curr,el,nulltype,info);
+
+      -- na lev‚ stranˆ p©i©azen¡ mus¡ b˜t promˆnn  
+      x_check_assign(curr,el,info);
+
+      -- typov  kontrola prav‚ho operandu 
+      if expr^.oper<>op_concat
+
+        -- pro vˆt¨inu oper tor– je to trivi ln¡ 
+        then a_type(curr,er,el^.t,info)
+
+        -- pro z©etˆzen¡ je to o dost slo‘itˆj¨¡ 
+        else c_type(curr,er,el^.t,info);
+        end if;
+
+      -- dosadit do v˜razu nov˜ typ 
+      expr^.t:=el^.t;
+
+    -- norm ln¡ oper tor 
+    else
+      -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+      if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+        {%%X zp©esnit chybov‚ hl ¨en¡ }
+        ce^.seterror({CCERR=}000005,ce_incompatible);
+        expr^.join(el,er);
+        expr^.errpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+      -- zvolit p©esnˆj¨¡ typ v˜sledku 
+      x_resolve_by_result(curr,ptyp,expr^.t,res);
+
+      -- typov  kontrola podv˜raz– 
+      case expoperinfo[expr^.oper].tc
+        when tc_none    do a_type(curr,el,nulltype,info); a_type(curr,er,nulltype,info);
+        when tc_left    do a_type(curr,el,res     ,info); a_type(curr,er,nulltype,info);
+        when tc_right   do a_type(curr,el,nulltype,info); a_type(curr,er,res     ,info);
+        when tc_both    do a_type(curr,el,res     ,info); a_type(curr,er,res     ,info);
+        when tc_concat  do c_type(curr,el,res     ,info); c_type(curr,er,res     ,info);
+        when others     do verify(372,true);
+        end case;
+
+      -- upravit typ v˜razu (pokud se mohl zmˆnit) 
+      if (res.tview=tview_full) and not t_equal(expr^.t,res) then
+        -- typ v˜sledku 
+        expr^.t:=res;
+        end if;
+      end if;
+
+  -- povedla se typov  kontrola podv˜raz– ? 
+  if (el^.zprac<ep_type) or (er^.zprac<ep_type) then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy
+  expr^.join(el,er);
+  end a_type_operator_lang;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_operator (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpoper;            -- v˜raz
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola oper toru.
+----------------------------------------------------------------------------------------------------
+var
+  poper            : pentity_subprogram;         -- p©et¡‘en˜ oper tor
+
+begin
+  -- vyhodnotit nejednozna‡n‚ typy 
+  a_resolve(curr,expr,ptyp,info);
+
+  -- nen¡ to n hodou p©et¡‘en˜ oper tor ? 
+  expr^.gettypesym(0,pentity(poper));
+  if poper<>nil
+
+    -- ano, je to p©et¡‘en˜ oper tor, konvertovat na vol n¡ procedury 
+    then a_type_overloaded(curr,pexpnode(expr),poper,ptyp,info)
+
+    -- ne, jazykem definovan˜ oper tor 
+    else a_type_operator_lang(curr,expr,ptyp,info);
+    end if;
+  end a_type_operator;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_unary_lang (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpunary;           -- v˜raz
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola jazykem definovan‚ho un rn¡ho oper toru.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz                                    
+  res              : typeview;                   -- typ v˜sledku                                
+
+begin
+  -- rozdˆlit podv˜razy 
+  expr^.split(el);
+
+  -- typov  kontrola lev‚ho podv˜razu 
+  if expr^.assign
+
+    -- p©i©azen¡ 
+    then
+      -- typov  kontrola lev‚ho operandu 
+      a_type(curr,el,nulltype,info);
+
+      -- na lev‚ stranˆ p©i©azen¡ mus¡ b˜t promˆnn  
+      x_check_assign(curr,el,info);
+
+      -- dosadit do v˜razu nov˜ typ 
+      expr^.t:=el^.t;
+
+    -- norm ln¡ oper tor 
+    else
+      -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+      if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+        {%%X zp©esnit chybov‚ hl ¨en¡ }
+        ce^.seterror({CCERR=}000006,ce_incompatible);
+        expr^.join(el);
+        expr^.errpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+      -- zvolit p©esnˆj¨¡ typ v˜sledku 
+      x_resolve_by_result(curr,ptyp,expr^.t,res);
+
+      -- typov  kontrola podv˜razu 
+      a_type(curr,el,res,info);
+
+      -- upravit typ v˜razu (pokud se mohl zmˆnit) 
+      if (res.tview=tview_full) and not t_equal(expr^.t,res) then
+        -- typ v˜sledku 
+        expr^.t:=res;
+        end if;
+      end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy 
+  expr^.join(el);
+  end a_type_unary_lang;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_unary (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpunary;           -- v˜raz
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola un rn¡ho oper toru.
+----------------------------------------------------------------------------------------------------
+var
+  poper            : pentity_subprogram;         -- p©et¡‘en˜ oper tor
+
+begin
+  -- vyhodnotit nejednozna‡n‚ typy
+  a_resolve(curr,expr,ptyp,info);
+
+  -- nen¡ to n hodou p©et¡‘en˜ oper tor ? 
+  expr^.gettypesym(0,pentity(poper));
+
+  if poper<>nil
+
+    -- ano, je to p©et¡‘en˜ oper tor, konvertovat na vol n¡ procedury 
+    then a_type_overloaded(curr,pexpnode(expr),poper,ptyp,info)
+
+    -- ne, jazykem definovan˜ oper tor 
+    else a_type_unary_lang(curr,expr,ptyp,info);
+    end if;
+  end a_type_unary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_component (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpcomponent;       -- v˜raz
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola komponenty.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+begin
+  -- typov  kontrola podv˜razu
+  if expr^.sub<>nil then
+    -- typov  kontrola podv˜razu
+    a_type(curr,expr^.sub,nulltype,info);
+
+    -- povedla se typov  kontrola podv˜razu ?
+    if expr^.sub^.zprac<ep_type then goto k1; end if;
+    end if;
+
+  -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+  if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+    {%%X zp©esnit chybov‚ hl ¨en¡ }
+    ce^.seterror({CCERR=}000007,ce_incompatible);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_type;
+
+k1:
+  end a_type_component;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_imm (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpimm;             -- v˜raz
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola p©¡m‚ hodnoty.
+----------------------------------------------------------------------------------------------------
+begin
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+  if ptyp.tview<>tview_null then
+    -- je podv˜raz kompatibiln¡ s dodan˜m typem ?
+    if not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+      {%%X zp©esnit chybov‚ hl ¨en¡ }
+      ce^.seterror({CCERR=}000008,ce_incompatible);
+      expr^.errpos;
+      {%%RESUME ce^.raiseerror;}
+      ce^.resumeerror;
+      end if;
+
+{ Ondra 30.11.1999 : Tak p©esnˆ tohle nesm¡m udˆlat s ‘ dnou konstantou.
+   Protip©¡klad    : var x : range -10..10 := -10;
+                 ...
+                 x:=x+20; -- naprosto leg ln¡ !
+                 ...
+
+    -- kovertovat p©¡mou hodnotu 
+    imm_settype(expr^.imm,expr^.t.typ,ptyp);
+
+    -- dosadit nov˜ typ 
+    expr^.settype(curr,ptyp);
+}
+    end if;
+  end a_type_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_param (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    arg            : in out pexpitem;            -- skute‡n˜ parametr
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola skute‡n‚ho parametru.
+----------------------------------------------------------------------------------------------------
+-- %%TECH V¨echny operace se prov dˆj¡ na ARG^.SUB, tak‘e se nemus¡
+-- v nad©azen‚ procedu©e dˆlat SPLIT/JOIN.
+----------------------------------------------------------------------------------------------------
+var
+  t                : typeview;                   -- pohled na typ parametru
+
+begin
+  if arg^.sub<>nil then
+    -- typov  kontrola podv˜razu 
+    a_type(curr,arg^.sub,arg^.t,info);
+{
+    case pentity_param(arg^.sym)^.pass
+      -- hodnotou 
+      pp_value     do
+          t.init(curr,pentity_param(arg^.sym)^.typ.getctype);
+          a_type(curr,arg^.sub,t,info);
+          end;
+
+      -- referenc¡ 
+      pp_ref       do
+          t.init(curr,pentity_param(arg^.sym)^.typ.getctype);
+          a_type(curr,arg^.sub,t{%%X nem  tu b˜t typ ?: pentity_param(arg^.sym)^.typ.getctype},info);
+          end;
+
+      -- referenc¡, bez typov‚ kontroly 
+      pp_unchecked do
+          t.initunchecked(pentity_param(arg^.sym)^.typ.getutype);
+          a_type(curr,arg^.sub,t,info);
+          end;
+
+      else verify(60,true);
+      end case;
+}
+    -- povedla se typov  kontrola podv˜razu ? 
+    if arg^.sub^.zprac<ep_type then return; end if;
+
+    ---- pro zjednodu¨en¡ p©evz¡t typ a t©¡du podv˜razu 
+    --arg^.t:=arg^.sub^.t;
+
+    -- pro zjednodu¨en¡ p©evz¡t t©¡du podv˜razu 
+    arg^.nclass:=arg^.sub^.nclass;
+    end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  arg^.zprac:=ep_type;
+  end a_type_param;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_call (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexplist;            -- vol n¡ procedury
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola vol n¡ procedury.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny argumenty                     
+  arg              : pexpitem;                   -- skute‡n˜ parametry procedury                
+  el               : pexpnode;                   -- jm‚no procedury                             
+  arglist          : pexpitem;                   -- skute‡n‚ parametry procedury                
+
+begin
+  -- oddˆlit prefix a argumenty 
+  expr^.split(el,arglist);
+
+  -- typov  kontrola jm‚na procedury 
+  a_type(curr,el,nulltype,info);
+
+  -- povedla se typov  kontrola jm‚na procedury ? 
+  if el^.zprac<ep_type then goto k1; end if;
+
+  ----- %%TECH -----------------------------------------------------------
+  -- Typovou kontrolu mohu prov‚st nez visle pro v¨echny argumenty, tak‘e     
+  -- se p©¡padn‚ nevyhodnocen¡ detekuje a‘ t‚mˆ© na konci t‚to procedury.     
+  -- (Na rozd¡l od typov‚ kontroly jm‚na procedury, jej¡‘ proveden¡ je nutn   
+  -- podm¡nka pro proveden¡ typov‚ kontroly argument–.)                       
+  -- Srovnej CX_FORM.A_FORM_LIST, CX_OPT.A_OPT_CALL                           
+  --------------------------------------------------------------------------------------------------
+
+  -- typov  kontrola argument– 
+  vyhodnoceno:=true;
+  arg:=arglist;
+  while arg<>nil loop
+    -- typov  kontrola argumentu 
+    -- SPLIT/JOIN se nedˆl , viz A_TYPE_PARAM 
+    a_type_param(curr,arg,info);
+    vyhodnoceno:=vyhodnoceno and (arg^.zprac>=ep_type);
+
+    -- dal¨¡ podv˜raz 
+    arg:=pexpitem(arg^.next);
+    end loop;
+
+  -- typov  kontrola n vratov‚ hodnoty 
+  if expr^.nclass=nc_none
+
+    -- procedura nevrac¡ hodnotu 
+    then
+      -- ale nˆjakou to chce, chyba 
+      if ptyp.tview<>tview_null then
+        {%%X zp©esnit chybov‚ hl ¨en¡ }
+        ce^.seterror({CCERR=}000009,ce_incompatible);
+        expr^.join(el,arglist);
+        expr^.errpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+    -- procedura vrac¡ hodnotu 
+    else
+      {%%X no a co ? }
+
+      -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+      if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+        {%%X zp©esnit chybov‚ hl ¨en¡ }
+        ce^.seterror({CCERR=}000010,ce_incompatible);
+        expr^.join(el,arglist);
+        expr^.errpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+      end if;
+
+  -- povedla se typov  kontrola argument– ? 
+  if not vyhodnoceno then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it prefix a argumenty 
+  expr^.join(el,arglist);
+  end a_type_call;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_range (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexprange;           -- rozsah
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola rozsahu.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ a prav˜ podv˜raz
+  er               : pexpnode;                   -- lev˜ a prav˜ podv˜raz
+
+begin
+  -- vyhodnotit nejednozna‡n‚ typy 
+  a_resolve(curr,expr,ptyp,info);
+
+  -- rozdˆlit podv˜razy
+  expr^.split(el,er);
+
+  {%%X nem–‘e se st t, ‘e by dodan˜ typ byl t©eba REAL ? }
+
+  -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+  if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+    {%%X zp©esnit chybov‚ hl ¨en¡ }
+    ce^.seterror({CCERR=}000011,ce_incompatible);
+    expr^.join(el,er);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola podv˜raz– 
+  a_type(curr,el,ptyp,info);
+  a_type(curr,er,ptyp,info);
+
+  -- dosadit do v˜razu nov˜ typ 
+  if ptyp.tview<>tview_null then expr^.t:=ptyp; end if;
+
+  -- povedla se typov  kontrola podv˜raz– ? 
+  if (el^.zprac<ep_type) or (er^.zprac<ep_type) then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy 
+  expr^.join(el,er);
+  end a_type_range;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_index (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpindex;           -- rozsah
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola indexu pole.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+
+begin
+  -- rozdˆlit podv˜razy 
+  expr^.split(el,er);
+
+  -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+  if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+    {%%X zp©esnit chybov‚ hl ¨en¡ }
+    ce^.seterror({CCERR=}000012,ce_incompatible);
+    expr^.join(el,er);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola lev‚ho podv˜raz– 
+  a_type(curr,el,nulltype,info);
+
+  -- typov  kontrola prav‚ho podv˜razu 
+  a_type(curr,er,el^.t.getrange(curr),info);
+
+  -- povedla se typov  kontrola podv˜raz– ? 
+  if (el^.zprac<ep_type) or (er^.zprac<ep_type) then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy 
+  expr^.join(el,er);
+  end a_type_index;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_ref (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpref;             -- reference
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola reference.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz                                    
+
+begin
+  -- rozdˆlit podv˜razy 
+  expr^.split(el);
+
+  -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+  if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+    {%%X zp©esnit chybov‚ hl ¨en¡ }
+    ce^.seterror({CCERR=}000013,ce_incompatible);
+    expr^.join(el);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola lev‚ho podv˜razu 
+  a_type(curr,el,nulltype,info);
+
+  -- povedla se typov  kontrola podv˜razu ? 
+  if el^.zprac<ep_type then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy 
+  expr^.join(el);
+  end a_type_ref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_deref (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpderef;           -- dereference
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola dereference.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz                                    
+
+begin
+  -- rozdˆlit podv˜razy 
+  expr^.split(el);
+
+  -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+  if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+    {%%X zp©esnit chybov‚ hl ¨en¡ }
+    ce^.seterror({CCERR=}000014,ce_incompatible);
+    expr^.join(el);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola lev‚ho podv˜raz– 
+  a_type(curr,el,nulltype,info);
+
+  -- povedla se typov  kontrola podv˜raz– ? 
+  if el^.zprac<ep_type then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy 
+  expr^.join(el);
+  end a_type_deref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_attrib (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpattrib;          -- atribut
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola atributu.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz                                    
+  arglist          : pexpitem;                   -- argumenty                                   
+
+begin
+  -- rozdˆlit podv˜razy 
+  expr^.split(el,arglist);
+
+  -- je podv˜raz kompatibiln¡ s dodan˜m typem ? 
+  if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+    {%%X zp©esnit chybov‚ hl ¨en¡ }
+    ce^.seterror({CCERR=}000015,ce_incompatible);
+    expr^.join(el,arglist);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola podv˜razu 
+  a_type(curr,el,nulltype,info);
+
+  -- povedla se typov  kontrola podv˜raz– ? 
+  if el^.zprac<ep_type then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy 
+  expr^.join(el,arglist);
+  end a_type_attrib;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_typecast (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexplist;            -- p©etypov n¡
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola p©etypov n¡.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz
+  arg              : pexpitem;                   -- argument
+
+begin
+  -- oddˆlit prefix a argumenty
+  expr^.split(el,arg);
+
+  -- je podv˜raz kompatibiln¡ s dodan˜m typem ?
+  if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+    {%%X zp©esnit chybov‚ hl ¨en¡ }
+    ce^.seterror({CCERR=}000016,ce_incompatible);
+    expr^.join(el,arg);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola lev‚ho podv˜razu
+  a_type(curr,el,nulltype,info);
+
+  -- typov  kontrola prav‚ho podv˜razu
+  a_type(curr,arg^.sub,nulltype,info);
+  arg^.zprac:=arg^.sub^.zprac;
+
+  -- povedla se typov  kontrola podv˜raz– ?
+  if (el^.zprac<ep_type) or (arg^.zprac<ep_type) then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it prefix a argumenty 
+  expr^.join(el,arg);
+  end a_type_typecast;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_aggregate (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpaggregate;       -- agreg t
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola agreg tu.
+----------------------------------------------------------------------------------------------------
+with
+  cc_sym,
+  cx_phase;
+  
+label k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz
+  xel              : pexpnode;                   -- podv˜razy slo‘ky
+  xer              : pexpnode;                   -- podv˜razy slo‘ky
+  arglist          : pexpitem;                   -- slo‘ky
+  x                : pexpitem;                   -- slo‘ka
+  xtyp             : typeview;                   -- typ slo‘ky                                  
+  ctyp             : typeview;                   -- typ v˜bˆru                                  
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny v¨echny podv˜razy             
+  srch             : tentitysearch;              -- slo‘ka recordu
+
+begin
+  -- oddˆlit prefix a argumenty 
+  expr^.split(el,arglist);
+
+  ---- nejd©¡v ur‡it typ cel‚ho agreg tu ----
+  if expr^.t.tview=tview_aggregate
+
+    -- typ nen¡ ur‡en 
+    then
+      verify(245,el<>nil);
+
+      --- z kontextu je zn m agreg tn¡ typ => pou‘¡t ho ---
+      if t_is_sts(ptyp,dts_aggregate) then
+        expr^.t:=ptyp;
+
+      --- z kontextu je zn m ordin ln¡ typ => pou‘¡t jako b zi mno‘iny ---
+      elsif t_is_sts(ptyp,dts_ordinal) then
+        unimplemented(87);
+
+      --- z kontextu nen¡ k dispozici rozumn˜ typ => vymyslet mno‘inu ---
+      else
+        unimplemented(77);
+        end if;
+
+      vyhodnoceno:=true;
+
+    -- typ je ur‡en
+    else
+      -- typov  kontrola prefixu
+      a_type(curr,el,nulltype,info);
+      vyhodnoceno:=el^.zprac>=ep_type;
+      end if;
+
+  ---- typov  kontrola slo‘ek v z vislosti na typu agreg tu ----
+  case expr^.t.stype
+    -- record
+    when dt_record do
+        -- nal‚zt prvn¡ slo‘ku recordu
+        srch.find_et_first(expr^.t.getctype,rc_primary,et_var,[esf_ancestor]);
+
+        -- typov  kontrola v¨ech slo‘ek
+        x:=arglist;
+        while x<>nil loop
+          -- podv˜razy slo‘ky
+          x^.split(xel,xer);
+
+          -- typov  kontrola vazby 
+          case x^.itype
+            -- pozi‡n¡ slo‘ka
+            when ei_expr   do
+                -- je v–bec nˆjak  slo‘ka k dispozici ?
+                if srch.psym=nil then
+                  ce^.seterror({CCERR=}000017,ce_toomanyitems);
+                  x^.join(xel,xer);
+                  x^.errpos;
+                  ce^.resumeerror;
+                  end if;
+
+                -- poznamenat do slo‘ky souvisej¡c¡ symbol
+                x^.sym:=srch.psym;
+
+                -- typ slo‘ky
+                xtyp.init(curr,pentity_var(srch.psym)^.typ.getctype);
+
+                -- pro p©¡¨tˆ vyhledat dal¨¡ slo‘ku
+                srch.find_et_next;
+
+            -- kl¡‡ov 
+            when ei_choice do
+                -- mus¡ to b˜t jeden identifik tor
+                if (xer=nil) or (xer^.ntype<>nt_component) or (pexpcomponent(xer)^.id=nil) or (xer^.sub<>nil) then
+                  ce^.seterror({CCERR=}000018,ce_i_association);
+                  x^.join(xel,xer);
+                  x^.errpos;
+                  ce^.resumeerror;
+                  end if;
+
+                -- p©edˆlat uzel, aŸ se s n¡m l‚pe pracuje
+                x^.itype:=ei_ident;
+                x^.id:=pexpcomponent(xer)^.id;
+
+                -- %%TECH Form ln¡ kontrola ji‘ zajistila, ‘e po v˜skytu prvn¡ kl¡‡ov‚ slo‘ky
+                -- ji‘ nen sleduj¡ ‘ dn‚ pozi‡n¡ slo‘ky, tak‘e to sam‚ hled tko m–‘eme pou‘¡t
+                -- i zde. %%X Je to v¨ak pras rna, tak‘e by se zde mˆlo pou‘¡t jin‚ hled tko
+                -- deklarovan‚ jako lok ln¡ promˆnn  bloku.
+
+                -- naj¡t slo‘ku podle identifik toru
+                srch.find_local(sym_primary_context(expr^.t.getutype^),x^.id^,[etv_public]);
+                if srch.psym=nil then
+                  ce^.seterror({CCERR=}000019,ce_undeclared);
+                  ce^.setparam(entityident_to_string(x^.id^));
+                  x^.join(xel,xer);
+                  x^.errpos;
+                  ce^.resumeerror;
+                  end if;
+
+                -- poznamenat do slo‘ky souvisej¡c¡ symbol
+                x^.sym:=srch.psym;
+
+                -- typ slo‘ky
+                xtyp.init(curr,pentity_var(srch.psym)^.typ.getctype);
+
+            -- OTHERS
+            when ei_others do unimplemented(93);
+
+            when others    do verify(447,true);
+            end case;
+
+          -- typov  kontrola hodnoty slo‘ky
+          a_type(curr,xel,xtyp,info);
+          vyhodnoceno:=vyhodnoceno and (xel^.zprac>=ep_type);
+
+          -- slou‡it podv˜razy
+          x^.join(xel,xer);
+
+          -- dal¨¡ slo‘ka
+          x:=pexpitem(x^.next);
+          end loop;
+
+    -- pole, ©etˆzec
+    when dt_array,dt_uarray,dt_string,dt_ustring do
+        -- vypo‡¡tat typ slo‘ky
+        xtyp:=expr^.t.getbase(curr);
+
+        -- vypo‡¡tat typ v˜bˆru
+        ctyp:=expr^.t.getrange(curr);
+
+        -- typov  kontrola v¨ech slo‘ek
+        x:=arglist;
+        while x<>nil loop
+          -- podv˜razy slo‘ky
+          x^.split(xel,xer);
+
+          -- typov  kontrola vazby
+          case x^.itype
+            -- pozi‡n¡ slo‘ka
+            when ei_expr   do { nic nedˆlat };
+
+            -- kl¡‡ov 
+            when ei_choice do
+                x_phase_prev(curr,xer,ctyp,eu_use,info);
+                vyhodnoceno:=vyhodnoceno and (xer^.zprac>=ep_type);
+
+                --unimplemented(92);
+
+                -- form ln¡ kontrola
+
+                -- typov  kontrola
+
+                --a_type(curr,xer,ctyp,info);
+                --vyhodnoceno:=vyhodnoceno and (xer^.zprac>=ep_type);
+
+            -- OTHERS
+            when ei_others do { nic nedˆlat };
+
+            when others    do verify(248,true);
+            end case;
+
+          -- typov  kontrola hodnoty slo‘ky
+          a_type(curr,xel,xtyp,info);
+          vyhodnoceno:=vyhodnoceno and (xel^.zprac>=ep_type);
+
+          -- slou‡it podv˜razy
+          x^.join(xel,xer);
+
+          -- dal¨¡ slo‘ka
+          x:=pexpitem(x^.next);
+          end loop;
+
+    -- mno‘ina
+    when dt_set do
+        -- typ slo‘ky je typ b ze mno‘iny
+        xtyp:=expr^.t.getbase(curr);
+
+        -- typov  kontrola v¨ech slo‘ek
+        x:=arglist;
+        while x<>nil loop
+          -- podv˜razy slo‘ky
+          x^.split(xel,xer);
+
+          -- jedin˜ povolen˜ typ slo‘ky je v˜raz
+          if x^.itype<>ei_expr then
+            ce^.seterror({CCERR=}000020,ce_i_association);
+            x^.errpos;
+            ce^.resumeerror;
+            end if;
+
+          -- typov  kontrola hodnoty slo‘ky
+          a_type(curr,xel,xtyp,info);
+          vyhodnoceno:=vyhodnoceno and (xel^.zprac>=ep_type);
+
+          -- slou‡it podv˜razy
+          x^.join(xel,xer);
+
+          -- dal¨¡ slo‘ka
+          x:=pexpitem(x^.next);
+          end loop;
+        -- unimplemented(94);
+
+    when others do verify(246,true);
+    end case;
+
+  -- povedla se typov  kontrola podv˜raz– ?
+  if not vyhodnoceno then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy 
+  expr^.join(el,arglist);
+  end a_type_aggregate;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_message (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexplist;            -- zpr va
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola p©ijet¡/odesl n¡ zpr vy.
+----------------------------------------------------------------------------------------------------
+label k1;
+
+var
+  el               : pexpnode;                   -- podv˜raz
+  arglist          : pexpitem;                   -- paramety                                    
+  arg              : pexpitem;                   -- parametr                                    
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny argumenty                     
+
+begin
+  -- oddˆlit prefix a argumenty 
+  expr^.split(el,arglist);
+
+  -- nevrac¡ hodnotu 
+  {%%X zp©esnit chybov‚ hl ¨en¡ }
+  if ptyp.tview<>tview_null then
+    ce^.seterror({CCERR=}000021,ce_incompatible);
+    expr^.join(el,arglist);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola prefixu 
+  a_type(curr,el,nulltype,info);
+
+  -- typov  kontrola argument– 
+  vyhodnoceno:=true;
+  arg:=arglist;
+  while arg<>nil loop
+    unimplemented(101);
+    end loop;
+
+  -- povedla se typov  kontrola podv˜raz– ? 
+  if (el^.zprac<ep_form) or not vyhodnoceno then goto k1; end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+
+k1:
+  -- slou‡it podv˜razy 
+  expr^.join(el,arglist);
+  end a_type_message;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_this (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpthis;            -- THIS
+    ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Typov  kontrola THIS.
+----------------------------------------------------------------------------------------------------
+begin
+  -- je podv˜raz kompatibiln¡ s dodan˜m typem ?
+  if (ptyp.tview<>tview_null) and not t_compatible(curr,toc_transform,false,ptyp,expr^.t,false) then
+    {%%X zp©esnit chybov‚ hl ¨en¡ }
+    ce^.seterror({CCERR=}000022,ce_incompatible);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- typov  kontrola £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_type;
+  end a_type_this;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type =
+-- Typov  kontrola v˜razu.                                                    
+----------------------------------------------------------------------------------------------------
+with
+  cc_debug;
+
+begin
+  verify(4,expr=nil);
+
+  -- zpracov vat jen v˜razy z bezprost©ednˆ p©edchoz¡ f ze 
+  if expr^.zprac<>pred ep_type then return end if;
+
+  -- zkontrolovat v˜raz 
+  case expr^.ntype
+    -- oper tor 
+    when nt_operator  do a_type_operator(curr,pexpoper(expr),ptyp,info);
+
+    -- un rn¡ oper tor
+    when nt_unary     do a_type_unary(curr,pexpunary(expr),ptyp,info);
+
+    -- komponenta
+    when nt_component do a_type_component(curr,pexpcomponent(expr),ptyp,info);
+
+    -- p©¡m  hodnota
+    when nt_imm       do a_type_imm(curr,pexpimm(expr),ptyp,info);
+
+    -- vol n¡ procedury
+    when nt_call      do a_type_call(curr,pexplist(expr),ptyp,info);
+
+    -- rozsah
+    when nt_range     do a_type_range(curr,pexprange(expr),ptyp,info);
+
+    -- index pole
+    when nt_index     do a_type_index(curr,pexpindex(expr),ptyp,info);
+
+    -- reference
+    when nt_ref       do a_type_ref(curr,pexpref(expr),ptyp,info);
+
+    -- dereference
+    when nt_deref     do a_type_deref(curr,pexpderef(expr),ptyp,info);
+
+    -- atribut
+    when nt_attrib    do a_type_attrib(curr,pexpattrib(expr),ptyp,info);
+
+    -- p©etypov n¡
+    when nt_typecast  do a_type_typecast(curr,pexplist(expr),ptyp,info);
+
+    -- agreg t
+    when nt_aggregate do a_type_aggregate(curr,pexpaggregate(expr),ptyp,info);
+
+    -- odesl n¡ zpr vy
+    when nt_send      do a_type_message(curr,pexplist(expr),ptyp,info);
+
+    -- p©ijmut¡ zpr vy
+    when nt_accept    do a_type_message(curr,pexplist(expr),ptyp,info);
+
+    -- THIS
+    when nt_this      do a_type_this(curr,pexpthis(expr),ptyp,info);
+
+    -- jin‚ symboly tu nemaj¡ co dˆlat
+    when others       do verify(5,true);
+    end case;
+
+  -- poda©ila se typov  kontrola v˜razu ?
+  if expr^.zprac<>ep_type then return end if;
+
+  -- kontrola dynamick˜ch atribut–
+  begin
+    -- zjistit, jak‚ dynamick‚ atributy m–‘e v˜raz pou‘¡t
+    x_rta_provided_attributes(curr,expr);
+
+    -- zkontrolovat, jestli m  v˜raz resp. jeho podv˜razy v¨echny atributy, kter‚ pot©ebuj¡
+    x_rta_check_attributes(curr,expr);
+
+  catch
+    when others do
+      #if debug then;{%OFF}
+        if opt_dump in curr.entity^.compv.opts then 
+          debug_dump('---- Chybny strom -------------------------------------------------------------');
+          dumptree(expr); 
+          end if;
+      #end if;{%ON}
+
+        -- p©i chybˆ vr t¡me f zi zpracov n¡ v˜razu zpˆt, proto‘e se nepovedla cel  kontrola
+        expr^.zprac:=pred ep_type;
+
+        -- a v˜jimku po¨leme d l
+        raise;
+    end;
+  end a_type;
+
+
+
+end cx_type;

@@ -1,0 +1,741 @@
+----------------------------------------------------------------------------------------------------
+module private ca_block =
+-- P©eklada‡ Flexu.
+-- Anal˜za bloku p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 28.02.2002 : Vytvo©il.
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_base,cc_base.cc_type,cc_base.cc_sym,cc_attr,cc_def.cc_var,
+  cb_block,cb_block.cb_def,cb_block.cb_make,
+  cx_expr,cx_expr.cx_def,cx_expr.cx_make,
+  ca_util,ca_temp,ca_type;
+
+type
+  -- kontext analyzovan‚ho uzlu
+  tblcontext       = record
+      blevel       : t_unsigned;                 -- £rove¤ vno©en¡ vzhledem k begin..end blok–m
+      loop_level   : t_unsigned;                 -- £rove¤ vno©en¡ cyklu
+      end record;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure prepare_loop_context (
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    newcontext     : out tblcontext) =           -- kontext vnit©ku cyklu
+-- P©iprav¡ kontext pro anal˜zu vnit©ku cyklu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vˆt¨inu £daj– p©evz¡t
+  newcontext:=blcontext;
+
+  -- zapamatovat si £rove¤ vno©en¡ tohoto cyklu
+  newcontext.loop_level:=newcontext.blevel;
+  end prepare_loop_context;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_sequence (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bltop          : in pblnode;                 -- odpov¡daj¡c¡ nad©azen˜ uzel
+    list           : in bllist);                 -- sekvence p©¡kaz–
+-- Form ln¡ kontrola posloupnosti p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_cmd (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblcmd) =                -- analyzovav˜ p©¡kaz
+-- p©i©azovac¡ p©¡kaz
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end a_block_cmd;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_break (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblbreak) =              -- analyzovav˜ p©¡kaz
+-- p©¡kaz BREAK
+----------------------------------------------------------------------------------------------------
+begin
+  -- nen¡ to skok mimo aktu ln¡ blok ?
+  bl^.loc_outer:=bl^.blevel<>blcontext.loop_level;
+  end a_block_break;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_return (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblreturn) =             -- analyzovav˜ p©¡kaz
+-- p©¡kaz RETURN
+----------------------------------------------------------------------------------------------------
+begin
+  -- toto je ur‡itˆ skok mimo aktu ln¡ blok
+  bl^.loc_outer:=true;
+  end a_block_return;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_raise (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblraise) =              -- analyzovav˜ p©¡kaz
+-- p©¡kaz RAISE
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end a_block_raise;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_send (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblsend) =               -- analyzovav˜ p©¡kaz
+-- p©¡kaz SEND
+----------------------------------------------------------------------------------------------------
+begin
+  -- blok DO 
+  a_block_sequence(curr,blcontext,bl,bl^.xdo);
+
+  -- blok WHEN ACCEPT DO
+  a_block_sequence(curr,blcontext,bl,bl^.xaccept);
+
+  -- blok WHEN DELAY DO
+  a_block_sequence(curr,blcontext,bl,bl^.xdelay);
+  end a_block_send;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_goto (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblgoto) =               -- analyzovav˜ p©¡kaz
+-- p©¡kaz GOTO
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end a_block_goto;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_new (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblnew) =                -- analyzovav˜ p©¡kaz
+-- p©¡kaz NEW
+----------------------------------------------------------------------------------------------------
+var
+  binfo            : blinfo;                     -- kontext
+  xinfo            : expinfo;                    -- kontext
+  base             : typeview;                   -- b zov˜ typ pointeru
+  ptempvar         : pentity_var;                -- pracovn¡ promˆnn 
+  porgvar          : pexpnode;                   -- p–vodn¡ promˆnn 
+  ptag             : pentity_var;                -- slo‘ka @TAG
+  pstatus          : pentity_var;                -- slo‘ka @STATUS
+  srch             : tentitysearch;              -- hled tko
+
+begin
+  -- zjistit b zov˜ typ pointeru
+  base:=bl^.xvar^.t.getbase(curr);
+
+  -- analyzovat b zov˜ typ
+  if (base.getutype<>nil) and not base.isclass then
+    a_type(base.getctype^);
+    end if;
+
+  -- b zov˜ typ je t©¡da ?
+  if base.isclass then
+    -- naj¡t intern¡ slo‘ky @TAG a @STATUS
+    srch.find_local(sym_primary_context(base.getctype^),id_int_tag   ,etvs_all); ptag   :=pentity_var(srch.psym);
+    srch.find_local(sym_primary_context(base.getctype^),id_int_status,etvs_all); pstatus:=pentity_var(srch.psym);
+    verifyx(479,(ptag=nil) or (pstatus=nil),bl^.pos[bp_begin]);
+
+    -- p©ipravit kontexty
+    a_prepare_info(binfo,xinfo);
+
+    if bl^.xtag<>nil then
+      -- m -li explicitnˆ specifikovan˜ tag, tak se :size mus¡ br t z nˆj,
+      -- tak‘e pracovn¡ promˆnn  mus¡ b˜t machine_pointer a range mus¡
+      -- specifikovat jej¡ skute‡nou velikost.
+      unimplementedx(196,bl^.pos[bp_begin]);
+      end if;
+
+    -- zalo‘it pracovn¡ promˆnnou
+    a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+
+    -- zmˆnit p©¡kaz NEW na alokaci pracovn¡ promˆnn‚
+    porgvar:=bl^.xvar;
+    bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
+
+    -- Instance^.@TAG := TAG
+    if bl^.xtag<>nil
+
+      -- explicitnˆ specifikovan˜
+      then
+        a_list_append(bl^.bepilog,
+          b_make_cmd(curr,binfo,
+            x_make_op_assign(curr,xinfo,
+              x_make_component_selector(curr,xinfo,ptag,
+                x_make_deref(curr,xinfo,
+                  x_make_component_var(curr,xinfo,ptempvar)
+                  )
+                ),
+              bl^.xtag
+              )
+            )
+          );
+
+      -- podle typu t©¡dy (Instance^:tag)
+      else
+        a_list_append(bl^.bepilog,
+          b_make_cmd(curr,binfo,
+            x_make_op_assign(curr,xinfo,
+              x_make_component_selector(curr,xinfo,ptag,
+                x_make_deref(curr,xinfo,
+                  x_make_component_var(curr,xinfo,ptempvar)
+                  )
+                ),
+              x_make_attribute(curr,xinfo,atc_static,atf_tag,ata_type_tag{ata_expr_tag},inttype_tag,
+                x_make_deref(curr,xinfo,
+                  x_make_component_var(curr,xinfo,ptempvar)
+                  )
+                )
+              )
+            )
+          );
+        end if;
+
+    -- Instance^.ENTRY
+    a_list_append(bl^.bepilog,
+      b_make_cmd(curr,binfo,
+        x_make_call_spec(curr,xinfo,tst_entry,nil,
+          x_make_deref(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar)
+            ),
+          nil
+          )
+        )
+      );
+
+    -- Instance^.@STATUS := STATUS_INITED
+    a_list_append(bl^.bepilog,
+      b_make_cmd(curr,binfo,
+        x_make_op_assign(curr,xinfo,
+          x_make_component_selector(curr,xinfo,pstatus,
+            x_make_deref(curr,xinfo,
+              x_make_component_var(curr,xinfo,ptempvar)
+              )
+            ),
+          x_make_imm_uniint(curr,xinfo,cpu^.status_inited)
+          )
+        )
+      );
+
+    -- Promˆnn  := Instance
+    a_list_append(bl^.bepilog,
+      b_make_cmd(curr,binfo,
+        x_make_op_assign(curr,xinfo,
+          porgvar,
+          x_make_component_var(curr,xinfo,ptempvar))
+        )
+      );
+
+  -- v NEW je explicitnˆ specifikov n TAG => m–‘e m¡t metody INIT nebo ENTRY
+  elsif bl^.xtag<>nil then
+    unimplementedx(195,bl^.pos[bp_begin]);
+
+  -- %%X Nen¡ n hodou nutn‚ zajistit, aby BASE bylo ji‘ analyzov no? Bez toho si p©eci
+  -- nemohu b˜t jist, ‘e u‘ jsou pro nˆj vygenerov ny metody INIT a ENTRY, kter‚ zde
+  -- tak vehementnˆ testuju na existenci.
+
+  -- obsahuje t©¡du nebo m  speci ln¡ metodu INIT ?
+  elsif (base.getutype<>nil) and (base.getctype^.tinit=ti_complex)
+  and (t_contains_class(base.getctype^) or (base.getctype^.stable[tst_init].isset))
+  -- => potom je alokace o nˆco slo‘itˆj¨¡
+  then
+    verify(589,not base.getctype^.stable[tst_init].isset and not base.getctype^.stable[tst_entry].isset);
+
+    -- p©ipravit kontexty
+    a_prepare_info(binfo,xinfo);
+
+    -- zalo‘it pracovn¡ promˆnnou
+    a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+
+    -- zmˆnit p©¡kaz NEW na alokaci pracovn¡ promˆnn‚
+    porgvar:=bl^.xvar;
+    bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
+
+    -- zavolat metodu INIT
+    if base.getctype^.stable[tst_init].isset then
+      a_list_append(bl^.bepilog,
+        a_type_make_call(curr,binfo,xinfo,tst_init,base.getctype^,
+          x_make_deref(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar)
+            )
+          )
+        );
+      end if;
+
+    -- zavolat metodu ENTRY
+    if base.getctype^.stable[tst_entry].isset then
+      a_list_append(bl^.bepilog,
+        a_type_make_call(curr,binfo,xinfo,tst_entry,base.getctype^,
+          x_make_deref(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar)
+            )
+          )
+        );
+      end if;
+
+    -- Promˆnn  := Instance
+    a_list_append(bl^.bepilog,
+      b_make_cmd(curr,binfo,
+        x_make_op_assign(curr,xinfo,
+          porgvar,
+          x_make_component_var(curr,xinfo,ptempvar))
+        )
+      );
+    end if;
+  end a_block_new;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_discard (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pbldiscard) =            -- analyzovav˜ p©¡kaz
+-- p©¡kaz DISCARD
+----------------------------------------------------------------------------------------------------
+var
+  --%%TODO(I556)
+  nulllist         : const bllist;
+
+var
+  binfo            : blinfo;                     -- kontext
+  xinfo            : expinfo;                    -- kontext
+  base             : typeview;                   -- b zov˜ typ pointeru
+  ptempvar         : pentity_var;                -- pracovn¡ promˆnn 
+  pstatus          : pentity_var;                -- slo‘ka @STATUS
+  srch             : tentitysearch;              -- hled tko
+
+begin
+  -- zjistit b zov˜ typ pointeru
+  base:=bl^.xvar^.t.getbase(curr);
+
+  -- bude se dealokovat t©¡da ?
+  if base.isclass then
+    -- naj¡t intern¡ slo‘ku @STATUS
+    srch.find_local(sym_primary_context(base.getctype^),id_int_status,etvs_all); pstatus:=pentity_var(srch.psym);
+    verify(480,pstatus=nil);
+
+    -- p©ipravit kontexty
+    a_prepare_info(binfo,xinfo);
+
+    -- zalo‘it pracovn¡ promˆnnou
+    a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+
+    -- Instance := Promˆnn 
+    a_list_append(bl^.bprolog,
+      b_make_cmd(curr,binfo,
+        x_make_op_assign(curr,xinfo,
+          x_make_component_var(curr,xinfo,ptempvar),
+          bl^.xvar)
+        )
+      );
+
+    -- if Instance <> NIL and then Instance^.@STATUS = STATUS_INITED then
+    --   Instance^.EXIT;
+    --   end if;
+    a_list_append(bl^.bprolog,
+      b_make_if(curr,binfo,
+        b_make_list(
+          b_make_if_cond(curr,binfo,
+            x_make_op_and_then(curr,xinfo,
+              x_make_op_ne(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar),
+                x_make_imm_nil(curr,xinfo,ptempvar^.typ.getctype)
+                ),
+              x_make_op_eq(curr,xinfo,
+                x_make_component_selector(curr,xinfo,pstatus,
+                  x_make_deref(curr,xinfo,
+                    x_make_component_var(curr,xinfo,ptempvar)
+                    )
+                  ),
+                x_make_imm_uniint(curr,xinfo,cpu^.status_inited)
+                )
+              ),
+            b_make_list(
+              b_make_cmd(curr,binfo,
+                x_make_call_spec(curr,xinfo,tst_exit,nil,
+                  x_make_deref(curr,xinfo,
+                    x_make_component_var(curr,xinfo,ptempvar)
+                    ),
+                  nil
+                  )
+                ),
+              nulllist
+              )
+            ),
+          nulllist
+          )
+        )
+      );
+    end if;
+  end a_block_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_delay (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pbldelay) =              -- analyzovav˜ p©¡kaz
+-- p©¡kaz DELAY
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end a_block_delay;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_if (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblif) =                 -- analyzovav˜ p©¡kaz
+-- p©¡kaz IF
+----------------------------------------------------------------------------------------------------
+begin
+  a_block_sequence(curr,blcontext,bl,bl^.sub);
+  end a_block_if;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_loop (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblloop) =               -- analyzovav˜ p©¡kaz
+-- p©¡kaz LOOP
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : tblcontext;                 -- nov˜ kontext pro vno©en‚ p©¡kazy
+
+begin
+  -- p©ipravit kontext
+  prepare_loop_context(blcontext,newcontext);
+
+  -- analyzovat vnit©ek cyklu
+  a_block_sequence(curr,newcontext,bl,bl^.sub);
+  end a_block_loop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_for (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblfor) =                -- analyzovav˜ p©¡kaz
+-- p©¡kaz FOR
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : tblcontext;                 -- nov˜ kontext pro vno©en‚ p©¡kazy
+
+begin
+  -- p©ipravit kontext
+  prepare_loop_context(blcontext,newcontext);
+
+  -- analyzovat vnit©ek cyklu
+  a_block_sequence(curr,newcontext,bl,bl^.sub);
+  end a_block_for;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_while (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblwhile) =              -- analyzovav˜ p©¡kaz
+-- p©¡kaz WHILE
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : tblcontext;                 -- nov˜ kontext pro vno©en‚ p©¡kazy
+
+begin
+  -- p©ipravit kontext
+  prepare_loop_context(blcontext,newcontext);
+
+  -- analyzovat vnit©ek cyklu
+  a_block_sequence(curr,newcontext,bl,bl^.sub);
+  end a_block_while;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_case (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblcase) =               -- analyzovav˜ p©¡kaz
+-- p©¡kaz CASE
+----------------------------------------------------------------------------------------------------
+begin
+  a_block_sequence(curr,blcontext,bl,bl^.sub);
+  end a_block_case;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_accept (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblaccept) =             -- analyzovav˜ p©¡kaz
+-- p©¡kaz ACCEPT
+----------------------------------------------------------------------------------------------------
+begin
+  a_block_sequence(curr,blcontext,bl,bl^.sub);
+  end a_block_accept;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_block (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblblock) =              -- analyzovav˜ p©¡kaz
+-- blok p©¡kazu
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : tblcontext;             -- nov˜ kontext pro vno©en‚ p©¡kazy
+
+begin
+  -- p©ipravit nov˜ kontext pro vno©en‚ p©¡kazy
+  newcontext:=blcontext;
+  succ newcontext.blevel;
+
+  -- kompil torem generovan  ‡ st <INIT>
+  a_block_sequence(curr,newcontext,bl,bl^.binit);
+
+  -- kompil torem generovan  ‡ st <ENTRY>
+  a_block_sequence(curr,newcontext,bl,bl^.bentry);
+
+  -- vlastn¡ blok
+  a_block_sequence(curr,newcontext,bl,bl^.sub);
+
+  -- ‡ st CATCH
+  a_block_sequence(curr,newcontext,bl,bl^.bcatch);
+
+  -- ‡ st LEAVE
+  a_block_sequence(curr,newcontext,bl,bl^.bleave);
+
+  -- kompil torem generovan  ‡ st <EXIT>
+  a_block_sequence(curr,newcontext,bl,bl^.bexit);
+  end a_block_block;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_asm (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblasm) =                -- analyzovav˜ p©¡kaz
+-- kod v assembleru
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end a_block_asm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_label (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pbllabel) =              -- analyzovav˜ p©¡kaz
+-- n vˆ¨t¡
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end a_block_label;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_when_m (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblwhen_m) =             -- analyzovav˜ p©¡kaz
+-- vˆtev obsluhy zpr vy
+----------------------------------------------------------------------------------------------------
+begin
+  a_block_sequence(curr,blcontext,bl,bl^.sub);
+  end a_block_when_m;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_when_c (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblwhen_c) =             -- analyzovav˜ p©¡kaz
+-- vˆtev CASE
+----------------------------------------------------------------------------------------------------
+begin
+  a_block_sequence(curr,blcontext,bl,bl^.sub);
+  end a_block_when_c;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_if_cond (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblif_cond) =            -- analyzovav˜ p©¡kaz
+-- vˆtev IF
+----------------------------------------------------------------------------------------------------
+begin
+  a_block_sequence(curr,blcontext,bl,bl^.sub);
+  end a_block_if_cond;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_loop1 (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pblloop1) =              -- analyzovav˜ p©¡kaz
+-- jednopr–chodov˜ cyklus
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : tblcontext;                 -- nov˜ kontext pro vno©en‚ p©¡kazy
+
+begin
+  -- p©ipravit kontext
+  prepare_loop_context(blcontext,newcontext);
+
+  -- analyzovat vnit©ek cyklu
+  a_block_sequence(curr,newcontext,bl,bl^.sub);
+  end a_block_loop1;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_sequence =
+-- Form ln¡ kontrola posloupnosti p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+var
+  p                : pblnode;
+
+begin
+  -- anal˜za v¨ech p©¡kaz–
+  p:=list.first;
+  while p<>nil loop
+    -- do p©¡kazu dosadit aktu ln¡ £rove¤ vno©en¡ vzhledem k begin..end blok–m
+    p^.blevel:=blcontext.blevel;
+
+    -- typ p©¡kazu zahrnout do mno‘iny lok lnˆ vno©en˜ch p©¡kaz–
+    --%%TODO(UNION) bltop^.loc_cmd+blocktypeset:[p^.btype];
+    bit_set(bltop^.loc_cmd,t_bit_index(p^.btype:ord));
+
+    -- form ln¡ kontrola p©¡kazu
+    case p^.btype
+      -- jednoduch‚ p©¡kazy
+      when bt_cmd         do a_block_cmd(curr,blcontext,pblcmd(p));
+      when bt_break       do a_block_break(curr,blcontext,pblbreak(p));
+      when bt_return      do a_block_return(curr,blcontext,pblreturn(p));
+      when bt_raise       do a_block_raise(curr,blcontext,pblraise(p));
+      when bt_send        do a_block_send(curr,blcontext,pblsend(p));
+      when bt_goto        do a_block_goto(curr,blcontext,pblgoto(p));
+      when bt_new         do a_block_new(curr,blcontext,pblnew(p));
+      when bt_discard     do a_block_discard(curr,blcontext,pbldiscard(p));
+      when bt_delay       do a_block_delay(curr,blcontext,pbldelay(p));
+      -- slo‘en‚ p©¡kazy
+      when bt_if          do a_block_if(curr,blcontext,pblif(p));
+      when bt_loop        do a_block_loop(curr,blcontext,pblloop(p));
+      when bt_for         do a_block_for(curr,blcontext,pblfor(p));
+      when bt_while       do a_block_while(curr,blcontext,pblwhile(p));
+      when bt_case        do a_block_case(curr,blcontext,pblcase(p));
+      when bt_accept      do a_block_accept(curr,blcontext,pblaccept(p));
+      when bt_block       do a_block_block(curr,blcontext,pblblock(p));
+      when bt_asm         do a_block_asm(curr,blcontext,pblasm(p));
+      -- pomocn‚ uzly
+      when bt_label       do a_block_label(curr,blcontext,pbllabel(p));
+      when bt_when_m      do a_block_when_m(curr,blcontext,pblwhen_m(p));
+      when bt_when_c      do a_block_when_c(curr,blcontext,pblwhen_c(p));
+      when bt_if_cond     do a_block_if_cond(curr,blcontext,pblif_cond(p));
+      -- uzly pou‘it‚ poprv‚ p©i optimalizaci
+      when bt_loop1       do a_block_loop1(curr,blcontext,pblloop1(p));
+      when others do verify(603,true);
+      end case;
+
+    -- aktualizovat mno‘inu glob lnˆ vno©en˜ch p©¡kaz–
+    bltop^.tra_cmd+p^.tra_cmd;
+
+    -- aktualizovat p©¡znak glob lnˆ vno©en˜ch vnˆj¨¡ch skok–
+    bltop^.tra_outer or p^.tra_outer;
+    if p^.btype<>bt_block
+      then bltop^.loc_outer or p^.loc_outer;
+      else bltop^.tra_outer or p^.loc_outer;
+      end if;
+
+    -- dal¨¡ p©¡kaz
+    p:=p^.next;
+    end loop;
+
+  -- do mno‘iny glob lnˆ vno©en˜ch p©¡kaz– zapo‡¡tat
+  -- mno‘inu lok lnˆ vno©en˜ch p©¡kaz–
+  bltop^.tra_cmd+bltop^.loc_cmd;
+
+  -- do p©¡znaku glob lnˆ vno©en˜ch vnˆj¨¡ch skok–
+  -- zapo‡¡tat p©¡znak lok lnˆ vno©en˜ch vnˆj¨¡ch skok–
+  {bltop^.tra_outer:=bltop^.tra_outer or bltop^.loc_outer;}
+  end a_block_sequence;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block =
+-- Anal˜za bloku p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+var
+  blcontext        : tblcontext;             -- kontext analyzovan‚ho uzlu
+
+begin
+  verify(477,bl=nil);
+
+  -- p©ipravit kontext anal˜zy uzlu
+  blcontext.blevel:=0;
+
+  -- do top-level bloku dosadit po‡ te‡n¡ £rove¤ vno©en¡
+  bl^.blevel:=blcontext.blevel;
+
+  -- analyzovat blok
+  a_block_block(sym_primary_context(curr),blcontext,bl);
+  end a_block;
+
+
+
+end ca_block;

@@ -1,0 +1,590 @@
+----------------------------------------------------------------------------------------------------
+module public cl_codeview_types =
+-- P©eklada‡ Flexu.
+-- Gener tor CodeView debug informac¡ - modul pro typy
+----------------------------------------------------------------------------------------------------
+-- Radek : 31.01.2003 : Prepsal z FIPu.
+----------------------------------------------------------------------------------------------------
+
+with
+  standard,
+  standard.names,
+  cc_def,
+  cc_def.cc_unitype;
+
+type
+  t_byte               = t_unsigned8;
+  t_word               = t_unsigned16;
+  t_longint            = t_signed32;
+  t_namestring         = string 100 of t_char8;
+
+  t_word_array;
+  p_word_array         = ^t_word_array;
+  t_word_array         = array of t_word;
+
+  -- pole offsetu
+  t_offset_array;
+  p_offset_array       = ^t_offset_array;
+  t_offset_array       = array of t_unsigned32;
+
+
+  -- pole pocatku a koncu
+  t_start_end_array;
+  p_start_end_array    = ^t_start_end_array;
+  t_start_end_array    = array of record
+      start_offset     : t_unsigned32;
+      end_offset       : t_unsigned32;
+      end record;
+
+
+  -- aktualni status codeview informaci
+  t_codeview_status    = enum
+      tcvs_init;                                 -- vytvari se strom potrebnych informaci
+      tcvs_building;                             -- generuji se codeview data
+      tcvs_build;                                -- vygenerovany codeview data
+      tcvs_dumping;                              -- probiha export codeview dat
+      tcvs_dump;                                 -- vyexportovany codeview data
+      end enum;
+
+
+  -- typy typu - pouze pouzite ve FLEXu
+  t_codeview_type_type = enum
+      lf_nodef;
+
+      -- hlavni typy
+      lf_mofifier;
+      lf_pointer;
+      lf_array;
+      lf_class;
+      lf_structure;
+      lf_union;
+      lf_enum;
+      lf_procedure;
+      lf_mfunction;
+      lf_dimarray;
+
+      -- odkazovane typy
+      lf_arglist;                                -- sezbnam parametru procedury
+      lf_fieldlist;                              -- seznam polozek recordu
+
+      -- polozky komplexnich typu
+      lf_enumerate;                              -- jmeno a hodnota polozky enumu
+      lf_member;                                 -- data member
+      lf_bit;                                    -- bit field
+
+      -- ciselne typy
+      lf_numeric;
+      lf_char;
+      lf_short;
+      lf_ushort;
+      lf_long;
+      lf_ulong;
+
+      -- primitivni typy
+      lf_t_void;                                 -- void
+      lf_t_char;                                 -- 8-bit signed
+      lf_t_uchar;                                -- 8-bit unsigned
+      lf_t_short;                                -- 16-bit signed
+      lf_t_ushort;                               -- 16-bit unsigned
+      lf_t_long;                                 -- 32-bit signed
+      lf_t_ulong;                                -- 32-bit unsigned
+      lf_t_quad;                                 -- 64-bit signed
+      lf_t_uquad;                                -- 64-bit unsigned
+      lf_t_real32;                               -- 32-bit real
+      lf_t_real48;                               -- 48-bit real
+      lf_t_real64;                               -- 64-bit real
+      lf_t_real80;                               -- 80-bit real
+      lf_t_real128;                              -- 128-bit real
+      lf_t_rchar;                                -- real char
+      lf_t_wchar;                                -- wide char
+      end enum;
+
+
+type
+  -- predstrcena deklarace
+  t_codeview_type;
+  p_codeview_type      = ^t_codeview_type;
+
+  -- member attribute field
+  t_codeview_type_member_attribute = set of enum
+      -- access protection
+      tctma_noprotection;
+      tctma_private;
+      tctma_protected;
+      tctma_public;
+
+      -- method properties
+      tctma_vanillamethod;
+      tctma_virtualmethod;
+      tctma_staticmethod;
+      tctma_friendmethod;
+      tctma_introducingvirtualmethod;
+      tctma_purevirtualmethod;
+      tctma_pureintroducingvirtualmethod;
+
+      -- others
+      tctma_pseudo;
+      tctma_noinherit;
+      tctma_noconstruct;
+      tctma_compgenx;
+      end enum;
+
+  -- property pro record a class
+  t_codeview_type_record_property = set of enum
+      tctrp_packed;                              -- structure is packed
+      tctrp_ctor;                                -- class has constructor and/or destructor
+      tctrp_overops;                             -- class has overloaded operators
+      tctrp_isnested;                            -- class is nested class
+      tctrp_cnested;                             -- class contains nested classes
+      tctrp_opassign;                            -- class has overloaded assignment
+      tctrp_opcast;                              -- class has casting methods
+      end enum;
+
+
+  -- jmeno a hodnota datoveho prvku vyctu
+  t_codeview_type_enum_name;
+  p_codeview_type_enum_name = ^t_codeview_type_enum_name;
+  t_codeview_type_enum_name = record
+      -- souvisejici informace
+      attr             : t_codeview_type_member_attribute; -- attributy
+      typ              : t_codeview_type_type;   -- typ hodnoty
+      value            : t_longint;              -- hodnota
+      name             : t_namestring;           -- jmeno prvku
+      memberindex      : t_longint;              -- cislo typu vyctoveho prvku
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- nonstatic data member
+  t_codeview_type_member;
+  p_codeview_type_member = ^t_codeview_type_member;
+  t_codeview_type_member = record
+      -- souvisejici informace
+      attr             : t_codeview_type_member_attribute; -- attributy
+      memberindex      : t_longint;              -- cislo typu
+      typ              : p_codeview_type;        -- typ polozky
+      offset           : tunidata_addr;          -- offset v recordu nebo tride
+      name             : t_namestring;           -- jmeno polozky
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- polozky recordu, class, unionu a vyctu
+  t_codeview_type_fieldlist;
+  p_codeview_type_fieldlist = ^t_codeview_type_fieldlist;
+  t_codeview_type_fieldlist = record
+      -- souvisejici informace
+      fieldtype        : t_codeview_type_type;   -- typ polozky
+      fielddesc        : t_pointer;              -- pointer na popis polozky
+
+      -- pomocne informace
+      next             : p_codeview_type_fieldlist; -- pointer na dalsi polozku
+      prev             : p_codeview_type_fieldlist; -- pointer na predchozi polozku
+      status           : t_codeview_status;      -- status
+      end record;
+
+  -- spole‡n˜ p©edek popis– strukturovan˜ch typ–
+  t_codeview_type0     = record
+      end record;
+  p_codeview_type0     = ^class t_codeview_type0;
+
+  -- bitfield
+  t_codeview_type_bitfield;
+  p_codeview_type_bitfield = ^t_codeview_type_bitfield;
+  t_codeview_type_bitfield = t_codeview_type0 with record
+      -- codeview informace
+      typ              : t_longint;              -- typ prvku
+      length           : t_byte;                 -- delka prvku v bitech
+      position         : t_byte;                 -- offset prvniho bitu urcujici prvek
+
+      -- souvisejici informace
+      cv_typ           : p_codeview_type;        -- typ polozky
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- typ class a record
+  t_codeview_type_record;
+  p_codeview_type_record = ^class t_codeview_type_record;
+  t_codeview_type_record = t_codeview_type0 with record
+      -- codeview informace
+      count            : t_word;                 -- pocet elementu ve strukture
+      prop             : t_word;                 -- property bit field
+
+      -- souvisejici informace
+      proper           : t_codeview_type_record_property; -- property
+      first_field      : p_codeview_type_fieldlist; {t_pointer na seznam polozek                     }
+      last_field       : p_codeview_type_fieldlist; {t_pointer na seznam polozek                     }
+      dList            : t_pointer;              -- pointer na tridy odvozene ode me
+      vshape           : t_pointer;              -- index of the virtual function table shape desc.
+      length           : tunidata_size;          -- velikost recordu
+      name             : t_namestring;            -- jmeno recordu
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- typ enum
+  t_codeview_type_enum;
+  p_codeview_type_enum = ^class t_codeview_type_enum;
+  t_codeview_type_enum = t_codeview_type0 with record
+      -- codeview informace
+      count            : t_word;                 -- pocet elementu ve strukture
+      prop             : t_word;                 -- property bit field
+      typx             : t_longint;
+
+      -- souvisejici informace
+      first_field      : p_codeview_type_fieldlist; {t_pointer na seznam polozek                     }
+      last_field       : p_codeview_type_fieldlist; {t_pointer na seznam polozek                     }
+      name             : t_namestring;           -- jmeno recordu
+      typ              : t_codeview_type_type;   -- primitivni datovy typ !!! obecne jakykoliv !!!
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- typ parametru procedury
+  t_codeview_type_argitem;
+  p_codeview_type_argitem = ^t_codeview_type_argitem;
+  t_codeview_type_argitem = record
+      -- souvisejici informace
+      typ              : p_codeview_type;        -- typ argumentu
+
+      -- pomocne informace
+      order            : tunidata_size;          -- poradi parametru
+      status           : t_codeview_status;      -- status
+      prev             : p_codeview_type_argitem;-- predchozi parametr
+      next             : p_codeview_type_argitem;-- nasledujici parametr
+      end record;
+
+
+  -- typ volani procedury
+  t_codeview_type_proc_call = enum
+      cpc_nearc;                                 -- Near C
+      cpc_farc;                                  -- Far C
+      cpc_nearpascal;                            -- Near Pascal
+      cpc_farpascal;                             -- Far Pascal
+      cpc_nearfastcall;                          -- Near fastcall
+      cpc_farfastcall;                           -- Far fastcall
+      cpc_nearstdcall;                           -- Near stdcall
+      cpc_farstdcall;                            -- Far stdcall
+      cpc_nearsyscall;                           -- Near syscall
+      cpc_farsyscall;                            -- Far syscall
+      cpc_thiscall;                              -- This call
+      cpc_mipscall;                              -- MIPS call
+      cpc_generic;                               -- Generic
+      end enum;
+
+
+  -- typ procedure
+  t_codeview_type_proc;
+  p_codeview_type_proc = ^class t_codeview_type_proc;
+  t_codeview_type_proc = t_codeview_type0 with record
+      -- codeview informace
+      rvtype           : t_longint;              -- index typu navratove hodnoty
+      call             : t_byte;                 -- calling convention
+      parms            : t_word;                 -- pocet parametru
+      arglist          : t_longint;              -- index typu argumentu
+
+      -- souvisejici informace
+      cv_call          : t_codeview_type_proc_call; -- calling convention
+      cv_result        : p_codeview_type;        -- typ navratove hodnoty
+      first_argument   : p_codeview_type_argitem;-- pointer na prvni parametr procedury
+      last_argument    : p_codeview_type_argitem;-- pointer na konec seznamu parametru
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- typ pole
+  t_codeview_type_array;
+  p_codeview_type_array = ^class t_codeview_type_array;
+  t_codeview_type_array = t_codeview_type0 with record
+      -- codeview informace
+      elemtype         : t_longint;              -- typ prvku
+      idxtype          : t_longint;              -- typ indexu
+
+      -- souvisejici informace
+      cv_elemtype      : p_codeview_type;        -- typ prvku
+      cv_idxtype       : p_codeview_type;        -- typ indexu
+      length           : tunidata_size;          -- velikost pole v bytech
+      name             : t_namestring;           -- jmeno typu pole
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- typ vicerozmerne pole
+  t_codeview_type_dimarray;
+  p_codeview_type_dimarray = ^t_codeview_type_dimarray;
+  t_codeview_type_dimarray = record
+      -- codeview informace
+      utype            : t_longint;              -- typ prvku
+      diminfo          : t_longint;              -- typ indexu
+
+      -- souvisejici informace
+      cv_elemtype      : p_codeview_type;        -- typ prvku
+      cv_diminfo       : p_codeview_type;        -- typ indexu
+      name             : t_namestring;           -- jmeno typu pole
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- pointer ptr type
+  t_codeview_type_pointer_ptr = enum
+      cpp_near;                                  -- Near
+      cpp_far;                                   -- Far
+      cpp_huge;                                  -- Huge
+      cpp_basedonsegment;                        -- Based on segment (OBSOLED)
+      cpp_basedonvalue;                          -- Based on value
+      cpp_basedonsegmentofvalue;                 -- Based on segment of value (OBSOLED)
+      cpp_basedonaddress;                        -- Based on address of symbol (OBSOLED)
+      cpp_basedonsegmentofaddress;               -- Based on segment  of symbol address (OBSOLED)
+      cpp_basedontype;                           -- Based on type
+      cpp_basedonself;                           -- Based on self (OBSOLED)
+      cpp_near32bit;                             -- Near 32 bit pointer
+      cpp_far32bit;                              -- Far 32 bit pointer
+      cpp_64bit;                                 -- 64 bit pointer
+      end enum;
+
+
+  -- pointer mode
+  t_codeview_type_pointer_mode = enum
+      cpm_pointer;                               -- Pointer
+      cpm_reference;                             -- Reference
+      cpm_pointertodatamember;                   -- Pointer to data memeber
+      cpm_pointertomethod;                       -- Pointer to method
+      end enum;
+
+
+  -- typ pointer
+  t_codeview_type_pointer;
+  p_codeview_type_pointer = ^class t_codeview_type_pointer;
+  t_codeview_type_pointer = t_codeview_type0 with record
+      -- codeview informace
+      attr             : t_longint;              -- attributy pointru
+
+      -- souvisejici informace
+      typ              : p_codeview_type;        -- typ objektu na ktery pointer ukazuje
+      ptrtype          : t_codeview_type_pointer_ptr;  -- ptr type
+      ptrmode          : t_codeview_type_pointer_mode; -- ptr mode
+      isflat32         : t_logical;              -- true if 16:32 pointer
+      volatile         : t_logical;              -- true if pointer is volatile
+      ptrconst         : t_logical;              -- true if pointer is const
+      unaligned        : t_logical;              -- true if pointer is unaligned
+      restrict         : t_logical;              -- true if pointer is restricted
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- type
+  t_codeview_type      = record
+      -- odkaz na objekty prekladace
+      _type_           : pentity_type;           -- odkaz na objekt prekladace
+
+      -- codeview informace pro modul
+      length           : t_word;                 -- delka definice typu
+      leaf             : t_word;                 -- typ typu
+
+      -- souvisejici informace
+      desc             : p_codeview_type0;       -- popis typu
+      indextype        : t_longint;              -- index typu = poradove cislo typu $1000..$1000+n
+
+      -- pomocne informace
+      typ              : t_codeview_type_type;   -- typ typu
+      reference        : p_codeview_type;        -- pointer na tento typ, pokud existuje
+      primitive        : t_logical;              -- jedna se o primitivni datovy typ ?
+      status           : t_codeview_status;      -- status
+      prev             : p_codeview_type;        -- ukazatel na predchozi typ v seznamu
+      next             : p_codeview_type;        -- ukazatel na dalsi typ v seznamu
+      end record;
+
+
+  -- dupnuty data o typu
+  t_codeview_type_dump;
+  p_codeview_type_dump = ^t_codeview_type_dump;
+  t_codeview_type_dump = record
+      buffer           : p_unsigned8array;       -- buffer s dumpnutyma datama
+      size             : t_unsigned32;           -- velikost dat v bufferu
+      prev             : p_codeview_type_dump;   -- predchozi polozka v seznamu
+      next             : p_codeview_type_dump;   -- nasledujici polozka v seznamu
+      end record;
+
+
+  -- tabulka typu
+  t_codeview_type_table;
+  p_codeview_type_table = ^t_codeview_type_table;
+  t_codeview_type_table = record
+      -- codeview informace pro modul
+      flags            : t_longint;              -- priznak tabulky typu
+      cType            : t_longint;              -- pocet typu
+      offType          : p_offset_array;         -- offsety zacatku definici typu
+
+      -- souvisejici informace
+      type_first       : p_codeview_type;        -- seznam typu
+      type_last        : p_codeview_type;        -- pointer na posledni typ v seznamu
+
+      indextype        : t_longint;              -- aktualni cislo typu
+      size             : t_unsigned32;           -- velikost bufferu pro dumpnuta data
+      dump_first       : p_codeview_type_dump;   -- prvni polozka v seznamu dumpnutych dat
+      dump_last        : p_codeview_type_dump;   -- posledni polozka v seznamu dumpnutych dat
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+var
+  codeview_type_type_code : const array t_codeview_type_type of t_word := [
+      $0000,                                     -- nodef
+
+      -- hlavni typy
+      $1001,                                     -- LF_MODIFIER
+      $1002,                                     -- LF_POINTER
+      $1003,                                     -- LF_ARRAY
+      $1004,                                     -- LF_CLASS
+      $1005,                                     -- LF_STRUCTURE
+      $1006,                                     -- LF_UNION
+      $1007,                                     -- LF_ENUM
+      $1008,                                     -- LF_PROCEDURE
+      $1009,                                     -- LF_MFUNCTION
+      $100c,                                     -- LF_DIMARRAY
+
+      -- odkazovane typy
+      $1201,                                     -- LF_ARGLIST
+      $1203,                                     -- LF_FIELDLIST
+
+      -- polozky komplexnich typu
+      $0403,                                     -- LF_ENUMERATE
+      $1405,                                     -- LF_MEMBER
+      $1205,                                     -- LF_BIT
+
+      -- ciselne typy
+      $8000,                                     -- LF_NUMERIC
+      $8000,                                     -- LF_CHAR
+      $8001,                                     -- LF_SHORT
+      $8002,                                     -- LF_USHORT
+      $8003,                                     -- LF_LONG
+      $8004,                                     -- LF_ULONG
+
+      -- primitivni typy
+      $0003,                                     -- void
+      $0010,                                     -- 8-bit signed
+      $0020,                                     -- 8-bit unsigned
+      $0011,                                     -- 16-bit signed
+      $0021,                                     -- 16-bit unsigned
+      $0012,                                     -- 32-bit signed
+      $0022,                                     -- 32-bit unsigned
+      $0013,                                     -- 64-bit signed
+      $0023,                                     -- 64-bit unsigned
+      $0040,                                     -- 32-bit real
+      $0044,                                     -- 48-bit real
+      $0041,                                     -- 64-bit real
+      $0042,                                     -- 80-bit real
+      $0043,                                     -- 128-bit real
+      $0070,                                     -- real char
+      $0071                                      -- wide char
+      ];
+
+
+  codeview_type_pointer_ptr : const array t_codeview_type_pointer_ptr of t_byte := [
+      0,                                         -- Near
+      1,                                         -- Far
+      2,                                         -- Huge
+      3,                                         -- Based on segment (OBSOLED)
+      4,                                         -- Based on value
+      5,                                         -- Based on segment of value (OBSOLED)
+      6,                                         -- Based on address of symbol (OBSOLED)
+      7,                                         -- Based on segment  of symbol address (OBSOLED)
+      8,                                         -- Based on type
+      9,                                         -- Based on self (OBSOLED)
+      10,                                        -- Near 32 bit pointer
+      11,                                        -- Far 32 bit pointer
+      12                                         -- 64 bit pointer
+      ];
+
+
+  codeview_type_pointer_mode : const array t_codeview_type_pointer_mode of t_byte := [
+      0,                                         -- Pointer
+      1,                                         -- Reference
+      2,                                         -- Pointer to data memeber
+      3                                          -- Pointer to method
+      ];
+
+
+  codeview_type_proc_call : const array t_codeview_type_proc_call of t_byte := [
+      0,                                         -- Near C
+      1,                                         -- Far C
+      2,                                         -- Near Pascal
+      3,                                         -- Far Pascal
+      4,                                         -- Near fastcall
+      5,                                         -- Far fastcall
+      7,                                         -- Near stdcall
+      8,                                         -- Far stdcall
+      9,                                         -- Near syscall
+      10,                                        -- Far syscall
+      11,                                        -- This call
+      12,                                        -- MIPS call
+      13                                         -- Generic
+      ];
+
+----------------------------------------------------------------------------------------------------
+procedure generate_codeview_type (
+    _type          : in pentity_type;
+    _leaf          : in out t_codeview_type_type;
+    _primitive     : in out t_logical;
+    _desc          : in out p_codeview_type0;
+    _my            : in p_codeview_type;
+    _base          : in out t_codeview_type_table
+    );
+-- Vygeneruje popis typu.
+----------------------------------------------------------------------------------------------------
+procedure dump_codeview_type (
+    _my            : in p_codeview_type;
+    _base          : in out t_codeview_type_table
+    );
+-- Dump popisu typu.
+----------------------------------------------------------------------------------------------------
+procedure get_codeview_type_container (
+    _type          : in pentity_type;
+    _base          : in out t_codeview_type_table;
+    _container     : in out p_codeview_type
+    ) return t_logical;
+-- K zadanenmu typu najde jeho reprezentaci v CodeView strukture.
+----------------------------------------------------------------------------------------------------
+procedure entityident_to_name (
+    id             : in tentityident)
+    return t_namestring;
+-- P©evod identifik toru entity na jm‚no v r mci CodeView informac¡.
+----------------------------------------------------------------------------------------------------
+procedure filename_to_name (
+    id             : in t_text_name)
+    return t_namestring;
+-- P©evod identifik toru souboru na jm‚no v r mci CodeView informac¡.
+----------------------------------------------------------------------------------------------------
+procedure trunc_file_name (
+    id             : in t_namestring)
+    return t_namestring;
+-- P©evod identifik toru souboru na jm‚no v r mci CodeView informac¡.
+----------------------------------------------------------------------------------------------------
+procedure unsigned_to_name (
+    x              : in t_unsigned)
+    return t_namestring;
+-- P©evod cel‚ho ‡¡sla bez znam‚nka na jm‚no v r mci CodeView informac¡.
+----------------------------------------------------------------------------------------------------
+
+end cl_codeview_types;

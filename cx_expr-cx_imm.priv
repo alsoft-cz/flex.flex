@@ -1,0 +1,1069 @@
+----------------------------------------------------------------------------------------------------
+module private cx_imm =
+-- P©eklada‡ Flexu.
+-- Operace s p©¡mou hodnotou.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 24.07.2001 : Vytvo©il.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+#separate public cx_array;
+#separate private cx_array;
+-- Pr ce s agreg tem pole.
+----------------------------------------------------------------------------------------------------
+#separate public cx_set;
+#separate private cx_set;
+-- Pr ce s agreg tem mno‘iny.        
+----------------------------------------------------------------------------------------------------
+
+const
+  -- alokace pamˆti
+  immitemsinit     = 10;
+  immitemsdelta    = 20;
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_convord (
+     oldval        : in unchecked;               -- p–vodn¡ hodnota
+     newval        : out unchecked;              -- nov  hodnota
+     oldsize       : in t_unsigned32;            -- velikost p–vodn¡ hodnoty
+     oldsign       : in t_logical;               -- T-signed, F-unsigned
+     newsize       : in t_unsigned32;            -- velikost nov‚ hodnoty
+     newsign       : in t_logical) =             -- T-signed, F-unsigned
+-- Konvertuje ordin ln¡ hodnotu.
+----------------------------------------------------------------------------------------------------
+var
+  ui               : tuniint;
+
+begin
+  uniint_load(ui,oldval,oldsize,oldsign);
+  if uniint_test_shrink(ui,newsize,newsign) then
+    ce^.seterror({CCERR=}000091,ce_numrange);
+    {%%POS}
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  uniint_store(ui,newval,newsize);
+  end imm_convord;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_ordinal =
+-- Ulo‘¡ do p©¡m‚ hodnoty univerz ln¡ integer.                                
+----------------------------------------------------------------------------------------------------
+begin
+  imm.ic:=ic_ordinal;
+  imm.ui:=ui;
+  end store_ordinal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_real =
+-- Ulo‘¡ do p©¡m‚ hodnoty univerz ln¡ real.                                
+----------------------------------------------------------------------------------------------------
+begin
+  imm.ic:=ic_real;
+  imm.ur:=ur;
+  end store_real;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_nil =
+-- Ulo‘¡ do p©¡m‚ hodnoty NIL.                                                
+----------------------------------------------------------------------------------------------------
+begin
+  imm.ic:=ic_nil;
+  end store_nil;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_string =
+-- Ulo‘¡ do p©¡m‚ hodnoty znakov˜ agreg t.
+-- (Nealokuje pamˆŸ, jen p©evezme pointer).
+----------------------------------------------------------------------------------------------------
+type
+  tmpointer        = ^unchecked for machine_pointer use true;
+  tupointer        = record
+      ptr          : tmpointer;
+      rta_last     : unsigned 32;
+      end record;
+
+begin
+  imm.ic:=ic_condensed;
+  imm.citems.len:=str^:length;
+  imm.citems.isize:=str^:base:size;
+  --%%TODO(SLICE) krutobrut ln¡ z plata
+  tupointer(imm.citems.items:unchecked).ptr     :=^str^[1]:unchecked;
+  tupointer(imm.citems.items:unchecked).rta_last:=str^:length;
+  --imm.citems.items:=^str^[1..str^:length]:unchecked;
+  end store_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_sysstr =
+-- Ulo‘¡ do p©¡m‚ hodnoty syst‚mov˜ ©etˆzec.
+----------------------------------------------------------------------------------------------------
+var
+  i                : s:range:type;
+
+begin
+  -- z kladn¡ £daje
+  imm.ic:=ic_condensed;
+  imm.citems.len:=s:length;
+  imm.citems.isize:=tunichar:size;
+
+  -- alokovat pamˆŸ
+  new imm.citems.items range imm.citems.len*imm.citems.isize;
+
+  -- zkop¡rovat ©etˆzec 
+  for i in s:range loop
+    tunichar({%%TODO(SLICE)}t_pointer(^imm.citems.items^[(i-1)*tunichar:size])^):=char_to_unichar(s[i]);
+    end loop;
+  end store_sysstr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_imm =
+-- Zkop¡ruje do p©¡m‚ hodnoty jinou p©¡mou hodnotu.                           
+-- (vytv ©¡ fyzickou kopii).                                                  
+----------------------------------------------------------------------------------------------------
+use
+  advanced,
+  advanced.low_level,
+  advanced.low_level.unchecked_memory_access;
+
+var
+  i                : t_unsigned;
+
+begin
+  imm.ic:=from.ic;
+  case from.ic
+    -- ordin ln¡ hodnota 
+    when ic_ordinal   do imm.ui:=from.ui;
+
+    -- re ln‚ ‡¡slo
+    when ic_real      do imm.ur:=from.ur;
+
+    -- kondenzovan‚ pole
+    when ic_condensed do
+        new imm.citems.items range from.citems.len*from.citems.isize;
+        imm.citems.len  :=from.citems.len;
+        imm.citems.isize:=from.citems.isize;
+        advanced.low_level.unchecked_memory_access.memory_copy(from.citems.items^,imm.citems.items^,imm.citems.len*imm.citems.isize);
+
+    -- agreg t pole
+    when ic_array     do
+        -- alokovat pamˆŸ pro agreg t
+        new imm.aitems;
+
+        -- zkop¡rovat prvky, je-li co kop¡rovat
+        if from.aitems^.list<>nil then
+          -- alokovat pamˆŸ pro prvky
+          new imm.aitems^.list range from.aitems^.list^:length;
+
+          -- zkop¡rovat prvky
+          for i in from.aitems^.list^:range loop
+            succ imm.aitems^.list^:length;
+            imm.aitems^.list^[i].lval:=from.aitems^.list^[i].lval;
+            imm.aitems^.list^[i].hval:=from.aitems^.list^[i].hval;
+            store_imm(imm.aitems^.list^[i].val,from.aitems^.list^[i].val);
+            end loop;
+          end if;
+
+        -- zkop¡rovat OTHERS
+        store_imm(imm.aitems^.othersval,from.aitems^.othersval);
+
+    -- agreg t recordu
+    when ic_record    do
+        -- alokovat pamˆŸ pro agreg t
+        new imm.ritems;
+
+        -- zkop¡rovat prvky, je-li co kop¡rovat
+        if from.ritems^.list<>nil then
+          -- alokovat pamˆŸ pro prvky
+          new imm.ritems^.list range from.ritems^.list^:last;
+
+          -- zkop¡rovat prvky
+          for i in from.ritems^.list^:range loop
+            succ imm.ritems^.list^:length;
+            imm.ritems^.list^[i].item:=from.ritems^.list^[i].item;
+            store_imm(imm.ritems^.list^[i].val,from.ritems^.list^[i].val);
+            end loop;
+          end if;
+
+        -- zkop¡rovat OTHERS
+        store_imm(imm.ritems^.othersval,from.ritems^.othersval);
+        --unimplemented(450);
+
+    -- agreg t mno‘iny
+    when ic_set       do
+        -- alokovat pamˆŸ pro agreg t
+        new imm.sitems;
+
+        -- zkop¡rovat prvky, je-li co kop¡rovat
+        if from.sitems^.list<>nil then
+          -- alokovat pamˆ© pro prvky
+          new imm.sitems^.list range from.sitems^.list^:length;
+
+          -- zkop¡rovat prvky (‘ dn‚ deep copy nen¡ pot©eba)
+          imm.sitems^.list^:=from.sitems^.list^;
+          end if;
+        --unimplemented(136);
+
+    -- NIL
+    when ic_nil       do ;
+
+--  when ic_bin       do                 -- specifikov no nad©azen˜m typem
+--      c_store(imm.val,from.vsize);
+--      imm.vsize:=from.vsize;
+--      movef(from.val^,imm.val^,imm.vsize);
+
+--  -- relokabiln¡ symol
+--  when ic_relo      do imm.sym:=from.sym;
+
+    when others       do verify(250,true);
+    end case;
+  end store_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_array =
+-- Vytvo©¡ p©¡mou hodnotu typu agreg t pole.                                  
+----------------------------------------------------------------------------------------------------
+begin
+  -- z kladn¡ £daje 
+  imm.ic:=ic_array;
+
+  -- alokovat pamˆŸ pro agreg t 
+  new imm.aitems;
+
+  -- p©edalokovat po‘adovan˜ po‡et polo‘ek
+  if items<>0 then
+    cx_array.choice_extend(imm.aitems^,items);
+    end if;
+
+  -- OTHERS je implicitnˆ NIL 
+  store_nil(imm.aitems^.othersval);
+  end store_array;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_array_item =
+-- Ulo‘¡ do p©¡m‚ hodnoty (agreg tu pole) hodnotu polo‘ek v ur‡it‚m rozsahu.  
+----------------------------------------------------------------------------------------------------
+begin
+  verify(438,(imm.ic<>ic_array) or (imm.aitems=nil));
+
+  cx_array.choice_add_single(imm.aitems^,val,item);
+  end store_array_item;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_array_items_range =
+-- Ulo‘¡ do p©¡m‚ hodnoty (agreg tu pole) hodnotu polo‘ek v ur‡it‚m rozsahu.  
+----------------------------------------------------------------------------------------------------
+begin
+  verify(251,(imm.ic<>ic_array) or (imm.aitems=nil));
+
+  cx_array.choice_add_range(imm.aitems^,lval,hval,item);
+  end store_array_items_range;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_array_others =
+-- Ulo‘¡ do p©¡m‚ hodnoty (agreg tu pole) hodnotu OTHERS.                     
+----------------------------------------------------------------------------------------------------
+begin
+  verify(252,(imm.ic<>ic_array) or (imm.aitems=nil));
+
+  -- ulo‘it 
+  store_imm(imm.aitems^.othersval,item);
+  end store_array_others;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_record =
+-- Vytvo©¡ p©¡mou hodnotu typu agreg t ©etˆzce.                               
+----------------------------------------------------------------------------------------------------
+begin
+  -- z kladn¡ £daje 
+  imm.ic:=ic_record;
+
+  -- alokovat pamˆŸ pro agreg t 
+  new imm.ritems;
+
+  -- OTHERS je implicitnˆ NIL 
+  store_nil(imm.ritems^.othersval);
+  end store_record;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_record_item =
+-- Ulo‘¡ do p©¡m‚ hodnoty (agreg tu recordu) hodnotu jedn‚ polo‘ky.           
+----------------------------------------------------------------------------------------------------
+var
+  i                : t_unsigned;
+  _list            : imm.ritems^.list:type;
+  _x               : imm.ritems^.list^:base;
+
+begin;
+  verify(436,(imm.ic<>ic_record) or (imm.ritems=nil));
+
+  -- nen¡ u‘ hodnota slo‘ky definov na ? 
+  i:=1;
+  if imm.ritems^.list<>nil then
+    while i<=imm.ritems^.list^:length and then imm.ritems^.list^[i].item<>pitem loop 
+      succ i; 
+      end loop;
+    end if;
+  if imm.ritems^.list<>nil and then i<=imm.ritems^.list^:length
+
+    -- ano je => varov n¡ + zmˆnit hodnotu 
+    then
+      -- varov n¡ 
+      --%%X CURR nem me k dispozici... Co s t¡m ?  if cw_duplicate_association in curr.compv.warns then begin
+        ce^.setwarning({CCERR=}000092,cw_duplicate_association);
+        {%%POS}
+        --end if;
+
+      -- zmˆnit hodnotu 
+      imm.ritems^.list^[i].val:=item;
+
+    -- ne nen¡ => p©idat novou hodnotu 
+    else
+      -- realokovat pamˆŸ
+      if imm.ritems^.list=nil then
+        new imm.ritems^.list range immitemsinit;
+      elsif imm.ritems^.list^:length+1>imm.ritems^.list^:last then
+        --%%TODO(ADJUST) adjust imm.ritems^.list range imm.ritems^.list^:last+immitemsdelta;
+        new _list range imm.ritems^.list^:last+immitemsdelta;
+        _list^:=imm.ritems^.list^;
+        discard imm.ritems^.list;
+        imm.ritems^.list:=_list;
+        end if;
+
+      -- p©idat na konec %%TODO(AGGREGATE)
+      _x.item:=pitem;
+      _x.val :=item;
+      imm.ritems^.list^ & _x;
+      --unimplemented(89);
+      end if;
+
+  end store_record_item;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_record_others =
+-- Ulo‘¡ do p©¡m‚ hodnoty (agreg tu recordu) hodnotu OTHERS.                  
+----------------------------------------------------------------------------------------------------
+begin
+  verify(254,(imm.ic<>ic_record) or (imm.ritems=nil));
+
+  -- ulo‘it 
+  store_imm(imm.ritems^.othersval,item);
+  end store_record_others;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_set =
+-- Vytvo©¡ p©¡mou hodnotu typu agreg t mno‘iny.                               
+----------------------------------------------------------------------------------------------------
+begin
+  -- z kladn¡ £daje 
+  imm.ic:=ic_set;
+
+  -- alokovat pamˆŸ pro agreg t 
+  new imm.sitems;
+  end store_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_set_item =
+-- Ulo‘¡ do p©¡m‚ hodnoty (agreg tu mno‘iny) polo‘ku.                         
+----------------------------------------------------------------------------------------------------
+begin
+  verify(440,(imm.ic<>ic_set) or (imm.sitems=nil));
+
+  cx_set.choice_add_single(imm.sitems^,val);
+  end store_set_item;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure store_set_items_range =
+-- Ulo‘¡ do p©¡m‚ hodnoty (agreg tu mno‘iny) polo‘ky v ur‡it‚m rozsahu.       
+----------------------------------------------------------------------------------------------------
+begin
+  verify(441,(imm.ic<>ic_set) or (imm.sitems=nil));
+
+  cx_set.choice_add_range(imm.sitems^,lval,hval);
+  end store_set_items_range;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure load_uniint =
+-- Z p©¡m‚ hodnoty na‡te cel‚ ‡¡slo.                                          
+----------------------------------------------------------------------------------------------------
+begin
+  case imm.ic
+    when ic_ordinal     do ui:=imm.ui;
+    when ic_nil         do ui:=ui_nil;
+    when others         do verify(8,true{imm.ic<>ic_ordinal});
+    end case;
+  end load_uniint;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure load_unireal =
+-- Z p©¡m‚ hodnoty na‡te univerz ln¡ re ln‚ ‡¡slo
+----------------------------------------------------------------------------------------------------
+begin
+  case imm.ic
+    when ic_ordinal     do ur:=uniint_to_unireal(imm.ui);
+    when ic_real        do ur:=imm.ur;
+    when ic_nil         do ur:=ur_nil;
+    when others         do verify(236,true);
+    end case;
+  end load_unireal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure load_unilogical =
+-- Z p©¡m‚ hodnoty na‡te univerz ln¡ logickou hodnotu.
+----------------------------------------------------------------------------------------------------
+begin
+  case imm.ic
+    when ic_ordinal     do ul:=uniint_to_unilogical(imm.ui);{imm.ui;}
+    when ic_nil         do ul:=ul_nil;
+    when others         do verify(94,true{imm.ic<>ic_ordinal});
+    end case;
+  end load_unilogical;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure load_sysstr =
+-- Z p©¡m‚ hodnoty na‡te syst‚mov˜ ©etˆzec.
+----------------------------------------------------------------------------------------------------
+with
+  standard.numerics;
+  
+var
+  i                : t_unsigned;
+  j                : t_unsigned;
+  l                : s:range:type;
+
+begin
+{
+  verify(85,(imm.ic<>ic_string) or (imm.pocet<>imm.delka{Dukaz: imm.pocet=imm.delka => prvek:size=1}));
+  byte(s[0]):=imm.pocet;
+  movef(imm.citems.items^,s[1],imm.pocet);
+}
+  case imm.ic
+    when ic_condensed do
+        s:length:=min_unsigned(s:last,imm.citems.len);
+        i:=0;
+        j:=1;
+        for l in s:range loop
+          imm_convord(imm.citems.items^[i],s[j],imm.citems.isize,false,s:base:size,false);
+          i+imm.citems.isize;
+          j+1;
+          end loop;
+    when ic_nil do s:={sysstr_nil}nil;
+    when others do verify(85,true{imm.ic<>ic_string});
+    end case;
+  end load_sysstr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure load_image =
+-- Z p©¡m‚ hodnoty na‡te jej¡ textovou reprezentaci.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(179,t.tview<>tview_full);
+  case imm.ic
+    -- ordin ln¡ hodnota 
+    when ic_ordinal     do
+        case t{ptyp^}.stype
+          -- ‡¡slo se znam‚nkem
+          when dt_signed, dt_uniint do --%%TODO(LIB) s:=linttostr(imm.ui,tuniint:size);
+
+          -- ‡¡slo bez znam‚nka
+          when dt_unsigned do --%%TODO(LIB) s:=lnumtostr(imm.ui,tuniint:size);
+
+          -- znak
+          when dt_char, dt_unichar do unimplemented(46);
+
+          -- boolean
+          when dt_logical, dt_unilogical do unimplemented(47);
+
+          -- enum
+          when dt_enum do unimplemented(48);
+
+          when others do verify(118,true);
+          end case;
+
+    -- re ln‚ ‡¡slo
+    when ic_real do
+        case t{ptyp^}.stype
+          -- re ln‚ ‡¡slo
+          when dt_float, dt_unireal do --%%TODO(LIB) s:=realtostr({%%X}extended(imm.ur),true,0);
+
+          when others do verify(119,true);
+          end case;
+
+    -- nil
+    when ic_nil do s:=sysstr_nil_image;
+
+    when others do verify(117,true);
+    end case;
+  end load_image;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_convarray (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    imm            : in out timm_value;          -- p©¡m  hodnota
+    oldtype        : in typeview;                -- p–vodn¡ typ
+    newtype        : in typeview;                -- nov˜ typ
+    change         : out t_logical) =            -- T-zmˆnila se intern¡ reprezentace
+-- Konvertuje pole star‚ho typu na nov˜ typ.
+----------------------------------------------------------------------------------------------------
+var
+  oldbase          : typeview;                   -- b ze p–vodn¡ho typu                         
+  newbase          : typeview;                   -- b ze nov‚ho typu                            
+  oldrange         : typeview;                   -- rozsah p–vodn¡ho typu                       
+  newrange         : typeview;                   -- rozsah nov‚ho typu                          
+  change0          : t_logical;                  -- vno©en˜ p©¡znak zmˆny                       
+  diff             : tuniint;                    -- rozd¡l mez¡                                 
+  i                : t_unsigned;
+  j                : t_unsigned;
+
+begin
+  -- pole je pr zdn‚, nen¡ co ©e¨it 
+  if imm.ic=ic_nil then return; end if;
+
+--verify(81,imm.ic<>ic_condensed);
+
+  -- zjistit b ze typ– 
+  oldbase:=oldtype.getbase(curr);
+  newbase:=newtype.getbase(curr);
+
+  -- typy jsou bin rnˆ stejn‚, nen¡ co ©e¨it 
+  --if t_binaryidentical(t_defview(old^.base.getctype),t_defview(new^.base.getctype),true) then exit; end if;
+  if t_binaryidentical(curr,oldbase,newbase,true) then return; end if;
+
+  case imm.ic
+    -- kondenzovan˜ tvar 
+    when ic_condensed do
+        -- nic se transformovat nebude 
+{
+        case oldtype.stype
+          -- unichar --> 
+          dt_unichar : case newtype.stype
+              -- --> char 
+              dt_char do
+                  -- zkonvertovat 
+                  if udcmpe(newtype.getsize,ud_lunichar) then
+                    end if;
+
+                  change:=true;
+                  end;
+
+              else verify(265,true);
+              end case;
+
+          else verify(266,true);
+          end case;
+}
+
+    -- agreg tn¡ tvar
+    when ic_array do
+        -- konvertovat v¨echny prvky
+        for i in imm.aitems^.list^:range loop
+          imm_settype(curr,imm.aitems^.list^[i].val,oldbase,newbase,change0);
+          change:=change or change0;
+          end loop;
+
+        -- konvertovat OTHERS
+        imm_settype(curr,imm.aitems^.othersval,oldbase,newbase,change0);
+        change:=change or change0;
+
+        -- rozsahy
+        oldrange:=oldtype.getrange(curr);
+        newrange:=newtype.getrange(curr);
+
+        -- rozd¡l mez¡ (NEW:FIRST - OLD:FIRST)
+        diff:=newrange.getlval-oldrange.getlval;
+
+        -- p©epo‡¡tat meze
+        if diff<>ui_0 then
+          for i in imm.aitems^.list^:range loop
+            imm.aitems^.list^[i].lval+diff;
+            imm.aitems^.list^[i].hval+diff;
+            end loop;
+          end if;
+
+    when others do verify(260,true);
+    end case;
+  end imm_convarray;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_settype =
+-- P©izp–sob¡ p©¡mou hodnotu nov‚mu typu.                                     
+----------------------------------------------------------------------------------------------------
+begin
+  -- p©edpoklad : nic se nezmˆn¡
+  change:=false;
+
+  case oldtype.stype
+    -- diskr‚tn¡ typy -->
+    when dt_signed,dt_unsigned,dt_char,dt_enum,dt_logical,dt_uniint,dt_unilogical,dt_unichar do case newtype.stype
+        -- --> diskr‚tn¡ typy
+        when dt_signed,dt_unsigned,dt_char,dt_enum,dt_logical,dt_uniint,dt_unilogical,dt_unichar do { nic nedˆlat };
+
+        -- --> re ln‚ typy
+        when dt_float,dt_unireal do unimplemented(26);
+
+        when others do verify(76,true);
+        end case;
+
+    -- re ln‚ typy -->
+    when dt_float,dt_unireal do case newtype.stype
+        -- --> re ln‚ typy
+        when dt_float,dt_unireal do { nic nedˆlat };
+
+        when others do verify(77,true);
+        end case;
+
+    -- pole nebo ©etˆzec -->
+    when dt_array,dt_uarray,dt_string,dt_ustring,{dt_unistr,}dt_uniarray do case newtype.stype
+        -- --> pole nebo ©etˆzec
+        when dt_array,dt_uarray,dt_string,dt_ustring,{dt_unistr,}dt_uniarray do imm_convarray(curr,imm,oldtype,newtype,change);
+
+        when others do verify(259,true);
+        end case;
+
+    -- mno‘ina -->
+    when dt_set do case newtype.stype
+        -- --> mno‘ina
+        when dt_set do { nic nedˆlat };
+
+        when others do verify(439,true);
+        end case;
+
+    -- record -->
+    when dt_record do case newtype.stype
+        -- --> record
+        when dt_record do { nic nedˆlat };
+
+        when others do verify(449,true);
+        end case;
+
+    -- NIL -->
+    when dt_uninil do
+        case newtype.tview
+          -- Full view
+          when tview_full do case newtype.stype
+              -- --> diskr‚tn¡ typy
+              when dt_signed,dt_unsigned,dt_char,dt_enum,dt_logical,dt_uniint do
+                  imm.ic:=ic_ordinal;
+                  imm.ui:=ui_nil;
+                  change:=true;
+
+              -- --> re ln‚ typy
+              when dt_float,dt_unireal do
+                  imm.ic:=ic_real;
+                  imm.ur:=ur_nil;
+                  change:=true;
+
+              -- pro ostatn¡ typy ponechat
+              when others do ;
+              end case;
+
+          -- Unchecked view
+          when tview_unchecked do -- nic nedˆlat
+
+          when others do verify(471,true);
+          end case;
+
+    when others do verify(80,true);
+    end case;
+  end imm_settype;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_check =
+-- Kontrola spr vnosti p©¡m‚ hodnoty.
+----------------------------------------------------------------------------------------------------
+var
+  lval             : tuniint;                    -- doln¡ mez
+  hval             : tuniint;                    -- horn¡ mez
+  sign             : t_logical;                  -- znam‚nko
+  base             : typeview;                   -- b zov˜ typ
+  length           : tuniint;                    -- d‚lka rozsahu
+  ui               : tuniint;
+  i                : t_unsigned;
+
+begin
+  case imm.ic
+    -- ordin ln¡ hodnota
+    when ic_ordinal do
+        verify(268,not (t.stype in dts_u_ordinal));
+
+        -- neprov dˆt pro univerz ln¡ typy
+        if t.stype in dts_unitype then return; end if;
+
+        -- kontrola mez¡
+        if imm.ui<t.getlval or imm.ui>t.gethval then
+          ce^.seterror({CCERR=}000093,ce_numrange);
+          {%%POS}
+          {%%RESUME ce^.raiseerror;}
+          ce^.resumeerror;
+          end if;
+
+    -- re ln‚ ‡¡slo
+    when ic_real do
+        -- kontrola p©esnosti
+        {%%X dodˆlat a‘ bude hotov  vlastn¡ re ln  aritmetika }
+
+    -- kondenzovan˜ ©etˆzec
+    when ic_condensed do
+        -- kontrola d‚lky
+        case t.stype
+          -- ©etˆzec
+          when dt_string do
+              ui:=unsigned_to_uniint(imm.citems.len);
+              if ui>t.getrange(curr).getlength then
+                ce^.setwarning({CCERR=}000094,cw_imm_strlength);
+                {%%POS}
+                end if;
+
+          -- neomezen˜ ©etˆzec
+          when dt_ustring do { nic nedˆlat };
+
+          -- pole
+          when dt_array do
+              ui:=unsigned_to_uniint(imm.citems.len);
+              length:=t.getrange(curr).getlength;
+              if ui<>length then
+                ce^.seterror({CCERR=}000095,ce_arraylength);
+                --%%TODO(LIB) ce^.sethint(formats2(hint_expr_arraylength,linttostr(ui,tuniint:size),linttostr(length,tuniint:size)));
+                {%%POS}
+                {%%RESUME ce^.raiseerror;}
+                ce^.resumeerror;
+                end if;
+
+          -- neomezen‚ pole
+          when dt_uarray  do { nic nedˆlat };
+
+          when others do verify(269,true);
+          end case;
+
+        -- typ b ze 
+        base:=t.getbase(curr);
+        verify(270,not (base.stype in dts_ordinal));
+
+        -- pro zjednodu¨en¡ 
+        sign:=base.stype=dt_signed;
+        lval:=base.getlval;
+        hval:=base.gethval;
+
+        -- kontrola mez¡ prvk– 
+        if imm.citems.len>0 then
+          for i in 0..imm.citems.len-1 loop
+            -- na‡¡st hodnotu prvku
+            uniint_load(ui,imm.citems.items^[i*imm.citems.isize],imm.citems.isize,sign);
+
+            -- kontrola mez¡
+            if ui<lval or ui>hval then
+              ce^.seterror({CCERR=}000096,ce_numrange);
+              {%%POS}
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+              end if;
+            end loop;
+          end if;
+
+    -- agreg t pole
+    when ic_array do
+        -- Tvrzen¡: Nen¡ t©eba prov dˆt ‘ dn‚ kontroly
+        -- D–kaz: P©¡m  hodnota typu agreg t pole vznikne pouze p©ekladem
+        -- syntaktick‚ kategorie Agreg t.
+        --   Je t©eba kontrolovat 2 podm¡nky:
+        --     1) rozsah indexu ve vazbˆ polo‘ky,
+        --     2) p©¡pustnost konstantn¡ hodnoty polo‘ky.
+        -- Obˆ kontroly se prov dˆj¡ bˆhem zpracov n¡ agreg tu.
+
+    -- agreg t recordu
+    when ic_record do
+        -- Tvrzen¡: Nen¡ t©eba prov dˆt ‘ dn‚ kontroly
+        -- D–kaz: analogicky jako pro agreg t pole
+
+    -- agreg t mno‘iny
+    when ic_set do
+        -- Tvrzen¡: Nen¡ t©eba prov dˆt ‘ dn‚ kontroly
+        -- D–kaz: analogicky jako pro agreg t pole
+
+    -- NIL
+    when ic_nil do { nic nedˆlat };
+
+    when others do verify(267,true);
+    end case;
+  end imm_check;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_get_length =
+-- D‚lka znakov‚ho agreg tu.
+----------------------------------------------------------------------------------------------------
+begin
+  case imm.ic
+    when ic_condensed do length:=unsigned_to_uniint(imm.citems.len);
+    when ic_array     do
+        if imm.aitems^.list=nil or else imm.aitems^.list^:length=0
+          then length:=ui_0;
+          else length:=imm.aitems^.list^[imm.aitems^.list^:length].hval;
+          end if;
+    when others do verify(542,true);
+    end case;
+  end imm_get_length;
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_isnil =
+-- True, je-li p©¡m  hodnota NIL nebo NIL-ekvivalentn¡.
+----------------------------------------------------------------------------------------------------
+begin
+  case imm.ic
+    when ic_ordinal   do result:=imm.ui=ui_nil;
+    when ic_real      do result:=imm.ur=ur_nil;
+    when ic_nil       do result:=true;
+    when ic_condensed do result:=imm.citems.len=0;
+    when ic_array     do result:=(imm.aitems^.list=nil or else imm.aitems^.list^:length=0) and then imm_isnil(imm.aitems^.othersval);
+    {%%X doplnit: LEN<>0 AND THEN imm_isnil(libovolna slozka) }
+    when ic_record    do result:=(imm.ritems^.list=nil or else imm.ritems^.list^:length=0) and then imm_isnil(imm.ritems^.othersval);
+    when ic_set       do result:=imm.sitems^.list=nil or else imm.sitems^.list^:length=0;
+    {%%X doplnit: LEN<>0 AND THEN imm_isnil(libovolna slozka) }
+--  when ic_relo      do result:=false;
+    when others       do verify(261,true);
+    end case;
+  end imm_isnil;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_isfullset =
+-- True, je-li p©¡m  hodnota ekvivalentn¡ £pln‚ mno‘inˆ.                      
+----------------------------------------------------------------------------------------------------
+begin
+  case imm.ic
+    when ic_set         do
+        result:=imm.sitems^.list<>nil
+                and then imm.sitems^.list^:length=1
+                and then imm.sitems^.list^[1].lval=ptyp^.base.getctype()^.lval
+                and then imm.sitems^.list^[1].hval=ptyp^.base.getctype()^.hval;
+    when ic_nil         do result:=false;
+    when others         do verify(454,true);
+    end case;
+  end imm_isfullset;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_union =
+-- Sjednocen¡ dvou mno‘in.
+----------------------------------------------------------------------------------------------------
+var
+  i                : t_unsigned;
+
+begin
+  verify(455,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil]);
+
+  -- vpravo je NIL => nic nedˆlat
+  if imm_isnil(B) then return; end if;
+
+  -- z NIL vlevo udˆlat mno‘inu
+  if A.ic=ic_nil then
+    store_set(A);
+    end if;
+
+  -- prvky z B zahrnout do A
+  for i in B.sitems^.list^:range loop
+    if B.sitems^.list^[i].lval=B.sitems^.list^[i].hval
+      then store_set_item(A,B.sitems^.list^[i].lval)
+      else store_set_items_range(A,B.sitems^.list^[i].lval,B.sitems^.list^[i].hval);
+      end if;
+    end loop;
+  end imm_union;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_diff =
+-- Rozd¡l dvou mno‘in.
+----------------------------------------------------------------------------------------------------
+var
+  i                : t_unsigned;
+
+begin
+  verify(458,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil]);
+
+  -- na jedn‚ stranˆ je NIL => nic nedˆlat
+  if imm_isnil(A) or imm_isnil(B) then return; end if;
+
+  -- prvky z B odstranit z A
+  for i in B.sitems^.list^:range loop
+    if B.sitems^.list^[i].lval=B.sitems^.list^[i].hval
+      then cx_set.choice_remove_single(A.sitems^,B.sitems^.list^[i].lval)
+      else cx_set.choice_remove_range(A.sitems^,B.sitems^.list^[i].lval,B.sitems^.list^[i].hval);
+      end if;
+    end loop;
+  end imm_diff;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_cmp =
+-- Porovn n¡ dvou p©¡m˜ch hodnot.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure cmpnil (
+        imm        : in timm_value) =            -- prav˜ operand
+    -- Porovn n¡ NIL = cokoliv.
+    ------------------------------------------------------------------------------------------------
+    begin
+      case imm.ic
+        when ic_ordinal   do cmp:=imm.ui=ui_nil;
+        when ic_real      do cmp:=imm.ur=ur_nil;
+        when ic_condensed do cmp:=imm.citems.len=0;
+        when ic_array     do unimplemented(108);--cmp:=(imm2.aitems^.len=0) and (imm2.aitems^.othersval
+        when ic_record    do unimplemented(109);--cmp:=imm2.ritems^.
+        when ic_set       do unimplemented(137);
+        when others       do verify(316,true);
+        end case;
+      case oper
+        when cmp_eq     do { nic nedˆlat };
+        when cmp_ne     do cmp:=not cmp;
+        when others     do verify(317,true);
+        end case;
+      end cmpnil;
+
+var
+  a                : tuniint;
+  b                : tuniint; 
+  i                : t_unsigned;
+
+begin
+  -- ordin ln¡ -- ordin ln¡
+  if (imm1.ic=ic_ordinal) and (imm2.ic=ic_ordinal) then
+    case oper
+      when cmp_eq do cmp:=imm1.ui=imm2.ui;
+      when cmp_ne do cmp:=imm1.ui<>imm2.ui;
+      when cmp_lt do cmp:=imm1.ui<imm2.ui;
+      when cmp_le do cmp:=imm1.ui<=imm2.ui;
+      when cmp_gt do cmp:=imm1.ui>imm2.ui;
+      when cmp_ge do cmp:=imm1.ui>=imm2.ui;
+      when others do verify(121,true);
+      end case;
+
+  -- re ln‚ -- re ln‚
+  elsif (imm1.ic=ic_real) and (imm2.ic=ic_real) then
+    unimplemented(106);
+
+  -- kondenzovan‚ pole -- kondenzovan‚ pole
+  elsif (imm1.ic=ic_condensed) and (imm2.ic=ic_condensed) then
+    case oper
+      -- =, <>
+      when cmp_eq,cmp_ne do
+          if imm1.citems.len<>imm2.citems.len
+
+            -- r–zn‚ d‚lky => je to jasn‚
+            then cmp:=oper=cmp_ne
+
+            -- stejn‚ d‚lky => zkoumat d l
+            else
+              -- porovnat
+              i:=0;
+              while i<imm1.citems.len loop
+                -- na‡¡st ‡¡sla
+                uniint_load(a,imm1.citems.items^[i*imm1.citems.isize],imm1.citems.isize,{%%X sign:}false);
+                uniint_load(b,imm2.citems.items^[i*imm2.citems.isize],imm2.citems.isize,{%%X sign:}false);
+
+                -- porovnat
+                if a<>b then break; end if;
+
+                -- dal¨¡ prvek
+                succ i;
+                end loop;
+
+              -- finta s xorem
+              cmp:=(i=imm1.citems.len) xor (oper=cmp_ne);
+              end if;
+
+      -- <, <=, >, >=
+      when cmp_lt,cmp_le,cmp_gt,cmp_ge do
+          unimplemented(111);
+
+      when others do verify(318,true);
+      end case;
+
+  -- pole -- pole
+  elsif (imm1.ic in timmclassset:[ic_condensed,ic_array]) and (imm2.ic in timmclassset:[ic_condensed,ic_array]) then
+    unimplemented(110);
+
+  -- record -- record
+  elsif (imm1.ic=ic_record) and (imm2.ic=ic_record) then
+    unimplemented(107);
+
+  -- mno‘ina -- mno‘ina
+  elsif (imm1.ic=ic_set) and (imm2.ic=ic_set) then
+    unimplemented(138);
+
+  -- NIL -- NIL
+  elsif (imm1.ic=ic_nil) and (imm2.ic=ic_nil) then
+    case oper
+      when cmp_eq do cmp:=true;
+      when cmp_ne do cmp:=false;
+      when others do verify(314,true);
+      end case;
+
+  -- NIL -- cokoliv
+  elsif imm1.ic=ic_nil then cmpnil(imm2)
+
+  -- cokoliv -- NIL
+  elsif imm2.ic=ic_nil then cmpnil(imm1)
+
+  else
+    verify(315,true);
+    end if;
+  end imm_cmp;
+
+
+
+end cx_imm;

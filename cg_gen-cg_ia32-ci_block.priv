@@ -1,0 +1,2241 @@
+----------------------------------------------------------------------------------------------------
+module private ci_block =
+-- P©eklada‡ Flexu.
+-- Generov n¡ bloku p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 22.01.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  standard,
+  cc_base,
+  cc_base.cc_rtl,
+  cc_attr,
+  cx_expr,
+  cx_expr.cx_def,
+  cx_expr.cx_imm,
+  cb_block,
+  cb_block.cb_def,
+  ci_code,
+  ci_code.ci_rtl,
+  ci_code.ci_instr,
+  ci_code.ci_relo,
+  ci_code.ci_oper,
+  ci_code.ci_stack,
+  ci_reg,
+  ci_context,
+  ci_expr,
+  ci_fragment,
+  cg_debug,
+  cp_cpu.cp_32.cp_def,
+  cp_cpu.cp_ia32.ci_abi,
+  cp_cpu.cp_ia32.ci_instr;
+
+type
+  -- kontext p©¡kazu
+  iblcontext       = record
+      xlevel       : t_unsigned;                 -- hloubka vno©en¡ blok– begin..end
+      end_loop     : itarget;                    -- n vˆ¨t¡ konce cyklu
+      loop_level   : t_unsigned;                 -- hlobka vno©en¡ cyklu
+      end_block    : itarget;                    -- n vˆ¨t¡ konce bloku
+      top_block    : itarget;                    -- n vˆ¨t¡ konce top-level bloku
+      incatch      : t_logical;                  -- v ‡ sti catch
+      end record;
+
+const
+  -- nejvy¨¨¡ blok begin..end
+  xlevel_top       = 1;
+
+----------------------------------------------------------------------------------------------------
+procedure prepare_loop_context (
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    newcontext     : out iblcontext;             -- kontext vnit©ku cyklu
+    end_loop       : in itarget) =               -- n vˆ¨t¡ konce cyklu
+-- P©iprav¡ kontext pro generov n¡ vnit©ku cyklu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vˆt¨inu £daj– p©evz¡t
+  newcontext:=context;
+
+  -- zapamatovat si n vˆ¨t¡ konce cyklu
+  newcontext.end_loop:=end_loop;
+
+  -- zapamatovat si £rove¤ vno©en¡ tohoto cyklu
+  newcontext.loop_level:=newcontext.xlevel;
+  end prepare_loop_context;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure assign_label_target (
+    plabel         : in pentity_label;           -- zpracov van‚ n vˆ¨t¡
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Pokud se tak ji‘ nestalo, tak do n vˆ¨t¡ dopln¡ ‡¡slo n vˆ¨t¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat c¡l skoku
+  if plabel^.codegen=nil then
+    -- alokovat pamˆŸ 
+    new picodegen_label(plabel^.codegen);
+
+    -- doplnit n vˆ¨t¡                  
+    newtarget(info,picodegen_label(plabel^.codegen)^.target);
+    end if;
+  end assign_label_target;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_node (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblnode;                 -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo);           -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du jednoho uzlu.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_sequence (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    list           : in bllist;                  -- prvn¡ uzel sekvence
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du posloupnosti p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+var
+  bl               : pblnode;
+
+begin
+  bl:=list.first;
+{
+  -- doplnit z znam pro generov n¡ debug informac¡
+  if bl<>nil then
+    adddebuginfo(inst,dbt_sequence_,bl^.pos[bp_begin].b,nil);
+    end if;
+}
+  while bl<>nil loop
+    -- vygenerovat jeden uzel
+    i_node(curr,bl,context,inst,info);
+
+    -- dal¨¡ p©¡kaz
+    bl:=bl^.next;
+    end loop;
+  end i_sequence;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_cmd (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblcmd;                  -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©i©azovac¡ho p©¡kazu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_cmd,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- vygenerovat p©¡kaz
+  i_gen_expr(inst,info,curr,bl^.expr);
+  end i_cmd;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_break (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblbreak;                -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu BREAK.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_break,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- nen¡ pro tuto entitu vy‘adov n slo‘itˆj¨¡ zp–sob n vratu
+  if (bl^.blevel>1) and (bl^.blevel>context.loop_level)
+
+    -- ano => vyu‘¡t Return-control frame
+    then
+      -- vyplnit Return-control frame
+      i_set_rcframe_action(inst,info,bl^.blevel-context.loop_level,context.end_loop);
+
+      -- skok na koncov‚ n vˆ¨t¡ bloku
+      addjump(inst,info,ic_ucond,context.end_block{inst.rettarget});
+
+    -- ne => p©¡mo skok na konec cyklu
+    else
+     -- skok na n vˆ¨t¡
+     addjump(inst,info,ic_ucond,context.end_loop);
+     end if;
+  end i_break;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_return (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblreturn;               -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu RETURN.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_return,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- nen¡ pro tuto entitu vy‘adov n slo‘itˆj¨¡ zp–sob n vratu
+  if bl^.blevel>1 then
+    i_set_rcframe_action(inst,info,bl^.blevel-1,context.top_block);
+    end if;
+
+  -- skok na koncov‚ n vˆ¨t¡ bloku
+  addjump(inst,info,ic_ucond,context.end_block{inst.rettarget});
+  end i_return;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_raise (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblraise;                -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu RAISE.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_raise,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  if bl^.msg<>nil
+
+    -- vyvol n¡ nov‚ v˜jimky
+    then
+      -- zru¨it starou v˜jimku
+      if context.incatch then
+        -- %%X Tady snad nen¡ nic t©eba dˆlat, ne ?
+        end if;
+
+      -- sestavit informace o v˜jimce
+      i_gen_expr(inst,info,curr,bl^.msg);
+
+      -- vyvolat v˜jimku
+      if bl^.dest<>nil
+
+        -- v uveden‚m tasku
+        then
+          unimplemented(103);
+
+        -- v aktu ln¡m tasku
+        else
+          addcallrtl(inst,info,rtl_raise_exception);
+          end if;
+
+    -- ¨¡©en¡ aktu ln¡ v˜jimky
+    else
+      -- sta‡¡ udˆlat skok na konec bloku, tam u‘ se to o¨et©¡ samo
+      addjump(inst,info,ic_ucond,context.end_block);
+
+      ---- prostˆ zru¨it aktu ln¡ exception-frame
+      --addcallint(inst,info,int_end_xframe);
+      end if;
+  end i_raise;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_send (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblsend;                 -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu SEND.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_send,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  unimplemented(182);
+  end i_send;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_goto (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblgoto;                 -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu GOTO.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_goto,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- doplnit ‡¡slo n vˆ¨t¡
+  assign_label_target(bl^.plabel,info);
+
+  -- skok na n vˆ¨t¡
+  -- %%X Zjednodu¨eno
+  addjump(inst,info,ic_ucond,picodegen_label(bl^.plabel^.codegen)^.target);
+  end i_goto;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_new (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblnew;                  -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu NEW.
+----------------------------------------------------------------------------------------------------
+var
+  opnone           : ioper;                      -- pr zdn˜ v˜sledek
+  opvar            : ioper;                      -- adresa promˆnn‚
+--optag            : ioper;                      -- TAG
+--opsize           : ioper;                      -- RANGE resp. velikost
+  oprtavalue       : ioper;                      -- hodnota dynamick‚ho atributu
+  ptyp             : pentity_type;               -- typ promˆnn‚
+  base             : pentity_type;               -- typ b ze pointeru
+  subcontext       : iexprcontext;               -- kontext generov n¡ jednoho v˜razu
+  mastercontext    : iexprcontext;               -- kontext generov n¡ v¨ech v˜raz–
+
+    ------------------------------------------------------------------------------------------------
+    procedure storertattrib (
+        rta        : rtattrib) =                 -- ukl dan˜ atribut
+    -- Do pointeru ulo‘¡ zadan˜ dynamick˜ atribut (je-li to po‘adov no).
+    ------------------------------------------------------------------------------------------------
+    var
+      oprtaaddr    : ioper;                      -- adresa dynamick‚ho atributu
+
+    begin
+      if rta in ptyp^.pattrib then
+        -- obnovit registry
+        i_refresh(inst,info,mastercontext,opvar);
+
+        -- sestavit adresu atributu
+        i_gen_load_rtattrib_addr(ptyp^.pattrib,opvar,rta,oprtaaddr);
+
+        -- p©i©adit
+        addii(inst,info,ii_mov,oprtaaddr,oprtavalue,op0);
+
+        -- korekce pro :last - neomezen‚ pole b zovat od nuly
+        if (rta=rta_last) and then (base<>nil) and then (base^.stype=dt_uarray) then
+          addii(inst,info,ii_dec,oprtaaddr,op0,op0);
+          end if;
+        end if;
+      end storertattrib;
+
+begin
+  -- typ promˆnn‚ a b ze pointeru
+  ptyp:=bl^.xvar^.t.getctype;
+  base:=ptyp^.base.getutype;
+
+  -- pointer-to-object m–‘e obsahovat atributy :tag, :size a :last
+  verify(444,ptyp^.pattrib-rtattribset:[rta_tag,rta_size,rta_last]<>rtattribset:[]);
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_new,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- vytvo©it kontext pro generov n¡ v¨ech v˜raz–
+  i_createcontext(mastercontext,lm_gen,nil);
+
+
+  ---- (1) generov n¡ jm‚na promˆnn‚ ----
+
+  -- jak jsme na tom s atributy ulo‘en˜mi v pointeru ?
+  if ptyp^.pattrib<>rtattribset:[]
+
+    -- nˆjak‚ m me => p©i generov n¡ v˜razu ulo‘it adresu na stack a nav¡c vr tit
+    then
+      -- p©ipravit kontext generov n¡
+      i_newcontext(mastercontext,subcontext,lm_push_and_load_addr,nil);
+
+      -- jm‚no promˆnn‚
+      i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xvar,opvar);
+
+      -- z registru odvodit adresn¡ operand
+      opregtomem(opvar,4);
+
+    -- nem me ‘ dn‚ => p©i generov n¡ v˜razu jen ulo‘it adresu na stack
+    else
+      -- p©ipravit kontext generov n¡
+      i_newcontext(mastercontext,subcontext,lm_push_addr,nil);
+
+      -- jm‚no promˆnn‚
+      i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xvar,opnone);
+      end if;
+
+
+  ---- (2) generov n¡ tagu ----
+
+  -- m me k dispozici TAG ?
+  if bl^.xtag<>nil
+
+    -- ano => na‡¡st dynamick˜ tag
+    then
+      unimplementedx(141,bl^.xtag^.pos);
+
+      -- m me i RANGE ?
+      if bl^.xrange<>nil
+
+        -- ano => TAG mus¡ specifikovat unconstrained typ
+        then
+          --addcallrtl(inst,info,rtl_tag_check_unconstrained);
+
+        -- ne => TAG mus¡ specifikovat constrained typ
+        else
+          --addcallrtl(inst,info,rtl_tag_check_constrained);
+          end if;
+
+    -- ne => na‡¡st statick˜ tag
+    else
+      nullop(oprtavalue,io_imm);
+      oprtavalue.rtype:=irt_symbol;
+      oprtavalue.psym:=base{ptyp}; { Ondra 18.12.2002 : Byl chybnˆ uveden typ pointeru m¡sto jeho b ze }
+      end if;
+
+  -- ulo‘it hodnotu atributu :tag do pointeru
+  storertattrib(rta_tag);
+
+  -- uvolnit hodnotu atributu :tag
+  i_free(info,mastercontext,oprtavalue);
+{
+  if rta_tag in ptyp^.pattrib then
+    -- ulo‘it do pointeru
+    unimplemented(140);
+    end if;
+}
+
+
+  ---- (3) generov n¡ velikosti ----
+
+  -- m me k dispozici RANGE ?
+  if bl^.xrange<>nil
+
+    -- ano => vypo‡¡tat dynamickou velikost
+    then
+      -- na‡¡st hodnotu
+      i_newcontext(mastercontext,subcontext,lm_reg_all,nil);
+      i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xrange,oprtavalue);
+
+      -- ulo‘it hodnotu atributu :last do pointeru
+      storertattrib(rta_last);
+
+      -- je to ^unconstrained array/string ?
+      if base<>nil then
+        verify(446,base^.stype not in dts_index);
+
+        -- vyn sobit velikost¡ b ze
+        i_gen_mul_reg(inst,info,subcontext,oprtavalue,unidata_size_to_imm32(base^.base.getctype^.size));
+
+        -- p©i‡¡st z kladn¡ velikost objektu
+        if base^.stype in dts_string then
+          addopimm(inst,info,ii_add,oprtavalue,lstrisize32);
+          end if;
+        end if;
+
+    -- ne => statick  velikost
+    else
+      -- byl uveden TAG ?
+      if bl^.xtag<>nil
+
+        -- ano => pou‘¡t dynamickou velikost danou tagem
+        then
+          unimplemented(142);
+
+        -- ne => pou‘¡t statickou velikost danou typem b ze
+        else
+          verify(445,base=nil);
+          verify(550,rta_last in ptyp^.pattrib);
+
+          -- p©ipravit velikost
+          nullop(oprtavalue,io_imm);
+          oprtavalue.imm:=unidata_size_to_imm32(base^.size);
+          oprtavalue.size:=idefregsize;
+          end if;
+      end if;
+
+  -- ulo‘it hodnotu atributu :size do pointeru
+  storertattrib(rta_size);
+
+{
+  -- atribut :size
+  if [rta_last,rta_size]*ptyp^.pattrib<>[] then
+    unimplemented(144);
+
+    -- adresa atributu :size
+
+    -- ulo‘it do pointeru
+    --addii(inst,info,ii_mov,opvar_size,opsize,op0);
+    end if;
+}
+  -- ulo‘it adresu promˆnn‚ na stack
+  --addii(inst,info,ii_push,opvar,op0,op0);
+
+  -- ulo‘it atribut :size na stack
+  addii(inst,info,ii_push,oprtavalue,op0,op0);
+
+  -- uvolnit hodnotu atributu :size
+  i_free(info,mastercontext,oprtavalue);
+
+
+  ---- (4) vlastn¡ alokace pamˆti ----
+
+  -- %%TECH Nemus¡me se v–bec zaj¡mat o to, jestli to je ‡i nen¡ t©¡da, proto‘e ve¨kerou
+  -- obsluhu p©¡padu alokace t©¡dy ji‘ glob ln¡ anal˜za rozvinula do sekvence pomocn˜ch
+  -- p©¡kaz– um¡stˆn˜ch v epilogu tohoto p©¡kazu NEW.
+
+  -- m  po‡ te‡n¡ hodnotu ?
+  if base<>nil and then base^.init.isset and then not imm_isnil(base^.init.getimm^)
+
+    -- ano => alokovat a p©i©adit
+    then
+      -- zavolat ALLOC
+      addcallrtl(inst,info,rtl_alloc);
+
+      -- p©i©adit po‡ te‡n¡ hodnotu
+      unimplemented(191);
+
+    -- ne => alokovat a inicializovat na NIL
+    else
+      -- zavolat ALLOC
+      addcallrtl(inst,info,rtl_alloc{_and_fillz});
+      end if;
+  end i_new;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_discard (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pbldiscard;              -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu DISCARD.
+----------------------------------------------------------------------------------------------------
+var
+  opnone           : ioper;                      -- pr zdn˜ v˜sledek
+  xcontext         : iexprcontext;               -- kontext v˜razu
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_discard,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- vytvo©it kontext
+  i_createcontext(xcontext,lm_push_addr,nil);
+
+  -- jm‚no promˆnn‚
+  i_load_expr(inst,info,xcontext,bl^.xvar,opnone);
+
+  -- zavolat FREE
+  addcallrtl(inst,info,rtl_free);
+  end i_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_delay (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pbldelay;                -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu DELAY.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- adddebuginfo(inst.di,dbt_delay,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  unimplemented(183);
+  end i_delay;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_if (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblif;                   -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu IF.
+----------------------------------------------------------------------------------------------------
+var
+  sub              : pblif_cond;                 -- vˆtev IF
+  last             : itarget;                    -- c¡l pro skok na konec
+  next             : itarget;                    -- c¡l pro skok na dal¨¡ variantu
+
+begin
+  -- alokovat n vˆ¨t¡ pro skok na konec skoku
+  newtarget(info,last);
+
+  -- vygenerovat v¨echny vˆtve
+  sub:=pblif_cond(bl^.sub.first);
+  while sub<>nil loop
+    verify(97,sub^.btype<>bt_if_cond);
+
+    -- doplnit z znam pro generov n¡ debug informac¡
+    adddebuginfo(inst.di,dbt_if,getaddr(inst),sub^.pos[bp_begin]{.b},nil);
+
+    -- podm¡nka proveden¡
+    if sub^.cond<>nil then
+      -- alokovat n vˆ¨t¡ pro skok na konec vˆtve
+      newtarget(info,next);
+
+      -- podm¡nka
+      i_gen_cond(inst,info,curr,sub^.cond,tgfallthru,next);
+      end if;
+
+    -- sekvence p©¡kaz–
+    i_sequence(curr,sub^.sub,context,inst,info);
+
+    -- skok na konec
+    if sub^.next<>nil then
+      addjump(inst,info,ic_ucond,last);
+      end if;
+
+    -- dosadit c¡l skoku na toto m¡sto
+    if sub^.cond<>nil then
+      settarget(info,next,getaddr(inst));
+      end if;
+
+    -- dal¨¡ vˆtev
+    sub:=pblif_cond(sub^.next);
+    end loop;
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_end_if,getaddr(inst),bl^.pos[bp_end]{.b},nil);
+
+  -- dosadit c¡l skoku na toto m¡sto
+  settarget(info,last,getaddr(inst));
+  end i_if;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_loop (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblloop;                 -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu LOOP.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : iblcontext;                 -- nov˜ kontext
+  op1              : ioper;                      -- operand
+  tgtop            : itarget;                    -- n vˆ¨t¡: za‡ tek cyklu
+  tgbottom         : itarget;                    -- n vˆ¨t¡: konec cyklu
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_loop,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- alokovat n vˆ¨t¡
+  newtarget(info,tgtop);
+  newtarget(info,tgbottom);
+  settarget(info,tgtop,getaddr(inst));
+
+  -- p©ipravit nov˜ kontext
+  prepare_loop_context(context,newcontext,tgbottom);
+
+  -- vygenerovat posloupnost p©¡kaz–
+  i_sequence(curr,bl^.sub,newcontext,inst,info);
+
+  if bl^.cond<>nil
+    -- UNTIL
+    then
+      -- doplnit z znam pro generov n¡ debug informac¡
+      adddebuginfo(inst.di,dbt_until,getaddr(inst),bl^.pos[bp_end]{.b},nil);
+
+      -- vygenerovat podm¡nku
+      i_gen_cond(inst,info,curr,bl^.cond,{cond=true=>}tgfallthru,{cond=false=>}tgtop);
+
+    -- END LOOP
+    else
+      -- doplnit z znam pro generov n¡ debug informac¡
+      adddebuginfo(inst.di,dbt_end_loop,getaddr(inst),bl^.pos[bp_end]{.b},nil);
+
+      addjump(inst,info,ic_ucond,tgtop{addr});
+      end if;
+
+  -- dosadit c¡l skoku na toto m¡sto
+  settarget(info,tgbottom,getaddr(inst));
+  end i_loop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_for (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblfor;                  -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu FOR.
+----------------------------------------------------------------------------------------------------
+var
+  oplow            : ioper;                      -- doln¡ mez
+  ophigh           : ioper;                      -- horn¡ mez
+  opvar            : ioper;                      -- promˆnn 
+  optemp           : ioper;                      -- pomocn˜ operand
+  tg_start         : itarget;                    -- n vˆ¨t¡ za‡ tku cyklu
+  tg_end           : itarget;                    -- n vˆ¨t¡ konce cyklu
+  dynamicbound     : t_logical;                  -- jedna z mez¡ je dynamick 
+  highdynamic      : t_logical;                  -- horn¡ mez je dynamick 
+  xcontext         : iexprcontext;               -- kontext generov n¡ v˜razu
+  newcontext       : iblcontext;                 -- kontext pro generov n¡ tˆla cyklu
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_for,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- %%X Re‘im CONCURRENT nen¡ implementov n,
+  -- generuje se stejn˜ k¢d jako pro p©¡m‚ po©ad¡
+
+  -- p©ipravit n vˆ¨t¡
+  newtarget(info,tg_start);
+  newtarget(info,tg_end);
+
+  -- implicitn¡ meze
+  if bl^.xrange=nil then
+    -- doln¡ mez
+    nullop(oplow,io_imm);
+    if bl^.order=bfo_reverse
+      then oplow.imm:=uniint_to_imm32(bl^.for_var^.typ.getctype^.hval);
+      else oplow.imm:=uniint_to_imm32(bl^.for_var^.typ.getctype^.lval);
+      end if;
+
+    -- horn¡ mez
+    nullop(ophigh,io_imm);
+    if bl^.order=bfo_reverse
+      then ophigh.imm:=uniint_to_imm32(bl^.for_var^.typ.getctype^.lval);
+      else ophigh.imm:=uniint_to_imm32(bl^.for_var^.typ.getctype^.hval);
+      end if;
+
+    -- meze rozhodnˆ nejsou dynamick‚
+    dynamicbound:=false;
+    highdynamic:=false;
+    --unimplemented(129);
+
+  -- konstruktor rozsahu
+  elsif bl^.xrange^.ntype=nt_range then
+    -- p©ipravit kontext pro horn¡ mez
+    i_createcontext(xcontext,lm_temp_value,bl^.for_var^.typ.getctype);
+
+    -- horn¡ mez
+    if bl^.order=bfo_reverse
+      then i_load_expr(inst,info,xcontext,bl^.xrange^.sub,ophigh);
+      else i_load_expr(inst,info,xcontext,bl^.xrange^.sub^.next,ophigh);
+      end if;
+
+    -- nen¡ horn¡ mez dynamick  ?
+    highdynamic:=ophigh.optype<>io_imm;
+
+    -- p©ipravit kontext pro doln¡ mez
+    i_createcontext(xcontext,lm_reg,bl^.for_var^.typ.getctype);
+
+    -- doln¡ mez
+    if bl^.order=bfo_reverse
+      then i_load_expr(inst,info,xcontext,bl^.xrange^.sub^.next,oplow);
+      else i_load_expr(inst,info,xcontext,bl^.xrange^.sub,oplow);
+      end if;
+
+    -- nen¡ jedna z mez¡ dynamick  ?
+    dynamicbound:=(oplow.optype<>io_imm) or (ophigh.optype<>io_imm);
+
+  -- typ
+  elsif bl^.xrange^.nclass=nc_type then
+    -- horn¡ mez
+    nullop(ophigh,io_imm);
+    if bl^.order=bfo_reverse
+      then ophigh.imm:=uniint_to_imm32(bl^.xrange^.t.getctype^.lval);
+      else ophigh.imm:=uniint_to_imm32(bl^.xrange^.t.getctype^.hval);
+      end if;
+
+    -- doln¡ mez
+    nullop(oplow,io_imm);
+    if bl^.order=bfo_reverse
+      then oplow.imm:=uniint_to_imm32(bl^.xrange^.t.getctype^.hval);
+      else oplow.imm:=uniint_to_imm32(bl^.xrange^.t.getctype^.lval);
+      end if;
+
+    -- meze rozhodnˆ nejsou dynamick‚
+    dynamicbound:=false;
+    highdynamic:=false;
+    --unimplemented(127);
+
+  -- atribut (nepochybnˆ dynamick˜)
+  elsif bl^.xrange^.ntype=nt_attrib then
+    verifyx(597,(pexpattrib(bl^.xrange)^.aclass<>atc_dynamic) or pexpattrib(bl^.xrange)^.ata not in tattractualset:[ata_string_range,ata_array_range],bl^.pos[bp_begin]);
+
+    -- doln¡ mez
+    nullop(oplow,io_imm);
+    case bl^.xrange^.sub^.t.stype
+      when dt_string,dt_ustring do oplow.imm:=timm32(1);
+      when dt_uarray do oplow.imm:=timm32(0);
+      when others do verifyx(598,true,bl^.pos[bp_begin]);
+      end case;
+
+    -- horn¡ mez
+    case bl^.xrange^.sub^.t.stype
+      when dt_string,dt_ustring do i_load_length(inst,info,curr,bl^.xrange^.sub,bl^.order=bfo_reverse,ophigh); --unimplementedx(128,bl^.pos[bp_begin]);
+      when dt_uarray do i_load_rtattrib(inst,info,curr,rta_last,bl^.xrange^.sub,bl^.order=bfo_reverse,ophigh);
+      when others do verifyx(599,true,bl^.pos[bp_begin]);
+      end case;
+
+    -- pro reverzn¡ cyklus zamˆnit operandy
+    if bl^.order=bfo_reverse then
+      -- zamˆnit
+      optemp:=oplow;
+      oplow:=ophigh;
+      ophigh:=optemp;
+
+      -- patchnout velikost - v tomto p©¡padˆ se bude hodit i v konstantn¡m operandu,
+      -- jinako to p©i alokaci pomocn‚ho registru v NEWOPREG a p r © dk– n¡‘e chc¡pne.
+      ophigh.size:=oplow.size;
+      end if;
+
+    -- horn¡ mez je dynamick 
+    dynamicbound:=true;
+    highdynamic:=bl^.order<>bfo_reverse;
+
+  -- nic jin‚ho se zde nem–‘e objevit
+  else
+    verify(414,true)
+    end if;
+
+  -- p©ipravit kontext pro jm‚no promˆnn‚
+  i_createcontext(xcontext,lm_gen,nil);
+
+  -- adresa promˆnn‚ (bude buƒ ve tvaru [EBP+ofs] nebo absolutn¡)
+  nullop(opvar,io_mem);
+  opvar.base.reg:=istackframereg[inst.frame];
+  opvar.size:=unidata_size_to_unsigned(bl^.for_var^.typ.getctype^.size);
+  getvaraddr(inst,info,bl^.for_var,opvar.disp);
+  {i_load_expr(inst,info,xcontext,bl^.for_var,opvar);}
+
+  -- nacpat doln¡ mez do promˆnn‚
+  addii(inst,info,ii_mov,opvar,oplow,op0);
+
+  -- doln¡ mez u‘ nebude pot©eba
+  -- %%X v tuto chv¡li se to uvoln¡ samo, do budoucna bude ale pot©eba
+  -- kontext generov n¡ v˜razu udr‘ovat glob lnˆ
+  --i_free(info,xcontext,oplow);
+
+  -- p©ipravit kontext pro generov n¡ FOR
+  i_createcontext(xcontext,lm_gen,nil);
+
+  -- jedna z mez¡ je dynamick 
+  if dynamicbound then
+
+    -- nen¡ dynamick  pr vˆ horn¡ mez ?
+    if highdynamic
+
+      -- horn¡ mez je dynamick  => p©es registr
+      then
+        -- pomocn˜ registr
+        newopreg(inst,info,xcontext,optemp,ophigh.size,irm_int,op0);
+
+        -- na‡¡st horn¡ mez
+        addii(inst,info,ii_mov,optemp,ophigh,op0);
+
+        -- porovnat
+        addii(inst,info,ii_cmp,opvar,optemp,op0);
+
+        -- uvolnit pomocn˜ registr
+        i_free(info,xcontext,optemp);
+
+      -- horn¡ mez je statick  => p©¡mo
+      else
+        -- rovnou porovnat
+        addii(inst,info,ii_cmp,opvar,ophigh,op0);
+        end if;
+
+    -- skok
+    if bl^.order=bfo_reverse
+
+      -- FOR s dekrementac¡
+      then
+        if bl^.for_var^.typ.getctype^.stype=dt_signed
+          then addjump(inst,info,ic_l,tg_end);
+          else addjump(inst,info,ic_b,tg_end);
+          end if;
+
+      -- FOR s inkrementac¡
+      else
+        if bl^.for_var^.typ.getctype^.stype=dt_signed
+          then addjump(inst,info,ic_g,tg_end);
+          else addjump(inst,info,ic_a,tg_end);
+          end if;
+        end if;
+    end if;
+
+  -- adresa za‡ tku cyklu
+  settarget(info,tg_start,getaddr(inst));
+
+  -- p©ipravit nov˜ kontext
+  prepare_loop_context(context,newcontext,tg_end);
+
+  -- tˆlo cyklu
+  i_sequence(curr,bl^.sub,newcontext,inst,info);
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_end_loop,getaddr(inst),bl^.pos[bp_end]{.b},nil);
+
+  -- p©ipravit kontext pro porovn n¡ s horn¡ mez¡
+  i_createcontext(xcontext,lm_gen,nil);
+
+  -- porovnat ©¡d¡c¡ promˆnnou s dynamickou horn¡ mez¡
+  if highdynamic
+
+    -- horn¡ mez p©es registr
+    then
+      newopreg(inst,info,xcontext,optemp,ophigh.size,irm_int,op0);
+      addii(inst,info,ii_mov,optemp,ophigh,op0);
+      addii(inst,info,ii_cmp,opvar,optemp,op0);
+      i_free(info,xcontext,optemp);
+
+    -- p©¡mo
+    else
+      addii(inst,info,ii_cmp,opvar,ophigh,op0)
+      end if;
+
+  -- skok ven z cyklu p©i dosa‘en¡ horn¡ meze
+  addjump(inst,info,ic_e,tg_end);
+
+  -- zmˆnit ©¡d¡c¡ promˆnnou
+  if bl^.order=bfo_reverse
+    -- dekrementovat
+    then addii(inst,info,ii_dec,opvar,op0,op0)
+    -- inkrementovat
+    else
+      addii(inst,info,ii_inc,opvar,op0,op0)
+      end if;
+
+  -- skok na za‡ tek cyklu
+  addjump(inst,info,ic_ucond,tg_start);
+
+  -- adresa konce cyklu
+  settarget(info,tg_end,getaddr(inst));
+
+  -- uvolnit operandy
+  -- %%X Nev¡m, pro© tady byly ty I_FREE, kdy‘ XCONTEXT se ka‘dou chv¡li vytv ©¡ nov˜
+  --i_free(info,xcontext,ophigh);
+  --i_free(info,xcontext,opvar);
+  end i_for;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_while (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblwhile;                -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu WHILE.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : iblcontext;                 -- nov˜ kontext
+  op1              : ioper;                      -- operand
+  tgtop            : itarget;                    -- n vˆ¨t¡: za‡ tek cyklu
+  tgbottom         : itarget;                    -- n vˆ¨t¡: konec cyklu
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_while,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- alokovat n vˆ¨t¡
+  newtarget(info,tgtop);
+  newtarget(info,tgbottom);
+  settarget(info,tgtop,getaddr(inst));
+
+  -- p©ipravit nov˜ kontext
+  prepare_loop_context(context,newcontext,tgbottom);
+
+  -- vygenerovat podm¡nku
+  i_gen_cond(inst,info,curr,bl^.cond,{cond=true=>}tgfallthru,{cond=false=>}tgbottom);
+
+  -- vygenerovat posloupnost p©¡kaz–
+  i_sequence(curr,bl^.sub,newcontext,inst,info);
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_end_loop,getaddr(inst),bl^.pos[bp_end]{.b},nil);
+
+  -- skok na za‡ tek
+  addjump(inst,info,ic_ucond,tgtop);
+
+  -- dosadit c¡l skoku na toto m¡sto
+  settarget(info,tgbottom,getaddr(inst));
+  end i_while;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_case (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblcase;                 -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu CASE
+----------------------------------------------------------------------------------------------------
+type
+  icasetglist      = array of record
+      tg_jmp       : itarget;                    -- n vˆ¨t¡ skokov‚ tabulky
+      tg_do        : itarget;                    -- n vˆ¨t¡ obsluhy
+      end record;
+
+var
+  opexpr           : ioper;                      -- hodnota ©¡d¡c¡ho v˜razu
+  opchoice         : ioper;                      -- v˜bˆr
+  xcontext         : iexprcontext;               -- kontext generov n¡ v˜razu
+  blwhen           : pblwhen_c;                  -- vˆtve CASE
+  tg_end_case      : itarget;                    -- n vˆ¨t¡ pro skok na konec CASE
+  tg_list          : ^icasetglist;               -- n vˆ¨t¡ jednotliv˜ch vˆtv¡
+  tg_next          : itarget;                    -- n vˆ¨t¡ pro skok na dal¨¡ tabulku
+  cnt              : t_unsigned;                 -- po‡et vˆtv¡
+  ptyp             : pentity_type;               -- typ ©¡d¡c¡ho v˜razu
+  i                : t_unsigned;
+  j                : t_unsigned;
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_case,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- bude pot©eba typ ©¡d¡c¡ho v˜razu
+  ptyp:=bl^.expr^.t.getctype;
+
+  ----- %%TECH Generov n¡ CASE ---------------------------------------------------------------------
+  -- Pou‘¡v  se nejjednodu¨¨¡ mo‘n  metoda. P©ed za‡ tkem CASE se vygeneruje
+  -- k¢d pro rozskok na jednotliv‚ obsluhy. P©edpokl d  se, ‘e v˜bˆry jsou
+  -- v r mci jedn‚ vˆtve CASE vzestupnˆ set©¡dˆny.
+  -- Pro ka‘dou vˆtev CASE jsou zapot©eb¡ dvˆ n vˆ¨t¡:
+  --   -- skok na dal¨¡ skokov‚ tabulky (pro prvn¡ a posledn¡ ne, ale...)
+  --   -- skok na k¢d dan‚ vˆtve
+  -- Pro cel˜ case je nav¡c pot©eba n vˆ¨t¡ na skok na konec.
+  --------------------------------------------------------------------------------------------------
+
+  ----- p©ipravit n vˆ¨t¡ -----
+
+  -- n vˆ¨t¡ pro skok na konec
+  newtarget(info,tg_end_case);
+
+  -- spo‡¡tat vˆtve
+  blwhen:=pblwhen_c(bl^.sub.first);
+  cnt:=0;
+  while blwhen<>nil loop
+    succ cnt;
+    blwhen:=pblwhen_c(blwhen^.next);
+    end loop;
+  verify(420,cnt=0);
+
+  -- alokovat n vˆ¨t¡
+  new tg_list range cnt;
+  for i in tg_list^:range loop
+    newtarget(info,tg_list^[i].tg_jmp);
+    newtarget(info,tg_list^[i].tg_do);
+    end loop;
+
+  ----- vypo‡¡tat ©¡d¡c¡ v˜raz -----
+
+  -- p©ipravit kontext
+  i_createcontext(xcontext,lm_reg_all,ptyp);
+
+  -- na‡¡st v˜raz do registru
+  i_load_expr(inst,info,xcontext,bl^.expr,opexpr);
+
+  ----- vygenerovat skokovou tabulku -----
+  blwhen:=pblwhen_c(bl^.sub.first);
+  for i in tg_list^:range loop
+    -- doplnit z znam pro generov n¡ debug informac¡
+    adddebuginfo(inst.di,dbt_when,getaddr(inst),blwhen^.pos[bp_begin]{.b},nil);
+
+    -- n vˆ¨t¡ pro skok na tuto tabulku
+    settarget(info,tg_list^[i].tg_jmp,getaddr(inst));
+
+    case blwhen^.ctype
+
+      -- seznam v˜bˆr–
+      when bct_choice do
+          -- zpracovat v¨echny optimalizovan‚ v˜bˆry
+          for j in blwhen^.clist.list^:range loop
+            if blwhen^.clist.list^[j].lval=blwhen^.clist.list^[j].hval
+
+              -- jedna hodnota
+              then
+                -- na‡¡st hodnotu
+                nullop(opchoice,io_imm);
+                opchoice.imm:=uniint_to_imm32(blwhen^.clist.list^[j].lval);
+
+                -- porovnat
+                addii(inst,info,ii_cmp,opexpr,opchoice,op0);
+
+                -- p©i shodˆ skok na obsluhu
+                addjump(inst,info,ic_e,tg_list^[i].tg_do);
+
+                -- Ondra 12.9.2002 : Je-li to posledn¡ vˆtev, tak pro jistotu skok
+                -- na konec CASE. %%TODO(CASE) V takov‚ situaci hl sit CONSTRAINT_ERROR.
+                if (i=tg_list^:last) and (j=blwhen^.clist.list^:length) then
+                  addjump(inst,info,ic_ucond,tg_end_case);
+                  end if;
+
+              -- rozsah hodnot
+              else
+                -- na‡¡st hodnotu doln¡ meze
+                nullop(opchoice,io_imm);
+                opchoice.imm:=uniint_to_imm32(blwhen^.clist.list^[j].lval);
+
+                -- porovnat
+                addii(inst,info,ii_cmp,opexpr,opchoice,op0);
+
+                -- je-li men¨¡, tak skok na dal¨¡ skokovou tabulku
+                if i=tg_list^:last
+                  -- z posledn¡ vˆtve se sk ‡e na konec CASE (nemˆlo by nastat)
+                  then tg_next:=tg_end_case
+                  -- z ostatn¡ch na dal¨¡
+                  else tg_next:=tg_list^[i+1].tg_jmp;
+                  end if;
+                if ptyp^.stype=dt_signed
+                  then addjump(inst,info,ic_l,tg_next);
+                  else addjump(inst,info,ic_b,tg_next);
+                  end if;
+
+                -- na‡¡st hodnotu horn¡ meze
+                nullop(opchoice,io_imm);
+                opchoice.imm:=uniint_to_imm32(blwhen^.clist.list^[j].hval);
+
+                -- porovnat
+                addii(inst,info,ii_cmp,opexpr,opchoice,op0);
+
+                -- je-li <=, skok na obsluhu
+                if ptyp^.stype=dt_signed
+                  then addjump(inst,info,ic_le,tg_list^[i].tg_do);
+                  else addjump(inst,info,ic_be,tg_list^[i].tg_do);
+                  end if;
+                end if;
+            end loop;
+{
+          -- p©ipravit kontext
+          i_createcontext(xcontext,lm_gen,ptyp);
+
+          -- zpracovat v¨echny v˜bˆry
+          for j in 1..blwhen^.list.lcount loop
+            -- p©¡mo jedna hodnota
+            if blwhen^.list.list^[j]^.ntype=nt_imm then
+              -- na‡¡st hodnotu
+              i_load_expr(inst,info,xcontext,blwhen^.list.list^[j],opchoice);
+
+              -- porovnat
+              addii(inst,info,ii_cmp,opexpr,opchoice,op0);
+
+              -- p©i shodˆ skok na obsluhu
+              addjump(inst,info,ic_e,tg_list^[i].tg_do);
+
+            -- konstantn¡ rozsah
+            elsif blwhen^.list.list^[j]^.ntype=nt_range then
+              -- na‡¡st hodnotu doln¡ meze
+              i_load_expr(inst,info,xcontext,pexprange(blwhen^.list.list^[j])^.sub,opchoice);
+
+              -- porovnat
+              addii(inst,info,ii_cmp,opexpr,opchoice,op0);
+
+              -- je-li men¨¡, tak skok na dal¨¡ skokovou tabulku
+              if i=cnt
+                -- z posledn¡ vˆtve se sk ‡e na konec CASE (nemˆlo by nastat)
+                then tg_next:=tg_end_case
+                -- z ostatn¡ch na dal¨¡
+                else tg_next:=tg_list^[i+1].tg_jmp;
+              if ptyp^.stype=dt_signed
+                then addjump(inst,info,ic_l,tg_next);
+                else addjump(inst,info,ic_b,tg_next);
+                end if;
+
+              -- na‡¡st hodnotu horn¡ meze
+              i_load_expr(inst,info,xcontext,pexprange(blwhen^.list.list^[j])^.sub^.next,opchoice);
+
+              -- porovnat
+              addii(inst,info,ii_cmp,opexpr,opchoice,op0);
+
+              -- je-li <=, skok na obsluhu
+              if ptyp^.stype=dt_signed
+                then addjump(inst,info,ic_le,tg_list^[i].tg_do);
+                else addjump(inst,info,ic_be,tg_list^[i].tg_do);
+                end if;
+
+            -- jm‚no typu
+            elsif blwhen^.list.list^[j]^.nclass=nc_type then
+              unimplemented(130);
+
+            else verify(422,true);
+            end loop;
+}
+
+
+      -- OTHERS
+      when bct_others do
+          -- p©¡mo skok na obsluhu
+          addjump(inst,info,ic_ucond,tg_list^[i].tg_do);
+
+
+      when others do verify(421,true);
+      end case;
+
+    -- dal¨¡ vˆtev
+    blwhen:=pblwhen_c(blwhen^.next);
+    end loop;
+
+  ----- vygenerovat obsluhy -----
+  blwhen:=pblwhen_c(bl^.sub.first);
+  for i in tg_list^:range loop
+    -- n vˆ¨t¡ pro skok na tuto vˆtev
+    settarget(info,tg_list^[i].tg_do,getaddr(inst));
+
+    -- k¢d
+    i_sequence(curr,blwhen^.sub,context,inst,info);
+
+    -- skok na konec CASE
+    if i<tg_list^:last then addjump(inst,info,ic_ucond,tg_end_case); end if;
+
+    -- dal¨¡ vˆtev
+    blwhen:=pblwhen_c(blwhen^.next);
+    end loop;
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_end_case,getaddr(inst),bl^.pos[bp_end]{.b},nil);
+
+  -- c¡l skoku na toto m¡sto
+  settarget(info,tg_end_case,getaddr(inst));
+  end i_case;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_accept (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblaccept;               -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu ACCEPT
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_accept,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  unimplemented(184);
+  end i_accept;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_block (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblblock;                -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du bloku p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : iblcontext;                 -- nov˜ kontext
+
+    ------------------------------------------------------------------------------------------------
+    procedure set_end_target (
+        target     : itarget) =
+    -- Do NEWCONTEXT poznamen  n vˆ¨t¡ pro skok na konec tohoto bloku.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- p©i©adit n vˆ¨t¡ pro skok na konec
+      newcontext.end_block:=target;
+
+      -- pokud jsme top-level blok, tak je¨tˆ nastavit n vˆ¨t¡ pro
+      -- skok na n ¨ konec, kter‚ se bude hodit v p©¡kazech RETURN
+      -- vno©en˜ch v dal¨¡ch begin..end bloc¡ch
+      if newcontext.xlevel=1 then
+        newcontext.top_block:=target;
+        end if;
+      end set_end_target;
+
+var
+  xframe           : t_logical;                  -- T-je pot©eba exceptionframe
+  rcframe          : t_logical;                  -- T-je pot©eba returun-control frame
+-- save_rcframe : timm32;       { adresa nad©azen‚ho return-control framu
+  frame_handler    : timm32;                     -- offset polo‘ky HANDLER v exception-frame
+  tg_catch         : itarget;                    -- n vˆ¨t¡ ‡ sti CATCH
+  tg_leave         : itarget;                    -- n vˆ¨t¡ ‡ sti LEAVE
+  tg_final         : itarget;                    -- n vˆ¨t¡ END - finalizace
+  tg_end           : itarget;                    -- n vˆ¨t¡ END - ret
+  tg_end_when      : itarget;                    -- n vˆ¨t¡ konce WHEN bloku
+  blwhen           : pblwhen_m;                  -- vˆtev CATCH
+  tg_next_when     : itarget;                    -- p©¡¨t¡ vˆtev CATCH
+  tg_this_when     : itarget;                    -- tato vˆtev CATCH
+  i                : t_unsigned;
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_block_begin,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+  -- p©ipravit nov˜ kontext
+  newcontext:=context;
+  succ newcontext.xlevel;
+  newcontext.incatch:=false;
+
+  -- zjistit, zda pot©ebujeme v˜jimky
+  xframe:=(bl^.bcatch.first<>nil) or (bl^.bleave.first<>nil)
+          or ((newcontext.xlevel=xlevel_top) and
+          ((bl^.binit.first<>nil) or (bl^.bentry.first<>nil) or (bl^.bexit.first<>nil)));
+          --(a_needs_initialization(curr) or a_needs_entry(curr) or a_needs_exit(curr)));
+
+  -- zjistit, zda nˆkdo uvnit© bude pot©ebovat return-control frame
+  rcframe:={(newcontext.xlevel>xlevel_top) and} bl^.tra_outer or bl^.loc_outer {(bt_return in bl^.tra_cmd)};
+
+  -- alokovat n vˆ¨t¡
+  newtarget(info,tg_catch);
+  newtarget(info,tg_leave);
+  newtarget(info,tg_final);
+  newtarget(info,tg_end);
+
+  -- p©i©adit n vˆ¨t¡ pro skok na konec tohoto bloku
+  set_end_target(tg_leave);
+
+  -- vytvo©it exception frame
+  if xframe then
+    i_create_xframe(inst,info,frame_handler,tg_end{tg_final});
+    end if;
+
+  -- vytvo©it return-control frame (jen pro top-level blok)
+  if rcframe and (newcontext.xlevel=xlevel_top) then
+    i_create_rcframe(inst,info{,save_rcframe});
+    end if;
+
+  -- inicializace promˆnn˜ch (vol n¡ entry)
+  if (newcontext.xlevel=xlevel_top) {and false} then
+    -- v tuto chv¡li je adresa obsluhy v˜jimky nastavena na RTL_END_XFRAME
+
+    -- po‡ te‡n¡ hodnoty promˆnn˜ch
+    --writeln(sec,'--',numtofilename(curr.pos[sp_header].b.num),' ',curr.pos[sp_header].b.line,' ',curr.pos[sp_header].b.col);
+    --cb_def.dumptree(bl^.binit.first);
+    i_sequence(curr,bl^.binit,context,inst,info);
+
+    -- zavolat ENTRY
+    if bl^.bentry.first<>nil {a_needs_entry(curr)} then
+      -- p©¡padn  v˜jimka mus¡ zavolat EXIT ji‘ inicializovan˜ch t©¡d
+      -- => zmˆnit adresu obsluhy v˜jimky
+      verify(399,not xframe);
+      i_set_handler(inst,info,frame_handler,tg_final);
+
+      -- vygenerovat
+      i_sequence(curr,bl^.bentry,context,inst,info);
+      end if;
+    end if;
+
+  -- adresa obsluhy : CATCH
+  if xframe then
+    i_set_handler(inst,info,frame_handler,tg_catch);
+    end if;
+
+  -- p©¡kazov  ‡ st
+  i_sequence(curr,bl^.sub,newcontext,inst,info);
+
+  -- p©esko‡it CATCH
+  if bl^.bcatch.first<>nil then
+    addjump(inst,info,ic_ucond,tg_leave);
+    end if;
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  if bl^.bcatch.first<>nil then
+    adddebuginfo(inst.di,dbt_block_leave,getaddr(inst),bl^.bcatch_pos,nil);
+    end if;
+
+  -- adresa skoku na toto m¡sto: CATCH
+  settarget(info,tg_catch,getaddr(inst));
+
+  -- ‡ st CATCH
+  if bl^.bcatch.first<>nil then
+    -- doplnit z znam pro generov n¡ debug informac¡
+    --adddebuginfo(inst.di,dbt_catch,getaddr(inst),bl^.pos[bp_begin].b,nil);
+
+    --unimplemented(7);
+    newcontext.incatch:=true;
+
+    -- zpracovat v¨echny WHEN
+    blwhen:=pblwhen_m(bl^.bcatch.first);
+    while blwhen<>nil loop
+      -- doplnit z znam pro generov n¡ debug informac¡
+      adddebuginfo(inst.di,dbt_when,getaddr(inst),blwhen^.pos[bp_begin]{.b},nil);
+
+      -- vygenerovat v˜bˆr
+      case blwhen^.ctype
+        -- v˜bˆr
+        when bct_choice do
+            -- n vˆ¨t¡ pro p©esko‡en¡ obsluhy
+            newtarget(info,tg_next_when);
+
+            -- n vˆ¨t¡ pro skok na tuto obsluhu
+            if blwhen^.list^:length>1 then newtarget(info,tg_this_when); end if;
+
+            -- testovat v¨echny v˜bˆry
+            for i in blwhen^.list^:range loop
+              -- vygenerovat ‡¡slo v˜jimky
+              i_load_message_code(inst,info,curr,blwhen^.list^[i]);
+
+              -- testovat
+              addcallrtl(inst,info,rtl_check_code);
+
+              -- neshoduje se => zkusit dal¨¡ obsluhu
+              if i<blwhen^.list^:length
+                then addjump(inst,info,ic_e,tg_this_when);
+                else addjump(inst,info,ic_ne,tg_next_when);
+                end if;
+              end loop;
+
+            -- c¡l skoku na toto n vˆ¨t¡
+            if blwhen^.list^:length>1 then settarget(info,tg_this_when,getaddr(inst)); end if;
+
+        -- OTHERS
+        when bct_others do -- nic nedˆlat
+
+        when others do verify(309,true);
+        end case;
+
+      -- alokovat n vˆ¨t¡ pro skok na konec tohoto WHEN bloku
+      newtarget(info,tg_end_when);
+
+      -- p©i©adit n vˆ¨t¡ pro skok na konec tohoto bloku
+      set_end_target(tg_end_when);
+
+      -- vygenerovat obsluhu
+      i_sequence(curr,blwhen^.sub,newcontext,inst,info);
+
+      -- p©i©adit n vˆ¨t¡ pro skok na konec tohoto WHEN bloku
+      settarget(info,tg_end_when,getaddr(inst));
+
+      -- reset v˜jimky
+      addcallrtl(inst,info,rtl_discard_exception);
+
+      -- skok na LEAVE
+      addjump(inst,info,ic_ucond,tg_leave);
+
+      -- skok na dal¨¡ vˆtev CATCH nebo na LEAVE
+      if blwhen^.ctype=bct_choice then
+        settarget(info,tg_next_when,getaddr(inst));
+        end if;
+
+      -- dal¨¡ vˆtev CATCH
+      blwhen:=pblwhen_m(blwhen^.next);
+      end loop;
+
+    newcontext.incatch:=false;
+    end if;
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  if bl^.bleave.first<>nil then
+    adddebuginfo(inst.di,dbt_block_leave,getaddr(inst),bl^.bleave_pos,nil);
+    end if;
+
+  -- adresa skoku na toto m¡sto: LEAVE
+  settarget(info,tg_leave,getaddr(inst));
+
+  -- ‡ st LEAVE
+  if bl^.bleave.first<>nil then
+    -- doplnit z znam pro generov n¡ debug informac¡
+    --adddebuginfo(inst.di,dbt_leave,getaddr(inst),bl^.pos[bp_begin].b,nil);
+
+    -- p©i©adit n vˆ¨t¡ pro skok na konec tohoto bloku
+    set_end_target(tg_final);
+
+    -- adresa obsluhy: END - finalizace
+    if xframe then
+      i_set_handler(inst,info,frame_handler,tg_final);
+      end if;
+
+    i_sequence(curr,bl^.bleave,newcontext,inst,info);
+    end if;
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  adddebuginfo(inst.di,dbt_block_end,getaddr(inst),bl^.pos[bp_end]{.b},nil);
+
+  -- adresa skoku na toto m¡sto: END - finalizace
+  settarget(info,tg_final,getaddr(inst));
+
+  -- finalizace promˆnn˜ch (vol n¡ exit)
+  if (newcontext.xlevel=xlevel_top) and (bl^.bexit.first<>nil){a_needs_exit(curr)} then
+    -- doplnit z znam pro generov n¡ debug informac¡
+    --adddebuginfo(inst.di,dbt_finalization_,getaddr(inst),bl^.pos[bp_begin].b,nil);
+
+    -- adresa obsluhy: END - ret
+    verify(398,not xframe);
+    i_set_handler(inst,info,frame_handler,tg_end);
+
+    -- zavolat EXIT
+    i_sequence(curr,bl^.bexit,context,inst,info);
+    end if;
+
+  -- adresa skoku na toto m¡sto: END - ret
+  settarget(info,tg_end,getaddr(inst));
+
+  -- zru¨it exception-frame
+  if xframe then
+    -- zru¨it exception-frame a ¨¡©it eventu ln¡ v˜jimku
+    addcallrtl(inst,info,rtl_end_xframe);
+    end if;
+
+  -- prov‚st akci podle return-control framu (kromˆ top-level bloku)
+  if rcframe and (newcontext.xlevel>xlevel_top) then
+    i_process_rcframe(inst,info,{save_rcframe,}context.end_block);
+    end if;
+  end i_block;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_label (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pbllabel;                -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du n vˆ¨t¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  --adddebuginfo(inst.di,dbt_label_,getaddr(inst),bl^.pos[bp_begin].b,nil);
+
+  -- doplnit ‡¡slo n vˆ¨t¡
+  assign_label_target(bl^.plabel,info);
+
+  -- p©idˆlit c¡li skoku adresu
+  settarget(info,picodegen_label(bl^.plabel^.codegen)^.target,getaddr(inst));
+  end i_label;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure adjust_asm_op (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
+    oper           : in out ioper) =             -- upravovan˜ operand instrukce
+-- Uprav¡ operand p©edan˜ inline assemblerem do pou‘iteln‚ho tvaru.
+----------------------------------------------------------------------------------------------------
+with
+  ci_asm;
+
+begin
+  case oper.optype
+    -- nepou‘it˜ operand -> konec
+    when io_none do return;
+
+    -- nˆkter‚ operandy jsou u‘ dokon‡eny
+    when io_reg, io_imm do return;
+
+    -- adresa v pamˆti
+    when io_mem  do case oper.rtype
+        -- nic
+        when irt_none do -- nic nedˆlat
+
+        -- symbol
+        when irt_symbol do
+            case pentity(oper.psym)^.etype
+              -- promˆnn 
+              when et_var do
+                  case pentity_var(oper.psym)^.mclass
+                    -- automatick 
+                    when mc_auto do
+                        -- %%X !! nebyl u‘ b zov˜ registr jednou uveden ?
+                        oper.base.reg:=istackframereg[inst.frame];
+                        -- zjistit adresu promˆnn‚
+                        getvaraddr(inst,info,pentity_var(oper.psym),oper.disp);
+                        -- operand je p©ekonvertov n -> zmˆna typu
+                        oper.optype:=io_mem;
+                        oper.psym:=nil;
+                        oper.rtype:=irt_none;
+
+                    -- statick 
+                    when mc_static do
+
+                    when others do verify(198,true);
+                    end case;
+
+              when others do verify(197,true);
+              end case;
+           
+        when others do verify(211,true);
+        end case;
+
+    -- c¡l skoku
+    when io_rel do case oper.rtype
+        -- nic
+        when irt_none do -- nic nedˆlat
+
+        -- symbol
+        when irt_symbol do
+            case pentity(oper.psym)^.etype
+              -- n vˆ¨t¡
+              when et_label do
+                  -- doplnit ‡¡slo n vˆ¨t¡
+                  assign_label_target(pentity_label(oper.psym),info);
+
+                  -- upravit operand
+                  oper.rtype:=irt_none;
+                  oper.target:=picodegen_label(pentity_label(oper.psym)^.codegen)^.target;
+
+              when others do verify(627,true);
+              end case;
+        { % % FLEX
+            -- pro OPER.LPOS mus¡me doplnit spr vn˜ target
+            oper.target:=piasmlabellist(oper.lpos)^.target^.iasml.target;
+        }
+        when others do verify(226,true);
+        end case;
+
+    when others do verify(195,true);
+    end case;
+  end adjust_asm_op;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_asm (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblasm;                  -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du inline assembleru.
+----------------------------------------------------------------------------------------------------
+with
+  ci_asm;
+
+var
+  i                : t_unsigned;
+  p                : piasmnode;                  -- polo‘ka seznamu instrukc¡
+
+begin
+  -- v¨em n vˆ¨t¡m p©idˆlit c¡l skoku
+  p:=bl^.ifirst;
+  while p<>nil loop
+    -- je-li toto n vˆ¨t¡, p©idˆl mu ‡¡slo c¡le skoku
+    if p^.ntype=ian_label then 
+      newtarget(info,piasmnode_label(p)^.target); 
+      end if;
+    p:=p^.next;
+    end loop;
+
+  -- zpracovat v¨echny instrukce
+  p:=bl^.ifirst;
+  while p<>nil loop
+    case p^.ntype
+      -- n vˆ¨t¡
+      when ian_label do
+          -- doplnit ‡¡slo n vˆ¨t¡
+          assign_label_target(piasmnode_label(p)^.plabel,info);
+
+          -- c¡li skoku p©i©adit adresu
+          settarget(info,picodegen_label(piasmnode_label(p)^.plabel^.codegen)^.target,getaddr(inst));
+
+      -- instrukce assembleru
+      when ian_instruction do
+          -- doplnit z znam pro generov n¡ debug informac¡
+          adddebuginfo(inst.di,dbt_asm,getaddr(inst),p^.pos{.b},nil);
+
+          -- upravit operandy instrukce
+          for i in piasmnode_instr(p)^.op:range loop
+            adjust_asm_op(inst,info,piasmnode_instr(p)^.op[i]);
+            end loop;
+
+          -- pro skok na relativn¡ adresu upravit prvn¡ operand
+          if (iinstrinfo[piasmnode_instr(p)^.ii].kind=iik_jump) and (piasmnode_instr(p)^.op[1].optype=io_rel) then
+            -- pro skokov‚ instrukce pot©ebujeme m¡t c¡l skoku trochu jinde ne‘ je implicitnˆ
+            piasmnode_instr(p)^.op[1].disptarget:=piasmnode_instr(p)^.op[1].target;
+
+            -- upravit
+            adjustoprel(inst,info,iinstrinfo[piasmnode_instr(p)^.ii].cond,piasmnode_instr(p)^.op[1]);
+            end if;
+
+          -- prefix instrukce
+          if piasmnode_instr(p)^.prefix<>ip_none then
+            addip(inst,info,piasmnode_instr(p)^.prefix);
+            end if;
+
+          -- p©idat instrukci do k¢du
+          addii(inst,info,piasmnode_instr(p)^.ii,piasmnode_instr(p)^.op[1],piasmnode_instr(p)^.op[2],piasmnode_instr(p)^.op[3]);
+
+      -- cokoli ostatn¡ je chyba
+      when others do verify(224,true);
+      end case;
+
+    -- dal¨¡ instrukce
+    p:=p^.next;
+    end loop;
+  end i_asm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_simple (
+    curr           : in tentity_code;            -- p©ekl dan˜ prvek
+    bl             : in pblsimple;               -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu BREAK.
+----------------------------------------------------------------------------------------------------
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  case bl^.btype   
+    -- p©i©azovac¡ p©¡kaz
+    when bt_cmd         do adddebuginfo(inst.di,dbt_cmd,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
+    -- p©¡kaz BREAK
+    when bt_break       do adddebuginfo(inst.di,dbt_break,getaddr(inst),bl^.pos[bp_begin]{.b},nil); 
+
+    -- p©¡kaz RETURN
+    when bt_return      do adddebuginfo(inst.di,dbt_return,getaddr(inst),bl^.pos[bp_begin]{.b},nil); 
+
+    -- p©¡kaz RAISE
+    when bt_raise       do adddebuginfo(inst.di,dbt_raise,getaddr(inst),bl^.pos[bp_begin]{.b},nil); 
+
+    -- p©¡kaz SEND
+    when bt_send        do adddebuginfo(inst.di,dbt_send,getaddr(inst),bl^.pos[bp_begin]{.b},nil); 
+
+    -- p©¡kaz GOTO
+    when bt_goto        do adddebuginfo(inst.di,dbt_goto,getaddr(inst),bl^.pos[bp_begin]{.b},nil); 
+
+    -- p©¡kaz NEW
+    when bt_new         do adddebuginfo(inst.di,dbt_new,getaddr(inst),bl^.pos[bp_begin]{.b},nil); 
+
+    -- p©¡kaz DISCARD
+    when bt_discard     do adddebuginfo(inst.di,dbt_discard,getaddr(inst),bl^.pos[bp_begin]{.b},nil); 
+
+    -- p©¡kaz DELAY
+    when bt_delay       do adddebuginfo(inst.di,dbt_delay,getaddr(inst),bl^.pos[bp_begin]{.b},nil); 
+
+    -- jin‚ p©¡kazy tu nemaj¡ co dˆlat
+    when others do verify(478,true);
+    end case;
+
+  -- vygenerovat prolog
+  i_sequence(curr,bl^.bprolog,context,inst,info);
+
+  -- vygenerovat k¢d
+  case bl^.btype
+    -- p©i©azovac¡ p©¡kaz
+    when bt_cmd         do i_cmd(curr,pblcmd(bl),context,inst,info);
+
+    -- p©¡kaz BREAK
+    when bt_break       do i_break(curr,pblbreak(bl),context,inst,info);
+
+    -- p©¡kaz RETURN
+    when bt_return      do i_return(curr,pblreturn(bl),context,inst,info);
+
+    -- p©¡kaz RAISE
+    when bt_raise       do i_raise(curr,pblraise(bl),context,inst,info);
+
+    -- p©¡kaz SEND
+    when bt_send        do i_send(curr,pblsend(bl),context,inst,info);
+
+    -- p©¡kaz GOTO
+    when bt_goto        do i_goto(curr,pblgoto(bl),context,inst,info);
+
+    -- p©¡kaz NEW
+    when bt_new         do i_new(curr,pblnew(bl),context,inst,info);
+
+    -- p©¡kaz DISCARD
+    when bt_discard     do i_discard(curr,pbldiscard(bl),context,inst,info);
+
+    -- p©¡kaz DELAY
+    when bt_delay       do i_delay(curr,pbldelay(bl),context,inst,info);
+
+    -- jin‚ p©¡kazy tu nemaj¡ co dˆlat
+    when others do verify(478,true);
+    end case;
+
+  -- vygenerovat epilog
+  i_sequence(curr,bl^.bepilog,context,inst,info);
+  end i_simple;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_node =
+-- Generov n¡ k¢du jednoho uzlu.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+begin
+  verifyx(25,(bl=nil) or (bl^.zprac<>bl^.zprac:last),bl^.pos[bp_begin]);
+
+  -- vygenerovat k¢d
+  case bl^.btype
+    -- p©i©azovac¡ p©¡kaz
+    when bt_cmd         do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz BREAK
+    when bt_break       do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz RETURN
+    when bt_return      do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz RAISE
+    when bt_raise       do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz SEND
+    when bt_send        do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz GOTO
+    when bt_goto        do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz NEW
+    when bt_new         do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz DISCARD
+    when bt_discard     do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz DELAY
+    when bt_delay       do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz IF
+    when bt_if          do i_if(curr,pblif(bl),context,inst,info);
+
+    -- p©¡kaz LOOP
+    when bt_loop        do i_loop(curr,pblloop(bl),context,inst,info);
+
+    -- p©¡kaz FOR
+    when bt_for         do i_for(curr,pblfor(bl),context,inst,info);
+
+    -- p©¡kaz WHILE
+    when bt_while       do i_while(curr,pblwhile(bl),context,inst,info);
+
+    -- p©¡kaz CASE
+    when bt_case        do i_case(curr,pblcase(bl),context,inst,info);
+
+    -- p©¡kaz ACCEPT
+    when bt_accept      do i_accept(curr,pblaccept(bl),context,inst,info);
+
+    -- blok p©¡kazu
+    when bt_block       do i_block(curr,pblblock(bl),context,inst,info);
+
+    -- n vˆ¨t¡
+    when bt_label       do i_label(curr,pbllabel(bl),context,inst,info);
+
+    -- inline assembler
+    when bt_asm         do i_asm(curr,pblasm(bl),context,inst,info);
+
+    -- jin‚ symboly tu nemaj¡ co dˆlat
+    when others do verify(26,true);
+    end case;
+
+k1:
+  end i_node;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_allocpar (
+    curr           : in tentity_code;            -- generovan˜ symbol
+    inst           : in out icodeinst;           -- instance
+    ppar           : in pentity_param;           -- parametr/n vratov  hodnota
+    ofs            : in out t_signed32;          -- offset od stack-frame
+    retval         : in t_logical) =             -- PPAR je n vratov  hodnota.
+-- Vymysl¡ adresu p©es jakou bude dostupn˜ parametr procedury, (nebo jej¡
+-- n vratov  hodnota).
+-- RETVAL: Je-li TRUE, pova‘uje se PPAR za n vratovou hodnotu procedury.
+--         prostor kter˜ zde bude tomuto parametru p©idˆlen nebude zapo‡¡t n
+--         do velikosti, kter  bude uvolnˆna p©i n vratu z procedury. To mus¡
+--         za©¡dit volaj¡c¡ procedura a‘ po zpracov n¡ n vratov‚ hodnoty.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_util;
+
+var
+  par_info         : iparinfo;                   -- informace o jednom parametru
+  rta              : rtattrib;
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_allocpar_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_begin].b,nil);
+  --  end if;
+
+  -- parametr
+  par_info.pparam:=ppar;
+
+  -- pozice
+  par_info.ofs:=ofs;
+
+  -- z kladn¡ velikost (stejn  konstrukce je v CI_EXPR.I_GEN_CALL)
+  if ppar^.pass in pps_ref
+
+    -- odkazem
+    then
+      addalign(par_info.size,0,lpointer32,istackalign)
+
+    -- hodnotou
+    else
+      addalign(par_info.size,0,unidata_size_to_unsigned(ppar^.typ.getctype^.size),istackalign);
+      end if;
+
+  -- zapo‡¡tat run-time atributy
+  if ppar^.rta_used{usedrta}<>rtattribset:[] then
+    for rta in rtattrib loop
+      if rta in ppar^.rta_used{usedrta} then
+        addalign(par_info.size,par_info.size,unidata_size_to_unsigned(cpu32_rtattribsize[rta]),istackalign);
+        end if;
+      end loop;
+    end if;
+
+  -- p©ibyl jeden parametr
+  ofs+t_signed(par_info.size);
+
+  -- bude se odstra¤ovat ze stacku p©i n vratu z procedury
+  if not retval then
+    inst.profile.retfree+par_info.size;
+    end if;
+
+  -- dal¨¡ parametr zpracov n
+  inst.profile.par^ & par_info;
+  end i_allocpar;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_copypar (
+    curr           : in tentity_code;            -- generovan˜ symbol
+    inst           : in out icodeinst;           -- nov  instance
+    instref        : in icodeinst) =             -- referen‡n¡ instance
+-- Zkop¡ruje adresy v¨ech parametr– z referen‡n¡ instance (INSTREF) do nov‚
+-- instance (INST).
+----------------------------------------------------------------------------------------------------
+var
+  x                : t_unsigned32;
+  rta              : rtattrib;
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_allocpar_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_begin].b,nil);
+  --  end if;
+
+  -- realokovat pamˆŸ
+  new inst.profile.par range instref.profile.par^:length;
+
+  -- zkop¡rovat z kladn¡ £daje profilu paramet–
+  inst.profile.call:=instref.profile.call;
+  inst.profile.thisofs:=instref.profile.thisofs;
+  inst.profile.retfree:=instref.profile.retfree;
+
+  -- zkop¡rovat adresy parametr–
+  inst.profile.par^:=instref.profile.par^;
+  end i_copypar;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_entry =
+-- Vygeneruje entry sekvenci podprogramu.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_sym;
+
+var
+  ptyp             : pentity_type;               -- typ procedury
+  pvirt            : pentity_virtual;            -- souvisej¡c¡ virtu ln¡ metoda
+  srch             : tentitysearch;              -- hled tor
+  ofs              : t_signed32;                 -- offset od stack-frame
+  addr             : timm32;                     -- pro kompatibilitu parametru
+  i                : t_unsigned;
+  opnesting        : ioper;                      -- £rove¤ vno©en¡ podprogramu
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_entry_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_begin].b,nil);
+  --  end if;
+
+  -- vyrobit stack-frame
+  case inst.frame
+    -- ESP-relativn¡
+    when isf_sptr do
+        verify(498,curr.nesting<>0);
+        -- nic nedˆlat
+
+
+    -- EBP-relativn¡
+    when isf_fptr do
+        if curr.nesting=0
+
+          -- podporogram nen¡ vno©en˜, ani neobsahuje jin‚ vno©en‚ podprogramy
+          then
+            -- PUSH EBP
+            addii(inst,info,ii_push,op_ebp,op0,op0);
+
+            -- MOV EBP,ESP
+            addii(inst,info,ii_mov,op_ebp,op_esp,op0);
+
+          -- vno©en˜ podprogram, nebo obsahuje jin‚ vno©en‚ podprogramy
+          else
+            verify(499,curr.nesting>31);
+
+            -- £rove¤ vno©en¡
+            nullop(opnesting,io_imm);
+            opnesting.imm:=unsigned_to_imm32(curr.nesting);
+
+            -- ENTER <velikost stacku>,<vno©en¡>
+            addii(inst,info,ii_enter,op_0_16bit,opnesting,op0);
+
+            -- poznamenat si, ‘e prvn¡ch NESTING*4 byt– stacku pod EBP je obsazen˜ch
+            inst.layout.display:=curr.nesting*4;
+
+            -- poznamenat si, kam se m  doplnit pot©ebn  velikost stacku
+            -- info.espmark:=getfieldaddr(info,iif_imm1);
+            end if;
+
+        -- Pozn mka : instrukce ENTER umo‘¤uje upravovat velikost ESP jen o 16bitovou hodnotu, tak‘e
+        -- se rezervace m¡sta na stacku ©e¨¡ obecnˆji p©es dodate‡n‚ SUB ESP,<velikot>.
+        -- %%X Dodˆlat, aby se pou‘¡valo rovnou ENTER, pokud je to mo‘n‚ (e.g. <64 KB dat na stacku)
+
+        -- SUB ESP,0
+        addii(inst,info,ii_sub,op_esp,op_0_32bit,op0);
+
+        -- poznamenat si, kam se m  doplnit pot©ebn  velikost stacku
+        info.espmark:=getfieldaddr(info,iif_imm1);
+
+
+    when others do verify(125,true);
+    end case;
+
+  if curr.etype in ets_subprogram then
+    ---- profil parametr– ----
+    -- pro r–zn‚ typy podprogram– se to dˆl  jinak
+    case curr.etype
+      -- procedura, metoda nebo speci ln¡ metoda
+      when et_procedure,et_static,et_virtual,et_special do
+          -- po‡ te‡n¡ offset v oblasti "nad" stack-frame (parametry)
+          ofs:=t_signed(istackframesize[inst.frame]);
+
+          --- pointer na instanci ---
+          if pentity_subprogram(^curr)^.instance<>tip_none then
+            -- p©ipravit THIS
+            inst.profile.thisofs:=ofs;
+
+            -- posunout offset na parametry
+            ofs+linstanceptr32;
+
+            -- zapo‡¡tat mezi uvol¤ovan‚ hodnoty
+            inst.profile.retfree+linstanceptr32;
+            end if;
+
+          -- z¡skat typ procedury
+          ptyp:=pentity_procedure(^curr)^.typ.getutype;
+
+          -- speci ln¡ metody t©¡d nemaj¡ typ
+          if ptyp<>nil then
+            --- parametry ---
+            -- alokovat pamˆŸ pro popis parametr–
+            new inst.profile.par range srch.count_et(ptyp,rc_primary,et_param,[]);
+
+            -- ur‡it adresu v¨ech parametr–
+            -- Parametry mus¡ adresovat v na prvn¡ pohled divn‚m po©ad¡: opa‡nˆ ne‘
+            -- specifikuje volac¡ konvence. To je d no stackem rostouc¡m shora dol–.
+            if not (inst.profile.call in iccs_reverse)
+              then srch.find_et_first(ptyp,rc_primary,et_param,[esf_reverse]);
+              else srch.find_et_first(ptyp,rc_primary,et_param,[]);
+              end if;
+            while srch.psym<>nil loop
+              -- vytvo© prostor na stacku a zapamatuj si jeho pozici (ofset).
+              -- n vratovou hodnotu si nech me na konec
+              if srch.psym<>ptyp^.result then
+                i_allocpar(curr,inst,pentity_param(srch.psym),ofs,false);
+                end if;
+
+              -- dal¨¡ parametr
+              srch.find_et_next;
+              end loop;
+
+            --- n vratov  hodnota ---
+            -- Nakonec vyhrad¡me prostor pro RESULT hodnotu procedury. Ta mus¡ b˜t
+            -- v‘dy nejv˜¨e na stacku, nez visle na volac¡ konvenci.
+            if ptyp^.result<>nil then
+              -- vytvo© prostor na stacku a zapamatuj si jeho pozici (ofset)
+              i_allocpar(curr,inst,ptyp^.result,ofs,true);
+              end if;
+            end if;
+
+
+      -- p©et¡‘en¡ virtu ln¡ metody
+      when et_override  do
+          --ptyp:=pdefprocedure(pdefoverride(@curr)^.virt.getcsym)^.typ.getctype;
+
+          -- z¡skat souvisej¡c¡ virtu ln¡ metodu
+          pvirt:=pentity_virtual(pentity_override(^curr)^.virt.getcentity);
+
+          -- zkop¡rovat profil parametr– do p©et¡‘en¡
+          verify(539,(pvirt^.codegen=nil) or (picodegen_subprog(pvirt^.codegen)^.ifirst<>picodegen_subprog(pvirt^.codegen)^.ilast));
+          i_copypar(curr,inst,picodegen_subprog(pvirt^.codegen)^.ifirst^);
+
+
+      -- nic jin‚ho neum¡me
+      when others do verify(538,true);
+      end case;
+
+    ---- profil lok ln¡ch promˆnn˜ch ----
+    -- %%X Pozor, FIND_ET_FIRST to neprohled  do hloubky. Nen¡ to ¨patnˆ?
+    srch.find_et_first(^curr,rc_primary,et_var,[]);
+    while srch.psym<>nil loop
+      -- bude se promˆnn  um¡sŸovat hned ?
+    {%%TECH(OPT) Optimaliz tor si s konstantn¡ podm¡nkou neporad¡.
+      if (pentity_var(srch.psym)^.pparam=nil) and (pentity_var(srch.psym)^.mclass=mc_auto) and {%%X}false then
+        setvaraddr(inst,info,pentity_var(srch.psym),addr);
+        end if;
+    }
+      -- dal¨¡ promˆnn 
+      srch.find_et_next;
+      end loop;
+    end if;
+  end i_gen_entry;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_exit =
+-- Vygeneruje exit sekvenci podprogramu.
+----------------------------------------------------------------------------------------------------
+var
+  op1              : ioper;                      -- parametr
+
+begin
+  -- doplnit z znam pro generov n¡ debug informac¡
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_exit_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_end].b,nil);
+  --  end if;
+
+  -- zru¨it stack-frame
+  case inst.frame
+    -- ESP-relativn¡
+    when isf_sptr do -- nic nedˆlat
+
+    -- EBP-relativn¡
+    when isf_fptr do
+        -- v p©edp©ipraven‚ instrukci SUB ESP,0 (I_ENTRY) opravit skute‡nou
+        -- velikost stacku
+        if inst.layout.last=nil
+
+          -- prostor na stacku nen¡ pot©eba, to je nˆco pro optimaliz tor
+          then
+            -- nic nedˆlat
+
+          -- ano ¤ kej prostor pot©ebujeme, velikost se d  odvodit z maxim ln¡
+          -- pou‘it‚ hloubky stacku (sta‡¡ obr tit znam‚nko):
+          else
+            setfield(inst,info.espmark,t_unsigned(-t_signed(inst.layout.last^.ofs)));
+            end if;
+
+        -- MOV ESP,EBP
+        addii(inst,info,ii_mov,op_esp,op_ebp,op0);
+        -- POP EBP
+        addii(inst,info,ii_pop,op_ebp,op0,op0);
+
+
+    when others do verify(125,true);
+    end case;
+
+  -- exit
+  if inst.profile.retfree>0
+
+    -- s odstranˆn¡m parametr–
+    then
+      -- operand
+      nullop(op1,io_imm);
+      op1.imm:=unsigned_to_imm32(inst.profile.retfree);
+
+      -- instrukce
+      addii(inst,info,ii_ret,op1,op0,op0);
+
+    -- bez odstranˆn¡ parametr–
+    else
+      addii(inst,info,ii_ret,op0,op0,op0);
+      end if;
+
+  -- z plata pro CodeView: je¨tˆ jeden dummy © dek
+  if curr.bl.isset then
+    adddebuginfo(inst.di,dbt_block_end,getaddr(inst),pblnode(curr.bl.getcblock)^.pos[bp_end],nil);
+    addii(inst,info,ii_nop,op0,op0,op0);
+    end if;
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_highpc,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_end].b,nil);
+  --  end if;
+  end i_gen_exit;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_block =
+-- Vygeneruje k¢d p©¡kazov‚ ‡ sti symbolu.
+----------------------------------------------------------------------------------------------------
+with
+  standard,console;
+
+var
+  info             : igeninfo;                   -- informace o pr–bˆhu generov n¡
+  context          : iblcontext;                 -- kontext p©¡kazu
+
+begin
+  -- nen¡ co generovat
+  -- %%X je tohle dob©e ? a co inicializace lok ln¡ch promˆnn˜ch ?
+  if not curr.bl.isset then return; end if;
+
+  -- p©ipravit informace o generov n¡
+  initinfo(curr,info);
+
+  -- p©ipravit kontext
+  context.xlevel:=0;
+
+  -- alokovat n vˆ¨t¡ pro skok na konec k¢du
+  --newtarget(info,context.end_block{inst.rettarget});
+
+  -- doplnit z znam pro generov n¡ debug informac¡
+  -- %%X k ‡emu je tahle debug informace ?
+  if curr.bl.isset<>nil then
+    adddebuginfo(inst.di,dbt_procedure,getaddr(inst),pblnode(curr.bl.getcblock)^.pos[bp_begin]{.b},nil);
+    end if;
+
+  -- entry sekvence
+  i_gen_entry(curr,inst,info);
+
+  -- vygenerovat blok
+  i_node(curr,curr.bl.getcblock,context,inst,info);
+
+  -- dosadit c¡l skoku na toto m¡sto
+  --settarget(info,context.end_block{inst.rettarget},getaddr(inst));
+
+  -- exit sekvence
+  i_gen_exit(curr,inst,info);
+
+  -- vyhodnotit lok ln¡ relokace
+  localresolve(curr,inst,info);
+  end i_gen_block;
+
+
+
+end ci_block;

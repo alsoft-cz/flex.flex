@@ -1,0 +1,686 @@
+----------------------------------------------------------------------------------------------------
+module private cx_util =
+-- P©eklada‡ Flexu.
+-- Procedury na manipulaci se stromem.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 31.07.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_lexsym,cc_sym,
+  cx_expr.cx_imm;
+
+----------------------------------------------------------------------------------------------------
+procedure x_refine_binary =
+-- Podle typ– operand– up©esn¡ volbu jazykem definovan‚ho bin. oper toru.
+----------------------------------------------------------------------------------------------------
+begin
+  -- ? AND --> BIT_AND 
+  if t_is_sts(t1,dts_u_integer) or t_is_sts(t2,dts_u_integer) then
+    case oper
+      when op_and do lop:=op_bitand;
+      when op_or  do lop:=op_bitor;
+      when op_xor do lop:=op_bitxor;
+      -- jinak beze zmˆny
+      when others do lop:=oper;
+      end case;
+
+  -- ? * --> INTERSECT
+  elsif t_is_sts(t1,dts_u_set) or t_is_sts(t2,dts_u_set) then
+    case oper
+      when op_add do lop:=op_union;
+      when op_sub do lop:=op_diff;
+      when op_mul do lop:=op_isect;
+      -- jinak beze zmˆny
+      when others do lop:=oper;
+      end case;
+
+  -- ostatn¡ p©¡pady beze zmˆny 
+  else
+    lop:=oper;
+    end if;
+  end x_refine_binary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_refine_unary =
+-- Podle typu operandu up©esn¡ volbu jazykem definovan‚ho un. oper toru.      
+----------------------------------------------------------------------------------------------------
+begin
+  -- ? NOT --> BIT_NOT 
+  if t_is_sts(t1,dts_u_integer) then
+    case oper
+      when un_not do lop:=un_bitnot;
+      -- jinak beze zmˆny
+      when others do lop:=oper;
+      end case;
+
+  -- ? NOT --> SET_NOT
+  elsif t_is_sts(t1,dts_u_set) then
+    case oper
+      when un_not do lop:=un_setnot;
+      -- jinak beze zmˆny
+      when others do lop:=oper;
+      end case;
+
+  -- ostatn¡ p©¡pady beze zmˆny
+  else
+    lop:=oper;
+    end if;
+  end x_refine_unary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_resolve =
+-- Podle dvou ordin ln¡ch typ– (netestuje se) operand– odvod¡ typ v˜sledku.   
+-- Typy mus¡ b˜t kompatibiln¡ (netestuje se).                                 
+----------------------------------------------------------------------------------------------------
+var
+  t1               : typeview;
+  t2               : typeview;
+  p                : pentity_type;
+
+begin
+  -- nen¡ t©eba nˆco dˆlat s Partial view ?
+  if usefullview and (_t1.tview=tview_partial) and (_t2.tview=tview_partial)
+
+    -- z Partial view udˆlat Full view
+    then
+      t1.initfull(_t1.getutype);
+      t2.initfull(_t2.getutype);
+
+    -- ponechat
+    else
+      t1:=_t1;
+      t2:=_t2;
+      end if;
+
+  -- signed -- signed 
+  if ((t1.stype=dt_signed) and (t2.stype=dt_signed))
+  -- unsigned -- unsigned 
+  or ((t1.stype=dt_unsigned) and (t2.stype=dt_unsigned))
+  -- logical -- logical 
+  or ((t1.stype=dt_logical) and (t2.stype=dt_logical))
+  -- character -- character 
+  or ((t1.stype=dt_char) and (t2.stype=dt_char))
+  -- enum -- enum
+  or ((t1.stype=dt_enum) and (t2.stype=dt_enum))
+  then
+    -- vybrat p©esnˆj¨¡ typ (p©ednost m  typ lev‚ho podv˜razu)
+    if t1.getbits<t2.getbits
+      then result:=t2
+      else result:=t1;
+      end if;
+
+  -- pointer -- pointer
+  elsif (t1.stype=dt_pointer) and (t2.stype=dt_pointer) then
+    -- vybrat pointer s typovou informac¡
+    -- (p©ednost m  typ lev‚ho podv˜razu)
+    if (t1.getpbase<>pb_class) and (t2.getpbase=pb_class)
+      then result:=t2
+      else result:=t1;
+      end if;
+
+  -- string -- string
+  elsif (t1.stype in dts_string) and (t2.stype in dts_string) then
+    result:=t1;
+
+  -- array -- array
+  elsif (t1.stype in dts_array) and (t2.stype in dts_array) then
+    result:=t1;
+
+  -- mo‘ina -- mno‘ina
+  elsif (t1.stype in dts_set) and (t2.stype in dts_set) then
+    result:=t1;
+
+  -- record -- record
+  elsif (t1.stype=dt_record) and (t2.stype=dt_record) then
+    result:=t1;
+
+  -- tag -- tag
+  elsif (t1.stype=dt_tag) and (t2.stype=dt_tag) then
+    result:=t1;
+
+  -- univerz ln¡ -- univerz ln¡
+  -- Sem u‘ by mˆly dorazit kompatibiln¡ typy, tak‘e nen¡ t©eba testovat, zda
+  -- se jedn  o _kompatibiln¡_ univerz ln¡ typy a sta‡¡ vr tit jeden z nich.
+  elsif (t1.stype in dts_unitype) and (t2.stype in dts_unitype) then
+    result:=t1;
+
+  -- univerz ln¡ -- cosi
+  elsif t1.stype in dts_unitype then
+    result:=t2;
+
+  -- cosi -- univerz ln¡
+  elsif t2.stype in dts_unitype then
+    result:=t1;
+
+  else
+    verify(64,true);
+    end if;
+  end x_resolve;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_resolve_by_result =
+-- Na z kladˆ po‘adovan‚ho typu v˜sledku (T1) a typu podv˜razu z typov‚       
+-- kontroly 1 (T2) zvol¡ typ podv˜razu typov‚ kontroly 2.                     
+-- Typy mus¡ b˜t kompatibiln¡ (netestuje se).                                 
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‘adovan˜ typ v˜sledku nen¡ Full view => zvolit typ podv˜razu 
+  if t1.tview<>tview_full then result:=t2
+
+  -- typ podv˜razu je Null view => zvolit po‘adovan˜ typ 
+  elsif t2.tview=tview_null then result:=t1
+
+  -- typ podv˜razu nen¡ Full view => zvolit ten, typ v˜sledku nesm¡ m¡t vliv 
+  elsif t2.tview<>tview_full then result:=t2
+{
+  -- jeden z typ– nen¡ k dispozici
+  if t1.tview=tview_null then result:=t2
+  elsif t2.tview=tview_null then result:=t1
+}
+  -- d le u‘ jsou oba typy zcela jistˆ Full view
+
+  -- stejn‚ typy, nen¡ co ©e¨it
+  elsif t_equal(t1,t2) then result:=t1
+
+  -- ordin ln¡ - ordin ln¡
+  elsif (t1.stype in dts_ordinal) and (t2.stype in dts_ordinal) then
+    -- T2 je p©esnˆj¨¡
+    if t1.getbits<t2.getbits then result:=t2
+
+    -- stejnˆ p©esn‚, ale r–zn‚ znam‚nko
+    elsif (((t1.stype=dt_signed) and (t2.stype=dt_unsigned))
+    or ((t1.stype=dt_unsigned) and (t2.stype=dt_signed)))
+    and t1.getbits=t2.getbits then result:=t2
+
+    -- celo‡¡seln‚ a T1 je p©esnˆj¨¡
+    elsif (t1.stype in tdatatypeset:[dt_signed,dt_unsigned])
+    and (t2.stype in tdatatypeset:[dt_signed,dt_unsigned])
+    and t2.getbits<t1.getbits then
+      result:=t1{newtmp(curr,result,t2.stype,t1.size)};
+
+    -- ostatn¡ p©¡pady
+    else
+      result:=t1;
+      end if;
+
+  -- ve v¨ech ostatn¡ch p©¡padech zvolit T1
+  {%%X Ur‡itˆ ??? }
+  else
+    result:=t1;
+    end if;
+  end x_resolve_by_result;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_resolve_opdtype =
+-- Typ operand– upraven˜ vzhledem k oper toru.
+-- (Nap©¡klad v˜sledek porovn n¡ je v‘dy univerz ln¡ logical, ale typ         
+-- operand– je t©eba pole.)                                                   
+----------------------------------------------------------------------------------------------------
+var
+  res              : typeview;
+
+begin
+  if expoperinfo[expr^.oper].tdiff
+
+    -- typ znova vypo‡¡tat
+    then
+      if expr^.oper in expopertypeset:[op_in,op_notin]
+
+        -- pro IN a NOT IN je to typ prav‚ho operandu
+        then
+          -- nen¡ t©eba nˆco dˆlat s Partial view ?
+          if usefullview and (expr^.sub^.next^.t.tview=tview_partial)
+
+            -- z Partial view udˆlat Full view
+            then
+              res.initfull(expr^.sub^.next^.t.getutype);
+              result:=res.stype;
+
+            -- ponechat
+            else
+              result:=expr^.sub^.next^.t.stype
+              end if;
+
+        -- pro ostatn¡ operandy zvolit p©esnˆj¨¡ typ
+        else
+          x_resolve(expr^.sub^.t,expr^.sub^.next^.t,usefullview,res);
+          result:=res.stype;
+          end if;
+
+    -- typ p©evz¡t
+    else
+      if usefullview and (expr^.t.tview=tview_partial)
+        then
+          res.initfull(expr^.t.getutype);
+          result:=res.stype;
+        else 
+          result:=expr^.t.stype;
+          end if;
+      end if;
+  end x_resolve_opdtype;
+
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_addunary =
+-- Dopln¡ un rn¡ oper tor. Typ a t©¡du uzlu p©evezme z p–vodn¡ho v˜razu.      
+----------------------------------------------------------------------------------------------------
+begin
+  -- vznikl nov˜ uzel 
+  derivenode(pexpnode(newexpr),oldexpr,info,nt_unary);
+
+  -- p©evz¡t typ a t©¡du 
+  newexpr^.nclass:=oldexpr^.nclass;
+
+  -- oper tor (v‡etnˆ p©¡znaku p©i©azen¡) 
+  pexpunary(newexpr)^.oper:=oper;
+  pexpunary(newexpr)^.assign:=assignable and oldexpr^.assign;
+
+  -- operand 
+  pexpunary(newexpr)^.join(sub);
+  end x_addunary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_addui =
+-- Dopln¡ univerz ln¡ integer. Typ uzlu p©evezme z p–vodn¡ho v˜razu.          
+-- T©¡du nastav¡ na NC_VALUE.                                                 
+----------------------------------------------------------------------------------------------------
+begin
+  -- vznikl nov˜ uzel 
+  derivenode(pexpnode(newexpr),oldexpr,info,nt_imm);
+
+  -- t©¡da uzlu 
+  newexpr^.nclass:=nc_value;
+
+  -- ulo‘it konstantu 
+  store_ordinal(pexpimm(newexpr)^.imm,ui);
+  end x_addui;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_addul =
+-- Dopln¡ univerz ln¡ logical. Typ uzlu p©evezme z p–vodn¡ho v˜razu.          
+-- T©¡du nastav¡ na NC_VALUE.                                                 
+----------------------------------------------------------------------------------------------------
+var
+  ui               : tuniint;
+
+begin
+  ui:=unilogical_to_uniint(ul);
+  x_addui(newexpr,oldexpr,ui,info);
+  end x_addul;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_add_imm =
+-- Dopln¡ konstantu. Typ uzlu p©evezme z p–vodn¡ho v˜razu.                    
+-- T©¡du nastav¡ na NC_VALUE.                                                 
+----------------------------------------------------------------------------------------------------
+begin
+  -- vznikl nov˜ uzel 
+  derivenode(pexpnode(newexpr),oldexpr,info,nt_imm);
+
+  -- t©¡da uzlu 
+  newexpr^.nclass:=nc_value;
+  end x_add_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_addop =
+-- Dopln¡ bin rn¡ oper tor EL op UI.                                          
+----------------------------------------------------------------------------------------------------
+begin
+  -- vznikl nov˜ uzel 
+  derivenode(pexpnode(newexpr),expr,info,nt_operator);
+
+  -- oper tor (v‡etnˆ p©¡znaku p©i©azen¡) 
+  newexpr^.oper:=op;
+  newexpr^.assign:=assignable and expr^.assign;
+
+  -- t©¡da uzlu 
+  newexpr^.nclass:=nc_value;
+
+  -- lev˜ podv˜raz 
+  newexpr^.sub:=el;
+
+  -- prav˜ podv˜raz 
+  x_addui(pexpimm(newexpr^.sub^.next),newexpr,ui,info);
+  end x_addop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_addsysstr =
+-- Dopln¡ univerz ln¡ ©etˆzec. T©¡du nastav¡ na NC_VALUE.                     
+----------------------------------------------------------------------------------------------------
+begin
+  -- vznikl nov˜ uzel 
+  derivenode(pexpnode(newexpr),oldexpr,info,nt_imm);
+
+  -- t©¡da uzlu 
+  newexpr^.nclass:=nc_value;
+
+  -- ulo‘it konstantu 
+  store_sysstr(pexpimm(newexpr)^.imm,s);
+  end x_addsysstr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_changeop =
+-- X expr^.oper ER --> X newop UI                                             
+----------------------------------------------------------------------------------------------------
+begin
+  -- zmˆnit oper tor 
+  expr^.oper:=newop;
+
+  -- vznikl nov˜ uzel 
+  derivenode(pexpnode(er),er,info,nt_imm);
+
+  -- p©evzal se typ p–vodn¡ho prav‚ho operandu, ale my chceme jin˜
+  er^.settype(curr,def_uniint);
+
+  -- t©¡da uzlu 
+  er^.nclass:=nc_value;
+
+  -- konstanta 
+  store_ordinal(pexpimm(er)^.imm,ui);
+  end x_changeop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rangetotype =
+-- Z konstantn¡ho rozsahu udˆl  typ.
+----------------------------------------------------------------------------------------------------
+with
+  cd_decl,
+  cd_decl.cd_create;
+
+var
+  a                : tuniint;                    -- meze
+  b                : tuniint;                    -- meze
+  el               : pexpimm;                    -- podv˜razy
+  er               : pexpimm;                    -- podv˜razy
+
+    ------------------------------------------------------------------------------------------------
+    procedure new_ordinal_type (
+        stype      : in tdatatype) =
+    -- Vytvo©¡ nov˜ ordin ln¡ typ podle konstantan¡ho rozsahu
+    ------------------------------------------------------------------------------------------------
+    var
+      ptyp_context : tcontext;                   -- kontext vznikl‚ho typu
+      ptyp_pos     : lexposblock;                -- virtu ln¡ pozice typu
+
+    begin
+      -- zjistit virtu ln¡ pozici typu
+      expr^.getpos(ptyp_pos);
+
+      -- vytvo©it a za©adit typ
+      d_create_at_position(curr,pentity(ptyp),ptyp_context,et_type,nil,ptyp_pos);
+
+      -- typ
+      ptyp^.stype:=stype;
+      
+      -- doplnit meze typu
+      ptyp^.lval:=a;
+      ptyp^.hval:=b;
+
+      -- a dopo‡¡tat zb˜vaj¡c¡ parametry
+      cpu^.getordparams2(ptyp^.stype,ptyp^.bits,ptyp^.size,ptyp^.lval,ptyp^.hval);
+
+      -- dokon‡en¡ deklarace
+      d_end_at_position(ptyp^,ptyp_pos,false);
+      end new_ordinal_type;
+
+var
+  ptyp_context     : tcontext;                   -- kontext vznikl‚ho typu
+  ptyp_pos         : lexposblock;                -- virtu ln¡ pozice typu
+
+begin
+  verify(67,not ((expr^.ntype=nt_range) and (expr^.sub^.ntype=nt_imm) and (expr^.sub^.next^.ntype=nt_imm)));
+
+  -- podv˜razy 
+  expr^.get(pexpnode(el),pexpnode(er));
+
+  -- meze
+  load_uniint(el^.imm,a);
+  load_uniint(er^.imm,b);
+
+  case expr^.t.stype
+    -- univerz ln¡ cel‚ ‡¡slo 
+    when dt_uniint     do 
+        if uniint_sign(a) or uniint_sign(b)
+          then new_ordinal_type(dt_signed);
+          else new_ordinal_type(dt_unsigned);
+          end if;
+      
+    -- univerz ln¡ znak
+    when dt_unichar    do new_ordinal_type(dt_char);
+
+    -- univerz ln¡ logical
+    when dt_unilogical do new_ordinal_type(dt_logical);
+      
+    -- diskr‚tn¡ typ
+    when dt_signed,dt_unsigned,dt_char,dt_logical,dt_enum do
+        --unimplemented(9);
+
+        -- vytvo©it a za©adit typ
+        d_create_at_position(curr,pentity(ptyp),ptyp_context,et_type,nil,ptyp_pos);
+
+        -- specifikace
+        ptyp^.stype:=expr^.t.stype;
+        ptyp^.size:=expr^.t.getsize;
+        ptyp^.bits:=expr^.t.getbits;
+        ptyp^.lval:=a;
+        ptyp^.hval:=b;
+        ptyp^.ancestor.setentity(expr^.t.getctype);
+
+        -- dokon‡en¡ deklarace
+        d_end_at_position(ptyp^,ptyp_pos,false);
+
+{ Pozn mka: Tato procedura nesm¡ z konstantn¡ho rozsahu regul rn¡ho ordin ln¡ho typu odvodit
+  nˆjak‚ho potomka tohoto typu s range constraintem. To se ©e¨¡ jinak, jinde a jindy.
+
+    -- regul rn¡ ordin ln¡ typ
+    when dt_signed,dt_unsigned,dt_char,dt_logical,dt_enum do
+        unimplemented(9);
+}
+    when others do verify(66,true);
+    end case;
+  end x_rangetotype;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_uniarray =
+-- Nastav¡ typ v˜razu jako univerz ln¡ pole of BASE.
+----------------------------------------------------------------------------------------------------
+begin
+  -- string
+  expr^.newtype(curr,dt_uniarray,uds_0);
+
+  -- of BASE
+  {%%X a co vyhodnocen¡ ? (pspecunistr(...)^.base.e:=ete_evaluated)}
+  expr^.t.getutype()^.base.settype(base);
+  end x_uniarray;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_getconcatkind =
+-- Zp–sob, jak˜m se z©etˆzuje zadan˜ v˜raz vzhledem k dodan‚mu typu.          
+----------------------------------------------------------------------------------------------------
+begin
+  verify(370,not t_is_sts(typ,dts_u_index));
+
+  if expr^.t.tview<>tview_full
+
+    -- nen¡ k dispozici £pln˜ pohled na typ => mus¡ to b˜t komponenta
+    then concatkind:=nck_component
+
+    -- je k dispozici pohled na typ => rozhodnout se podle datov‚ho typu
+    else
+      case expr^.t.stype
+        -- ©etˆzce
+        when dt_string   do
+            -- maj¡ stejn‚ b ze ?
+            if t_equal(typ.getbase(curr),expr^.t.getbase(curr))
+              -- ano => pak je to pod©etˆzce
+              then concatkind:=nck_substring
+              -- ne => mus¡ to b˜t komponenta
+              else concatkind:=nck_component;
+              end if;
+
+        -- neomezen˜ ©etˆzec => mus¡ to b˜t pod©etˆzce
+        when dt_ustring  do concatkind:=nck_substring;
+
+        -- pole
+        when dt_array    do
+            -- maj¡ stejn‚ b ze ?
+            if t_equal(typ.getbase(curr),expr^.t.getbase(curr))
+              -- ano => pak je to podpole
+              then concatkind:=nck_subarray
+              -- ne => mus¡ to b˜t komponenta
+              else concatkind:=nck_component;
+              end if;
+
+        -- neomezen‚ pole => mus¡ to b˜t podpole
+        when dt_uarray   do concatkind:=nck_subarray;
+
+        -- univerz ln¡ pole
+        when dt_uniarray do
+            -- univerz ln¡ pole se p©izp–sobuje typu v˜sledku
+            -- (komponenta to b˜t nem–‘e)
+            if t_is_sts(typ,dts_string)
+              -- pro string je to tedy pod©etˆzec
+              then concatkind:=nck_substring
+              -- a pro pole je to podpole
+              else concatkind:=nck_subarray;
+              end if;
+
+        -- ostatn¡ typy => mus¡ to b˜t komponenta
+        when others      do concatkind:=nck_component;
+        end case;
+      end if;
+  end x_getconcatkind;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_classinstance =
+-- Nalezne podv˜raz ur‡uj¡c¡ instanci t©¡dy.
+----------------------------------------------------------------------------------------------------
+var
+  expr             : pexpnode;
+
+begin
+  expr:=_expr;
+  while expr<>nil and expr^.nclass not in nodeclassset:[nc_var,nc_value,nc_type] loop expr:=expr^.sub; end loop;
+  instance:=expr;
+  end x_classinstance;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_get_deref_nclass =
+-- Pro zadan˜ uzel zjist¡ t©¡du uzlu po dereferenci.
+----------------------------------------------------------------------------------------------------
+begin
+  case expr^.nclass
+    when nc_value do result:=nc_var;
+    when nc_var   do result:=nc_var;
+    when nc_type  do result:=nc_type;
+    when others   do verify(111,true);
+    end case;
+  end x_get_deref_nclass;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_is_nil =
+-- True, je-li zadan˜ v˜raz p©¡m  hodnota NIL.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=(expr^.ntype=nt_imm) and imm_isnil(pexpimm(expr)^.imm);
+  end x_is_nil;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_is_constant =
+-- True, je-li zadan˜ v˜raz konstantn¡.                                       
+----------------------------------------------------------------------------------------------------
+begin
+  result:=expr^.ntype=nt_imm;
+  end x_is_constant;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_has_static_size =
+-- True, m -li zadan˜ v˜raz statickou velikost.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=rtattribset:[rta_size,rta_last]*expr^.rta_used=rtattribset:[];
+  verify(519,result and not expr^.t.hassize);
+  end x_has_static_size;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_has_dynamic_size =
+-- True, m -li zadan˜ v˜raz dynamickou velikost.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=rtattribset:[rta_size,rta_last]*expr^.rta_used<>rtattribset:[];
+  end x_has_dynamic_size;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_swap =
+-- Prohod¡ operandy.
+----------------------------------------------------------------------------------------------------
+var
+  ex               : pexpnode;
+
+begin
+  ex:=el;
+  el:=er;
+  er:=ex;
+  end x_swap;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_set_param_type =
+-- Ur‡¡ typ skute‡n‚ho parametru podle form ln¡ho parametru.
+----------------------------------------------------------------------------------------------------
+begin
+  case param^.pass
+    when pp_unchecked do arg^.settypeunchecked(curr,param^.typ.getutype);
+    when pp_class     do arg^.settype(curr,param^.typ.getctype);--unimplemented(73);
+    when pp_virtual   do unimplemented(73);
+    when others       do arg^.settype(curr,param^.typ.getctype);
+    end case;
+  end x_set_param_type;
+
+
+
+end cx_util;

@@ -1,0 +1,285 @@
+----------------------------------------------------------------------------------------------------
+module private cc_text =
+-- P©eklada‡ Flexu.
+-- €ten¡ zdroj ku.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 25.04.2000 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  standard.console,
+  standard.files,
+  cc_def.cc_codes,
+  cc_def.cc_var;
+
+----------------------------------------------------------------------------------------------------
+procedure openfile =
+-- Otev©e nov˜ soubor a um¡st¡ ho na vrchol z sobn¡ku otev©en˜ch soubor–.
+----------------------------------------------------------------------------------------------------
+var
+  ifile            : plexinput;                  -- nov˜ vstupn¡ soubor
+  s                : t_char32str;
+
+begin
+  -- poznamenat do listingu
+  s:='Compiling ' & name; -- %%TODO(RTATTRIB:LAST)
+  listing^.write_line(s);
+  listing^.start_indent;
+  
+  -- alokovat pamˆŸ pro deskriptor souboru
+  new ifile;
+
+  begin
+    -- otev©¡t soubor
+    ifile^.f.init_text_name(name);
+    if cfg_sharing
+      then ifile^.f.open(t_fs_object_mode_set:[tfm_read],tfa_sequential,tfss_shared_read,false);
+      else ifile^.f.open(t_fs_object_mode_set:[tfm_read],tfa_sequential,tfss_not_shared,false);
+      end if;
+    if ifile^.f.res<>tfe_ok then
+      ce^.seterror({CCERR=}000061,ce_f_open);
+      ce^.setparam(name);
+      ce^.raiseerror;
+      end if;
+
+    -- alokovat buffer
+    ifile^.bufsize:=ifile^.f.get_size;
+    new ifile^.buf range ifile^.bufsize;
+
+    -- doplnit dal¨¡ £daje
+    ifile^.include:=include;
+
+    -- prvn¡ © dek m  ‡¡slo 1 (‡¡slo sloupce na 1 se nastav¡ p©e‡ten¡m prvn¡ho znaku)
+    ifile^.znbuf[0].line:=1;
+
+    -- zaregistrovat jm‚no otev©en‚ho souboru a poznamenat si jeho p©idˆlen‚ identifika‡n¡ ‡¡slo
+    used_files^.add_file_name(name,ifile^.num);
+
+  catch
+    when others do
+        -- uzav©¡t soubor
+        ifile^.f.close;
+
+        -- uvolnit buffer
+        discard ifile^.buf;
+
+        -- uvolnit deskriptor souboru
+        discard ifile;
+
+        -- v˜jimku poslat d l
+        raise;
+    end;
+
+  -- za©adit na stack
+  ifile^.next:=lex_input;
+  lex_input:=ifile;
+  end openfile;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure popfile =
+-- Zav©e aktu ln¡ soubor.
+----------------------------------------------------------------------------------------------------
+with
+  standard.conversions,
+  standard.names;
+
+var
+  ifile            : plexinput;                  -- deskriptor zav¡ran‚ho souboru
+  text_name        : p_text_name;                -- plain-text jm‚no souboru
+
+begin
+  -- konec odsazen¡ v listingu
+  listing^.end_indent;
+
+  -- je ukon‡en podm¡nˆn˜ p©eklad ?
+  checkmeta;
+
+  -- vyjmout ze stacku vrchn¡ soubor
+  ifile:=lex_input;
+  lex_input:=ifile^.next;
+
+  -- ozn mit dokon‡en¡ p©ekladu tohoto souboru
+  output^.write('Compiled ');
+  begin
+    ifile^.f.name.compose_name(text_name);
+    output^.write(text_name^);
+  leave
+    discard text_name;
+    end;
+  output^.write(' (');
+  output^.write(unsigned_to_string(ifile^.znbuf[0].line));
+  output^.write('/');
+  output^.write(unsigned_to_string(total_lines));
+  output^.write_line(')');
+
+  -- zav©¡t soubor
+  ifile^.f.close;
+
+  -- uvolnit buffer
+  discard ifile^.buf;
+
+  -- uvolnit deskriptor souboru
+  discard ifile;
+
+  -- sn¡‘it odsazen¡ v listingu
+  --lstendi;
+  end popfile;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure checkmeta =
+-- Zkontroluje, zda jsou uzavreny vsechny blokove metaprikazy.
+----------------------------------------------------------------------------------------------------
+var
+  i                : lex_input^.metastack:type:range;
+
+begin
+  if lex_input^.metastack:length>0 then
+    for i in lex_input^.metastack:range loop
+      ce^.seterror({CCERR=}000083,ce_meta_no_end);
+      ce^.setpos(lex_input^.metastack[i].pos);
+      {%%RESUME ce^.raiseerror;}
+      end loop;
+    lex_input^.metastack:=nil;
+    end if;
+  end checkmeta;
+
+
+      
+----------------------------------------------------------------------------------------------------
+procedure getchar =
+-- P©e‡te znak ze souboru. Na konci souboru vrac¡ \0. Pokud p©e‡te ze souboru znak \0, vr t¡ \32.
+-- Automaticky odstra¤uje ze z sobn¡ku includovan‚ soubory.
+----------------------------------------------------------------------------------------------------
+with
+  standard.names;
+
+var
+  znak             : lexchar;                    -- znak p©e‡ten˜ a konvertovan˜ ze vstupu
+  fsize            : t_file_pointer;             -- velikost souboru
+  eof              : t_logical := false;         -- T-hl sit konec souboru, i kdy‘ v bufferu nˆco je
+  text_name        : p_text_name;                -- plain-text jm‚no souboru
+
+begin
+  -- pokud nen¡ v unget bufferu ‘ dn˜ znak, p©e‡¡st jeden ze vstupu
+  if lex_input^.znpos=0 then
+    -- nen¡ pot©eba na‡¡st data ze souboru ?
+    if lex_input^.bufpos>=lex_input^.buflen then
+      -- zjistit velikost souboru
+      fsize:=lex_input^.f.get_size;
+
+      -- nen¡ u‘ konec souboru a nem–‘eme jeden soubor odstranit ze stacku ?
+      if lex_input^.fpos>=fsize and then lex_input^.include then
+        -- sice se vrac¡me k p©edchoz¡mu souboru, ale konec souboru mus¡me hl sit
+        --eof:=true;
+
+        -- zav©¡t jeden soubor
+        popfile;
+
+        -- znova zjistit velikost souboru
+        fsize:=lex_input^.f.get_size;
+        end if;
+
+      -- m–‘eme (a pot©ebujeme) je¨tˆ nˆco na‡¡st ?
+      if lex_input^.bufpos>=lex_input^.buflen and then lex_input^.fpos<fsize then
+        -- kolik se bude ‡¡st
+        if fsize-lex_input^.fpos<lex_input^.bufsize
+          then lex_input^.buflen:=fsize-lex_input^.fpos
+          else lex_input^.buflen:=lex_input^.bufsize
+          end if;
+
+        -- na‡¡st
+        lex_input^.f.read(lex_input^.fpos,lex_input^.buf^,lex_input^.buflen);
+        lex_input^.fpos+t_file_pointer(lex_input^.buflen);
+        lex_input^.bufpos:=0;
+
+        -- povedlo se ?
+        if lex_input^.f.res<>tfe_ok then
+          ce^.seterror({CCERR=}000000,ce_f_read);
+          begin
+            lex_input^.f.name.compose_name(text_name);
+            ce^.setparam(text_name^);
+          leave
+            discard text_name;
+            end;
+          ce^.raiseerror;
+          end if;
+        end if;
+      end if;
+
+    -- posledn¡ znak ulo‘it coby p©edposledn¡
+    lex_input^.znbuf[1]:=lex_input^.znbuf[0];
+    {%%TODO(SLICE): lex_input^.znbuf[lex_input^.znbuf:first..lex_input^.znbuf:last-1]:=lex_input^.znbuf[lex_input^.znbuf:first+1..lex_input^.znbuf:last]}
+
+    -- je k dispozici znak ?
+    if lex_input^.bufpos<lex_input^.buflen and then not eof
+
+      -- ano => na‡¡st do bufferu
+      then
+        -- na‡¡st znak z bufferu z konvertovat do intern¡ reprezentace
+        znak:=lexchar(lex_input^.buf^[lex_input^.bufpos]);
+        succ lex_input^.bufpos;
+
+        -- ulo‘it do bufferu a konvertovat \0
+        if znak=\0
+          then lex_input^.znbuf[0].zn:=\32
+          else lex_input^.znbuf[0].zn:=znak
+          end if;
+
+        -- vypo‡¡tat pozici znaku (odvodit od pozice posledn¡ho p©e‡ten‚ho znaku)
+        if znak<>\10
+
+          -- jin˜ znak
+          then
+            succ lex_input^.znbuf[0].col;
+
+          -- LF - konec © dku
+          else
+            succ total_lines;
+            if lex_input^.effective then
+              succ effective_lines;
+              lex_input^.effective:=false;
+              end if;
+            succ lex_input^.znbuf[0].line;
+            lex_input^.znbuf[0].col:=0;
+            end if;
+
+      -- ne => konec souboru
+      else
+        lex_input^.znbuf[0].zn:=\0;      
+        end if;
+
+    -- v bufferu je ted prave jeden znak
+    lex_input^.znpos:=1;
+    end if;
+
+  -- nyn¡ je aspo¤ jeden znak v bufferu => p©edat ho ven
+  pred lex_input^.znpos;
+  c:=lex_input^.znbuf[lex_input^.znpos].zn;
+  end getchar;
+
+
+{%%X
+----------------------------------------------------------------------------------------------------
+procedure scanchar =
+-- €te znaky ze souboru a‘ naraz¡ na jeden z C1 nebo C2 nebo na konec souboru. Vr t¡ nalezen˜ znak.
+----------------------------------------------------------------------------------------------------
+begin
+  end scanchar;
+}
+
+
+----------------------------------------------------------------------------------------------------
+procedure ungetchar =
+-- Vr t¡ naposledy p©e‡ten˜ znak do vstupu.
+----------------------------------------------------------------------------------------------------
+begin
+  succ lex_input^.znpos;
+  end ungetchar;
+
+
+
+end cc_text;

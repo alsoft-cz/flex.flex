@@ -1,0 +1,436 @@
+---------------------------------------------------------------------------------------------------
+module public cl_codeview =
+-- P©eklada‡ Flexu.
+-- Gener tor CodeView debug informac¡.
+----------------------------------------------------------------------------------------------------
+-- Radek : 31.01.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  standard,
+  cg_gen,
+  cg_gen.cg_ia32,
+  cg_gen.cg_ia32.ci_def,
+  cl_link.cl_resolver,
+  cl_link.cl_debug.cl_codeview_types;
+
+type
+  -- dopredna deklarace
+  t_codeview_code;         p_codeview_code       = ^t_codeview_code;
+  t_codeview_module;       p_codeview_module     = ^t_codeview_module;
+
+
+type
+  t_codeview_dir_item_type = enum
+      sst_module;
+      sst_types;
+      sst_public;
+      sst_publicsym;
+      sst_symbols;
+      sst_alignsym;
+      sst_srclnseg;
+      sst_srcmodule;
+      sst_libraries;
+      sst_globalsym;
+      sst_globalpub;
+      sst_globaltypes;
+      sst_mpc;
+      sst_segmap;
+      sst_segname;
+      sst_precomp;
+      sst_offsetmap16;
+      sst_offsetmap32;
+      sst_fileindex;
+      sst_staticsym;
+      end enum;
+
+  -- varianta symbolu
+  t_codeview_symbol_type = enum
+      s_nodef;
+      s_compile;
+      s_ssearch;
+      s_end;
+      s_skip;
+      s_cvreserve;
+      s_objname;
+      s_endarg;
+      s_coboludt;
+      s_manyreg;
+      s_return;
+      s_entrythis;
+      s_register;
+      s_constant;
+      s_udt;
+      s_coboludt2;
+      s_manyreg2;
+      s_bprel32;
+      s_ldata32;
+      s_gdata32;
+      s_pub32;
+      s_lproc32;
+      s_gproc32;
+      s_thunk32;
+      s_block32;
+      s_with32;
+      s_label32;
+      s_cexmodel32;
+      s_vfttable32;
+      s_regrel32;
+      s_lthread32;
+      s_gthread32;
+      s_lprocmips32;
+      s_gprocmips32;
+      s_procdef;
+      s_dataref;
+      s_align;
+      end enum;
+
+  t_codeview_symbol_type_set = set of t_codeview_symbol_type;
+
+
+  -- attributy typu
+  t_codeview_type_attribute = set of enum
+      tcvta_no_access_protection;
+      tcvta_private;
+      tcvta_protected;
+      tcvta_public;
+      tcvta_vanilla_method;
+      tcvta_virtual_method;
+      tcvta_static_method;
+      tcvta_friend_method;
+      tcvta_introducing_virtual_method;
+      tcvta_pure_virtual_method;
+      tcvta_pure_introducing_virtual_method;
+      tcvta_pseudo;
+      tcvta_noinherit;
+      tcvta_noconstruct;
+      tcvta_compgenx;
+      end enum;
+
+  -- src file to address mapping
+  t_codeview_src_file_map;
+  p_codeview_src_file_map = ^t_codeview_src_file_map;
+  t_codeview_src_file_map = record
+      -- codeview informace
+      Seg              : t_signed16;             -- cislo segmentu
+      cPair            : t_word;                 -- pocet radek
+      offset           : p_offset_array;         -- pole adres [0..cPair-1]
+      linenumber       : p_word_array;           -- pole radek [0..cPair-1]
+
+      -- pomocne informace
+      code             : p_codeview_code;        -- segment code
+      status           : t_codeview_status;      -- status
+      prev             : p_codeview_src_file_map; -- predchozi prvek v seznamu
+      next             : p_codeview_src_file_map; -- nasledujici prvek v seznamu
+      end record;
+
+  -- src file
+  t_codeview_src_file;
+  p_codeview_src_file  = ^t_codeview_src_file;
+  t_codeview_src_file  = record
+      -- odkaz na objekty v prekladaci
+      num              : t_unsigned32;           -- cislo souboru
+
+      -- codeview informace
+      cSeg             : t_word;                 -- pocet segmentu cerpajici ze zdrojaku
+      pad              : t_unsigned16;           -- zarovnani
+      baseSrcLn        : p_offset_array;         -- offsety popisu mapovani radku
+      start_end        : p_start_end_array;      -- zacak a konec jednotlivych code segmentu
+      cbName           : t_byte;                 -- delka jmena souboru
+      Name             : t_namestring;           -- jmeno souboru
+
+      -- souvisejici informace
+      baseSrcLn_first  : p_codeview_src_file_map; -- seznam mapovani radek na code segmenty
+      baseSrcLn_last   : p_codeview_src_file_map; -- posledni prvek seznamu
+
+      -- pomocne informace
+      shortname        : t_namestring;           -- jmeno souboru bez cesty
+      status           : t_codeview_status;      -- status
+      prev             : p_codeview_src_file;    -- predchozi soubor
+      next             : p_codeview_src_file;    -- dalsi soubor
+      end record;
+
+  -- src module
+  t_codeview_src;
+  p_codeview_src       = ^t_codeview_src;
+  t_codeview_src       = record
+      -- codeview informace
+      cFile            : t_word;                 -- pocet zdrojovych textu poskytujici modulu kod
+      cSeg             : t_word;                 -- pocet code segmentu cerpajici kod
+      baseSrcFile      : p_offset_array;         -- offsety zacatku popisu souboru
+      start_end        : p_start_end_array;      -- zacatek a konec code segmentu
+      seg              : p_word_array;           -- segment pro code segment
+
+      -- souvisejici informace
+      baseSrcFile_first: p_codeview_src_file;    -- seznam souboru poskytujici modulu kod
+      baseSrcFile_last : p_codeview_src_file;    -- posledni prvek seznamu
+
+      -- pomocne informace
+      size             : t_unsigned32;           -- velikost bufferu pro ulozeni informaci
+      status           : t_codeview_status;      -- status
+      end record;
+
+  -- lokalni promenna
+  t_codeview_alignsym;
+  p_codeview_alignsym  = ^t_codeview_alignsym;
+  t_codeview_alignsym  = record
+      -- odkaz na objekty v prekladaci
+      _var_             : pentity_value;         -- info o promenne v prekaldaci
+      _code_            : pentity_code;          -- info o kodu v prekladaci
+      _instance_        : picodeinst;            -- instance
+      _segment_         : tsegment;              -- segment, kde je kod ulozen
+
+      -- codeview informace pro modul
+      index             : t_word;                -- index typu symbolu
+      offset            : t_signed32;            -- offset adresy promenne
+      indextype         : t_longint;             -- index typu
+      name              : t_namestring;          -- jmeno symbolu
+      pparent           : t_unsigned32;          -- offset rodicovskeho symbolu
+      pend              : t_unsigned32;          -- offset konce platnosti tohoto symbolu
+      pnext             : t_unsigned32;          -- dalsi blokovy symbol
+      length            : t_unsigned32;          -- delka kodu
+      debug_start       : t_unsigned32;          -- offset zacatku kodu
+      debug_end         : t_unsigned32;          -- offset konce kodu
+      segment           : t_signed16;            -- cislo segmenu,kde je kod ulozen
+      flags             : t_byte;                -- maska s priznaky
+
+      -- pomocne informace
+      tentity           : t_codeview_symbol_type;-- varianta symbolu
+      typ               : p_codeview_type;       -- typ promenne
+
+      -- pomocne informace
+      myoffset         : t_unsigned32;           -- offset tohoto symbolu v tabulce symbolu
+      status           : t_codeview_status;      -- status modulu
+      prev             : p_codeview_alignsym;    -- ukazatel na predchozi symbol v seznamu
+      next             : p_codeview_alignsym;    -- ukazatel na dalsi symbol v seznamu
+      parent           : p_codeview_alignsym;    -- ukazatel na rodicovsky kod
+      first_child      : p_codeview_alignsym;    -- ukazatel na prvni podrizeny symbol
+      last_child       : p_codeview_alignsym;    -- posledni symbol v seznamu
+      end record;
+
+
+  -- symbol
+  t_codeview_symbol;
+  p_codeview_symbol  = ^t_codeview_symbol;
+  t_codeview_symbol  = record
+      -- odkaz na objekty v prekladaci
+      _symbol_          : pentity;               -- info o symbolu
+      asymbol           : p_codeview_alignsym;
+
+      -- codeview informace pro modul
+      indextype         : t_longint;             -- index typu
+      name              : t_namestring;          -- jmeno symbolu
+
+      -- pomocne informace
+      tentity            : t_codeview_symbol_type; -- varianta symbolu
+      typ               : p_codeview_type;       -- typ promenne
+      modul             : p_codeview_module;     -- modul                                           
+
+      -- pomocne informace
+      dumplength       : t_unsigned32;           -- delka dumpu
+      myoffset         : t_unsigned32;           -- offset tohoto symbolu v tabulce symbolu
+      status           : t_codeview_status;      -- status modulu
+      prev             : p_codeview_symbol;      -- ukazatel na predchozi symbol v seznamu
+      next             : p_codeview_symbol;      -- ukazatel na dalsi symbol v seznamu
+      end record;
+
+
+  -- code
+  t_codeview_code      = record
+      -- odkaz na objekty v prekladaci
+      _code_           : pentity_code;           -- info o kodu v prekladaci
+      _instance_       : picodeinst;             -- instance
+      _segment_        : tsegment;               -- segment, kde je kod ulozen
+
+      -- codeview informace pro modul
+      Seg              : t_signed16;             -- cislo segmentu
+      pad              : t_unsigned16;           -- zarovnani
+      offset           : t_unsigned32;           -- offset v segmentu, kde code zacina
+      cbSeg            : t_unsigned32;           -- velikost code v bytech
+
+      -- pomocne informace
+      Src              : p_codeview_src_file;    -- seznam souboru poskytujici zdrojovy kod
+      status           : t_codeview_status;      -- status code
+      prev             : p_codeview_code;        -- ukazatel na predchozi code v seznamu
+      next             : p_codeview_code;        -- ukazatel na dalsi code v seznamu
+      end record;
+
+
+  -- module
+  t_codeview_module    = record
+      -- odkaz na objekty prekladace
+      _module_         : pentity_module;         -- info o modulu v prekladaci
+
+      -- codeview informace pro modul
+      ovlNumber        : t_word;                 -- overlay number
+      iLib             : t_word;                 -- index do sekce sstLibrary
+      cSeg             : t_word;                 -- pocet code segmentu v modulu
+      Style            : t_word;                 -- debugging style ('CV')
+
+      -- souvisejici informace
+      Src              : p_codeview_src;         -- mapovani zdrojovych kodu na code segmenty
+      first_code       : p_codeview_code;        -- ukazatel na prvni code v seznamu
+      last_code        : p_codeview_code;        -- ukazatel na posledni code v seznamu
+      first_alignsym   : p_codeview_alignsym;    -- pointer na prvni lokalni promennou
+      last_alignsym    : p_codeview_alignsym;    -- pointer na posledni lokalni promennou
+
+      -- pomocne informace
+      num              : t_word;                 -- cislo modulu
+      status           : t_codeview_status;      -- status modulu
+      prev             : p_codeview_module;      -- ukazatel na predchozi modul v seznamu
+      next             : p_codeview_module;      -- ukazatel na dalsi modul v seznamu
+      end record;
+
+
+  p_linkres            = ^linkresolver;
+
+  -- priznaky segmentu
+  t_codeview_seg_flag = enum
+      tcvsf_group;
+      tcvsf_abs;
+      tcvsf_sel;
+      tcvsf_32bit;
+      tcvsf_execute;
+      tcvsf_write;
+      tcvsf_read;
+      end enum;
+
+  t_codeview_seg_flags = set of t_codeview_seg_flag;
+
+  -- cisla pridelena segmentum
+  t_codeview_segment_map = array tsegment of record
+      Seg              : t_signed16;             -- cislo segmentu
+      flags            : t_codeview_seg_flags;   -- priznaky
+      ovl              : t_word;                 -- overlay
+      group            : t_word;                 -- skupina
+      frame            : t_word;                 -- frame
+      iSegName         : t_word;                 -- index do tabulky jmen
+      iClassName       : t_word;                 -- index do tabulky jmen
+      offset           : t_unsigned32;           -- offset ve fyzickem segmentu
+      cbseg            : t_unsigned32;           -- velikost logickeho segmentu
+      base             : t_unsigned32;           -- bazova adresa segmentu
+      end record;
+
+
+  -- jmeno ouboru
+  t_codeview_filename;
+  p_codeview_filename  = ^t_codeview_filename;
+  t_codeview_filename  = record
+      -- codeview informace
+      name             : t_namestring;           -- jmeno souboru
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      prev             : p_codeview_filename;    -- predchazejici prvek v seznamu
+      next             : p_codeview_filename;    -- nasledujici prvek v seznamu
+      end record;
+
+
+  -- seznam souboru
+  t_codeview_fileindex;
+  p_codeview_fileindex = ^t_codeview_fileindex;
+  t_codeview_fileindex = record
+      -- codeview informace
+      cMod             : t_word;                 -- pocet modulu v exe souboru
+      cRef             : t_word;                 -- pocet zaznamu v tabulce jmen
+      ModStart         : p_word_array;           -- offsety v tabulce jmen kde jsou soubory modulu
+      cRefCnt          : p_word_array;           -- pocet souboru spojenych s modulem
+      NameRef          : p_offset_array;         -- pointery na zacatky jmen souboru
+
+      -- souvisejici informace
+      first_name       : p_codeview_filename;    -- pointer na seznam jmen
+      last_name        : p_codeview_filename;    -- pointer na posledni soubor v seznamu
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- polozka adresare codeview debug informaci
+  t_codeview_dir_item;
+  p_codeview_dir_item  = ^t_codeview_dir_item;
+  t_codeview_dir_item  = record
+      -- codeview informace pro adresar
+      subsection       : t_word;                 -- typ podsekce
+      iMod             : t_word;                 -- cislo souvisejiciho modulu
+      Ifo              : t_unsigned32;           -- offset na podsekci
+      cb               : t_unsigned32;           -- velikost podsekce
+
+      -- souvisejici informace
+      subsection_type  : t_codeview_dir_item_type; -- typ podsekce
+      dump_data        : p_unsigned8array;       -- pointer na dumpnuta data
+      dump_length      : t_unsigned32;           -- velikost dumpu
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      prev             : p_codeview_dir_item;    -- ukazatel na predchozi polozku adresare
+      next             : p_codeview_dir_item;    -- ukazatel na dalsi polozku adresare
+      end record;
+
+
+  -- adresar codeview debug informaci
+  t_codeview_dir;
+  p_codeview_dir       = ^t_codeview_dir;
+  t_codeview_dir       = record
+      -- codeview informace pro adresar
+      cbDirHeader      : t_word;                 -- delka hlavicky adresare
+      cbDirEntry       : t_word;                 -- delka polozek adresare
+      cDir             : t_unsigned32;           -- pocet polozek adresare
+      IfoNextDir       : t_unsigned32;           -- pointer na dalsi adresar-nepouzito
+      flags            : t_unsigned32;           -- priznaky adresare=0
+
+      -- souvisejici informace
+      first_dir_item   : p_codeview_dir_item;    -- pointer na seznam polozke adresare
+      last_dir_item    : p_codeview_dir_item;    -- pointer na posledni polozku adresare
+
+      -- pomocne informace
+      status           : t_codeview_status;      -- status
+      end record;
+
+
+  -- informace pro PE hlavicku souboru
+  t_codeview_PE        = record
+      Characteristic   : t_longint;
+      TimeDataStamp    : t_longint;
+      MajorVersion     : t_word;
+      MinorVersion     : t_word;
+      Typ              : t_longint;
+      SizeOfData       : t_unsigned32;
+      AddressOfRawData : t_unsigned32;
+      PointerToRawData : t_unsigned32;
+      end record;
+
+
+
+----------------------------------------------------------------------------------------------------
+class public t_codeview = extend t_debug_information;
+-- Generator codeview debug informaci.
+----------------------------------------------------------------------------------------------------
+
+    var
+      PE_dir_entry : t_codeview_PE;
+      seg          : t_codeview_segment_map;     -- informace o segmentech
+
+      first_module : p_codeview_module;          -- seznam modulu
+      last_module  : p_codeview_module;          -- ukazatel na konec seznamu modulu
+
+    ------------------------------------------------------------------------------------------------
+    static register_segment (
+        _type      : in tsegment;                -- typ registrovaneho segmentu
+        _Seg       : in t_word;                  -- cislo segmentu
+        _flags     : in t_codeview_seg_flags;    -- priznaky segmentu
+        _offset    : in t_unsigned32;            -- offset ve fyzickem segmentu
+        _size      : in t_unsigned32             -- velikost logickeho segmentu
+        );
+    -- Zaregistruje segment.
+    ------------------------------------------------------------------------------------------------
+    end t_codeview;
+
+type
+  p_codeview           = ^class t_codeview;
+
+
+var
+  codeview_version     : t_namestring:='NB11';
+
+end cl_codeview;

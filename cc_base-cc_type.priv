@@ -1,0 +1,2005 @@
+----------------------------------------------------------------------------------------------------
+module private cc_type =
+-- P©eklada‡ Flexu.
+-- Operace s typy.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 20.06.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_sym,cc_def.cc_codes;
+
+type
+  -- akce pro ur‡en¡ kompatibility
+  ttypecheck       = enum
+      ---- jednoduch‚ kontroly ----
+      ttc_incompatible;                          -- nekompatibiln¡, nen¡ co ©e¨it
+      ttc_convertible;                           -- p©¡mo konvertibiln¡
+      ttc_aritm_check;                           -- kontrola shodnosti aritmetik
+      ttc_simple_check;                          -- jednoduch  kontrola dˆdi‡nosti
+      ttc_strict_simple;                         -- striktn¡ jednoduch  kontrola dˆdi‡nosti
+      ttc_derived;                               -- jeden z typ– odvozen˜ od toho druh‚ho
+      ttc_identical;                             -- typy mus¡ b˜t shodn‚
+      ---- pole ----
+      ttc_array_array;                           -- array -- array
+      ttc_uarray_array;                          -- uarray -- array
+      ttc_array_uarray;                          -- array -- uarray
+      ttc_uarray_uarray;                         -- uarray -- uarray
+      ttc_array_uniarray;                        -- array -- univerz ln¡ poel
+    --ttc_array_unichar;                         -- array -- univerz ln¡ znak (znak. agr.)
+      ttc_uniarray_array;                        -- univerz ln¡ pole -- array
+    --ttc_unichar_array;                         -- univerz ln¡ znak -- pole
+      ---- ©etˆzce ----
+      ttc_string_string;                         -- (u)string -- (u)string
+      ttc_string_uniarray;                       -- (u)string -- univerz ln¡ pole
+    --ttc_string_unichar;                        -- (u)string -- univerz ln¡ znak (znak.agr.)
+      ttc_uniarray_string;                       -- univerz ln¡ pole -- (u)string
+    --ttc_unichar_string;                        -- univerz ln¡ znak -- (u)string
+      ttc_uniarray;                              -- univerz ln¡ pole -- univerz ln¡ pole
+      ttc_string_component;                      -- (u)string  -- komponenta
+      ttc_component_string;                      -- komponenta -- (u)string
+      ttc_component_component;                   -- komponenta -- komponenta
+      ---- uspo© d n¡ ©etˆzc– (<) ----
+      ttc_order_string_string;                   -- (u)string < (u)string
+      ttc_order_uniarray_string;                 -- univerz ln¡ pole < (u)string
+      ttc_order_string_uniarray;                 -- (u)string < univerz ln¡ pole
+      ttc_order_uniarray;                        -- univerz ln¡ pole < univerz ln¡ pole
+      ---- mno‘iny ----
+      ttc_set_set;                               -- mno‘ina -- mno‘ina
+      ttc_in_set;                                -- diskr‚tn¡ IN mno‘ina
+      ---- pointery ----
+      ttc_pointer_assign;                        -- kontrola kompatibility pointer–
+      ttc_pointer_rel;                           -- kontrola kompatibility pointer–
+      ttc_pointer_ref;                           -- reference na pointer
+      ---- NIL ----
+      ttc_nil;                                   -- univerz lnˆ kompatibiln¡ NIL
+      end enum;
+
+  -- %%TECH Pozn mka: Charakter test– TTC_SIMPLE_CHECK a TTC_STRICT_SIMPLE
+  -- zaji¨Ÿuje automatickou kontrolu shodnosti aritmetik celo‡¡seln˜ch typ–.
+  -- D–kaz: Aritmetiky nelze zmˆnit derivac¡ typu.
+
+  -- tabulka pro kontrolu kompatibility
+  ttypechecktab    = array toperclass,tdatatype,tdatatype of record
+      c            : ttypecheck;                 -- kompatibilita/dal¨¡ kontrola
+      r            : tresulttype;                -- typ v˜sledku
+      a            : t_logical;                  -- T-povoleno zkr cen‚ p©i©azen¡
+      end record;
+
+var
+  typecheck        : ttypechecktab;
+
+----------------------------------------------------------------------------------------------------
+procedure set111 (
+    oclass         : in toperclass;              -- t©¡da operace
+    assign         : in t_logical;               -- T-povoleno zkr cen‚ p©i©azen¡
+    t1             : in tdatatype;               -- datov‚ typy
+    t2             : in tdatatype;               -- datov‚ typy
+    check          : in ttypecheck;              -- kontrola
+    result         : in tresulttype) =           -- typ v˜sledku
+-- TYPECHECK[T1,T2]:=CHECK.
+----------------------------------------------------------------------------------------------------
+begin
+  typecheck[oclass,t1,t2].c:=check;
+  typecheck[oclass,t1,t2].r:=result;
+  typecheck[oclass,t1,t2].a:=assign;
+  end set111;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure set1s1 (
+    oclass         : in toperclass;              -- t©¡da operace
+    assign         : in t_logical;               -- T-povoleno zkr cen‚ p©i©azen¡
+    t1             : in tdatatypeset;            -- datov‚ typy
+    t2             : in tdatatype;               -- datov‚ typy
+    check          : in ttypecheck;              -- kontrola
+    result         : in tresulttype) =           -- typ v˜sledku
+-- TYPECHECK[T1,T2]:=CHECK.
+----------------------------------------------------------------------------------------------------
+var
+  i                : tdatatype;
+
+begin
+  for i in tdatatype loop
+    if i in t1 then
+      typecheck[oclass,i,t2].c:=check;
+      typecheck[oclass,i,t2].r:=result;
+      typecheck[oclass,i,t2].a:=assign;
+      end if;
+    end loop;
+  end set1s1;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure set11s (
+    oclass         : in toperclass;              -- t©¡da operace
+    assign         : in t_logical;               -- T-povoleno zkr cen‚ p©i©azen¡
+    t1             : in tdatatype;               -- datov‚ typy
+    t2             : in tdatatypeset;            -- datov‚ typy
+    check          : in ttypecheck;              -- kontrola
+    result         : in tresulttype) =           -- typ v˜sledku
+-- TYPECHECK[T1,T2]:=CHECK.
+----------------------------------------------------------------------------------------------------
+var
+  o                : toperclass;
+  i                : tdatatype;
+
+begin
+  for i in tdatatype loop
+    if i in t2 then
+      typecheck[oclass,t1,i].c:=check;
+      typecheck[oclass,t1,i].r:=result;
+      typecheck[oclass,t1,i].a:=assign;
+      end if;
+    end loop;
+  end set11s;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure set1ss (
+    oclass         : in toperclass;              -- t©¡da operace
+    assign         : in t_logical;               -- T-povoleno zkr cen‚ p©i©azen¡
+    t1             : in tdatatypeset;            -- datov‚ typy
+    t2             : in tdatatypeset;            -- datov‚ typy
+    check          : in ttypecheck;              -- kontrola
+    result         : in tresulttype) =           -- typ v˜sledku
+-- TYPECHECK[T1,T2]:=CHECK.
+----------------------------------------------------------------------------------------------------
+var
+  i                : tdatatype;
+  j                : tdatatype;
+
+begin
+  for i in tdatatype loop
+    if i in t1 then
+      for j in tdatatype loop
+        if j in t2 then
+          typecheck[oclass,i,j].c:=check;
+          typecheck[oclass,i,j].r:=result;
+          typecheck[oclass,i,j].a:=assign;
+          end if;
+        end loop;
+      end if;  
+    end loop;
+  end set1ss;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sets11 (
+    oclass         : in toperclassset;           -- t©¡da operace
+    assign         : in t_logical;               -- T-povoleno zkr cen‚ p©i©azen¡
+    t1             : in tdatatype;               -- datov‚ typy
+    t2             : in tdatatype;               -- datov‚ typy
+    check          : in ttypecheck;              -- kontrola
+    result         : in tresulttype) =           -- typ v˜sledku
+-- TYPECHECK[T1,T2]:=CHECK.
+----------------------------------------------------------------------------------------------------
+var
+  o                : toperclass;
+
+begin
+  for o in toperclass loop
+    if o in oclass then
+      typecheck[o,t1,t2].c:=check;
+      typecheck[o,t1,t2].r:=result;
+      typecheck[o,t1,t2].a:=assign;
+      end if;
+    end loop;
+  end sets11;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure setss1 (
+    oclass         : in toperclassset;           -- t©¡da operace
+    assign         : in t_logical;               -- T-povoleno zkr cen‚ p©i©azen¡
+    t1             : in tdatatypeset;            -- datov‚ typy
+    t2             : in tdatatype;               -- datov‚ typy
+    check          : in ttypecheck;              -- kontrola
+    result         : in tresulttype) =           -- typ v˜sledku
+-- TYPECHECK[T1,T2]:=CHECK.
+----------------------------------------------------------------------------------------------------
+var
+  o                : toperclass;
+  i                : tdatatype;
+
+begin
+  for o in toperclass loop
+    if o in oclass then
+      for i in tdatatype loop
+        if i in t1 then
+          typecheck[o,i,t2].c:=check;
+          typecheck[o,i,t2].r:=result;
+          typecheck[o,i,t2].a:=assign;
+          end if;
+        end loop;
+      end if;
+    end loop;
+  end setss1;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sets1s (
+    oclass         : in toperclassset;           -- t©¡da operace
+    assign         : in t_logical;               -- T-povoleno zkr cen‚ p©i©azen¡
+    t1             : in tdatatype;               -- datov‚ typy
+    t2             : in tdatatypeset;            -- datov‚ typy
+    check          : in ttypecheck;              -- kontrola
+    result         : in tresulttype) =           -- typ v˜sledku
+-- TYPECHECK[T1,T2]:=CHECK.
+----------------------------------------------------------------------------------------------------
+var
+  o                : toperclass;
+  i                : tdatatype;
+
+begin
+  for o in toperclass loop
+    if o in oclass then
+      for i in tdatatype loop
+        if i in t2 then
+          typecheck[o,t1,i].c:=check;
+          typecheck[o,t1,i].r:=result;
+          typecheck[o,t1,i].a:=assign;
+          end if;
+        end loop;
+      end if;
+    end loop;
+  end sets1s;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure setsss (
+    oclass         : in toperclassset;           -- t©¡da operace
+    assign         : in t_logical;               -- T-povoleno zkr cen‚ p©i©azen¡
+    t1             : in tdatatypeset;            -- datov‚ typy
+    t2             : in tdatatypeset;            -- datov‚ typy
+    check          : in ttypecheck;              -- kontrola
+    result         : in tresulttype) =           -- typ v˜sledku
+-- TYPECHECK[T1,T2]:=CHECK.
+----------------------------------------------------------------------------------------------------
+var
+  o                : toperclass;
+  i                : tdatatype;
+  j                : tdatatype;
+
+begin
+  for o in toperclass loop
+    if o in oclass then
+      for i in tdatatype loop
+        if i in t1 then
+          for j in tdatatype loop
+            if j in t2 then
+              typecheck[o,i,j].c:=check;
+              typecheck[o,i,j].r:=result;
+              typecheck[o,i,j].a:=assign;
+              end if;
+            end loop;
+          end if;
+        end loop;
+      end if;
+    end loop;
+  end setsss;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure setcopy (
+    from           : in toperclass;              -- t©¡da operace
+    _to            : in toperclass) =            -- t©¡da operace
+-- TYPECHECK[TO]:=TYPECHECK[FROM].
+----------------------------------------------------------------------------------------------------
+begin
+  typecheck[_to]:=typecheck[from];
+  end setcopy;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure settypecomptab =
+-- Inicializace tabulky typov‚ kompatibility.
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%X €asto se pro dvojice typ– <univerz ln¡,neuniverz ln¡> vol¡ typ
+  -- v˜sledku jako TRT_RESOLVE. P©itom je zcela jasn‚, ‘e typ v˜sledku je
+  -- TRT_RIGHT resp. TRT_LEFT. €asem rozdˆlit nebo po sestaven¡ cel‚ tabulky
+  -- d vkovˆ p©epsat.
+
+  ----- P©i©azen¡ --------------------------------------------------------
+  ----- celo‡¡seln˜ := celo‡¡seln˜ -----
+  set111(toc_assign     ,true ,dt_signed    ,dt_signed    ,ttc_aritm_check      ,trt_left);
+  set111(toc_assign     ,true ,dt_unsigned  ,dt_unsigned  ,ttc_aritm_check      ,trt_left);
+  set1s1(toc_assign     ,true ,dts_integer  ,dt_uniint    ,ttc_convertible      ,trt_left);
+
+  ----- re ln˜ : = numerick˜ -----
+  set111(toc_assign     ,true ,dt_float     ,dt_float     ,ttc_simple_check     ,trt_left);
+  set111(toc_assign     ,true ,dt_float     ,dt_unireal   ,ttc_convertible      ,trt_left);
+
+  ----- logick˜ := logick˜ -----
+  set111(toc_assign     ,true ,dt_logical   ,dt_logical   ,ttc_simple_check     ,trt_left);
+  set111(toc_assign     ,true ,dt_logical   ,dt_unilogical,ttc_convertible      ,trt_left);
+
+  ----- znakov˜ := znakov˜ -----
+  set111(toc_assign     ,true ,dt_char      ,dt_char      ,ttc_simple_check     ,trt_left);
+  set111(toc_assign     ,true ,dt_char      ,dt_unichar   ,ttc_convertible      ,trt_left);
+
+  ----- v˜‡tov˜ := v˜‡tov˜ -----
+  set111(toc_assign     ,true ,dt_enum      ,dt_enum      ,ttc_derived          ,trt_left);
+
+  ----- pointer := pointer -----
+  set111(toc_assign     ,true ,dt_pointer   ,dt_pointer   ,ttc_pointer_assign   ,trt_left);
+
+  ----- regul rn¡ := NIL -----
+  set1s1(toc_assign     ,true ,dts_regular  ,dt_uninil    ,ttc_nil              ,trt_left);
+
+  ----- record : = record -----
+  set111(toc_assign     ,true ,dt_record    ,dt_record    ,ttc_strict_simple{!!},trt_left);
+
+  ----- pole := pole -----
+  set111(toc_assign     ,true ,dt_array     ,dt_array     ,ttc_array_array      ,trt_left);
+  set111(toc_assign     ,true ,dt_uarray    ,dt_array     ,ttc_uarray_array     ,trt_left);
+  set111(toc_assign     ,true ,dt_array     ,dt_uarray    ,ttc_array_uarray     ,trt_left);
+  set111(toc_assign     ,true ,dt_uarray    ,dt_uarray    ,ttc_uarray_uarray    ,trt_left);
+  set111(toc_assign     ,true ,dt_array     ,dt_uniarray  ,ttc_array_uniarray   ,trt_left);
+--set111(toc_assign     ,true ,dt_array     ,dt_unichar   ,ttc_array_unichar    ,trt_left);
+  set111(toc_assign     ,true ,dt_uarray    ,dt_uniarray  ,ttc_array_uniarray   ,trt_left);
+--set111(toc_assign     ,true ,dt_uarray    ,dt_unichar   ,ttc_array_unichar    ,trt_left);
+
+  ----- ©etˆzec := ©etˆzec -----
+  set1ss(toc_assign     ,true ,dts_string   ,dts_string   ,ttc_string_string    ,trt_left);
+  set1s1(toc_assign     ,true ,dts_string   ,dt_uniarray  ,ttc_string_uniarray  ,trt_left);
+--set1s1(toc_assign     ,true ,dts_string   ,dt_unichar   ,ttc_string_unichar   ,trt_left);
+
+  ----- mno‘ina := mno‘ina -----
+  set111(toc_assign     ,true ,dt_set       ,dt_set       ,ttc_set_set          ,trt_left);
+
+  ----- tag :    = tag -----
+  set111(toc_assign     ,true ,dt_tag       ,dt_tag       ,ttc_simple_check     ,trt_left);
+
+  ----- t©¡da := t©¡da -----
+  set111(toc_assign     ,true ,dt_class     ,dt_class     ,ttc_identical {!!}   ,trt_left);
+
+
+  ----- Transformace hodnoty ---------------------------------------------
+  -- z klad je stejn˜ jako p©i©azen¡ 
+  setcopy(toc_assign,toc_transform);
+
+  -- uniint <-- uniint 
+  set111(toc_transform  ,false,dt_uniint    ,dt_uniint    ,ttc_convertible      ,trt_left);
+
+  -- unireal <-- uniint,unireal 
+  set111(toc_transform  ,false,dt_unireal   ,dt_unireal   ,ttc_convertible      ,trt_left);
+
+  -- unichar <-- unichar 
+  set111(toc_transform  ,false,dt_unichar   ,dt_unichar   ,ttc_convertible      ,trt_left);
+
+  -- unilogical <-- unilogical
+  set111(toc_transform  ,false,dt_unilogical,dt_unilogical,ttc_convertible      ,trt_left);
+
+  -- uniarray <-- uniarray 
+  set111(toc_transform  ,false,dt_uniarray  ,dt_uniarray  ,ttc_uniarray         ,trt_left);
+
+  -- pole nebo ©etˆzec <-- uniarray 
+  set1s1(toc_transform  ,false,dts_index    ,dt_uniarray  ,ttc_uniarray         ,trt_left);
+
+  ----- P©ed n¡ adresy promˆnn‚ ------------------------------------------
+  ----- jednoduch‚ typy ----
+  set111(toc_ref        ,false,dt_signed    ,dt_signed    ,ttc_strict_simple    ,trt_left);
+  set111(toc_ref        ,false,dt_unsigned  ,dt_unsigned  ,ttc_strict_simple    ,trt_left);
+  set111(toc_ref        ,false,dt_logical   ,dt_logical   ,ttc_strict_simple    ,trt_left);
+  set111(toc_ref        ,false,dt_char      ,dt_char      ,ttc_strict_simple    ,trt_left);
+  set111(toc_ref        ,false,dt_enum      ,dt_enum      ,ttc_strict_simple    ,trt_left);
+  set111(toc_ref        ,false,dt_float     ,dt_float     ,ttc_strict_simple    ,trt_left);
+  set11s(toc_ref        ,false,dt_ustring   ,dts_string   ,ttc_string_string    ,trt_left);
+  set111(toc_ref        ,false,dt_string    ,dt_string    ,ttc_strict_simple    ,trt_left);
+  set111(toc_ref        ,false,dt_array     ,dt_array     ,ttc_array_array      ,trt_left);
+  set111(toc_ref        ,false,dt_uarray    ,dt_array     ,ttc_uarray_array     ,trt_left);
+  set111(toc_ref        ,false,dt_uarray    ,dt_uarray    ,ttc_uarray_uarray    ,trt_left);
+  set111(toc_ref        ,false,dt_record    ,dt_record    ,ttc_strict_simple    ,trt_left);
+  set111(toc_ref        ,false,dt_pointer   ,dt_pointer   ,ttc_pointer_ref      ,trt_left);
+  set111(toc_ref        ,false,dt_class     ,dt_class     ,ttc_strict_simple    ,trt_left);
+  set111(toc_ref        ,false,dt_set       ,dt_set       ,ttc_strict_simple    ,trt_left);
+
+
+  ----- Konstruktor rozsahu ----------------------------------------------
+  ----- celo‡¡seln˜ .. celo‡¡seln˜ -----
+  set111(toc_range      ,false,dt_signed    ,dt_signed    ,ttc_aritm_check      ,trt_resolve);
+  set111(toc_range      ,false,dt_unsigned  ,dt_unsigned  ,ttc_aritm_check      ,trt_resolve);
+  set1s1(toc_range      ,false,dts_integer  ,dt_uniint    ,ttc_convertible      ,trt_left);
+  set11s(toc_range      ,false,dt_uniint    ,dts_integer  ,ttc_convertible      ,trt_right);
+  set111(toc_range      ,false,dt_uniint    ,dt_uniint    ,ttc_convertible      ,trt_left);
+
+  ----- v˜‡tov˜ .. v˜‡tov˜ -----
+  set111(toc_range      ,false,dt_enum      ,dt_enum      ,ttc_strict_simple    ,trt_resolve);
+
+  ----- logick˜ .. logick˜ -----
+  set1ss(toc_range      ,false,dts_u_logical,dts_u_logical,ttc_convertible      ,trt_resolve);
+
+  ----- znakov˜ .. znakov˜ -----
+  set1ss(toc_range      ,false,dts_u_char   ,dts_u_char   ,ttc_convertible      ,trt_resolve);
+
+
+  ----- Aritmetick‚ operace ----------------------------------------------
+  ----- celo‡¡seln˜ + celo‡¡seln˜ -----
+  sets11(tocs_iaritm    ,true ,dt_signed    ,dt_signed    ,ttc_aritm_check      ,trt_resolve);
+  sets11(tocs_iaritm    ,true ,dt_unsigned  ,dt_unsigned  ,ttc_aritm_check      ,trt_resolve);
+  setss1(tocs_iaritm    ,true ,dts_integer  ,dt_uniint    ,ttc_convertible      ,trt_left);
+  sets1s(tocs_iaritm    ,false,dt_uniint    ,dts_integer  ,ttc_convertible      ,trt_right);
+  sets11(tocs_iaritm    ,false,dt_uniint    ,dt_uniint    ,ttc_convertible      ,trt_left);
+
+  ----- re ln˜ + re ln˜ -----
+  sets11(tocs_raritm    ,true ,dt_float     ,dt_float     ,ttc_convertible      ,trt_resolve);
+  sets11(tocs_raritm    ,true ,dt_float     ,dt_unireal   ,ttc_convertible      ,trt_left);
+  sets11(tocs_raritm    ,false,dt_unireal   ,dt_float     ,ttc_convertible      ,trt_right);
+  sets11(tocs_raritm    ,false,dt_unireal   ,dt_unireal   ,ttc_convertible      ,trt_left);
+
+
+  ----- Mno‘inov‚ operace ------------------------------------------------
+  ----- mno‘ina + mno‘ina -----
+  set111(toc_set        ,true ,dt_set       ,dt_set       ,ttc_set_set          ,trt_left);
+
+
+  ----- Spojov n¡ ©etˆzc– ------------------------------------------------
+  ----- string & string -----
+  set111(toc_concat     ,true ,dt_string    ,dt_string    ,ttc_string_string    ,trt_resolve{trt_string});
+  set11s(toc_concat     ,true ,dt_ustring   ,dts_string   ,ttc_string_string    ,trt_left);
+  set111(toc_concat     ,true ,dt_string    ,dt_ustring   ,ttc_string_string    ,trt_right);
+  set1s1(toc_concat     ,true ,dts_string   ,dt_uniarray  ,ttc_string_uniarray  ,trt_left);
+  set11s(toc_concat     ,false,dt_uniarray  ,dts_string   ,ttc_uniarray_string  ,trt_right);
+  set111(toc_concat     ,false,dt_uniarray  ,dt_uniarray  ,ttc_uniarray         ,trt_left);
+
+  ----- univerz ln¡ string & component -----
+  set11s(toc_concat     ,false,dt_uniarray    ,dts_u_unindexed,ttc_string_component ,trt_left);
+  set1s1(toc_concat     ,false,dts_u_unindexed,dt_uniarray    ,ttc_component_string ,trt_right);
+
+  ----- string & component (kromˆ p©¡padu component=string) -----
+  set11s(toc_concat     ,true ,dt_string      ,dts_u_unindexed,ttc_string_component ,trt_left{trt_string_el1});
+  set11s(toc_concat     ,true ,dt_ustring     ,dts_u_unindexed,ttc_string_component ,trt_left);
+  set1s1(toc_concat     ,false,dts_u_unindexed,dt_string      ,ttc_component_string ,trt_right{trt_string_er1});
+  set1s1(toc_concat     ,false,dts_u_unindexed,dt_ustring     ,ttc_component_string ,trt_right);
+
+  ----- component & component -----
+  set1ss(toc_concat     ,false,dts_unindexed,dts_unindexed,ttc_component_component,trt_uniarray_el);
+
+{
++ dt_string, dt_ustring  --> trt_right
++ dt_ustring, dt_string  --> trt_left
++ dt_ustring, dt_ustring --> trt_left
++ dt_string, dt_string   --> ??? a) dt_ustring b) trt_left
+
+  dt_string, dt_array    --> a) trt_left + dt_array:length ???, b) dt_ustring
+  dt_ustring, dt_array   --> trt_left
+  dt_array, dt_string    --> a) trt_right + dt_array:length ???, b) dt_ustring
+  dt_array, dt_ustring   --> trt_right
+}
+
+  ----- Logick‚ operace --------------------------------------------------
+  ----- logick˜ AND logick˜ -----
+  set1ss(toc_logical    ,true ,dts_u_logical,dts_u_logical,ttc_convertible      ,trt_resolve);
+                        {^^^^}
+
+  ----- Bitov‚ operace ---------------------------------------------------
+  ----- celo‡¡seln˜ BIT_AND celo‡¡seln˜ -----
+  set111(toc_bit        ,true ,dt_signed    ,dt_signed    ,ttc_aritm_check      ,trt_resolve);
+  set111(toc_bit        ,true ,dt_unsigned  ,dt_unsigned  ,ttc_aritm_check      ,trt_resolve);
+  set1s1(toc_bit        ,true ,dts_integer  ,dt_uniint    ,ttc_convertible      ,trt_left);
+  set11s(toc_bit        ,true ,dt_uniint    ,dts_integer  ,ttc_convertible      ,trt_right);
+  set111(toc_bit        ,true ,dt_uniint    ,dt_uniint    ,ttc_convertible      ,trt_left);
+
+
+  ----- Rela‡n¡ porovn vac¡ operace --------------------------------------
+  ----- celo‡¡seln˜ = celo‡¡seln˜ -----
+  set111(toc_rel_compare,false,dt_signed    ,dt_signed    ,ttc_aritm_check      ,trt_unilogical);
+  set111(toc_rel_compare,false,dt_unsigned  ,dt_unsigned  ,ttc_aritm_check      ,trt_unilogical);
+  set1s1(toc_rel_compare,false,dts_integer  ,dt_uniint    ,ttc_convertible      ,trt_unilogical);
+  set11s(toc_rel_compare,false,dt_uniint    ,dts_integer  ,ttc_convertible      ,trt_unilogical);
+  set111(toc_rel_compare,false,dt_uniint    ,dt_uniint    ,ttc_convertible      ,trt_unilogical);
+
+  ----- re ln˜ = re ln˜ -----
+  set111(toc_rel_compare,true ,dt_float     ,dt_float     ,ttc_convertible      ,trt_unilogical);
+  set111(toc_rel_compare,false,dt_float     ,dt_unireal   ,ttc_convertible      ,trt_unilogical);
+  set111(toc_rel_compare,false,dt_unireal   ,dt_float     ,ttc_convertible      ,trt_unilogical);
+  set111(toc_rel_compare,false,dt_unireal   ,dt_unireal   ,ttc_convertible      ,trt_unilogical);
+
+  ----- enum     = enum -----
+  set111(toc_rel_compare,false,dt_enum      ,dt_enum      ,ttc_derived          ,trt_unilogical);
+
+  ----- logick˜  = logick˜ -----
+  set1ss(toc_rel_compare,true ,dts_u_logical,dts_u_logical,ttc_convertible      ,trt_unilogical);
+                        {^^^^}
+  ----- znakov˜  = znakov˜ -----
+  set1ss(toc_rel_compare,false,dts_u_char   ,dts_u_char   ,ttc_convertible      ,trt_unilogical);
+
+  ----- pointer  = pointer -----
+  set111(toc_rel_compare,false,dt_pointer   ,dt_pointer   ,ttc_pointer_rel      ,trt_unilogical);
+
+  ----- ©etˆzcov˜ = ©etˆzcov˜ -----
+  set1ss(toc_rel_compare,false,dts_string   ,dts_string   ,ttc_string_string    ,trt_unilogical);
+  set11s(toc_rel_compare,false,dt_uniarray  ,dts_string   ,ttc_uniarray_string  ,trt_unilogical);
+  set1s1(toc_rel_compare,false,dts_string   ,dt_uniarray  ,ttc_string_uniarray  ,trt_unilogical);
+  set111(toc_rel_compare,false,dt_uniarray  ,dt_uniarray  ,ttc_uniarray         ,trt_unilogical);
+
+  ----- mno‘ina = mno‘ina -----
+  set1ss(toc_rel_compare,false,dts_u_set    ,dts_u_set    ,ttc_set_set          ,trt_unilogical);
+
+  ----- tag = tag -----
+  set111(toc_rel_compare,false,dt_tag       ,dt_tag       ,ttc_simple_check     ,trt_unilogical);
+
+  ----- record = record -----
+  set111(toc_rel_compare,false,dt_record    ,dt_record    ,ttc_identical        ,trt_unilogical);
+
+  ----- regul rn¡ = NIL -----
+  set1s1(toc_rel_compare,false,dts_regular  ,dt_uninil    ,ttc_NIL              ,trt_unilogical);
+  set11s(toc_rel_compare,false,dt_uninil    ,dts_regular  ,ttc_NIL              ,trt_unilogical);
+
+
+  ----- Rela‡n¡ uspo© d vac¡ operace -------------------------------------
+  ----- numerick˜ < numerick˜ -----
+  set111(toc_rel_order  ,false,dt_signed    ,dt_signed    ,ttc_aritm_check      ,trt_unilogical);
+  set111(toc_rel_order  ,false,dt_unsigned  ,dt_unsigned  ,ttc_aritm_check      ,trt_unilogical);
+  set1s1(toc_rel_order  ,false,dts_integer  ,dt_uniint    ,ttc_convertible      ,trt_unilogical);
+  set11s(toc_rel_order  ,false,dt_uniint    ,dts_integer  ,ttc_convertible      ,trt_unilogical);
+  set111(toc_rel_order  ,false,dt_uniint    ,dt_uniint    ,ttc_convertible      ,trt_unilogical);
+
+  ----- re ln˜ < re ln˜ -----
+  set111(toc_rel_order  ,true ,dt_float     ,dt_float     ,ttc_convertible      ,trt_unilogical);
+  set111(toc_rel_order  ,false,dt_float     ,dt_unireal   ,ttc_convertible      ,trt_unilogical);
+  set111(toc_rel_order  ,false,dt_unireal   ,dt_float     ,ttc_convertible      ,trt_unilogical);
+  set111(toc_rel_order  ,false,dt_unireal   ,dt_unireal   ,ttc_convertible      ,trt_unilogical);
+
+  ----- logick˜ < logick˜ -----
+  set1ss(toc_rel_order  ,true ,dts_u_logical,dts_u_logical,ttc_convertible      ,trt_unilogical);
+                        {^^^^}
+  ----- znakov˜ < znakov˜ -----
+  set1ss(toc_rel_order  ,false,dts_u_char   ,dts_u_char   ,ttc_convertible      ,trt_unilogical);
+
+  ----- enum < enum -----
+  set111(toc_rel_order  ,false,dt_enum      ,dt_enum      ,ttc_derived          ,trt_unilogical);
+
+  ----- ©etˆzcov˜ < ©etˆzcovy -----
+  set1ss(toc_rel_order  ,false,dts_string   ,dts_string   ,ttc_order_string_string    ,trt_unilogical);
+  set11s(toc_rel_order  ,false,dt_uniarray  ,dts_string   ,ttc_order_uniarray_string  ,trt_unilogical);
+  set1s1(toc_rel_order  ,false,dts_string   ,dt_uniarray  ,ttc_order_string_uniarray  ,trt_unilogical);
+  set111(toc_rel_order  ,false,dt_uniarray  ,dt_uniarray  ,ttc_order_uniarray         ,trt_unilogical);
+
+  ----- mno‘ina < mno‘ina -----
+  set1ss(toc_rel_order  ,false,dts_u_set    ,dts_u_set    ,ttc_set_set          ,trt_unilogical);
+
+  ----- tag < tag -----
+  set111(toc_rel_compare,false,dt_tag       ,dt_tag       ,ttc_simple_check     ,trt_unilogical);
+
+
+  ----- Test n le‘en¡ ----------------------------------------------------
+  ----- diskr‚tn¡ IN mno‘ina -----
+  set1ss(toc_rel_member ,false,dts_u_ordinal,dts_u_set    ,ttc_in_set           ,trt_unilogical);
+
+
+  ----- P©etypov n¡ ------------------------------------------------------
+  -- z klad je stejn˜ jako transformace hodnoty 
+  setcopy(toc_transform,toc_typecast);
+
+  ----- numerick‚ konverze -----
+  -- signed(signed) a unsigned(unsigned) se mus¡ redefinovat, 
+  -- proto‘e nepo‘adujeme kontrolu shodnosti aritmetik        
+  set111(toc_typecast   ,false,dt_signed    ,dt_signed    ,ttc_convertible      ,trt_left);
+  set111(toc_typecast   ,false,dt_unsigned  ,dt_unsigned  ,ttc_convertible      ,trt_left);
+  set111(toc_typecast   ,false,dt_signed    ,dt_unsigned  ,ttc_convertible      ,trt_left);
+  set111(toc_typecast   ,false,dt_unsigned  ,dt_signed    ,ttc_convertible      ,trt_left);
+  set11s(toc_typecast   ,false,dt_float     ,dts_u_integer,ttc_convertible      ,trt_left);
+
+  ----- konverze ‡¡sla na znak -----
+  set111(toc_typecast   ,false,dt_char      ,dt_unsigned  ,ttc_convertible      ,trt_left);
+  set111(toc_typecast   ,false,dt_char      ,dt_uniint    ,ttc_convertible      ,trt_left);
+
+  ----- konverze ‡¡sla na znak -----
+  set111(toc_typecast   ,false,dt_enum      ,dt_unsigned  ,ttc_convertible      ,trt_left);
+  set111(toc_typecast   ,false,dt_enum      ,dt_uniint    ,ttc_convertible      ,trt_left);
+
+  ----- Symetrick  konverze ----------------------------------------------
+  ----- univerz ln¡ integer -----
+  set111(toc_symmetric  ,false,dt_uniint    ,dt_uniint    ,ttc_convertible      ,trt_left);
+  set11s(toc_symmetric  ,false,dt_uniint    ,dts_integer  ,ttc_convertible      ,trt_left);
+  set1s1(toc_symmetric  ,false,dts_integer  ,dt_uniint    ,ttc_convertible      ,trt_left);
+
+  ----- univerz ln¡ real -----
+  set111(toc_symmetric  ,false,dt_unireal   ,dt_unireal   ,ttc_convertible      ,trt_left);
+  set111(toc_symmetric  ,false,dt_unireal   ,dt_float     ,ttc_convertible      ,trt_left);
+  set111(toc_symmetric  ,false,dt_float     ,dt_unireal   ,ttc_convertible      ,trt_left);
+
+  ----- univerz ln¡ znak -----
+  set111(toc_symmetric  ,false,dt_unichar   ,dt_unichar   ,ttc_convertible      ,trt_left);
+  set111(toc_symmetric  ,false,dt_unichar   ,dt_char      ,ttc_convertible      ,trt_left);
+  set111(toc_symmetric  ,false,dt_char      ,dt_unichar   ,ttc_convertible      ,trt_left);
+
+  ----- univerz ln¡ logical -----
+  set111(toc_symmetric  ,false,dt_unilogical,dt_unilogical,ttc_convertible      ,trt_left);
+  set111(toc_symmetric  ,false,dt_unilogical,dt_logical   ,ttc_convertible      ,trt_left);
+  set111(toc_symmetric  ,false,dt_logical   ,dt_unilogical,ttc_convertible      ,trt_left);
+  end settypecomptab;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_gettypeview =
+-- Typ pohledu na typ.                                                        
+----------------------------------------------------------------------------------------------------
+begin
+  -- typ nem me
+  if ptyp=nil then result:=tview_null
+
+  -- m me jen Incomplete declaration => Incomplete view 
+  elsif ptyp^.evaluated<>etd_full then result:=tview_incomplete
+
+  -- na t©¡du je v‘dy Full view 
+  elsif (ptyp^.evaluated=etd_full) and (ptyp^.stype=dt_class) then result:=tview_full
+
+  -- viditelnost dop©edn‚ deklarace a dokon‡en¡ deklarace se li¨¡ 
+  elsif ptyp^.visible<>ptyp^.full then
+    if sym_is_fully_visible(ptyp,context{^curr})
+      -- Full view 
+      then result:=tview_full
+      -- Partial view 
+      else result:=tview_partial;
+      end if;
+
+{
+  -- Full view pouze v nad©azen‚m deklarativn¡m regionu
+  elsif (ptyp^.visible in [sv_public,sv_protected]) and (ptyp^.full=sv_private) then
+    if isincluded(@curr,ptyp^.context)
+      -- v nad©azen‚m deklarativn¡m regionu => Full view 
+      then result:=tview_full
+      -- jinde => Partial view 
+      else result:=tview_partial;
+    end
+
+  -- Full view pouze v nad©azen‚m deklarativn¡m regionu nebo v potomkovi 
+  elsif (ptyp^.visible=sv_public) and (ptyp^.full=sv_protected) then
+    if isincluded(@curr,ptyp^.context) or isdescendant(@curr,ptyp^.context)
+      -- v potomkovi nebo v nad©azen‚m deklarativn¡m regionu => Full view 
+      then result:=tview_full
+      -- jinde => Partial view 
+      else result:=tview_partial;
+    end
+}
+{
+  -- typ by mohl m¡t utajenou strukturu 
+  elsif tf_hidden in ptyp^.tflags then
+    psym:=@curr;
+    while (psym<>nil) and (psym<>ptyp^.context) do psym:=psym^.context;
+    if psym=nil
+      then result:=tview_partial
+      else result:=tview_full;
+    end
+}
+  -- typ ur‡itˆ nem  utajenou strukturu 
+  else
+    result:=tview_full;
+    end if;
+  end t_gettypeview;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_gettypefullview =
+-- Typ pohledu na typ. Preferuje Full view, nikdy nevr t¡ Partial view.
+----------------------------------------------------------------------------------------------------
+begin
+  -- typ nem me
+  if ptyp=nil then 
+    result:=tview_null
+
+  -- m me jen Incomplete declaration => Incomplete view
+  elsif ptyp^.evaluated<>etd_full then 
+    result:=tview_incomplete
+
+  -- ve v¨ech ostatn¡ch p©¡padech se budeme chovat jako Full view
+  else 
+    result:=tview_full;
+    end if;
+  end t_gettypefullview;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_composite =
+-- True, je-li typ v zadan‚m kontextu kompozitn¡.                             
+----------------------------------------------------------------------------------------------------
+begin
+  -- typ je v dan‚m kontextu kompozitn¡ <=> 
+  result:=
+  -- nen¡ k dispozici Full view 
+  (t_gettypeview(context,ptyp)<>tview_full)
+  -- nebo je p©irozenˆ kompozitn¡ 
+  or (ptyp^.stype in dts_composite);
+  end t_composite;
+
+
+
+----------------------------------------------------------------------------------------------------
+{##}procedure t_unknownsize =
+-- True, m -li typ nezn mou velikost.                                         
+----------------------------------------------------------------------------------------------------
+begin
+  -- typ nem  v dan‚m kontextu zn mou velikost <=> 
+  result:=
+  -- nen¡ deklarov n nebo definov n 
+  (t_gettypeview(context,ptyp) in ttypeviewset:[tview_null,tview_incomplete])
+  -- nebo je p©irozenˆ neomezen˜ 
+  or (ptyp^.stype in dts_unconstrained);
+  end t_unknownsize;
+
+
+
+----------------------------------------------------------------------------------------------------
+{##}procedure t_unconstrained =
+-- True, je-li typ neomezen˜ (©etˆzec/pole).                                  
+----------------------------------------------------------------------------------------------------
+begin
+  -- typ je v dan‚m kontextu unconstrained <=> 
+  result:=
+  -- je k dispozici Full view 
+  (t_gettypeview(context,ptyp)=tview_full)
+  -- a je p©irozenˆ neomezen˜ 
+  and (ptyp^.stype in dts_unconstrained);
+  end t_unconstrained;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_equal =
+-- True, jsou-li typy shodn‚.                                                 
+----------------------------------------------------------------------------------------------------
+begin
+  result:=t1.getctype=t2.getctype;
+  end t_equal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_equalview =
+-- True, jsou-li to shodn‚ pohledy na shodn‚ typy.                            
+----------------------------------------------------------------------------------------------------
+begin
+  result:=(t1.tview=t2.tview) and (t1.getctype=t2.getctype);
+  end t_equalview;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_detcomp =
+-- True, jsou-li typy kompatibiln¡ z hlediska determinace kompatibility.      
+----------------------------------------------------------------------------------------------------
+begin
+  result:=not (
+  -- je-li jeden z typ– protected, mus¡ b˜t druh˜ identick˜ nebo univerz ln¡ 
+     ((t1.compat=tc_protected) and (not t_equal(t1,t2) and t2.stype not in dts_unitype))
+  or ((t2.compat=tc_protected) and (not t_equal(t1,t2) and t1.stype not in dts_unitype))
+  -- je-li jeden z typ– private, mus¡ b˜t druh˜ identick˜
+  or ((t1.compat=tc_private) and not t_equal(t1,t2))
+  or ((t2.compat=tc_private) and not t_equal(t1,t2))
+  );
+  end t_detcomp;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_typecheck =
+-- Typov  kontrola.                                                           
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure tedt_string_component (
+        t1         : in typeview;
+        t2         : in typeview) =
+    -- Test TTC_STRING_COMPONENT a TTC_COMPONENT_STRING.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nen¡ typ komponenty univerz ln¡ ? 
+      if t2.stype in dts_unitype
+
+        -- ano => mus¡ b˜t kompatibiln¡ s b z¡ ©etˆzce 
+        then
+          if not t_compatible(context,toc_symmetric,false,t1.getbase(context),t2,false) then
+            level:=tcl_incompatible;
+            return;
+            end if;
+
+        -- ne => mus¡ b˜t identick˜ s b z¡ ©etˆzce
+        else
+          if not t_equal(t1.getbase(context),t2) then
+            level:=tcl_incompatible;
+            return;
+            end if;
+          end if;
+
+      level:=tcl_convertible;
+      end tedt_string_component;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure tedt_string_string (
+        t1         : in typeview;
+        t2         : in typeview) =
+    -- Test TTC_STRING_STRING a TTC_ORDER_STRING_STRING.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if t_equal(t1,t2)
+
+        -- identick‚ typy 
+        then level:=tcl_identical;
+
+        -- zkoumat d l
+        else
+          -- identick‚ b ze
+          if t_equal(t1.getbase(context),t2.getbase(context))
+            then level:=tcl_static_identical
+            else level:=tcl_incompatible;
+            end if;
+          end if;
+      end tedt_string_string;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure test_uniarray (
+        t1         : in typeview;
+        t2         : in typeview) =
+    -- Test TTC_(ORDER_)STRING/(UNI)ARRAY_STRING/(UNI)ARRAY.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- no, jistˆ nebudou stejn‚ 
+
+      -- jedna z b z¡ je univerz ln¡ 
+      if t_is_sts(t1.getbase(context),dts_unitype) or t_is_sts(t2.getbase(context),dts_unitype)
+
+        -- mus¡ m¡t kompatibiln¡ b ze 
+        then
+          if not t_compatible(context,toc_symmetric,false,t1.getbase(context),t2.getbase(context),false) then
+          -- %%X Nemˆl by se p©¡znak WEAK rekurz¡vnˆ p©ed vat d l ?
+            level:=tcl_incompatible;
+            return;
+            end if;
+
+        -- jinak mus¡ m¡t identick‚ b ze 
+        else
+          if not t_equal(t1.getbase(context),t2.getbase(context)) then
+            level:=tcl_incompatible;
+            return;
+            end if;
+          end if;
+
+      level:=tcl_convertible;
+      end test_uniarray;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure test_partial (
+        t1         : in typeview;
+        t2         : in typeview;
+        xrestype   : in tresulttype) =
+    -- Test Partial view <--> Partial view
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- jsou typy stejn‚ ?
+      if t_equal(t1,t2)
+
+        -- ano => kompatibiln¡
+        then
+          restype:=xrestype{trt_left};
+          level:=tcl_identical;
+
+        -- r–zn‚ => nekompatiniln¡
+        else
+          level:=tcl_incompatible;
+          end if;
+      end test_partial;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure test_unchecked (
+        t1         : in typeview;
+        t2         : in typeview) =
+    -- Test Unchecked view := / <-- cokoliv
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- maj¡ oba typy d‚lky ?
+      if t1.hassize and t2.hassize
+
+        -- pak se mus¡ shodovat
+        then
+          if t1.getsize=t2.getsize
+            then
+              level:=tcl_static_identical;
+              restype:=trt_left; -- v˜sledek transformace je v‘dy lev˜ typ 
+            else
+              level:=tcl_incompatible;
+              end if;
+
+        -- jinak je to jedno (resp. se mus¡ shodovat dynamick‚ :size)
+        else
+          level:=tcl_static_identical;
+          restype:=trt_left; -- v˜sledek transformace je v‘dy lev˜ typ
+          -- %%X A co ta dynamick  kontrola ?
+          end if;
+      end test_unchecked;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure test_aggregate (
+        t1         : in typeview;
+        t2         : in typeview) =
+    -- Test Full view <--> Aggregate view.                                    
+    ------------------------------------------------------------------------------------------------
+    begin
+      if t_is_sts(t1,dts_aggregate)
+
+        -- vlevo je agreg t, OK
+        then 
+          restype:=trt_left;
+          level:=tcl_identical;
+
+        -- nˆco jin‚ho, nekompatibiln¡
+        else 
+          level:=tcl_incompatible;
+          end if;
+      end test_aggregate;
+
+
+
+var
+  t1b              : ptrbase;                    -- kompatibilita b z¡ dvou pointer–
+  t2b              : ptrbase;                    -- kompatibilita b z¡ dvou pointer–
+  t1a              : varaccess;                  -- determinace p©¡stupu pointeru 1
+  t2a              : varaccess;                  -- determinace p©¡stupu pointeru 1
+
+begin
+  restype:=trt_none;
+
+  --- jeden z typ– nen¡ ur‡en ---
+  if (t1.tview=tview_null) or (t2.tview=tview_null) then level:=tcl_incompatible
+
+  --- jeden z typ– nen¡ Full view ---
+  elsif (t1.tview<>tview_full) or (t2.tview<>tview_full) then
+    case oclass
+      -- var(T1) := value(T2) 
+      when toc_assign do
+           -- Partial view := Partial view
+           if (t1.tview=tview_partial) and (t2.tview=tview_partial) then
+             test_partial(t1,t2,trt_left);
+
+           -- Partial view := Unchecked view
+
+           -- Unchecked view := cokoliv
+           elsif t1.tview=tview_unchecked then
+             test_unchecked(t1,t2);
+
+           -- Full view := agreg t
+           elsif (t1.tview=tview_full) and (t2.tview=tview_aggregate) then
+             test_aggregate(t1,t2);
+
+           -- jin‚ varianty zat¡m neum¡m
+           else
+             unimplemented(150);
+             end if;
+
+      -- transformace value(T2) --> value(T1)
+      when toc_transform do
+           -- unchecked <-- regul rn¡
+           if (t1.tview=tview_unchecked) and t_is_sts(t2,dts_regular) then
+             -- mus¡ se shodovat d‚lka
+             if t1.hassize and t1.getsize<>t2.getsize
+               then level:=tcl_incompatible
+               else
+                 level:=tcl_static_identical;
+                 restype:=trt_left; -- v˜sledek transformace je v‘dy lev˜ typ
+                 end if;
+
+           -- Unchecked view <-- NIL
+           elsif (t1.tview=tview_unchecked) and t_is_sts(t2,tdatatypeset:[dt_uninil]) then
+             level:=tcl_static_identical;
+             restype:=trt_left; -- v˜sledek transformace je v‘dy lev˜ typ
+
+           -- Unchecked view <-- Unchecked view
+           elsif (t1.tview=tview_unchecked) and (t2.tview=tview_unchecked) then
+             test_unchecked(t1,t2);
+             --unimplemented(67);
+
+           -- Unchecked view <-- Partial view
+           elsif (t1.tview=tview_unchecked) and (t2.tview=tview_partial) then
+             test_unchecked(t1,t2);
+
+           -- Partial view <-- Partial view
+           elsif (t1.tview=tview_partial) and (t2.tview=tview_partial) then
+             test_partial(t1,t2,trt_left);
+          
+           -- Full view := agreg t
+           elsif (t1.tview=tview_full) and (t2.tview=tview_aggregate) then
+             test_aggregate(t1,t2);
+
+           -- nic jin‚ho nelze
+           else
+             level:=tcl_incompatible;
+             end if;
+
+      -- var(^T1) : = ^var(T2)
+      when toc_ref do
+           -- Partial view := Partial view 
+           if (t1.tview=tview_partial) and (t2.tview=tview_partial) then
+             test_partial(t1,t2,trt_left);
+
+           -- Partial view := Full view
+           elsif (t1.tview=tview_partial) and (t2.tview=tview_full) then
+             -- %%X To snad nejde, ne ? -- p©i vyhodnocov n¡ p©et¡‘en¡ to m–‘e nastat, 
+             -- ale to neznamen , ‘e je to leg ln¡. Bylo by vhodn‚ do t‚to procedury  
+             -- doplnit parametr, kter˜m by se dala zapnout vy¨¨¡ tolerance v–‡i      
+             -- vstupn¡m typ–m (=vypnout hl ¨en¡ UNIMEPLEMENTED a VERIFY).            
+             level:=tcl_incompatible;
+
+           -- Full view := Partial view
+           elsif (t1.tview=tview_full) and (t2.tview=tview_partial) then
+             -- %%X To snad nejde, ne ? -- p©i vyhodnocov n¡ p©et¡‘en¡ to m–‘e nastat, 
+             -- ale to neznamen , ‘e je to leg ln¡. Bylo by vhodn‚ do t‚to procedury  
+             -- doplnit parametr, kter˜m by se dala zapnout vy¨¨¡ tolerance v–‡i      
+             -- vstupn¡m typ–m (=vypnout hl ¨en¡ UNIMEPLEMENTED a VERIFY).            
+             level:=tcl_incompatible;
+
+           -- jin‚ varianty zat¡m neum¡m
+           else
+             unimplemented(179);
+             end if;
+
+      -- value(T1) Comparison operator value(T2)
+      when toc_rel_compare do
+           -- Partial view = Partial view
+           if (t1.tview=tview_partial) and (t2.tview=tview_partial) then
+             test_partial(t1,t2,trt_unilogical);
+
+           -- Full view := Aggregate view
+           elsif (t1.tview=tview_full) and (t2.tview=tview_aggregate) then
+             test_aggregate(t1,t2);
+
+           -- jin‚ varianty zat¡m neum¡m
+           else
+             unimplemented(180);
+             end if;
+
+      -- T1(value(T2))
+      when toc_typecast do
+           -- Partial view <-- Unchecked view
+           if (t1.tview=tview_partial) and (t2.tview=tview_unchecked) then
+             test_unchecked(t1,t2);
+
+           -- unconstrained(unchecked)
+           elsif t_is_sts(t1,dts_unconstrained) and (t2.tview=tview_unchecked) then
+             level:=tcl_static_identical;
+             restype:=trt_left;
+
+           -- regul rn¡(unchecked)
+           elsif t_is_sts(t1,dts_regular) and (t2.tview=tview_unchecked) then
+             -- mus¡ se shodovat d‚lka
+             if t2.hassize and t1.getsize<>t2.getsize
+               then level:=tcl_incompatible
+               else 
+                 level:=tcl_static_identical;
+                 restype:=trt_left;
+                 end if;
+
+           -- nic jin‚ho nelze
+           else
+             level:=tcl_incompatible;
+             --unimplemented(67);
+             end if;
+
+      -- ostatn¡ operace nelze prov‚st
+      when others do
+          level:=tcl_incompatible;
+
+      end case;
+
+  --- zkoumat d l (oba jsou ur‡itˆ Full view) ---
+  else 
+    -- kontrola na p©i©azen¡
+    if assign>typecheck[oclass,t1.stype,t2.stype].a then
+      level:=tcl_incompatible;
+      return;
+      end if;
+
+    -- typ v˜sledku
+    if assign
+      -- pro p©i©azen¡ v‘dy typ lev‚ho operandu
+      then restype:=trt_left
+      -- jinak podle tabulky
+      else restype:=typecheck[oclass,t1.stype,t2.stype].r;
+      end if;
+
+    case typecheck[oclass,t1.stype,t2.stype].c
+      -- nekompatibiln¡, nen¡ co ©e¨it 
+      when ttc_incompatible do level:=tcl_incompatible;
+
+      -- konvertibiln¡
+      when ttc_convertible do
+          if t_equal(t1,t2)
+            then level:=tcl_identical
+            else level:=tcl_convertible;
+            end if;
+
+      -- kontrola shodnosti aritmetik
+      when ttc_aritm_check do
+          -- identick‚ typpy
+          if t_equal(t1,t2) then level:=tcl_identical
+          -- shodn‚ aritmetiky
+          elsif t1.getintaritm=t2.getintaritm then level:=tcl_convertible
+          -- nekompatibiln¡ typy
+          else level:=tcl_incompatible;
+          end if;
+
+      -- jednoduch  kontrola dˆdi‡nosti
+      when ttc_simple_check do
+          -- identick‚ typpy
+          if t_equal(t1,t2) then level:=tcl_identical
+          -- T1 je p©edek T2 --> staticky bin rnˆ shodn‚
+          elsif t_ancestor(context,t1,t2) then level:=tcl_static_identical
+          -- T1 je potomek T2 --> dynamicky bin rnˆ shodn‚ (kontrola mez¡)
+          elsif t_descendant(context,t1,t2) then level:=tcl_dynamic_identical
+          -- T1 a T2 nejsou v ‘ dn‚m vztahu --> konvertovateln‚
+          else level:=tcl_convertible;
+          end if;
+
+      -- striktn¡ jednoduch  kontrola dˆdi‡nosti
+      when ttc_strict_simple do
+          -- identick‚ typy
+          if t_equal(t1,t2) then level:=tcl_identical
+          -- T1 je p©edek T2
+          elsif t_ancestor(context,t1,t2) then level:=tcl_static_identical
+          -- nekompatibiln¡
+          else level:=tcl_incompatible;
+          end if;
+
+      -- jeden typ odvozen od druh‚ho
+      when ttc_derived do
+          -- identick‚ typy
+          if t_equal(t1,t2) then level:=tcl_identical
+          -- T1 je p©edek T2 nebo naopak
+          elsif t_derived(context,t1,t2) then level:=tcl_static_identical
+          -- nekompatibiln¡
+          else level:=tcl_incompatible;
+          end if;
+
+      -- typy mus¡ b˜t shodn‚
+      when ttc_identical do
+          if t_equal(t1,t2)
+            then level:=tcl_identical
+            else level:=tcl_incompatible;
+            end if;
+
+      -- pole -- pole
+      when ttc_array_array do
+          if t_equal(t1,t2)
+            -- identick‚ typy
+            then level:=tcl_identical
+            -- pole mus¡ b˜t stejn 
+            else level:=tcl_incompatible;
+            end if ;
+
+      -- neomezen‚ pole -- pole
+      when ttc_uarray_array,
+      -- pole -- neomezen‚ pole
+      ttc_array_uarray,
+      -- neomezen‚ pole -- neomezen‚ pole
+      ttc_uarray_uarray do
+          -- no, jistˆ nebudou stejn‚
+
+          -- mus¡ m¡t stejn‚ b ze
+          if t_equal(t1.getbase(context),t2.getbase(context))
+            then level:=tcl_static_identical
+            else level:=tcl_incompatible;
+            end if;
+
+      -- pole -- univerz ln¡ pole
+      when ttc_array_uniarray,
+      -- ©etˆzec -- univerz ln¡ pole
+      ttc_string_uniarray,
+      -- univerz ln¡ pole -- pole
+      ttc_uniarray_array,
+      -- univerz ln¡ pole -- string
+      ttc_uniarray_string,
+      -- univerz ln¡ pole -- univerz ln¡ pole
+      ttc_uniarray do
+          test_uniarray(t1,t2);
+{
+      -- pole -- univerz ln¡ znak
+      when ttc_array_unichar,
+      -- ©etˆzec -- univerz ln¡ znak
+      ttc_string_unichar do
+          -- ©etˆzec mus¡ m¡t kompatibiln¡ b zi
+          if t_compatible(context,toc_symmetric,false,t1.getbase(context),t2,false)
+          {%%X Nemˆl by se p©¡znak WEAK rekurz¡vnˆ p©ed vat d l ? }
+            then level:=tcl_convertible
+            else level:=tcl_incompatible;
+            end if;
+}
+      -- string -- string
+      when ttc_string_string do tedt_string_string(t1,t2);
+
+      -- string -- component
+      when ttc_string_component do tedt_string_component(t1,t2);
+
+      -- component -- string
+      when ttc_component_string do tedt_string_component(t2,t1);
+
+      -- component -- component
+      when ttc_component_component do 
+          if t_equal(t1,t2)
+
+            -- typy jsou ekvivalentn¡ => ok
+            then level:=tcl_convertible
+
+            -- typy jsou r–zn‚ => nekompatibiln¡
+            else level:=tcl_incompatible;
+            end if;
+
+      -- string < string
+      when ttc_order_string_string do
+          -- mus¡ m¡t diskr‚tn¡ b ze
+          if t_is_sts(t1.getbase(context),dts_u_ordinal) and t_is_sts(t2.getbase(context),dts_u_ordinal)
+            -- maj¡ => zkoumat d l
+            then tedt_string_string(t1,t2)
+            -- nemaj¡ => nekompatibiln¡
+            else level:=tcl_incompatible;
+            end if;
+
+      -- univerz ln¡ pole < (u)string
+      when ttc_order_uniarray_string,
+      -- (u)string < univerz ln¡ pole
+      ttc_order_string_uniarray,
+      -- univerz ln¡ pole < univerz ln¡ pole
+      ttc_order_uniarray do
+          -- mus¡ m¡t diskr‚tn¡ b ze
+          if t_is_sts(t1.getbase(context),dts_u_ordinal) and t_is_sts(t2.getbase(context),dts_u_ordinal)
+            -- maj¡ => zkoumat d l
+            then test_uniarray(t1,t2)
+            -- nemaj¡ => nekompatibiln¡
+            else level:=tcl_incompatible;
+            end if;
+
+      -- mno‘ina -- mno‘ina
+      when ttc_set_set do
+          if t_equal(t1,t2)
+
+            -- identick‚ typy
+            then level:=tcl_identical
+
+            -- zkoumat d l
+            else
+              -- identick‚ b ze
+              if t_equal(t1.getbase(context),t2.getbase(context))
+                then level:=tcl_static_identical
+                else level:=tcl_incompatible;
+                end if;
+              end if;
+
+      -- diskr‚tn¡ IN mno‘ina
+      when ttc_in_set do
+          -- T1 mus¡ b˜t stejn˜ jako b ze T2, nebo apo¤ odvozen˜
+          if t_descendant(context,t1,t2.getbase(context))
+            then level:=tcl_convertible
+            else level:=tcl_incompatible;
+            end if;
+
+      -- reference na pointer
+      when ttc_pointer_ref do
+          if t_equal(t1,t2)
+
+            -- identick‚ typy
+            then level:=tcl_identical
+
+            -- zkoumat d l
+            else
+              -- mus¡ to b˜t pointery stejn‚ t©¡dy
+              if t1.getpclass<>t2.getpclass then
+                level:=tcl_incompatible;
+                return;
+                end if;
+
+              -- pro zjednodu¨en¡ si dop©edu zjistit kompatibilitu b z¡
+              t1b:=t1.getpbase;
+              t2b:=t2.getpbase;
+
+              -- strict -- strict
+              if (t1b=pb_strict) and (t2b=pb_strict) then
+                -- ^unconstrained -- ^(un)constrained => identick‚ b ze b z¡
+                -- %%FLEX Tohle je dost neobecn‚. Co p©¡pad ^^unconstrained -- ^^(un)constrained ??
+                if (t_is_stype(t1.getbase(context),dt_uarray) and t_is_sts(t2.getbase(context),dts_array))
+                or (t_is_stype(t1.getbase(context),dt_ustring) and t_is_sts(t2.getbase(context),dts_string)) then
+                  if t_equal(t1.getbase(context).getbase(context),t2.getbase(context).getbase(context))
+                    then level:=tcl_dynamic_identical
+                    else level:=tcl_incompatible;
+                    end if;
+                -- identick‚ b ze => kompatibiln¡
+                elsif t_equal(t1.getbase(context),t2.getbase(context)) then level:=tcl_static_identical
+                -- jinak nekompatibiln¡
+                else level:=tcl_incompatible;
+                end if;
+
+              -- class -- class
+              elsif (t1b=pb_class) and (t2b=pb_class) then
+                -- identick‚ b ze
+                if t_equal(t1.getbase(context),t2.getbase(context)) then level:=tcl_static_identical
+                -- jedna odvozen  od druh‚
+                elsif t_derived(context,t1.getbase(context),t2.getbase(context)) then level:=tcl_dynamic_identical
+                -- jinak nekompatibiln¡
+                else level:=tcl_incompatible;
+                end if
+
+              -- unchecked/strict -- unchecked/strict
+              elsif (t1b in ptrbaseset:[pb_strict,pb_unchecked]) and (t2b in ptrbaseset:[pb_strict,pb_unchecked]) then
+                -- bez omezen¡
+                level:=tcl_static_identical;
+
+              -- jin‚ kombinace jsou nepovolen‚
+              else
+                level:=tcl_incompatible;
+                end if;
+              end if;
+
+      -- p©i©azen¡ pointer–
+      when ttc_pointer_assign do
+          if t_equal(t1,t2)
+
+            -- identick‚ typy
+            then level:=tcl_identical
+
+            -- zkoumat d l
+            else
+              ---- (1) kontrola t©¡d ----
+              -- mus¡ to b˜t pointery stejn‚ t©¡dy
+              if t1.getpclass<>t2.getpclass then
+                level:=tcl_incompatible;
+                return;
+                end if;
+
+              ---- (2) kontrola b z¡ ----
+              -- pro zjednodu¨en¡ si dop©edu zjistit kompatibilitu b z¡
+              t1b:=t1.getpbase;
+              t2b:=t2.getpbase;
+
+              -- strict := strict
+              if (t1b=pb_strict) and (t2b=pb_strict) then
+                -- ^unconstrained -- ^(un)constrained => identick‚ b ze b z¡
+                -- %%FLEX Tohle je dost neobecn‚. Co p©¡pad ^^unconstrained -- ^^(un)constrained ??
+                if (t_is_stype(t1.getbase(context),dt_uarray) and t_is_sts(t2.getbase(context),dts_array))
+                or (t_is_stype(t1.getbase(context),dt_ustring) and t_is_sts(t2.getbase(context),dts_string)) then
+                  if t_equal(t1.getbase(context).getbase(context),t2.getbase(context).getbase(context))
+                    then level:=tcl_dynamic_identical
+                    else level:=tcl_incompatible;
+                    end if;
+                -- identick‚ b ze => kompatibiln¡
+                elsif t_equal(t1.getbase(context),t2.getbase(context)) then level:=tcl_static_identical
+                -- jinak nekompatibiln¡
+                else level:=tcl_incompatible;
+                end if;
+
+              -- strict := class
+              elsif (t1b=pb_strict) and (t2b=pb_class) then
+                -- Ondra 30.08.2001 : Domn¡v m se, ‘e je logi‡tˆj¨¡ p©esnˆ opa‡n 
+                -- podm¡nka - b ze T1 mus¡ b˜t p©edek b ze T2, tak‘e stejnˆ jako
+                -- v p©¡padˆ "class := strict". Nev¡m, pro‡ jsem to p–vodnˆ udˆlal
+                -- opa‡nˆ, ned v  to smysl.                                        
+                -- b ze T1 mus¡ b˜t potomek b ze T2
+                -- if t_descendant(context,t1.getbase(context),t2.getbase(context))
+
+                -- ^unconstrained -- ^(un)constrained => identick‚ b ze b z¡
+                -- %%FLEX Tohle je dost neobecn‚. Co p©¡pad ^^unconstrained -- ^^(un)constrained ??
+                if (t_is_stype(t1.getbase(context),dt_uarray) and t_is_sts(t2.getbase(context),dts_array))
+                or (t_is_stype(t1.getbase(context),dt_ustring) and t_is_sts(t2.getbase(context),dts_string)) then
+                  if t_equal(t1.getbase(context).getbase(context),t2.getbase(context).getbase(context))
+                    then level:=tcl_dynamic_identical
+                    else level:=tcl_incompatible;
+                    end if;
+                -- b ze T1 mus¡ b˜t p©edek b ze T2 => kompatibiln¡ 
+                elsif t_ancestor(context,t1.getbase(context),t2.getbase(context)) then level:=tcl_static_identical
+                -- jinak nekompatibiln¡
+                else level:=tcl_incompatible;
+                end if;
+
+              -- strict := unchecked
+              elsif (t1b=pb_strict) and (t2b=pb_unchecked) then
+                -- bez omezen¡
+                level:=tcl_static_identical;
+
+              -- class := strict
+              elsif (t1b=pb_class) and (t2b=pb_strict) then
+                -- ^unconstrained -- ^(un)constrained => identick‚ b ze b z¡
+                -- %%FLEX Tohle je dost neobecn‚. Co p©¡pad ^^unconstrained -- ^^(un)constrained ??
+                if (t_is_stype(t1.getbase(context),dt_uarray) and t_is_sts(t2.getbase(context),dts_array))
+                or (t_is_stype(t1.getbase(context),dt_ustring) and t_is_sts(t2.getbase(context),dts_string)) then
+                  if t_equal(t1.getbase(context).getbase(context),t2.getbase(context).getbase(context))
+                    then level:=tcl_dynamic_identical
+                    else level:=tcl_incompatible;
+                    end if;
+                -- b ze T2 mus¡ b˜t odvozena od b ze T1
+                elsif t_ancestor(context,t1.getbase(context),t2.getbase(context)) then level:=tcl_convertible
+                -- jinak nekompatibiln¡
+                else level:=tcl_incompatible;
+                end if;
+
+              -- class := unchecked
+              elsif (t1b=pb_class) and (t2b=pb_unchecked) then
+                -- nelze (jak by se ur‡il TAG ?)
+                level:=tcl_incompatible;
+
+              -- class := class
+              elsif (t1b=pb_class) and (t2b=pb_class) then
+                -- identick‚ b ze
+                if t_equal(t1.getbase(context),t2.getbase(context)) then level:=tcl_static_identical
+                -- jedna odvozen  od druh‚
+                elsif t_derived(context,t1.getbase(context),t2.getbase(context)) then level:=tcl_dynamic_identical
+                -- jinak nekompatibiln¡
+                else level:=tcl_incompatible;
+                end if;
+
+              -- unchecked := class
+              elsif (t1b=pb_unchecked) and (t2b=pb_class) then
+                -- bez omezen¡ konvertibiln¡
+                level:=tcl_convertible;
+
+              -- unchecked := unchecked/strict
+              elsif (t1b=pb_unchecked) and (t2b in ptrbaseset:[pb_unchecked,pb_strict]) then
+                -- bez omezen¡
+                level:=tcl_static_identical;
+
+              -- jin‚ p©¡pady by nemˆly nastat
+              else
+                verify(209,true);
+                end if;
+
+
+              ---- (3) kontrola determinace p©¡stupu ----
+              {%%X Neovˆ©eno. }
+              -- pro zjednodu¨en¡ si dop©edu zjistit determinace p©¡stupu
+              t1a:=t1.getpaccess;
+              t2a:=t2.getpaccess;
+
+              -- norm ln¡/const/protected := norm ln¡
+              if (t1a in varaccessset:[va_norm,va_protected,va_const]) and (t2a=va_norm) then
+                -- ok, nic nedˆlat
+
+              -- const := const/protected
+              elsif (t1a=va_const) and (t2a in varaccessset:[va_const,va_protected]) then
+                -- ok, nic nedˆlat
+
+              -- norm ln¡/protected := const
+              elsif (t1a in varaccessset:[va_norm,va_protected]) and (t2a=va_const) then
+                -- nelze
+                level:=tcl_incompatible;
+
+              -- norm ln¡ := protected
+              elsif (t1a=va_norm) and (t2a=va_protected) then
+                -- zkoumat d l
+                unimplemented(189);
+
+              -- protected := protected
+              elsif (t1a=va_protected) and (t2a=va_protected) then
+                -- zkoumat d l
+                unimplemented(190);
+
+              -- jin‚ p©¡pady by nemˆly nastat
+              else
+                verify(548,true)
+                end if;             
+              end if;
+
+      -- porovn n¡ pointer–
+      when ttc_pointer_rel do
+          if t_equal(t1,t2)
+
+            -- identick‚ typy
+            then level:=tcl_identical
+
+            -- zkoumat d l
+            else 
+              -- mus¡ to b˜t pointery stejn‚ t©¡dy
+              if t1.getpclass<>t2.getpclass then
+                level:=tcl_incompatible;
+                return;
+                end if;
+
+              -- pro zjednodu¨en¡ si dop©edu zjistit kompatibilitu b z¡
+              t1b:=t1.getpbase;
+              t2b:=t2.getpbase;
+
+              -- strict -- strict
+              if (t1b=pb_strict) and (t2b=pb_strict) then
+                -- ^unconstrained -- ^(un)constrained => identick‚ b ze b z¡
+                -- %%FLEX Tohle je dost neobecn‚. Co p©¡pad ^^unconstrained -- ^^(un)constrained ??
+                if (t_is_stype(t1.getbase(context),dt_uarray) and t_is_sts(t2.getbase(context),dts_array))
+                or (t_is_stype(t1.getbase(context),dt_ustring) and t_is_sts(t2.getbase(context),dts_string)) then
+                  if t_equal(t1.getbase(context).getbase(context),t2.getbase(context).getbase(context))
+                    then level:=tcl_dynamic_identical
+                    else level:=tcl_incompatible;
+                    end if;
+                -- identick‚ b ze => kompatibiln¡
+                elsif t_equal(t1.getbase(context),t2.getbase(context)) then level:=tcl_static_identical
+                -- jinak nekompatibiln¡
+                else level:=tcl_incompatible;
+                end if;
+
+              -- class -- class
+              elsif (t1b=pb_class) and (t2b=pb_class) then
+                -- identick‚ b ze
+                if t_equal(t1.getbase(context),t2.getbase(context)) then level:=tcl_static_identical
+                -- jedna odvozen  od druh‚
+                elsif t_derived(context,t1.getbase(context),t2.getbase(context)) then level:=tcl_dynamic_identical
+                -- jinak nekompatibiln¡
+                else level:=tcl_incompatible;
+                end if;
+
+              -- class -- strict
+              elsif (t1b=pb_class) and (t2b=pb_strict) then
+                -- b ze T2 mus¡ b˜t odvozena od b ze T1
+                if t_ancestor(context,t1.getbase(context),t2.getbase(context))
+                  then level:=tcl_convertible
+                  else level:=tcl_incompatible;
+                  end if;
+
+              -- strict -- class
+              elsif (t1b=pb_strict) and (t2b=pb_class) then
+                -- b ze T1 mus¡ b˜t odvozena od b ze T2
+                if t_descendant(context,t1.getbase(context),t2.getbase(context))
+                  then level:=tcl_convertible
+                  else level:=tcl_incompatible;
+                  end if;
+
+              -- unchecked/strict -- unchecked/strict
+              elsif (t1b in ptrbaseset:[pb_unchecked,pb_strict]) and (t2b in ptrbaseset:[pb_unchecked,pb_strict]) then
+                level:=tcl_convertible;
+
+              -- unchecked/class -- unchecked/class
+              elsif (t1b in ptrbaseset:[pb_unchecked,pb_class]) and (t2b in ptrbaseset:[pb_unchecked,pb_class]) then
+                level:=tcl_convertible;
+
+              -- jin‚ p©¡pady by nemˆly nastat
+              else
+                verify(210,true);
+                end if;
+              end if;  
+
+      -- NIL
+      when ttc_nil do level:=tcl_static_identical;
+
+      when others do verify(73,true);
+      end case;
+
+    -- na z vˆr je¨tˆ kontrola determinace
+    if level<>tcl_incompatible and then not weak and then not t_detcomp(t1,t2) then
+      level:=tcl_incompatible;
+      end if;
+    end if;
+  end t_typecheck;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_compatible =
+-- True, jsou-li typy kompatibiln¡.                                           
+-- Kromˆ testu determinace kompatibility prov d¡ i test konvertibility        
+-- hodnoty typu T2 na typ T1.                                                 
+----------------------------------------------------------------------------------------------------
+var
+  level            : tcomplevel;                 -- £rove¤ kompatibility                        
+  restype          : tresulttype;                -- typ v˜sledku                                
+
+begin
+  t_typecheck(context,oclass,assign,t1,t2,weak,level,restype);
+  result:=level<>tcl_incompatible;
+  end t_compatible;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_getcomplevel =
+-- —rove¤ kompatibility typ– v–‡i p©i©azen¡ var(T1):=value(T2).               
+----------------------------------------------------------------------------------------------------
+var
+  restype          : tresulttype;                -- typ v˜sledku                                
+
+begin
+  t_typecheck(context,oclass,assign,t1,t2,weak,result,restype);
+  end t_getcomplevel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_binaryidentical =
+-- True, jsou-li typy bin rnˆ identick‚.                                      
+----------------------------------------------------------------------------------------------------
+var
+  level            : tcomplevel;                 -- £rove¤ kompatibility                        
+  restype          : tresulttype;                -- typ v˜sledku                                
+
+begin
+  t_typecheck(context,toc_assign,true,t1,t2,weak,level,restype);
+  result:={udcmpe(t1.typ^.size,t2.typ^.size) and} level in tcomplevelset:[tcl_identical,tcl_static_identical];
+  {%%X Byl tady ten test velikosti pot©ebn˜ ? }
+  end t_binaryidentical;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_descendant =
+-- True, je-li T1 potomek T2.                                                 
+----------------------------------------------------------------------------------------------------
+var
+  t                : typeview;
+
+begin
+  -- Pozn mka: Podobn  procedura je i v CC_SYM, ale pro symboly (ISDESCENDANT) 
+  t:=t1;
+  while (t.tview<>tview_null) and not t_equal(t,t2) loop t:=t.getancestor(context) end loop;
+  result:=t.tview<>tview_null;
+  end t_descendant;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_ancestor =
+-- True, je-li T1 p©edek T2.                                                  
+----------------------------------------------------------------------------------------------------
+var
+  t                : typeview;
+
+begin
+  -- Pozn mka: Podobn  procedura je i v CC_SYM, ale pro symboly (ISANCESTOR) 
+  t:=t2;
+  while (t.tview<>tview_null) and not t_equal(t1,t) loop t:=t.getancestor(context) end loop;
+  result:=t.tview<>tview_null;
+  end t_ancestor;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_derived =
+-- True, je-li T1 p©edek nebo potomek T2.                                     
+----------------------------------------------------------------------------------------------------
+begin
+  result:=t_ancestor(context,t1,t2) or t_ancestor(context,t2,t1);
+  end t_derived;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_checktype =
+-- Dodate‡n  kontrola typu - zejm‚na z vislost¡ na jin˜ch typech.             
+-- Nap©¡klad pro typ procedura kontroluje £plnost deklarace typ– parametr–.   
+----------------------------------------------------------------------------------------------------
+var
+  srch             : tentitysearch;              -- hled tko
+
+begin
+  case ptyp^.stype
+    -- procedura
+    when dt_procedure do
+        -- projet v¨echny parametry
+        srch.find_et_first(ptyp,rc_primary,et_param,tesearchflagset:[]);
+        while srch.psym<>nil loop
+          {%%X}
+
+          -- dal¨¡ parametr
+          srch.find_et_next;
+          end loop;
+
+        {%%X}
+
+    -- pro jin‚ typy mˆ nic nenapad 
+    when others do verify(230,true);
+    end case;
+  end t_checktype;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_getptrattrib =
+-- Ze zadan˜ch £daj– vypo‡¡t  mno‘inu voliteln˜ch atribut– pointeru.          
+-- Pozor: O‡ek v , ‘e mno‘ina PATTRIB je ji‘ inicializovan .
+----------------------------------------------------------------------------------------------------
+begin
+  -- :tag 
+  if pbase=pb_class then
+    pattrib+rtattribset:[rta_tag{pa_tag}];
+    end if;
+
+  -- Ondra 06.12.2001 : Mus¡me se rozhodnout mezi :size a :last
+  -- unchecked => :size
+  if pbase=pb_unchecked then 
+    pattrib+rtattribset:[rta_size]
+  -- b ze je unconstrained string/array => :last
+  elsif base<>nil and base^.stype in dts_unconstrained then 
+    pattrib+rtattribset:[rta_last]
+  -- class => :size
+  elsif pbase=pb_class and pclass=pc_data then 
+    pattrib+rtattribset:[rta_size]; 
+    end if;
+
+  { P–vodn¡ verze:
+  if (pbase in ptrbaseset:[pb_class,pb_unchecked]) or ((base<>nil) and (base^.stype in dts_unconstrained)) then
+    pattrib+rtattribset:[rta_size{pa_size}];
+    end if;
+  }
+
+  -- Pozn mka: Nem–‘e se st t, ‘e by b zov˜ typ mˆl utajenou strukturu a j 
+  -- zde p©itom zjistil, ‘e je unconstrained. Je to t¡m, ‘e typ s
+  -- potenci lnˆ utajenou strukturou nesm¡ b˜t unconstrained.
+
+  -- ^instance
+  if pclass=pc_subprogram then
+    pattrib+rtattribset:[rta_instance{pa_instance}];
+    end if;
+  end t_getptrattrib;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_derive_string =
+-- Odvod¡ typ constrained string o d‚lce HVAL a b zi BASE.
+-- Pokud je HVAL vˆt¨¡ ne‘ maxim ln¡ dovolen , ohl s¡ varov n¡ CW_CONCAT_STRLENGTH a d‚lku o©¡zne na 
+-- maxim ln¡ dovolenou.
+----------------------------------------------------------------------------------------------------
+with
+  cc_var,
+  cd_decl,
+  cd_decl.cd_create;
+
+var
+  hval             : tuniint;                    -- zvolen  horn¡ mez                           
+  maxhval          : tuniint;                    -- maxim ln¡ horn¡ mez s ohledem na b zi       
+  size             : tunidata_size;              -- velikost ©etˆzce                            
+  isize            : tunidata_size;              -- velikost intern¡ ‡ sti                      
+  bsize            : tunidata_size;              -- velikost b ze                               
+  ptyp_context     : tcontext;                   -- kontext novˆ zalo‘en‚ho ©etˆzcov‚ho typu
+
+begin
+  -- zjistit velikost b ze 
+  bsize:=base.getsize;
+
+  -- ovˆ©it, zda je velikost p©¡pustn  
+  cpu^.getstrmaxhval(bsize,maxhval);
+  if hval0>maxhval
+
+    -- je to moc, ohl sit varov n¡ 
+    then
+      ce^.setwarning({CCERR=}000313,cw_concat_strlength);
+      {%%POS}
+      hval:=maxhval;
+
+    -- nen¡ to moc
+    else
+      hval:=hval0;
+      end if;
+
+  -- vypo‡¡tat parametry ©etˆzce 
+  cpu^.getstrparams(dt_string,size,isize,bsize,hval);
+
+  -- zalo‘it typ string
+  d_create_temporary_type(context,ptyp,ptyp_context,dt_string,size);
+
+  -- dosadit b zov˜ typ 
+  ptyp^.base.settype(base.getctype);
+
+  -- konec deklarace
+  d_end_temporary_type(ptyp^);
+
+  -- odvodit typ rozsahu 
+  t_derive_string_range(ptyp^,isize,hval);
+
+{
+  verify(343,(t1.stype<>dt_string) or (t2.stype<>dt_string));
+
+  -- zjistit velikost b ze
+  bsize:=t1.getbase(curr).getsize;
+
+  -- vypo‡¡tat po‡et prvk– ©etˆzce
+  hval:=t1.getrange(curr).gethval;
+  uiadd(hval,t2.getrange(curr).gethval);
+
+  -- ovˆ©it, zda je velikost p©¡pustn  
+  cpu^.getstrmaxhval(bsize,maxhval);
+  if uicmpg(hval,maxhval) then
+    ce^.setwarning({CCERR=}000314,cw_concat_strlength);
+    {%%POS}
+    hval:=maxhval;
+    end if;
+
+  -- vypo‡¡tat parametry ©etˆzce 
+  cpu^.getstrparams(dt_string,size,isize,bsize,hval);
+
+  -- zalo‘it typ string 
+  newtmp(curr,ptyp,dt_string,size);
+
+  -- dosadit b zov˜ typ 
+  ptyp^.base.settype(t1.getbase(curr).getctype);
+
+  -- odvodit typ rozsahu 
+  t_derive_string_range(ptyp^,isize,hval);
+}
+  end t_derive_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_derive_string_range =
+-- Pro zadan˜ typ ©ˆtˆzce odvod¡ rozsah ©etˆzce.
+----------------------------------------------------------------------------------------------------
+with
+  cc_var,cd_decl,cd_decl.cd_create;
+
+var
+  rtype            : pentity_type;               -- typ rozsahu ©etˆzce
+  rtype_context    : tcontext;                   -- kontext typu rozsahu ©etˆzce
+
+begin
+  -- vytvo©it typ rozsahu
+  d_create_at_position(sym_primary_context(typ),pentity(rtype),rtype_context,et_type,nil,{%%TODO(nullpos)}nil);
+  rtype^.tkind:=tk_regular;
+  rtype^.stype:=dt_unsigned;
+  rtype^.size:=isize;
+  rtype^.lval:=ui_1;
+  rtype^.hval:=hval;
+  cpu^.bytestobits(isize,rtype^.bits);
+  d_end_at_position(rtype^,{%%TODO(nullpos)}nil,false);
+
+  -- nastavit jako typ rozsahu uveden‚ho stringu
+  typ.srange.settype(rtype);
+  end t_derive_string_range;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_is_string_of_char =
+-- True, je-li typ unistr/string/ustring of char/unichar.                     
+----------------------------------------------------------------------------------------------------
+var
+  b                : typeview;
+
+begin
+  if (t.tview=tview_full) and (t.stype in dts_u_string)
+
+    -- je to string, zkoumat b zi
+    then
+      b:=t.getbase(context);
+      result:=(b.tview=tview_full) and (b.stype in dts_u_char);
+
+    -- je to nˆco jin‚ho
+    else
+      result:=false;
+      end if;
+  end t_is_string_of_char;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_is_pointer_to_object =
+-- True, je-li typ pointer na objekt.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=(t.tview=tview_full) and (t.stype=dt_pointer) and (t.getpclass=pc_data);
+  end t_is_pointer_to_object;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_is_pointer_to_unconstrained =
+-- True, je-li typ pointer na unconstrained array/string.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=(t.tview=tview_full) and (t.stype=dt_pointer) and (t.getpclass=pc_data)
+          and (t.getbase(context).stype in dts_unconstrained);
+  end t_is_pointer_to_unconstrained;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_is_sts =
+-- True, je-li typ z mno‘iny STS.                                             
+----------------------------------------------------------------------------------------------------
+begin
+  result:=(t.tview=tview_full) and (t.stype in sts);
+  end t_is_sts;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_is_stype =
+-- True, je-li typ roven STYPE.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=((t.tview=tview_full) or t.isclass) and (t.stype=stype);
+  end t_is_stype;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure t_contains_class =
+-- True, pokud zadan˜ typ obsahuje instanci t©¡dy jako subkomponentu.
+-- (Nebo je s m t©¡da.) Ka¨le se na viditelnost struktury typu.
+----------------------------------------------------------------------------------------------------
+var
+  srch             : tentitysearch;              -- hled tko
+
+begin
+  -- nepo‡¡tali jsme to u‘ jednou ?
+  if typ.cclass=tcc_unknown then
+    case typ.stype
+      -- p©¡mo t©¡da
+      when dt_class     do typ.cclass:=tcc_yes;
+
+      -- pole/©etˆzec
+      when dt_array,dt_uarray,dt_string,dt_ustring do
+          -- p©edpoklad
+          typ.cclass:=tcc_no;
+
+          -- zjistit, jak je na tom b ze
+          result:=t_contains_class(typ.base.getctype^);
+          if result then
+            typ.cclass:=tcc_yes;
+            return;
+            end if;
+
+      -- record
+      when dt_record do
+          -- p©edpoklad
+          typ.cclass:=tcc_no;
+
+          -- co p©edek ?
+          if typ.ancestor.isset then
+            result:=t_contains_class(pentity_type(typ.ancestor.getcentity)^);
+            if result then
+              typ.cclass:=tcc_yes;
+              return;
+              end if;
+            end if;
+
+          -- co komponenty ?
+          srch.find_et_first(^typ,rc_primary,et_var,[]);
+          while srch.psym<>nil loop
+            -- zkontrolovat
+            result:=t_contains_class(pentity_var(srch.psym)^.typ.getctype^);
+            if result then
+              typ.cclass:=tcc_yes;
+              return;
+              end if;
+
+            -- dal¨¡ symbol
+            srch.find_et_next;
+            end loop;
+
+      -- nic jin‚ho nem  komponenty ani nen¡ t©¡da
+      when others do typ.cclass:=tcc_no;
+      end case;
+    end if;
+
+  -- pokud se to je¨tˆ nezjistilo, tak zjistit teƒ
+  result:=typ.cclass=tcc_yes;
+  end t_contains_class;
+
+
+
+----------------------------------------------------------------------------------------------------
+entry =
+-- Inicializace.
+----------------------------------------------------------------------------------------------------
+begin
+  settypecomptab;
+  end entry;
+
+
+
+end cc_type;

@@ -1,0 +1,983 @@
+----------------------------------------------------------------------------------------------------
+module private cx_final =
+-- P©eklada‡ Flexu.
+-- Finalizace v˜razu.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 01.08.2001 : Vytvo©il.
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_attr,cc_sym,
+  cx_util,cx_imm;
+
+----------------------------------------------------------------------------------------------------
+procedure selectusage (
+    actual         : in expusage;                -- aktu ln¡ pou‘it¡ v˜razu
+    proposed       : in expusage)                -- navr‘en‚ pou‘it¡ v˜razu
+                   return expusage =             -- zvolen‚ pou‘it¡ v˜razu
+-- Zvol¡ lep¨¡ pou‘it¡ v˜razu. Pokud je aktu ln¡ pou‘¡t¡ EU_FORMAL, preferuje v‘dy to, jinak 
+-- navr‘en‚.
+----------------------------------------------------------------------------------------------------
+begin
+  if actual=eu_formal
+    then result:=eu_formal;
+    else result:=proposed;
+    end if;
+  end selectusage;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_operator (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpoper;       -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace oper tor–.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure c_final (
+        curr       : in tcontext;       -- p©ekl dan˜ prvek
+        expr       : in pexpnode;   -- v˜raz
+        ptyp       : in typeview;   -- po‘adovan˜ typ v˜razu
+        usage      : in expusage;   -- pou‘it¡ v˜razu
+        info       : in expinfo) =  -- informace o pr–bˆhu anal˜zy
+    -- Finalizace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zp–sob z©etˆzen¡ je touhle dobou ji‘ ur‡en
+
+      -- %%X Zde je oper tor v n- rn¡m tvaru ale p©i ur‡ov n¡ CONCATKIND byl
+      -- je¨tˆ v bin rn¡m. Nem–‘e se st t, ‘e by byl chybn˜ ? (snad ne)
+
+      -- prov‚st typovou kontrolu se spr vn˜m typem
+      case expr^.concatkind
+        -- substring nebo subpole
+        when nck_substring, nck_subarray do a_final(curr,expr,ptyp,usage,info);
+
+        -- komponenta
+        when nck_component do a_final(curr,expr,ptyp.getbase(curr),usage,info);
+
+        when others do verify(375,true);
+        end case;
+      end c_final;
+
+var
+  el               : pexpnode;                   -- podv˜razy
+  er               : pexpnode;                   -- podv˜razy
+  er0              : pexpnode;                   -- podv˜razy
+  er_zprac         : t_logical;                  -- finalizace prav˜ch podv˜raz–                
+
+begin
+  -- oddˆlit podv˜razy 
+  expr^.get(el,er0);
+
+  -- finalizovat lev˜ podv˜raz
+  if expr^.assign
+
+    -- p©i©azen¡ 
+    then
+      if expr^.oper=op_assign
+        then a_final(curr,el,nulltype,eu_write,info)
+        else a_final(curr,el,nulltype,eu_change,info);
+        end if;
+
+    -- norm ln¡ oper tor 
+    else
+      case expoperinfo[expr^.oper].tc
+        when tc_none    do a_final(curr,el,nulltype,eu_read,info);
+        when tc_left    do a_final(curr,el,expr^.t ,eu_read,info);
+        when tc_right   do a_final(curr,el,nulltype,eu_read,info);
+        when tc_both    do a_final(curr,el,expr^.t ,eu_read,info);
+        when tc_concat  do c_final(curr,el,expr^.t ,eu_read,info);
+        when others     do verify(373,true);
+        end case;
+      end if;
+
+  -- finalizovat prav˜ podv˜raz 
+  {%%X a co UNCHECKED ? }
+  er:=er0;
+  er_zprac:=true;
+  while er<>nil loop
+    -- finalizovat
+    case expoperinfo[expr^.oper].tc
+      when tc_none   do a_final(curr,er,nulltype,eu_read,info);
+      when tc_left   do a_final(curr,er,nulltype,eu_read,info);
+      when tc_right  do a_final(curr,er,expr^.t ,eu_read,info);
+      when tc_both   do a_final(curr,er,expr^.t ,eu_read,info);
+      when tc_concat do c_final(curr,er,expr^.t ,eu_read,info);
+      when others    do verify(374,true);
+      end case;
+
+    -- povedla se finalizace podv˜razu ? 
+    er_zprac:=er_zprac and (er^.zprac>=ep_final);
+
+    -- dal¨¡ prav˜ podv˜raz 
+    er:=er^.next;
+    end loop;
+
+  -- povedla se finalizace podv˜raz– ? 
+  if (el^.zprac<ep_final) or not er_zprac {(er^.zprac<ep_final)} then
+    el:=nil;
+    return;
+    end if;
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  x_rta_operator(curr,expr);
+{
+  -- dynamick‚ atributy nep©e‘ij¡ t‚mˆ© ‘ dn˜ oper tor 
+  expr^.rta:=[];
+  -- jen z©etˆzen¡ m–‘e m¡t dynamick˜ :last 
+  if expr^.oper=op_concat then
+    -- zkr cen‚ p©i©azen¡ => prvn¡ operand mus¡ m¡t :last
+    if expr^.assign then
+      -- vy‘ dat si run-time atributy
+      if el^.t.stype in dts_unconstrained
+        then x_require_rtattrib(el,[rta_last]);
+        else x_set_rtattrib(el,[rta_last]);
+        end if;
+      end if;
+
+    -- ka‘d˜ unconstrained operand mus¡ m¡t :last (je-li to t©eba)
+    {%%X unimplemented(114);}
+
+  -- p©i©azen¡ do v˜razu, kter˜ nem  velikost, mus¡ m¡t atribut :size
+  elsif (expr^.oper=op_assign) and not el^.t.hassize then
+    -- vy‘ dat si run-time atributy
+    if not el^.t.hassize then x_require_rtattrib(el,[rta_size]); end if;
+    if not er0^.t.hassize then x_require_rtattrib(er0,[rta_size]); end if;
+    end if;
+}
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_final;
+  end a_final_operator;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_unary (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpunary;      -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace un rn¡ch oper tor–.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜razy
+
+begin
+  -- oddˆlit podv˜razy
+  expr^.get(el);
+
+  -- finalizace podv˜razu
+  if expr^.assign
+
+    -- p©i©azen¡
+    then a_final(curr,el,nulltype,eu_write,info)
+
+    -- norm ln¡ oper tor
+    else a_final(curr,el,expr^.t,eu_read,info);
+    end if;
+
+  -- povedla se finalizace podv˜razu ? 
+  if el^.zprac<ep_final then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  {%%X un rn¡ oper tor by nemˆl poru¨it dynamick‚ atributy }
+  expr^.rta:=el^.rta;
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_final;
+  end a_final_unary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_component (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpcomponent;  -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace komponenty.
+----------------------------------------------------------------------------------------------------
+var
+  psym             : pentity;                -- souvisej¡c¡ entita
+  instance         : pexpnode;               -- souvisej¡c¡ instance t©¡dy
+
+begin
+{
+  -- finalizovat podv˜raz
+  if expr^.sub<>nil then a_final(curr,expr^.sub,nulltype,usage,info); end if;
+
+  {%%X Co se tady d  finalizovat ? }
+}
+  case expr^.nclass
+    -- promˆnn 
+    when nc_var do
+        -- souvisej¡c¡ entita
+        psym:=expr^.getsymbol;
+
+        -- finalizovat podv˜raz
+        if expr^.sub<>nil then
+          -- nen¡ souvisej¡c¡ entita slo‘ka nˆ‡eho ?
+          if (psym=nil) or (pentity_var(psym)^.mclass in mcs_offset)
+            -- pokud o entitˆ nic nev¡m, nebo je to nˆ‡¡ slo‘ka, finalizovat pro stejn‚ pou‘it¡
+            then a_final(curr,expr^.sub,nulltype,usage,info)
+            -- jinak finalizovat pro ‡istˆ form ln¡ pou‘it¡
+            else a_final(curr,expr^.sub,nulltype,eu_formal,info);
+            end if;
+          end if;
+
+        -- m  cenu bl¡‘e zkoumat jen pokusy o z pis
+        if usage in expusageset:[eu_write,eu_change] then
+          -- zkontrolovat podle souvisej¡c¡ entity
+          if psym<>nil then
+            case psym^.etype
+              -- promˆnn 
+              when et_var   do
+                  -- zkontrolovat m¢d p©¡stupu
+                  --%%X Identick‚ s kontrolou v a_final_deref => zobecnit do procedury
+                  case pentity_var(psym)^.vaccess
+                    -- bez omezen¡ => z pis povolen
+                    when va_norm      do               { ok };
+
+                    -- konstantn¡ => z pis zak z n
+                    when va_const     do
+                        ce^.seterror({CCERR=}000439,ce_i_write_access);
+                        expr^.errpos;
+                        ce^.resumeerror;
+
+                    -- chr nˆn  => z pis nˆkde povolen, nˆkde zak z n => zkoumat d l
+                    when va_protected do
+                        if not sym_is_included_or_ancestor(curr.entity,sym_get_container(psym)) then
+                          ce^.seterror({CCERR=}000440,ce_i_write_access);
+                          expr^.errpos;
+                          ce^.resumeerror;
+                          end if;
+
+                    when others do verify(605,true);
+                    end case;
+
+              -- parametr
+              when et_param do
+                  -- zapisovat nelze do IN parametru
+                  if pentity_param(psym)^.mode=pm_in then
+                    ce^.seterror({CCERR=}000441,ce_i_write_access);
+                    expr^.errpos;
+                    ce^.resumeerror;
+                    end if;
+
+              -- nic jin‚ho neum¡me
+              when others do verify(604,true);
+              end case;
+            end if;
+          end if;
+
+
+    -- hodnota
+    when nc_value do
+        -- finalizovat podv˜raz
+        if expr^.sub<>nil then
+          a_final(curr,expr^.sub,nulltype,usage,info);
+          end if;
+
+        -- z pis nen¡ povolen
+        verify(607,usage in expusageset:[eu_write,eu_change]);
+
+
+    -- procedura
+    when nc_proc do
+        -- souvisej¡c¡ entita
+        psym:=expr^.getsymbol;
+
+        -- finalizovat podv˜raz
+        if expr^.sub<>nil then
+          -- bude n s zaj¡mat potenci ln¡ instance t©¡dy
+          x_classinstance(expr^.sub,instance);
+
+          -- nen¡ to metoda s uvedenou instanc¡ t©¡dy ?
+          if (usage=eu_addr) and (psym<>nil) and (pentity_subprogram(psym)^.instance<>tip_none) and (instance<>nil)
+            -- zji¨Ÿuje se adresa metody => nepochybnˆ bude pot©eba in adresa instance
+            then a_final(curr,expr^.sub,nulltype,eu_addr,info)
+            -- jak‚koliv jin‚ zp–soby pou‘it¡ indikuj¡ finalizaci podv˜razu pro form ln¡ pou‘it¡
+            else a_final(curr,expr^.sub,nulltype,eu_formal,info);
+            end if;
+          end if;
+
+        -- je povolen jen form ln¡ p©¡stup a z¡sk n¡ adresy
+        verify(608,usage not in expusageset:[eu_formal,eu_addr]);
+
+
+    -- zpr va
+    when nc_message     do
+        -- finalizovat podv˜raz
+        if expr^.sub<>nil then
+          a_final(curr,expr^.sub,nulltype,eu_formal{usage},info);
+          end if;
+
+        -- je povolen jen form ln¡ p©¡stup a z¡sk n¡ adresy
+        verify(609,usage not in expusageset:[eu_formal,eu_addr]);
+
+
+    -- typ
+    when nc_type do
+        -- finalizovat podv˜raz
+        if expr^.sub<>nil then
+          a_final(curr,expr^.sub,nulltype,eu_formal{usage},info);
+          end if;
+
+        -- je povolen jen form ln¡ p©¡stup a pou‘it¡ hodnoty (tagu)
+        verify(620,usage not in expusageset:[{%%X Doplnˆno EU_READ, je to dob©e??}eu_read,eu_use,eu_formal]);
+
+
+    -- nˆco jin‚ho
+    when others do
+        -- finalizovat podv˜raz
+        if expr^.sub<>nil then
+          a_final(curr,expr^.sub,nulltype,usage,info);
+          end if;
+
+        -- je povolen jen form ln¡ p©¡stup
+        verify(606,usage<>eu_formal);
+
+    end case;
+
+  -- povedla se finalizace podv˜razu ? 
+  if (expr^.sub<>nil) and (expr^.sub^.zprac<ep_final) then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  -- Ondra 3.12.2001 : Tohle se mus¡ dˆlat jinak
+  expr^.rta:=[];
+{
+  -- je to t©¡da, ta m  sv‚ atributy jist‚ 
+  if t_is_sts(expr^.t,dts_class) then expr^.rta:=rtas_class
+  -- je to parametr
+  elsif (expr^.nclass=nc_var) and (expr^.s.psym<>nil) then
+    verify(331,expr^.s.psym^.etype<>et_var);
+    expr^.rta:=pentity_value(expr^.s.psym)^.allrta;
+  -- nic jin‚ho nem  dynamick‚ atributy
+  else
+    expr^.rta:=[];
+    end if;
+}
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_final;
+  end a_final_component;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_imm (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpimm;        -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace p©¡m‚ hodnoty.
+----------------------------------------------------------------------------------------------------
+var
+  change           : t_logical;                  -- T-zmˆnila se reprezentace konstanty
+
+begin
+  if ptyp.tview<>tview_null
+
+    -- po‘adov n konkr‚tn¡ typ konstanty
+    then
+      if not t_equal(expr^.t,ptyp) then
+        -- konvertovat p©¡mou hodnotu
+        imm_settype(curr,expr^.imm,expr^.t,ptyp,change);
+
+        -- zmˆnit typ v˜razu pokud se zmˆnila reprezentace
+        -- nebo pokud po‘adujeme ready-to-use hodnotu
+        -- nebo pokud byl p–vodn¡ typ univerz ln¡
+        if change or (usage=eu_use) or t_is_sts(expr^.t,dts_unitype) then
+          expr^.t:=ptyp;
+          end if;
+        end if;
+
+      -- test spr vnosti
+      if (expr^.t.tview=tview_full) and (usage in expusageset:[eu_read,eu_use,eu_formal]) then
+        begin
+          imm_check(curr,expr^.imm,expr^.t);
+        catch
+          when resume_error, compiler_error do
+              expr^.errpos;
+              raise;
+          end;
+        end if;
+
+   { POZNMKA: Tak tohle jde v Delphi v pohodˆ p©elo‘it. Stˆ‘uje si to
+      nejvej¨ na to, ‘e typ IF a typ prvn¡ho parametru nejsou kompatibiln¡.
+      C++ kompil tor z toho vy‡uhuje trochu moc.
+
+      -- konvertovat 
+      imm_settype(
+
+      -- p©i©adit po‘adovan˜ typ 
+      if usage=eu_use then oldic:=ic_ordinal else oldic:=ic_ordinal)
+   }
+
+    -- nen¡ ur‡en typ 
+    else
+      -- prov‚st test mez¡ 
+      if usage in expusageset:[eu_use,eu_formal] then
+        --...
+        end if;
+      end if;
+
+
+  -- %%X ?
+  --verifyx(531,(expr^.imm.ic=ic_set and expr^.imm.sitems^.lcount>expr^.imm.sitems^.lsize)
+  --         or (expr^.imm.ic=ic_array and expr^.imm.aitems^.lcount>expr^.imm.aitems^.lsize)
+  --         or (expr^.imm.ic=ic_record and expr^.imm.ritems^.lcount>expr^.imm.ritems^.lsize),expr^.pos);
+
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  {%%X p©¡m  hodnota nem  dynamick‚ atributy }
+  expr^.rta:=[];
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_final;
+  end a_final_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_call (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexplist;       -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace vol n¡.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜raz
+  arg              : pexpitem;                   -- argumenty
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny argumenty
+
+begin
+  -- oddˆlit podv˜razy
+  expr^.get(el,arg);
+
+  -- finalizovat podv˜raz
+  a_final(curr,el,nulltype,eu_addr,info);
+
+  -- finalizovat argumenty
+  vyhodnoceno:=true;
+  while arg<>nil loop
+    -- finalizovat argument 
+    case pentity_param(arg^.sym)^.mode
+      -- IN
+      when pm_in    do a_final(curr,arg^.sub,arg^.t,eu_use,info);
+
+      -- OUT
+      when pm_out   do a_final(curr,arg^.sub,arg^.t,eu_write,info);
+
+      -- IN OUT
+      when pm_inout do a_final(curr,arg^.sub,arg^.t,eu_change,info);
+
+      when others   do verify(180,true);
+      end case;
+    arg^.zprac:=arg^.sub^.zprac;
+
+    -- poda©ilo se argument finalizovat ? 
+    vyhodnoceno:=vyhodnoceno and (arg^.zprac>=ep_final);
+
+{%%A
+    -- vy‘ dat si run-time atributy 
+    x_set_rtattrib(curr,arg^.sub,pentity_param(arg^.sym)^.usedrta);
+}
+    -- dal¨¡ argument 
+    arg:=pexpitem(arg^.next);
+    end loop;
+
+  -- povedla se finalizace podv˜raz– ?
+  if (el^.zprac<ep_final) or not vyhodnoceno then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy
+  {%%X Z le‘¡ na n vratov‚ hodnotˆ }
+  expr^.rta:=[];
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_final;
+  end a_final_call;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_range (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexprange;      -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace rozsahu.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜razy
+  er               : pexpnode;                   -- podv˜razy
+
+begin
+  -- oddˆlit podv˜razy 
+  expr^.get(el,er);
+
+  -- finalizovat lev˜ podv˜raz 
+  a_final(curr,el,expr^.t{nulltype},usage,info);
+
+  -- finalizovat prav˜ podv˜raz 
+  a_final(curr,er,expr^.t{nulltype},usage,info);
+
+  -- povedla se finalizace podv˜raz– ? 
+  if (el^.zprac<ep_final) or (er^.zprac<ep_final) then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  -- rozsah nem  ‘ dn‚ dynamick‚ atributy 
+  expr^.rta:=[];
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_final;
+  end a_final_range;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_index (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpindex;      -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace indexu.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜razy
+  er               : pexpnode;                   -- podv˜razy
+
+begin
+  -- oddˆlit podv˜razy
+  expr^.get(el,er);
+
+  -- finalizovat lev˜ podv˜raz
+  a_final(curr,el,nulltype,usage,info);
+
+  -- finalizovat prav˜ podv˜raz 
+  a_final(curr,er,el^.t.getrange(curr),eu_use,info);
+
+  -- povedla se finalizace podv˜raz– ? 
+  if (el^.zprac<ep_final) or (er^.zprac<ep_final) then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  case expr^.itype
+    -- jedna komponenta
+    when eix_component  do
+        -- Ondra 3.12.2001 : Tohle se mus¡ dˆlat jinak
+        expr^.rta:=[];
+{
+        -- z le‘¡ na typu komponenty
+        if t_is_sts(expr^.t,dts_class)
+
+          -- t©¡da m  nˆjak‚ dynamick‚ atributy
+          then expr^.rta:=rtas_class
+
+          -- komponenty jin˜ch typ– nemaj¡ dynamick‚ atributy
+          else expr^.rta:=[];
+          end if;
+}
+    -- ©ez pole
+    when eix_slice      do {%%X dynamick˜ ©ez => dynamick˜ :last }unimplemented(113);
+
+    when others         do verify(330,true);
+    end case;
+}
+
+  -- finalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_final;
+  end a_final_index;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_ref (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpref;        -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace reference.
+----------------------------------------------------------------------------------------------------
+begin
+  -- finalizovat podv˜raz 
+  a_final(curr,expr^.sub,nulltype,eu_addr,info);
+
+  -- povedla se finalizace podv˜razu ? 
+  if expr^.sub^.zprac<ep_final then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy
+  -- stejn‚ jako atributy podv˜razu
+  expr^.rta:=expr^.sub^.rta;
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_final;
+  end a_final_ref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_deref (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpderef;      -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace dereference.
+----------------------------------------------------------------------------------------------------
+begin
+  -- finalizovat podv˜raz
+  a_final(curr,expr^.sub,nulltype,selectusage(usage,eu_read),info);
+
+  -- m  cenu bl¡‘e zkoumat jen pokusy o z pis
+  if usage in expusageset:[eu_write,eu_change] then
+    -- zkontrolovat m¢d p©¡stupu
+    {%%X Identick‚ s kontrolou v a_final_component => zobecnit do procedury }
+    case expr^.sub^.t.getpaccess
+      -- bez omezen¡ => z pis povolen
+      when va_norm      do { ok };
+
+      -- konstantn¡ => z pis zak z n
+      when va_const     do
+          ce^.seterror({CCERR=}000442,ce_i_write_access);
+          expr^.errpos;
+          ce^.resumeerror;
+
+
+      -- chr nˆn  => z pis nˆkde povolen, nˆkde zak z n => zkoumat d l
+      when va_protected do
+          if not sym_is_included_or_ancestor(curr.entity,sym_get_container(expr^.sub^.t.getctype)) then
+            ce^.seterror({CCERR=}000443,ce_i_write_access);
+            expr^.errpos;
+            ce^.resumeerror;
+            end if;
+
+      when others do verify(610,true);
+      end case;
+    end if;
+
+  -- povedla se finalizace podv˜razu ?
+  if expr^.sub^.zprac<ep_final then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy
+  -- stejn‚ jako atributy ulo‘en‚ v pointeru
+  expr^.rta:=expr^.sub^.t.getpattrib;
+}
+
+  -- finalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_final;
+  end a_final_deref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_attrib (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpattrib;     -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace atributu.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜raz
+  arglist          : pexpitem;                   -- skute‡n‚ parametry
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny slo‘ky
+
+begin
+  -- oddˆlit podv˜razy
+  expr^.get(el,arglist);
+
+  -- finalizovat lev˜ podv˜raz
+  vyhodnoceno:=true;
+  if expr^.atf=atf_none
+
+    -- u‘ivatelem definovan˜ atribut 
+    then
+      unimplemented(51);
+
+    -- jazykem definovan˜ atribut 
+    else
+      {%%X Do nˆkter˜ch dynamick˜ch atribut– se nesm¡ p©i©azovat. }
+      -- Test se d  s v˜hodou d t sem.                             
+
+      case expr^.aclass
+        {%%X Je pravda, ‘e pro ka‘d˜ statick˜ atribut je pou‘it¡ EU_FORMAL ? }
+        when atc_static  do a_final(curr,el,nulltype,eu_formal,info);
+        {%%X Nen¡ t©eba pro dynamick‚ atributy nˆkdy zmˆnit pou‘it¡ ? }
+        when atc_dynamic do a_final(curr,el,nulltype,usage,info);
+      --when atc_generic do unimplemented(50);
+        when others      do verify(128,true);
+        end case;
+      vyhodnoceno:=vyhodnoceno and (el^.zprac>=ep_final);
+      end if;
+
+  -- finalizovat seznam argument–
+  while arglist<>nil loop
+    unimplemented(49);
+    end loop;
+
+  -- povedlo se vyhodnocen¡ v¨ech podv˜raz– ?
+  if not vyhodnoceno then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  -- atribut nem  ‘ dn‚ dal¨¡ dynamick‚ atributy 
+  expr^.rta:=[];
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena
+  expr^.zprac:=ep_final;
+  end a_final_attrib;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_typecast (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexplist;       -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace p©etypov n¡.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜raz
+  arg              : pexpitem;                   -- argument
+
+begin
+  -- oddˆlit podv˜razy 
+  expr^.get(el,arg);
+
+  -- finalizovat lev˜ podv˜raz 
+  a_final(curr,el,nulltype,eu_formal,info);
+
+  -- finalizovat prav˜ podv˜raz 
+  a_final(curr,arg^.sub,nulltype,usage,info);
+  arg^.zprac:=arg^.sub^.zprac;
+
+  -- povedla se finalizace podv˜raz– ? 
+  if (el^.zprac<ep_final) or (arg^.zprac<ep_final) then return; end if;
+
+{%%A
+ -- ur‡it dynamick‚ atributy 
+  {%%X Jak‚ dynamick‚ atributy m  p©etypov n¡ ? Pokud je p©etypov n¡ tvaru   }
+  -- unconstrained --> unconstrained, pak :last a :size; v¨echny ostatn¡      
+  -- atributy jsou statick‚                                                   
+  expr^.rta:=[];
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_final;
+  end a_final_typecast;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_aggregate (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpaggregate;  -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace agreg tu.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- prefix
+  arglist          : pexpitem;                   -- slo‘ky                                      
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny slo‘ky                        
+
+begin
+  -- oddˆlit podv˜razy 
+  expr^.get(el,arglist);
+
+  -- finalizovat lev˜ podv˜raz 
+  if el<>nil
+    then
+      a_final(curr,el,nulltype,eu_formal,info);
+      vyhodnoceno:=el^.zprac>=ep_final;
+    else
+      vyhodnoceno:=true;
+      end if;
+
+  -- finalizovat slo‘ky 
+  -- Pozn mka: toto ji‘ za©¡dil optimaliz tor 
+
+  -- povedla se finalizace podv˜raz– ? 
+  if not vyhodnoceno then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  {%%X Jak‚ dynamick‚ atributy m  agreg t ? Pokud je unconstrained typu, pak }
+  -- :last a :size; v¨echny ostatn¡ atributy jsou statick‚                    
+  expr^.rta:=[];
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_final;
+  end a_final_aggregate;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_message (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexplist;       -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace vol n¡.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜raz
+  arg              : pexpitem;                   -- argumenty
+  vyhodnoceno      : t_logical;                  -- T-vyhodnoceny argumenty                     
+
+begin
+  -- oddˆlit podv˜razy 
+  expr^.get(el,arg);
+
+  -- finalizovat podv˜raz 
+  a_final(curr,el,nulltype,eu_addr,info);
+
+  -- finalizovat argumenty 
+  vyhodnoceno:=true;
+  while arg<>nil loop
+    -- finalizovat argument 
+    case expr^.ntype
+      -- p©ijet¡ zpr vy 
+      when nt_send   do a_final(curr,arg^.sub,arg^.t,eu_use,info);
+
+      -- odesl n¡ zpr vy
+      when nt_accept do a_final(curr,arg^.sub,arg^.t,eu_write,info);
+
+      when others    do verify(306,true);
+      end case;
+    arg^.zprac:=arg^.sub^.zprac;
+
+    -- poda©ilo se argument finalizovat ? 
+    vyhodnoceno:=vyhodnoceno and (arg^.zprac>=ep_final);
+
+    -- dal¨¡ argument 
+    arg:=pexpitem(arg^.next);
+    end loop;
+
+  -- povedla se finalizace podv˜raz– ? 
+  if (el^.zprac<ep_final) or not vyhodnoceno then return; end if;
+
+{%%A
+  -- ur‡it dynamick‚ atributy 
+  {%%X snad ‘ dn‚ ne ? }
+  expr^.rta:=[];
+}
+  -- finalizace £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_final;
+  end a_final_message;
+
+  
+
+----------------------------------------------------------------------------------------------------
+procedure a_final_this (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpthis;       -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+-- Finalizace THIS.
+----------------------------------------------------------------------------------------------------
+begin
+  -- nen¡ co finalizovat 
+  
+{%%A
+  -- ur‡it dynamick‚ atributy - je to t©¡da, ta m  sv‚ atributy jist‚ 
+  expr^.rta:=rtas_class;
+}
+
+  -- finalizace £spˆ¨nˆ dokon‡ena 
+  expr^.zprac:=ep_final;
+  end a_final_this;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final =
+-- Finalizace.                                                                
+----------------------------------------------------------------------------------------------------
+begin
+  verify(126,expr=nil);
+
+  -- zpracov vat jen v˜razy z bezprost©ednˆ p©edchoz¡ f ze 
+  if expr^.zprac<>pred(ep_final) then return; end if;
+
+  -- zkontrolovat v˜raz 
+  case expr^.ntype
+    -- oper tor 
+    when nt_operator  do a_final_operator(curr,pexpoper(expr),ptyp,usage,info);
+
+    -- un rn¡ oper tor
+    when nt_unary     do a_final_unary(curr,pexpunary(expr),ptyp,usage,info);
+
+    -- komponenta
+    when nt_component do a_final_component(curr,pexpcomponent(expr),ptyp,usage,info);
+
+    -- p©¡m  hodnota
+    when nt_imm       do a_final_imm(curr,pexpimm(expr),ptyp,usage,info);
+
+    -- vol n¡ procedury
+    when nt_call      do a_final_call(curr,pexplist(expr),ptyp,usage,info);
+
+    -- rozsah
+    when nt_range     do a_final_range(curr,pexprange(expr),ptyp,usage,info);
+
+    -- index pole
+    when nt_index     do a_final_index(curr,pexpindex(expr),ptyp,usage,info);
+
+    -- reference
+    when nt_ref       do a_final_ref(curr,pexpref(expr),ptyp,usage,info);
+
+    -- dereference
+    when nt_deref     do a_final_deref(curr,pexpderef(expr),ptyp,usage,info);
+
+    -- atribut
+    when nt_attrib    do a_final_attrib(curr,pexpattrib(expr),ptyp,usage,info);
+
+    -- p©etypov n¡
+    when nt_typecast  do a_final_typecast(curr,pexplist(expr),ptyp,usage,info);
+
+    -- agreg t
+    when nt_aggregate do a_final_aggregate(curr,pexpaggregate(expr),ptyp,usage,info);
+
+    -- odesl n¡ zpr vy
+    when nt_send      do a_final_message(curr,pexplist(expr),ptyp,usage,info);
+
+    -- p©ijet¡ zpr vy
+    when nt_accept    do a_final_message(curr,pexplist(expr),ptyp,usage,info);
+
+    -- THIS
+    when nt_this      do a_final_this(curr,pexpthis(expr),ptyp,usage,info);
+
+    -- jin‚ symboly tu nemaj¡ co dˆlat
+    when others       do verify(127,true);
+    end case;
+  end a_final;
+
+
+
+end cx_final;

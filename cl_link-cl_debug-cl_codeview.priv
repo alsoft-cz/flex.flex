@@ -1,0 +1,2345 @@
+----------------------------------------------------------------------------------------------------
+module private cl_codeview =
+-- P©eklada‡ Flexu.
+-- Gener tor CodeView debug informac¡.
+----------------------------------------------------------------------------------------------------
+
+with
+  standard,
+  standard.strings,
+  standard.classes,
+  standard.classes.hash_tables,
+  cc_def.cc_unitype,
+  cg_gen.cg_debug,
+  cc_base,
+  cc_base.cc_sym,
+  cc_def.cc_files,
+  cc_def.cc_var,
+  cl_link.cl_debug.cl_codeview_types;
+
+use
+  advanced,
+  advanced.low_level,
+  advanced.low_level.unchecked_memory_access;
+
+var
+  codeview_dir_item_type_code : const array t_codeview_dir_item_type of t_word := [
+      $0120,                                     -- sstModule
+      $0121,                                     -- sstTypes
+      $0122,                                     -- sstPublic
+      $0123,                                     -- sstPublicSym
+      $0124,                                     -- sstSymbols
+      $0125,                                     -- sstALignSym
+      $0126,                                     -- sstSrcLnSeg
+      $0127,                                     -- sstSrcModule
+      $0128,                                     -- sstLibraries
+      $0129,                                     -- sstGlobalSym
+      $012a,                                     -- sstGlobalPub
+      $012b,                                     -- sstGlobalTypes
+      $012c,                                     -- sstMPC
+      $012d,                                     -- sstSegMap
+      $012e,                                     -- sstSegName
+      $012f,                                     -- sstPreComp
+      $0131,                                     -- sstOffsetMap16
+      $0132,                                     -- sstOffsetMap32
+      $0133,                                     -- sstFileIndex
+      $0134                                      -- sstStaticSym
+      ];
+
+  codeview_symbol_type_code : const array t_codeview_symbol_type of t_word := [
+      $0000,                                     -- s_nodef
+      $0001,                                     -- s_compile
+      $0005,                                     -- s_ssearch
+      $0006,                                     -- s_end
+      $0007,                                     -- s_skip
+      $0008,                                     -- s_cvreserve
+      $0009,                                     -- s_objname
+      $000a,                                     -- s_endarg
+      $000b,                                     -- s_coboludt
+      $000c,                                     -- s_manyreg
+      $000d,                                     -- s_return
+      $000e,                                     -- s_entrythis
+      $1001,                                     -- s_register
+      $1002,                                     -- s_constant
+      $1003,                                     -- s_udt
+      $1004,                                     -- s_coboludt2
+      $1005,                                     -- s_manyreg2
+      $1006,                                     -- s_bprel32
+      $1007,                                     -- s_ldata32
+      $1008,                                     -- s_gdata32
+      $1009,                                     -- s_pub32
+      $100a,                                     -- s_lproc32
+      $100b,                                     -- s_gproc32
+      $0206,                                     -- s_thunk32
+      $0207,                                     -- s_block32
+      $0208,                                     -- s_with32
+      $0209,                                     -- s_label32
+      $020a,                                     -- s_cexmodel32
+      $100c,                                     -- s_vfttable32
+      $100d,                                     -- s_regrel32
+      $100e,                                     -- s_lthread32
+      $100f,                                     -- s_gthread32
+      $1010,                                     -- s_lprocmips32
+      $1011,                                     -- s_gprocmips32
+      $0400,                                     -- s_procdef
+      $0401,                                     -- s_dataref
+      $0402                                      -- s_align
+      ];
+
+  -- seznam tagu radkovych informaci, pro ktere se nemaji generovat codeview debug line informace
+  codeview_disable_debugtagtype : const set of tdebugtagtype := [dbt_block_begin];
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure generate_type (
+    _type          : in p_codeview_type;
+    _base          : in out t_codeview_type_table
+      ) =
+-- Vygeneruje popis typu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vygenerujeme popis typu
+  generate_codeview_type(_type^._type_,_type^.typ,_type^.primitive,_type^.desc,_type,_base);
+  end generate_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure generate_code (
+    _code          : in p_codeview_code
+    ) =
+-- Vypocte hodnoty por code segment.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vyplnime udaje pro code segment
+  _code^.Seg:=p_codeview(debug_info)^.seg[_code^._segment_].Seg;
+  _code^.pad:=0;
+  _code^.offset:=_code^._instance_^.cstart-p_codeview(debug_info)^.seg[_code^._segment_].base;
+  _code^.cbSeg:=_code^._instance_^.c^:length;
+  end generate_code;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure map_source_file_to_code (
+{var}_code          : in p_codeview_code
+    ) =
+-- Namapuje adresy na zdrojove kody.
+----------------------------------------------------------------------------------------------------
+var
+  codeinst         : picodeinst;                 -- instance code segmentu
+  i                : t_unsigned;                 -- index
+  lastnum          : t_unsigned32;               -- cislo posledne pouzivaneho souboru
+  lastfile         : p_codeview_src_file;        -- posledne pouzivany soubor
+  linemap          : p_codeview_src_file_map;    -- mapovani adres na radky zdrojoveho kodu
+
+begin
+  -- inicializace
+  _code^.Src:=nil;
+
+  -- prvni pruchod - zjistime potrebny prostor por alokaci struktur
+  lastnum:=0; lastfile:=nil;
+
+  if _code^._instance_^.di.d<>nil then
+    for i in _code^._instance_^.di.d^:range loop
+      -- pokud nesouhlasi soubor, musime ho dohledat, popr. zalozit
+      if (_code^._instance_^.di.d^[i].pos.b.num<>lastnum) and (_code^._instance_^.di.d^[i].pos.b.num<>0) then
+        -- zkusime soubor nejprve najit
+        lastnum:=_code^._instance_^.di.d^[i].pos.b.num;
+        lastfile:=_code^.Src;
+        while (lastfile<>nil) and (lastfile^.num<>lastnum) loop lastfile:=lastfile^.next; end loop;
+
+        -- nenalezeno ?
+        if lastfile=nil then
+          -- naalokujeme mu pamet...
+          new lastfile;
+
+          -- ...zinicializujeme...
+          lastfile^.num:=lastnum;
+          lastfile^.cSeg:=1;
+
+          -- ...a zaradime do seznamu
+          if _code^.Src=nil then
+            _code^.Src:=lastfile;
+          else
+            _code^.Src^.prev:=lastfile;
+            lastfile^.next:=_code^.Src;
+            _code^.Src:=lastfile;
+            end if;
+
+          -- muzeme predpokladat ze novy soubor bude mit jen jeden code segment
+          new linemap;
+     
+          lastfile^.baseSrcLn_first:=linemap;
+          lastfile^.baseSrcLn_last:=linemap;
+          end if;
+        end if;
+
+      -- pokud se jedna o relevantni radek
+      if _code^._instance_^.di.d^[i].pos.b.num<>0 then
+        linemap:=lastfile^.baseSrcLn_first;
+        succ linemap^.cPair;
+        end if;
+      end loop;
+    end if;
+
+  -- alokace struktur
+  lastfile:=_code^.Src;
+  while lastfile<>nil loop
+    linemap:=lastfile^.baseSrcLn_first;
+    if linemap^.cPair>0 then
+      new linemap^.offset range linemap^.cPair*4;
+      new linemap^.linenumber range (((linemap^.cPair*2)+2) div 4)*4;
+      end if;
+
+    -- znehodnotime informace z prvniho pruchodu
+    linemap^.cPair:=0;
+    lastfile:=lastfile^.next;
+    end loop;
+
+
+  -- druhy pruchod - vyplnime naalokovane struktury
+  lastnum:=0; lastfile:=nil;
+  if _code^._instance_^.di.d<>nil then
+    for i in _code^._instance_^.di.d^:range loop
+      -- pokud nesouhlasi soubor, musime ho dohledat
+      if (_code^._instance_^.di.d^[i].pos.b.num<>lastnum) and
+         (_code^._instance_^.di.d^[i].pos.b.num<>0) then
+        -- zkusime soubor nejprve najit
+        lastnum:=_code^._instance_^.di.d^[i].pos.b.num;
+        lastfile:=_code^.Src;
+        while (lastfile^.num<>lastnum) loop lastfile:=lastfile^.next; end loop;
+        linemap:=lastfile^.baseSrcLn_first;
+        end if;
+
+      -- jedna se o relevantni radek
+      if not (_code^._instance_^.di.d^[i].typ in codeview_disable_debugtagtype) and
+         (_code^._instance_^.di.d^[i].pos.b.num<>0) then
+        -- ulozime informaci o mapovani
+        linemap^.offset^[linemap^.cPair]:=_code^._instance_^.di.d^[i].ofs+_code^.offset;
+        linemap^.linenumber^[linemap^.cPair]:=_code^._instance_^.di.d^[i].pos.b.line;
+        succ linemap^.cPair;
+        end if;
+      end loop;
+    end if;
+
+  -- doplneni potrebnych informaci
+  if _code^.Src<>nil then
+    _code^.Src^.baseSrcLn_first^.Seg:=p_codeview(debug_info)^.seg[_code^._segment_].Seg;
+    _code^.Src^.baseSrcLn_first^.code:=_code;
+    end if;
+  end map_source_file_to_code;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure map_source_file_to_module (
+    _module            : in p_codeview_module
+    ) =
+-- Namapuje adresy na zdrojove kody.
+----------------------------------------------------------------------------------------------------
+var
+  codesegment      : p_codeview_code;            -- codeview code segment
+  lastnum          : t_unsigned32;               -- cislo posledne pouzivaneho souboru
+  lastfile         : p_codeview_src_file;        -- posledne pouzivany soubor
+  segfile          : p_codeview_src_file;        -- soubor aktualniho segmentu
+  linemap          : p_codeview_src_file_map;    -- mapovani adres na radky zdrojoveho kodu
+  src              : p_codeview_src;             -- hlavicka mapovani pro jeden modul
+  cseg_h           : t_word;                     -- index do informaci v hlavicce
+  cfile_h          : t_word;                     -- index do informaci v hlavicce
+  cseg_f           : t_word;                     -- index do informaci v popisu souboru
+  i                : t_word;                     -- index
+  j                : t_word;                     -- index
+  f1               : p_used_file;                -- jm‚no souboru 1
+
+begin
+  -- inicializace
+  lastnum:=0; lastfile:=nil;
+  new src;
+
+  -- v modulu nejdrive namapujeme vsechny code segmenty
+  codesegment:=_module^.first_code;
+  while codesegment<>nil loop
+    -- namapujeme codesegment
+    map_source_file_to_code(codesegment);
+
+    -- obsahuje code segment mapovani na zdrojove texty ?
+    segfile:=codesegment^.Src;
+    while segfile<>nil loop
+      -- neni soubor nahodou shodny s poslednim modulem ?
+      if segfile^.num<>lastnum then
+        -- musime soubor dohledat
+        lastfile:=src^.baseSrcFile_first;
+        lastnum:=segfile^.num;
+        while (lastfile<>nil) and (lastfile^.num<>lastnum) loop lastfile:=lastfile^.next; end loop;
+        end if;
+
+      -- soubor zatim v seznamu neni
+      if lastfile=nil then
+        segfile^.prev:=src^.baseSrcFile_last;
+        if src^.baseSrcFile_last<>nil then src^.baseSrcFile_last^.next:=segfile; end if;
+        src^.baseSrcFile_last:=segfile;
+        if src^.baseSrcFile_first=nil then src^.baseSrcFile_first:=segfile; end if;
+
+        -- aktualne pouzivany soubor
+        lastfile:=segfile;
+
+        -- aktualizace udaju v hlavicce
+        succ src^.cFile;
+
+        used_files^.find(segfile^.num,p_hash_table_item(f1));
+        segfile^.Name:=filename_to_name(f1^.name^);
+
+--       segfile^.Name:=numtofilename(segfile^.num);
+        segfile^.cbName:=segfile^.Name:length;
+
+      -- soubor jiz v seznamu existuje, spojime je
+      else
+        segfile^.baseSrcLn_first^.prev:=lastfile^.baseSrcLn_last;
+        if lastfile^.baseSrcLn_last<>nil then lastfile^.baseSrcLn_last^.next:=segfile^.baseSrcLn_first; end if;
+        lastfile^.baseSrcLn_last:=segfile^.baseSrcLn_first;
+        if lastfile^.baseSrcLn_first=nil then lastfile^.baseSrcLn_first:=segfile^.baseSrcLn_first; end if;
+
+        -- uvolnime informace o souboru
+--        c_free(cmem_temp,segfile);
+
+        -- aktualizace udaju v hlavicce
+        succ lastfile^.cSeg;
+        end if;
+
+      segfile:=segfile^.next;
+      end loop;
+
+    -- aktualizace udaju v hlavicce
+    if codesegment^.Src<>nil then
+      succ src^.cSeg;
+      end if;
+
+    -- code segment muze na mapovani zapomenout
+    codesegment^.Src:=nil;
+
+    -- dalsi code segment
+    codesegment:=codesegment^.next;
+    end loop;
+
+  -- mame vubec nejakou mapovaci informaci ?
+  if (src^.cFile=0) or (src^.cSeg=0) then
+    discard src;
+    src:=nil;
+
+  -- prepocteme relativni informace
+  else
+    -- inicializace
+    cseg_h:=0; cfile_h:=0; cseg_f:=0;
+
+    -- vypocet velikosti hlavicky
+    src^.size:=4+(src^.cFile*4)+(src^.cSeg*8)+((((src^.cSeg*2)+3) div 4)*4);
+
+    -- alokujeme v hlavicce misto pro informace o popisech souboru a segmentu
+    new src^.baseSrcFile range src^.cFile*4;
+    new src^.start_end range src^.cSeg*8;
+    new src^.seg range ((((src^.cSeg*2)+3) div 4)*4);
+
+    -- pro vsechny soubory
+    lastfile:=src^.baseSrcFile_first;
+    while lastfile<>nil loop
+      -- vyplnime informace o souboru do hlavicky a aktualizujem offset o velikost popisu souboru
+      src^.baseSrcFile^[cfile_h]:=src^.size;
+      succ cfile_h;
+      src^.size:=src^.size+4+(lastfile^.cSeg*4)+(lastfile^.cSeg*8)+(((lastfile^.cbName+4) div 4)*4);
+
+      -- alokujeme v popisu souboru misto na popis segmentu
+      new lastfile^.baseSrcLn range lastfile^.cSeg*4;
+      new lastfile^.start_end range lastfile^.cSeg*8;
+
+      -- ... a v nich vsechny mapovani na segmenty
+      linemap:=lastfile^.baseSrcLn_first; cseg_f:=0;
+      while linemap<>nil loop
+        -- vyplnime informace o mapovani a aktualizujeme offset o velikost mapovani
+        lastfile^.baseSrcLn^[cseg_f]:=src^.size;
+        if linemap^.cPair>0 then
+          lastfile^.start_end^[cseg_f].start_offset:=linemap^.offset^[0];
+          lastfile^.start_end^[cseg_f].end_offset:=linemap^.offset^[linemap^.cPair-1]+3;
+          end if;
+
+        -- aktualizujeme offset na dalsi mapovaci polozku
+        succ cseg_f;
+        src^.size:=src^.size+4+(((linemap^.cPair*6+3) div 4)*4);
+
+        -- ulozime do hlavicky zaznam o mapovanem segmentu
+        -- zjistime, zda jiz v hlavicce stejny zaznam neni
+        i:=1;
+        while i<=cseg_h loop
+          if (src^.start_end^[i-1].start_offset=lastfile^.start_end^[cseg_f-1].start_offset)
+          and (src^.start_end^[i-1].end_offset=lastfile^.start_end^[cseg_f-1].end_offset)
+          and (src^.seg^[i-1]=t_unsigned16(linemap^.Seg)) then 
+            break;
+            end if;
+          succ i;
+          end loop;
+
+        -- info dosud neulozene
+        if (i>cseg_h) and (cseg_h<src^.cSeg) then
+          src^.start_end^[cseg_h].start_offset:=lastfile^.start_end^[cseg_f-1].start_offset;
+          src^.start_end^[cseg_h].end_offset:=lastfile^.start_end^[cseg_f-1].end_offset;
+          src^.seg^[cseg_h]:=t_unsigned16(linemap^.Seg);
+          succ cseg_h;
+          end if;
+
+        -- dalsi mapovani
+        linemap:=linemap^.next;
+        end loop;
+
+      -- dalsi soubor
+      lastfile:=lastfile^.next;
+      end loop;
+    end if;
+
+  -- ulozime informace do modulu
+  _module^.Src:=src;
+  end map_source_file_to_module;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure generate_alignsym (
+    _alignsym      : in p_codeview_alignsym;
+    _typebase      : in out t_codeview_type_table
+  ) =
+-- Vygeneruje popis lokalniho symbolu.
+----------------------------------------------------------------------------------------------------
+var
+  lalignsym        : p_codeview_alignsym;
+
+begin
+  -- udelame lokalni kopii
+  lalignsym:=_alignsym;
+
+  while lalignsym<>nil loop
+    if lalignsym^.status<tcvs_building then
+      -- generujeme symbol
+      lalignsym^.status:=tcvs_building;
+
+      -- jedna se o lokalni, automatickou promennou na stacku ?
+      if lalignsym^.tentity=s_bprel32 then
+        -- pokud je zadan, najdeme typ promenne
+        if (lalignsym^._var_^.typ.getutype=nil) or
+           not (get_codeview_type_container(lalignsym^._var_^.typ.getutype,_typebase,lalignsym^.typ)) then
+
+          -- udelame z toho void
+          lalignsym^.typ:=nil;
+          end if;
+
+        -- u paramteru predavanych odkazem se pokusime najit referencni typ
+        if (lalignsym^._var_^.etype=et_param) and (pentity_param(lalignsym^._var_)^.pass<>pp_value) and
+           (lalignsym^.typ<>nil) and (lalignsym^.typ^.reference<>nil) then
+          lalignsym^.typ:=lalignsym^.typ^.reference;
+          end if;
+
+        -- jmeno symbolu a index
+        if lalignsym^._var_^.id=nil then lalignsym^.name:='' else lalignsym^.name:=entityident_to_name(lalignsym^._var_^.id^); end if;
+        lalignsym^.index:=codeview_symbol_type_code[lalignsym^.tentity];
+
+      -- jedna se o globalni nebo lokalni promennou modulu ?
+      elsif lalignsym^.tentity in t_codeview_symbol_type_set:[s_gdata32,s_ldata32] then
+        -- adresa promenne
+        lalignsym^.offset:=t_longint(picodegen_var(lalignsym^._var_^.codegen)^.addr-p_codeview(debug_info)^.seg[lalignsym^._segment_].base);
+        lalignsym^.segment:=p_codeview(debug_info)^.seg[lalignsym^._segment_].Seg;
+
+        -- pokud je zadan, najdeme typ promenne
+        if (lalignsym^._var_^.typ.getutype=nil) or
+           not (get_codeview_type_container(lalignsym^._var_^.typ.getutype,_typebase,lalignsym^.typ)) then
+
+          -- udelame z toho void
+          lalignsym^.typ:=nil;
+          end if;
+
+        -- jmeno symbolu a index
+        if lalignsym^._var_^.id=nil then lalignsym^.name:='' else lalignsym^.name:=entityident_to_name(lalignsym^._var_^.id^); end if;
+        lalignsym^.index:=codeview_symbol_type_code[lalignsym^.tentity];
+
+      -- jedna se o proceduru ?
+      elsif lalignsym^.tentity in t_codeview_symbol_type_set:[s_lproc32,s_gproc32] then
+        if lalignsym^._instance_^.c=nil then lalignsym^.length:=0 else lalignsym^.length:=lalignsym^._instance_^.c^:length; end if;
+        lalignsym^.debug_start:=0;               -- !!! dodelat presvedciveji
+        lalignsym^.debug_end:=lalignsym^.length-4;-- !!! dodelat presvedciveji
+        lalignsym^.offset:=t_longint(lalignsym^._instance_^.cstart-p_codeview(debug_info)^.seg[lalignsym^._segment_].base);
+        lalignsym^.segment:=p_codeview(debug_info)^.seg[lalignsym^._segment_].Seg;
+        lalignsym^.flags:=0;                     -- !!! dodelat
+        if lalignsym^._code_^.id=nil then
+          if (lalignsym^._code_^.etype=et_override) and (pentity_override(lalignsym^._code_)^.virt.getuentity<>nil) and
+             (pentity_override(lalignsym^._code_)^.virt.getuentity^.id<>nil)  then
+            lalignsym^.name:=entityident_to_name(pentity_override(lalignsym^._code_)^.virt.getuentity^.id^);
+          else                                                                                
+            lalignsym^.name:=''
+            end if;
+        else
+          lalignsym^.name:=entityident_to_name(lalignsym^._code_^.id^);
+          end if;
+        lalignsym^.index:=codeview_symbol_type_code[lalignsym^.tentity];
+
+        -- pokud je zadan, najdeme typ promenne
+        if lalignsym^._code_^.etype=et_override then
+          -- inicializace
+          lalignsym^.typ:=nil;
+
+          -- mame definovanou virtualniho predka ?
+          if pentity_override(lalignsym^._code_)^.virt.getuentity<>nil then
+            if (pentity_subprogram(pentity_override(lalignsym^._code_)^.virt.getuentity)^.typ.getutype=nil) or
+               not (get_codeview_type_container(pentity_subprogram(pentity_override(lalignsym^._code_)^.virt.getuentity)^.typ.getutype,_typebase,lalignsym^.typ)) then
+
+              -- udelame z toho void
+              lalignsym^.typ:=nil;
+              end if;
+            end if;
+
+        elsif (pentity_subprogram(lalignsym^._code_)^.typ.getutype=nil) or
+           not (get_codeview_type_container(pentity_subprogram(lalignsym^._code_)^.typ.getutype,_typebase,lalignsym^.typ)) then
+
+          -- udelame z toho void
+          lalignsym^.typ:=nil;
+          end if;
+        end if;
+
+      -- symbol je vygenerovan
+      lalignsym^.status:=tcvs_build;
+
+      -- dalsi symbol ve strome
+      if lalignsym^.first_child<>nil then lalignsym:=lalignsym^.first_child
+      elsif lalignsym^.next<>nil then lalignsym:=lalignsym^.next
+      else lalignsym:=lalignsym^.parent;
+      end if;
+    else
+      -- dalsi symbol ve strome
+      if lalignsym^.next<>nil 
+        then lalignsym:=lalignsym^.next;
+        else lalignsym:=lalignsym^.parent;
+        end if;
+      end if;
+    end loop;
+  end generate_alignsym;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure generate_symbol_table (
+    _symbol        : in p_codeview_symbol;       -- prvni symbol v tabulce
+    _typebase      : in out t_codeview_type_table
+    ) =
+-- Vygeneruje popis lokalniho symbolu.
+----------------------------------------------------------------------------------------------------
+var
+  lsymbol          : p_codeview_symbol;
+
+begin
+  -- udelame lokalni kopii
+  lsymbol:=_symbol;
+
+  -- pro vsechny symboly v seznamu
+  while lsymbol<>nil loop
+    -- je symbol v pozadovanem stavu
+    if lsymbol^.status=tcvs_init then
+      -- zmena stavu symbolu
+      lsymbol^.status:=tcvs_building;
+
+      -- jedna se o definici typu
+      if lsymbol^.tentity=s_udt then
+        -- jmeno symbolu
+        if lsymbol^._symbol_^.id=nil then lsymbol^.name:='' else lsymbol^.name:=entityident_to_name(lsymbol^._symbol_^.id^); end if;
+
+        -- pokud je zadan, najdeme typ promenne
+        if not (get_codeview_type_container(pentity_type(lsymbol^._symbol_),_typebase,lsymbol^.typ)) then
+
+          -- udelame z toho void
+          lsymbol^.typ:=nil;
+          end if;
+        end if;
+
+      lsymbol^.status:=tcvs_build;
+      end if;
+
+    -- dalsi symbol v poradi
+    lsymbol:=lsymbol^.next;
+    end loop;
+  end generate_symbol_table;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure dump_module (
+    _module        : in p_codeview_module;          -- codeview module
+    _num           : in t_word;                     -- cislo modulu
+    _buffer        : in out p_unsigned8array;       -- pointer na dump buffer
+    _length        : in out t_unsigned32;           -- velikost bufferu
+    _size          : in out t_unsigned32            -- obsazena velikost
+    ) =
+-- Udela dump modulu do bufferu, ktery si naalokuje.
+----------------------------------------------------------------------------------------------------
+var
+  codesegment      : p_codeview_code;            -- code segment modulu
+  name             : t_namestring;               -- jmeno modulu
+  i                : t_unsigned32;                  -- index
+  b3               : t_unsigned8;
+
+begin
+  -- inicializace
+  _buffer:=nil;
+
+  -- urcime jmeno modulu
+  name:='';
+  if _module^._module_^.id<>nil then name:=entityident_to_name(_module^._module_^.id^); end if;
+
+  -- vypocteme velikost potrebneho bufferu
+  _size:=12*_module^.cSeg+8+name:length+1;
+
+  -- a zarovname na modulo 4
+  _length:=((_size+3) div 4)*4;
+
+  -- alokace bufferu
+  new _buffer range _length;
+
+  -- a zacneme ukladat hodnoty modulu...
+  advanced.low_level.unchecked_memory_access.memory_copy(_module^.ovlNumber,_buffer^[0],2);
+  advanced.low_level.unchecked_memory_access.memory_copy(_module^.ilib,_buffer^[2],2);
+  advanced.low_level.unchecked_memory_access.memory_copy(_module^.cseg,_buffer^[4],2);
+  advanced.low_level.unchecked_memory_access.memory_copy(_module^.style,_buffer^[6],2);
+
+  -- ulozime pridelene cislo modulu
+  _module^.num:=_num;
+
+{%%SEC #if debug then; #if #declared codeview_debug; then;
+  writeln(sec,'Module :');
+  writeln(sec,'# ovlNumber = '+unsigned_to_string(_module^.ovlNumber));
+  writeln(sec,'# iLib      = '+unsigned_to_string(_module^.iLib));
+  writeln(sec,'# cSeg      = '+unsigned_to_string(_module^.cSeg));
+  writeln(sec,'# style     = '+chr(_module^.Style mod $100)+chr(_module^.Style div $100));
+  writeln(sec,'# size      = '+unsigned_to_string(_length));
+  writeln(sec,'# name      = '+name);
+  writeln(sec,'# segments info = section: offset:   size:');
+#end if; #end if; }
+
+  -- ...vsech code segmentu...
+  codesegment:=_module^.first_code; i:=0;
+  while codesegment<>nil loop
+    -- dump code segment dat
+    advanced.low_level.unchecked_memory_access.memory_copy(codesegment^.Seg,_buffer^[8+i*12],2);
+    advanced.low_level.unchecked_memory_access.memory_copy(codesegment^.pad,_buffer^[10+i*12],2);
+    advanced.low_level.unchecked_memory_access.memory_copy(codesegment^.offset,_buffer^[12+i*12],4);
+    advanced.low_level.unchecked_memory_access.memory_copy(codesegment^.cbseg,_buffer^[16+i*12],4);
+
+  {%%SEC #if debug then; #if #declared codeview_debug; then;
+    writeln(sec,formats3('                  %1        $%2 %3B ',
+                unsigned_to_string(codesegment^.Seg),
+                longtohex(codesegment^.offset),
+                unsigned_to_string(codesegment^.cbSeg)));
+  #end if; #end if; }
+
+    -- delsi code segment
+    codesegment:=codesegment^.next;
+
+    -- inkrementujeme offset do bufferu
+    succ i;
+    end loop;
+
+  -- ...a nakonec jeste jmeno modulu
+  b3:=name:length;
+  advanced.low_level.unchecked_memory_access.memory_copy(b3,_buffer^[8+i*12],1);
+  advanced.low_level.unchecked_memory_access.memory_copy(name[1],_buffer^[9+i*12],name:length);
+  end dump_module;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure dump_fileindex (
+    _buffer        : in out p_unsigned8array;    -- pointer na dump buffer
+    _length        : in out t_unsigned32;        -- velikost bufferu
+    _size          : in out t_unsigned32         -- obsazena velikost
+    ) =
+-- Udela dump fileindexu pro cely codeview strom.
+----------------------------------------------------------------------------------------------------
+var
+  modul            : p_codeview_module;          -- zpracovavany modul
+  fileinfo         : p_codeview_src_file;        -- soubor modulu
+  filename         : t_namestring;               -- jmeno souboru
+  cmod             : t_word;                     -- pocet modulu v exe souboru
+  cref             : t_word;                     -- pocet referenci na souboru
+  namessize        : t_unsigned32;               -- velikost bufferu pro ulozeni jmen souboru
+  w3               : t_word;                     -- pomocnej word
+  b3               : t_unsigned8;
+
+  -- pointery do bufferu
+  modstart_base    : t_unsigned32;
+  modcount_base    : t_unsigned32;
+  nameref_base     : t_unsigned32;
+  name_offset      : t_unsigned32;
+  name_segment     : t_unsigned32;
+
+
+begin
+  -- inicializace
+  cmod:=0;
+  cref:=0;
+  namessize:=0;
+
+  -- 1.pruchod - spocitame moduly a v nich reference
+  modul:=p_codeview(debug_info)^.first_module;
+  while modul<>nil loop
+    succ cmod;
+
+    -- jsou na modul namapovany nejake soubory ?
+    if modul^.Src<>nil then
+      fileinfo:=modul^.Src^.baseSrcFile_first;
+      while fileinfo<>nil loop
+        succ cref;
+
+        -- zapocteme velikost jmena souboru
+        filename:=fileinfo^.Name;
+        filename:=trunc_file_name(filename);
+--  while str_pos_substring(filename,'\')<>0 loop filename:=copy(filename,pos('\',filename)+1,255); end loop;
+        namessize:=namessize+filename:length+1;
+        fileinfo^.shortname:=filename;
+
+        -- dalsi soubor
+        fileinfo:=fileinfo^.next;
+        end loop;
+      end if;
+
+    -- dalsi modul
+    modul:=modul^.next;
+    end loop;
+
+  -- naalokujme potrebne struktury
+  _size:=4+(4*cmod)+(4*cref)+namessize;
+  _length:=((_size+3) div 4)*4;
+
+  -- alokace bufferu
+  new _buffer range _length;
+
+  -- inicializace bufferu
+  modstart_base:=4;
+  modcount_base:=modstart_base+(cmod*2);
+  nameref_base:=modcount_base+(cmod*2);
+  name_segment:=nameref_base+(cref*4);
+  name_offset:=0;
+
+
+  -- 2. pruchod - vyplnime buffer
+  advanced.low_level.unchecked_memory_access.memory_copy(cmod,_buffer^[0],2);
+  advanced.low_level.unchecked_memory_access.memory_copy(cref,_buffer^[2],2);
+  cmod:=0; cref:=0;
+  modul:=p_codeview(debug_info)^.first_module;
+  while modul<>nil loop
+    -- jsou na modul namapovany nejake soubory ?
+    if modul^.Src<>nil then
+      fileinfo:=modul^.Src^.baseSrcFile_first;
+
+      -- ulozime informace o prvnim souboru modulu
+      w3:=cref;
+      advanced.low_level.unchecked_memory_access.memory_copy(w3,_buffer^[modstart_base+cmod*2],2);
+      while fileinfo<>nil loop
+        -- ulozime info o souboru
+        advanced.low_level.unchecked_memory_access.memory_copy(name_offset,_buffer^[nameref_base+cref*4],4);
+        b3:=fileinfo^.shortname:length;
+        advanced.low_level.unchecked_memory_access.memory_copy(b3,_buffer^[name_segment+name_offset],1);
+        advanced.low_level.unchecked_memory_access.memory_copy(fileinfo^.shortname[1],_buffer^[name_segment+name_offset+1],fileinfo^.shortname:length);
+        name_offset:=name_offset+fileinfo^.shortname:length+1;
+
+        -- dalsi soubor
+        fileinfo:=fileinfo^.next;
+        succ cref;
+        end loop;
+
+      -- ulozime informace o poctu souboru modulu
+      w3:=cref-w3;
+      advanced.low_level.unchecked_memory_access.memory_copy(w3,_buffer^[modcount_base+cmod*2],2);
+      end if;
+
+    -- dalsi modul
+    modul:=modul^.next;
+    succ cmod;
+    end loop;
+  end dump_fileindex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure dump_alignsym (
+    _alignsym      : in p_codeview_alignsym;        -- prvni codeview alignsym v seznamu
+    _buffer        : in out p_unsigned8array;       -- pointer na dump buffer
+    _length        : in out t_unsigned32;           -- velikost bufferu
+    _size          : in out t_unsigned32            -- obsazena velikost
+  ) =
+-- Udela dump alignsym do bufferu, ktery si naalokuje.
+----------------------------------------------------------------------------------------------------
+var
+  prevblock        : p_codeview_alignsym;        -- predchozi blok symbol
+  search32         : t_unsigned32;               -- pointer na prvni blokovy symbol
+  search32seg      : t_signed16;                 -- segment prvni procedury
+  offset           : t_unsigned32;               -- offset v bufferu
+  symbolsize       : t_unsigned32;               -- velikost symbolu
+  ended            : t_logical;                  -- symbol jiz byl ukoncen
+  inproc           : t_logical;                  -- jsme vnoreni v procedure
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure _count_block_size_variables (
+        __alignsym    : in p_codeview_alignsym;  -- pocatecni symbol bloku
+        __prevblock   : in out p_codeview_alignsym;  -- pointer na predchozi blokovy symbol
+        __size        : in out t_unsigned32;     -- velikost bloku
+        __search32    : in out t_unsigned32;     -- pointer na prvni blok
+        __search32seg : in t_signed16            -- segment prvniho bloku
+        ) =
+    -- Spocte velikost dumpu bloku
+    ------------------------------------------------------------------------------------------------
+    var
+      __lalignsym     : p_codeview_alignsym;
+
+    begin
+      -- udelame lokalni kopii objektu
+      __lalignsym:=__alignsym;   
+
+      -- projdeme vsechny symboly v tomto bloku
+      while __lalignsym<>nil loop
+        -- je symbol pripraven na generovani ?
+        if (__lalignsym^.status=tcvs_build) and
+           (__lalignsym^.tentity in t_codeview_symbol_type_set:[s_bprel32,s_ldata32,s_gdata32]) then
+          -- zmena statusu
+          __lalignsym^.status:=tcvs_dumping;
+
+          -- offset symbolu
+          __lalignsym^.myoffset:=__size;
+
+          -- index typu
+          if __lalignsym^.typ=nil then
+            __lalignsym^.indextype:=t_longint(codeview_type_type_code[lf_t_void]);
+          else
+            __lalignsym^.indextype:=__lalignsym^.typ^.indextype;
+            end if;
+
+          -- lokalni promenna
+          if __lalignsym^.tentity=s_bprel32 then
+            -- pricteme velikost tohoto symbolu
+            __size:=__size+13+__lalignsym^.name:length;
+
+            -- a zarovname na modulo 4
+            __size:=((__size+3) div 4)*4;
+
+          -- globalni nebo lokalni promenna modulu
+          elsif __lalignsym^.tentity in t_codeview_symbol_type_set:[s_ldata32,s_gdata32] then
+            -- pricteme velikost tohoto symbolu
+            __size:=__size+15+__lalignsym^.name:length;
+
+            -- a zarovname na modulo 4
+            __size:=((__size+3) div 4)*4;
+            end if;
+          end if;
+
+        __lalignsym:=__lalignsym^.next;
+        end loop;
+      end _count_block_size_variables;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure _count_block_size_procedures (
+        __alignsym    : in p_codeview_alignsym;      -- pocatecni symbol bloku
+        __prevblock   : in out p_codeview_alignsym;  -- pointer na predchozi blokovy symbol
+        __size        : in out t_unsigned32;         -- velikost bloku
+        __search32    : in out t_unsigned32;         -- pointer na prvni blok
+        __search32seg : in out t_signed16            -- segment prvniho bloku
+        ) =
+    -- Spocte velikost dumpu bloku
+    ------------------------------------------------------------------------------------------------
+    var
+      __lalignsym     : p_codeview_alignsym;
+
+    begin
+      -- udelame kopii promenne
+      __lalignsym:=__alignsym;
+
+      -- projdeme vsechny symboly v tomto bloku
+      while __lalignsym<>nil loop
+        -- je symbol pripraven na generovani ?
+        if (__lalignsym^.status=tcvs_build) and (__lalignsym^.tentity in t_codeview_symbol_type_set:[s_gproc32,s_lproc32]) then
+          -- zmena statusu
+          __lalignsym^.status:=tcvs_dumping;
+
+          -- offset symbolu
+          __lalignsym^.myoffset:=__size;
+
+          -- index typu
+          if __lalignsym^.typ=nil then
+            __lalignsym^.indextype:=t_longint(codeview_type_type_code[lf_t_void]);
+          else
+            __lalignsym^.indextype:=__lalignsym^.typ^.indextype;
+            end if;
+
+          -- pointer na prvni blok
+          if __search32=0 then
+            __search32:=__size;
+            __search32seg:=__lalignsym^.segment;
+            end if;
+
+
+          -- pokud nas hleda nejaky predchozi blok, dame mu o nas info
+          if __prevblock<>nil then __prevblock^.pnext:=__lalignsym^.myoffset; end if;
+          __prevblock:=__lalignsym;
+
+          -- pricteme velikost tohoto symbolu
+          __size:=__size+40+__lalignsym^.name:length;
+
+          -- a zarovname na modulo 4
+          __size:=((__size+3) div 4)*4;
+
+          -- spocitame jak jsou velke deti
+          if __lalignsym^.first_child<>nil then
+            _count_block_size_variables(__lalignsym^.first_child,__prevblock,__size,__search32,__search32seg);
+            end if;
+
+          -- offset koncoveho symbolu
+          __lalignsym^.pend:=__size;
+          -- +Radek 9.1.2002 - nema cenu, stejne ukazuje nesmysly z vnejsi procedury
+        #if #declared radek; then;
+          if __lalignsym^.parent<>nil then __lalignsym^.pparent:=__lalignsym^.parent^.myoffset; end if;
+        #end if;
+
+          -- koncovy symbol
+          __size:=__size+4;
+
+          -- spocitame vnorene procedury
+          if __lalignsym^.first_child<>nil then
+            _count_block_size_procedures(__lalignsym^.first_child,__prevblock,__size,__search32,__search32seg);
+            end if;
+          end if;
+
+        __lalignsym:=__lalignsym^.next;
+        end loop;
+      end _count_block_size_procedures;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure _dump_symbol (
+        __alignsym : in p_codeview_alignsym;     -- prvni dumpovany symbol v seznamu
+        __realloc  : in t_longint;               -- realokocni konstanta
+        __buffer   : in p_unsigned8array;        -- buffer do ktereho dumpujeme
+        __offset   : in out t_unsigned32;        -- offset pro dump
+        __inproc   : in out t_logical;           -- zpracovavame zanorene symboly
+        __ended    : in out t_logical            -- symbol jiz byl ukoncen
+        ) =
+    -- Dupne tabulku symbolu
+    ------------------------------------------------------------------------------------------------
+    var
+      __realloced       : t_longint;             -- realokovane offsety
+      _ended            : t_logical;             -- symbol jiz byl ukoncen
+      _inproc           : t_logical;             -- jsme vnoreni do procedury
+      _dumpprocedures   : t_logical;             -- prvni pruchod je pro dump promennych
+      _startalignsym    : p_codeview_alignsym;   -- startovaci symbol
+      _lalignsym        : p_codeview_alignsym;
+      _b3               : t_unsigned8;
+
+
+    begin
+      -- inicializace
+      __ended:=false;
+      _inproc:=true;
+      _lalignsym:=__alignsym;
+      _startalignsym:=_lalignsym;
+
+      -- dva pruchody zpracovani
+      for _dumpprocedures in false..true loop
+        -- zaciname od zacatku
+        _lalignsym:=_startalignsym;
+
+        -- projdeme vsechny symboly v tomto bloku
+        while _lalignsym<>nil loop
+          -- je symbol pripraven na generovani ?
+          if (_lalignsym^.status=tcvs_dumping) and
+             (((not _dumpprocedures) and (_lalignsym^.tentity in t_codeview_symbol_type_set:[s_bprel32,s_ldata32,s_gdata32])) or
+              ((_dumpprocedures) and (_lalignsym^.tentity in t_codeview_symbol_type_set:[s_gproc32,s_lproc32]))) then
+            -- zmena statusu
+            _lalignsym^.status:=tcvs_dump;
+
+            -- lokalni promenna
+            if _lalignsym^.tentity=s_bprel32 then
+              -- delka symbolu bez informace o delce, zarovname na modulo 4
+              symbolsize:=_lalignsym^.name:length+13;
+              symbolsize:=(((symbolsize+3) div 4) * 4) - 2;
+              advanced.low_level.unchecked_memory_access.memory_copy(symbolsize,__buffer^[__offset],2); __offset:=__offset+2;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.index,__buffer^[__offset],2); __offset:=__offset+2;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.offset,__buffer^[ __offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.indextype,__buffer^[ __offset],4); __offset:=__offset+4;
+              _b3:=_lalignsym^.name:length;
+              advanced.low_level.unchecked_memory_access.memory_copy(_b3,__buffer^[__offset],1);
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.name[1],__buffer^[__offset+1],_lalignsym^.name:length);
+              __offset:=__offset+_lalignsym^.name:length+1;
+              __offset:=(((__offset+3) div 4) * 4);
+
+            -- globalni nebo lokalni promenna modulu
+            elsif _lalignsym^.tentity in t_codeview_symbol_type_set:[s_ldata32,s_gdata32] then
+              -- delka symbolu bez informace o delce, zarovname na modulo 4
+              symbolsize:=_lalignsym^.name:length+15;
+              symbolsize:=(((symbolsize+3) div 4) * 4) - 2;
+              advanced.low_level.unchecked_memory_access.memory_copy(symbolsize,__buffer^[__offset],2); __offset:=__offset+2;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.index,__buffer^[__offset],2); __offset:=__offset+2;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.indextype,__buffer^[ __offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.offset,__buffer^[ __offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.segment,__buffer^[__offset],2); __offset:=__offset+2;
+              _b3:=_lalignsym^.name:length;
+              advanced.low_level.unchecked_memory_access.memory_copy(_b3,__buffer^[__offset],1);
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.name[1],__buffer^[__offset+1],_lalignsym^.name:length);
+              __offset:=__offset+_lalignsym^.name:length+1;
+              __offset:=(((__offset+3) div 4) * 4);
+
+            -- procedura
+            elsif _lalignsym^.tentity in t_codeview_symbol_type_set:[s_gproc32,s_lproc32] then
+              -- pokud prave zpracovavame vnorenou proceduru, ukoncime vnejsi
+              if __inproc then
+                __ended:=true;
+
+                -- dumpneme konec bloku
+                symbolsize:=4;
+                symbolsize:=(((symbolsize+3) div 4) * 4) - 2;
+                advanced.low_level.unchecked_memory_access.memory_copy(symbolsize,__buffer^[__offset],2); __offset:=__offset+2;
+                advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[s_end],__buffer^[__offset],2); __offset:=__offset+2;
+                __offset:=(((__offset+3) div 4) * 4);
+
+                __inproc:=false;
+                end if;
+
+              -- delka symbolu bez informace o delce, zarovname na modulo 4
+              symbolsize:=_lalignsym^.name:length+40;
+              symbolsize:=(((symbolsize+3) div 4) * 4) - 2;
+
+              advanced.low_level.unchecked_memory_access.memory_copy(symbolsize,__buffer^[__offset],2); __offset:=__offset+2;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.index,__buffer^[__offset],2); __offset:=__offset+2;
+              if _lalignsym^.pparent<>0 then __realloced:=__realloc+t_signed32(_lalignsym^.pparent) else __realloced:=0; end if;
+              advanced.low_level.unchecked_memory_access.memory_copy(__realloced,__buffer^[__offset],4); __offset:=__offset+4;
+              if _lalignsym^.pend<>0 then __realloced:=__realloc+t_signed32(_lalignsym^.pend) else __realloced:=0; end if;
+              advanced.low_level.unchecked_memory_access.memory_copy(__realloced,__buffer^[__offset],4); __offset:=__offset+4;
+              if _lalignsym^.pnext<>0 then __realloced:=__realloc+t_signed32(_lalignsym^.pnext) else __realloced:=0; end if;
+              advanced.low_level.unchecked_memory_access.memory_copy(__realloced,__buffer^[__offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.length,__buffer^[__offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.debug_start,__buffer^[__offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.debug_end,__buffer^[__offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.indextype,__buffer^[__offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.offset,__buffer^[__offset],4); __offset:=__offset+4;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.segment,__buffer^[__offset],2); __offset:=__offset+2;
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.flags,__buffer^[__offset],1); __offset:=__offset+1;
+              _b3:=_lalignsym^.name:length;
+              advanced.low_level.unchecked_memory_access.memory_copy(_b3,__buffer^[__offset],1);
+              advanced.low_level.unchecked_memory_access.memory_copy(_lalignsym^.name[1],__buffer^[__offset+1],_lalignsym^.name:length);
+              __offset:=__offset+_lalignsym^.name:length+1;
+              __offset:=(((__offset+3) div 4) * 4);
+
+              -- dumpneme deti
+              if _lalignsym^.first_child<>nil then
+                _dump_symbol(_lalignsym^.first_child,__realloc,__buffer,__offset,_inproc,_ended);
+                end if;
+
+              -- nevygeneroval nam jiz nekdo konec bloku ?
+              if not _ended then
+                -- dumpneme konec bloku
+                symbolsize:=4;
+                symbolsize:=(((symbolsize+3) div 4) * 4) - 2;
+                advanced.low_level.unchecked_memory_access.memory_copy(symbolsize,__buffer^[__offset],2); __offset:=__offset+2;
+                advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[s_end],__buffer^[__offset],2); __offset:=__offset+2;
+                __offset:=(((__offset+3) div 4) * 4);
+                end if;
+              end if;
+            end if;
+
+          _lalignsym:=_lalignsym^.next;
+          end loop;
+        end loop;
+      end _dump_symbol;
+
+
+
+begin
+  -- inicializace
+  _buffer:=nil;
+  _size:=4;  -- konstanty length=2,type=0
+  search32:=0;
+  search32seg:=0;
+  prevblock:=nil;
+
+  inproc:=false;
+
+  -- zjistime potrebnou velikost bufferu = spocitame pres vsechny lokalni symboly
+  prevblock:=nil;
+  _count_block_size_variables(_alignsym,prevblock,_size,search32,search32seg);
+
+  -- zjistime potrebnou velikost bufferu = spocitame pres vsechny lokalni procedury
+  prevblock:=nil;
+  _count_block_size_procedures(_alignsym,prevblock,_size,search32,search32seg);
+
+  -- pokud budeme muset dupnout search32 symbol, musime si pro nej udelat misto
+  if search32>0 then _size:=_size+12; end if;
+
+  -- a zarovname na modulo 4
+  _length:=((_size+3) div 4)*4;
+
+  -- alokace bufferu
+  new _buffer range _length;
+
+  -- inicializace
+  offset:=0;
+
+  -- dump inicializacni konstanty a popr. search32 symbolu
+  symbolsize:=2;
+  advanced.low_level.unchecked_memory_access.memory_copy(symbolsize,_buffer^[offset],2); offset:=offset+4;
+
+  -- dum search32 symbolu
+  if search32<>0 then
+    search32:=search32+12;
+    symbolsize:=8;
+    advanced.low_level.unchecked_memory_access.memory_copy(symbolsize,_buffer^[offset],2); offset:=offset+2;
+    advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[s_ssearch],_buffer^[offset],2); offset:=offset+2;
+    advanced.low_level.unchecked_memory_access.memory_copy(search32,_buffer^[offset],4); offset:=offset+4;
+    advanced.low_level.unchecked_memory_access.memory_copy(search32seg,_buffer^[offset],2); offset:=offset+2;
+    symbolsize:=symbolsize+2;
+    symbolsize:=(((symbolsize+3) div 4) * 4) - symbolsize;
+    offset:=offset+symbolsize;
+
+    -- dumpneme symboly
+    _dump_symbol(_alignsym,12,_buffer,offset,inproc,ended);
+  else
+    -- dumpneme symboly
+    _dump_symbol(_alignsym,0,_buffer,offset,inproc,ended);
+    end if;
+  end dump_alignsym;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure dump_src_module (
+    _src           : in p_codeview_src;             -- codeview src module
+    _buffer        : in out p_unsigned8array;       -- pointer na dump buffer
+    _length        : in out t_unsigned32;           -- velikost bufferu
+    _size          : in out t_unsigned32            -- obsazena velikost
+    ) =
+-- Udela dump src modulu do bufferu, ktery si naalokuje.
+----------------------------------------------------------------------------------------------------
+var
+  srcfile          : p_codeview_src_file;        -- zdrojovy soubor
+  srcfilemap       : p_codeview_src_file_map;    -- mapovani zdrojoveho souboru
+  i                : t_unsigned32;               -- index
+  j                : t_unsigned32;               -- index
+  k                : t_unsigned32;               -- index
+  segment          : t_unsigned32;               -- segment ukladane informace
+
+begin
+  -- inicializace
+  _length:=_src^.size;
+  _size:=_length;
+  _buffer:=nil;
+
+  -- osetreni trivialnich pripadu
+  if _length=0 then return; end if;
+
+  -- alokace bufferu
+  new _buffer range _src^.size;
+
+  -- ulozime informace z hlavicky
+  segment:=0;
+  advanced.low_level.unchecked_memory_access.memory_copy(_src^.cFile,_buffer^[segment],2);
+  advanced.low_level.unchecked_memory_access.memory_copy(_src^.cSeg,_buffer^[segment+2],2);
+  advanced.low_level.unchecked_memory_access.memory_copy(_src^.baseSrcFile^[0],_buffer^[segment+4],_src^.cFile*4);
+  advanced.low_level.unchecked_memory_access.memory_copy(_src^.start_end^[0],_buffer^[segment+4+_src^.cFile*4],_src^.cSeg*8);
+  advanced.low_level.unchecked_memory_access.memory_copy(_src^.seg^[0],_buffer^[segment+4+_src^.cFile*4+_src^.cSeg*8],_src^.cSeg*2);
+
+  -- projdeme vsechny soubory
+  srcfile:=_src^.baseSrcFile_first; i:=0;
+  while srcfile<>nil loop
+    -- ulozime informace z hlavicky souboru
+    segment:=_src^.baseSrcFile^[i];
+    advanced.low_level.unchecked_memory_access.memory_copy(srcfile^.cSeg,_buffer^[segment],2);
+    advanced.low_level.unchecked_memory_access.memory_copy(srcfile^.baseSrcLn^[0],_buffer^[segment+4],srcfile^.cSeg*4);
+    advanced.low_level.unchecked_memory_access.memory_copy(srcfile^.start_end^[0],_buffer^[segment+4+srcfile^.cSeg*4],srcfile^.cSeg*8);
+    advanced.low_level.unchecked_memory_access.memory_copy(srcfile^.cbName,_buffer^[segment+4+srcfile^.cSeg*12],1);
+    advanced.low_level.unchecked_memory_access.memory_copy(srcfile^.Name[1],_buffer^[segment+4+srcfile^.cSeg*12+1],srcfile^.cbName);
+
+    -- projdeme vsechny mapovani
+    srcfilemap:=srcfile^.baseSrcLn_first; j:=0;
+    while srcfilemap<>nil loop
+      -- ulozime informace o mapovani
+      segment:=srcfile^.baseSrcLn^[j];                       
+      advanced.low_level.unchecked_memory_access.memory_copy(srcfilemap^.Seg,_buffer^[segment],2);
+      advanced.low_level.unchecked_memory_access.memory_copy(srcfilemap^.cPair,_buffer^[segment+2],2);
+      advanced.low_level.unchecked_memory_access.memory_copy(srcfilemap^.offset^[0],_buffer^[segment+4],srcfilemap^.cPair*4);
+      advanced.low_level.unchecked_memory_access.memory_copy(srcfilemap^.linenumber^[0],_buffer^[segment+4+srcfilemap^.cPair*4],srcfilemap^.cPair*2);
+
+      -- inkrementujeme index do tabulky offsetu
+      succ j;
+
+      -- dalsi popis mapovani
+      srcfilemap:=srcfilemap^.next;
+      end loop;
+
+    -- inkrementujeme index do tabulky offsetu
+    succ i;
+
+    -- dalsi popis souboru
+    srcfile:=srcfile^.next;
+    end loop;
+  end dump_src_module;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure dump_symbol_table (
+    _symbol        : in p_codeview_symbol;       -- prvni codeview symbol v tabulce symbolu
+    _buffer        : in out p_unsigned8array;    -- pointer na dump buffer
+    _length        : in out t_unsigned32;        -- velikost bufferu
+    _size          : in out t_unsigned32         -- obsazena velikost
+    ) =
+-- Udela dump tabulky symbolu do bufferu, ktery si naalokuje.
+----------------------------------------------------------------------------------------------------
+var
+  tentity          : p_codeview_symbol;          -- codeview symbol
+  offset           : t_unsigned32;               -- offset do bufferu
+  size             : t_unsigned32;               -- velikost symbolu
+  b3               : t_unsigned8;
+
+begin
+  -- inicializace
+  _size:=0;
+
+  -- v prvnim pruchodu spocitame velikost tabulky symbolu
+  tentity:=_symbol;
+  while tentity<>nil loop
+    -- pokud je symbol jiz pripraven pro dump
+    if tentity^.status=tcvs_build then
+      -- zmena stavu symbolu
+      tentity^.status:=tcvs_dumping;
+
+      -- index typu
+      if tentity^.typ=nil then
+        tentity^.indextype:=t_signed32(codeview_type_type_code[lf_t_void]);
+      else
+        tentity^.indextype:=tentity^.typ^.indextype;
+        end if;
+
+      -- jedna se o mnozuinu znamych typu ?
+      if tentity^.tentity in t_codeview_symbol_type_set:[s_udt,s_dataref] then
+        -- podle typu symbolu se rozhodneme co s nim
+        if tentity^.tentity=s_udt then
+          -- velikost symbolu zarovanana na modulo 4
+          tentity^.dumplength:=9+tentity^.name:length;
+          tentity^.dumplength:=((tentity^.dumplength+3) div 4) * 4;
+
+        elsif tentity^.tentity=s_dataref then
+          -- velikost symbolu zarovanana na modulo 4
+          tentity^.dumplength:=14;
+          tentity^.dumplength:=((tentity^.dumplength+3) div 4) * 4;
+          end if;
+
+        -- mame pro symbol dostatek mista ?
+        if (((_size+tentity^.dumplength+5) div 4096)<>(_size div 4096)) then
+          -- misto neni, doplnime zarovanavaci symbol
+          _size:=((_size+4095) div 4096)*4096;
+          end if;
+
+        -- pricteme velikost symbolu
+        _size:=_size+tentity^.dumplength;
+        end if;
+      end if;
+
+    -- dalsi symbol v poradi
+    tentity:=tentity^.next;
+    end loop;
+
+  -- pricteme hlavisku tabulky symbolu
+  _size:=_size+16;
+
+  -- a zarovname na modulo 4
+  _length:=((_size+3) div 4)*4;
+
+  -- alokace bufferu
+  new _buffer range _length;
+
+  -- nastavime na prvni ukladaci pozici
+  offset:=16;
+
+  -- ulozime hlavicku
+  size:=_size-16;
+  advanced.low_level.unchecked_memory_access.memory_copy(size,_buffer^[4],4);
+
+  -- druhy pruchod - generovani debug informaci pro tabulku symbolu
+  tentity:=_symbol;
+  while tentity<>nil loop
+    -- pokud je symbol jiz pripraven pro dump
+    if tentity^.status=tcvs_dumping then
+      -- mame pro symbol dostatek mista ?
+      if ((((offset-16)+tentity^.dumplength+5) div 4096)<>((offset-16) div 4096)) then
+
+        -- velikost zarovnani bez informace o delace zarovnani
+        size:=((((offset-16)+4095) div 4096)*4096)-(offset-16)-2;
+        advanced.low_level.unchecked_memory_access.memory_copy(size,_buffer^[offset],2); offset:=offset+2;
+        advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[s_align],_buffer^[offset],2); offset:=offset+size;
+
+        -- misto neni, doplnime zarovanavaci symbol
+        offset:=(((offset-16+4095) div 4096)*4096)+16;
+        end if;
+
+      -- podle typu symbolu se rozhodneme co s nim
+      if tentity^.tentity=s_udt then
+        -- velikost symbolu zarovanana na modulo 4
+        size:=tentity^.dumplength-2;
+        advanced.low_level.unchecked_memory_access.memory_copy(size,_buffer^[offset],2); offset:=offset+2;
+        advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[tentity^.tentity],_buffer^[offset],2); offset:=offset+2;
+        advanced.low_level.unchecked_memory_access.memory_copy(tentity^.indextype,_buffer^[offset],4); offset:=offset+4;
+        b3:=tentity^.name:length;
+        advanced.low_level.unchecked_memory_access.memory_copy(b3,_buffer^[offset],1);
+        advanced.low_level.unchecked_memory_access.memory_copy(tentity^.name[1],_buffer^[offset+1],tentity^.name:length);
+        offset:=offset+tentity^.name:length+1;
+        offset:=(((offset+3) div 4) * 4);
+
+      elsif tentity^.tentity=s_dataref then
+        -- velikost symbolu zarovanana na modulo 4
+        size:=tentity^.dumplength-2;
+        advanced.low_level.unchecked_memory_access.memory_copy(size,_buffer^[offset],2); offset:=offset+2;
+        advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[tentity^.tentity],_buffer^[offset],2); offset:=offset+2;
+        { checksum } offset:=offset+4;
+        { offset } advanced.low_level.unchecked_memory_access.memory_copy(tentity^.asymbol^.myoffset,_buffer^[offset],4); offset:=offset+4;
+        { module } advanced.low_level.unchecked_memory_access.memory_copy(tentity^.modul^.num,_buffer^[offset],2); offset:=offset+2;
+        offset:=(((offset+3) div 4) * 4);
+        end if;
+
+      -- zmena stavu symbolu
+      tentity^.status:=tcvs_dump;
+      end if;
+
+    -- dalsi symbol v poradi
+    tentity:=tentity^.next;
+    end loop;
+  end dump_symbol_table;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure dump_segment_map (
+    _segmentinfo   : in out t_codeview_segment_map; -- informace o sekcich ve vygenerovanem EXE
+    _buffer        : in out p_unsigned8array;       -- pointer na dump buffer
+    _length        : in out t_unsigned32;           -- velikost bufferu
+    _size          : in out t_unsigned32            -- obsazena velikost
+  ) =
+-- Udela dump informacich o sekcich ve vygenerovanem EXE.
+----------------------------------------------------------------------------------------------------
+var
+  num              : t_word;                     -- pocet platnych sekci
+  segment          : tsegment;                   -- zpracovanany segment
+  i                : t_unsigned32;               -- index
+  flags_map        : t_word;                     -- bitova mapa priznaku sekce
+  flag             : t_codeview_seg_flag;        -- priznak sekce
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure code_flags (
+        _code      : in out t_word;               -- bitova mapa priznaku sekce
+        _flags     : in out t_codeview_seg_flags  -- priznaky sekce
+        ) = 
+    ------------------------------------------------------------------------------------------------
+    var
+      flag             : t_codeview_seg_flag;    -- priznak sekce
+
+    begin
+      -- inicializace
+      _code:=0;
+
+      -- otestujeme existenci priznaku
+      for flag in t_codeview_seg_flag loop
+        if flag in (_flags) then
+          case flag
+            when tcvsf_group    do _code:=_code or $1000;
+            when tcvsf_abs      do _code:=_code or $0200;
+            when tcvsf_sel      do _code:=_code or $0100;
+            when tcvsf_32bit    do _code:=_code or $0008;
+            when tcvsf_execute  do _code:=_code or $0004;
+            when tcvsf_write    do _code:=_code or $0002;
+            when tcvsf_read     do _code:=_code or $0001;
+            end case;
+          end if;
+        end loop;
+      end code_flags;
+
+
+
+begin
+  -- inicializace
+  num:=0;
+  _buffer:=nil;
+  _length:=0;
+  _size:=0;
+
+  -- spocitame platne sekce
+  for segment in tsegment loop 
+    if _segmentinfo[segment].Seg>=0 then 
+      succ num; 
+      end if; 
+    end loop;
+
+  -- osetreni trivialnich pripadu
+  if num=0 then return; end if;
+
+  -- alokujeme potrebne misto v bufferu
+  _length:=num*20+4;
+  _size:=_length;
+
+  -- alokace bufferu
+  new _buffer range _length;
+
+  -- vyplnime informace
+  advanced.low_level.unchecked_memory_access.memory_copy(num,_buffer^[0],2);
+  advanced.low_level.unchecked_memory_access.memory_copy(num,_buffer^[2],2);
+
+{%%SEC #if debug then; #if #declared codeview_debug; then;
+  writeln(sec,'Segment map :');
+  writeln(sec,'# segments = '+unsigned_to_string(num));
+  writeln(sec,'# sements info = num: offset:   size:');
+#end if; #end if; }
+
+  -- vyplnime serazene informace o sekcich
+  for i in 1..num loop
+    for segment in tsegment loop
+      if _segmentinfo[segment].Seg=t_signed32(i) then
+        -- prvedeme priznaky na bitovou mapu
+        code_flags(flags_map,_segmentinfo[segment].flags);
+
+        -- ulozime vsechny informace do bloku
+        advanced.low_level.unchecked_memory_access.memory_copy(flags_map,_buffer^[4+(i-1)*20],2);
+--        advanced.low_level.unchecked_memory_access.memory_copy(_segmentinfo[segment].ovl,_buffer^[4+(i-1)*20+2],18);
+
+        advanced.low_level.unchecked_memory_access.memory_copy(_segmentinfo[segment].ovl,_buffer^[4+(i-1)*20+2],2);
+        advanced.low_level.unchecked_memory_access.memory_copy(_segmentinfo[segment].group,_buffer^[4+(i-1)*20+4],2);
+        advanced.low_level.unchecked_memory_access.memory_copy(_segmentinfo[segment].frame,_buffer^[4+(i-1)*20+6],2);
+        advanced.low_level.unchecked_memory_access.memory_copy(_segmentinfo[segment].isegname,_buffer^[4+(i-1)*20+8],2);
+        advanced.low_level.unchecked_memory_access.memory_copy(_segmentinfo[segment].iclassname,_buffer^[4+(i-1)*20+10],2);
+        advanced.low_level.unchecked_memory_access.memory_copy(_segmentinfo[segment].offset,_buffer^[4+(i-1)*20+12],4);
+        advanced.low_level.unchecked_memory_access.memory_copy(_segmentinfo[segment].cbseg,_buffer^[4+(i-1)*20+16],4);
+
+      {%%SEC #if debug then; #if #declared codeview_debug; then;
+        writeln(sec,formats3('                 %1    $%2 %3B',
+                    unsigned_to_string(i),
+                    longtohex(_segmentinfo[segment].base),
+                    unsigned_to_string(_segmentinfo[segment].cbseg)));
+      #end if; #end if; }
+
+        end if;
+      end loop;
+    end loop;
+  end dump_segment_map;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private t_codeview =
+-- Generator codeview debug informaci.
+----------------------------------------------------------------------------------------------------
+
+    var
+      -- odkaz na objekty prekladace
+      _compi_      : pentity_compile;
+      _linkresolver_ : p_linkres;
+
+      -- souvisejici informace
+      dir          : t_codeview_dir;             -- adresar codeview dump informaci
+      gtypes       : t_codeview_type_table;      -- tabulka globalnich typu
+
+      first_gsymbol: p_codeview_symbol;          -- seznam globalnich symbolu
+      last_gsymbol : p_codeview_symbol;          -- ukazatel na konec globalnich symbolu
+
+      -- pomocne informace
+      status       : t_codeview_status;          -- status codeview informaci
+
+    ----------------------------------------------------------------------------------------------
+    static add_module (
+        _module    : in pentity_module;          -- pointer na objekt prekladace
+        _cvmodule  : out p_codeview_module       -- pointer na zaregistrovany codeview module
+        );
+    -- Zaregistruje modul prekladace.
+    ----------------------------------------------------------------------------------------------
+    static remove_module (
+        _cvmodule  : in out p_codeview_module    -- pointer na zaregistrovany codeview module
+        );
+    -- Odregistruje modul prekladace.
+    ----------------------------------------------------------------------------------------------
+    static add_code (
+        _code      : in pentity_code;            -- pointer na objekt prekladace
+        _instance  : in picodeinst;              -- pointer na objekt prekladace
+        _cvmodule  : in p_codeview_module;       -- rodicovsky modul
+        _cvalign   : in out p_codeview_alignsym  -- rodicovsky kod
+        );
+    -- Zaregistruje code segment prekladace.
+    ----------------------------------------------------------------------------------------------
+    static add_type (
+        _type      : in pentity_type             -- pointer na objekt prekladace
+        );
+    -- Zaregistruje typ.
+    ----------------------------------------------------------------------------------------------
+    static add_local_variable (
+        _alignsym  : in pentity_value;           -- pointer na objekt prekladace
+        _addr      : in t_longint;               -- adresa promenne relativne vuci EBP
+        _cvmodule  : in p_codeview_module;       -- rodicovsky modul
+        _cvalign   : in p_codeview_alignsym      -- rodicovsky kod
+        );
+    -- Zaregistruje lokalni promennou.
+    ----------------------------------------------------------------------------------------------
+    static add_variable (
+        _alignsym  : in pentity_value;           -- pointer na objekt prekladace
+        _cvmodule  : in p_codeview_module        -- rodicovsky modul
+        );
+    -- Zaregistruje promennou.
+    ----------------------------------------------------------------------------------------------
+    static remove_code (
+        _cvcode    : in out p_codeview_code;     -- pointer na code objekt
+        _cvmodule  : in p_codeview_module        -- rodicovsky modul
+        );
+    -- Odregistruje code segment prekladace.
+    ----------------------------------------------------------------------------------------------
+    static trace_module (
+        _symbol    : in pentity;                 -- zpracovavany symbol
+        _cvmodule  : in p_codeview_module;       -- rodicovsky modul
+        _cvalign   : in p_codeview_alignsym      -- rodicovsky kod
+        );
+    -- Zpracuje strom modulu a prislusnych codesegmentu.
+    ----------------------------------------------------------------------------------------------
+    static optimize;
+    -- Odstrani redundantni informace.
+    ----------------------------------------------------------------------------------------------
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override init =
+    -- Inicializace.
+    ------------------------------------------------------------------------------------------------
+    var
+      segment       : tsegment;
+
+    begin
+      -- inicializace stavovych attributu
+      status:=tcvs_init;
+      for segment in tsegment loop
+        seg[segment].Seg:=-1;
+        end loop;
+      dir.status:=tcvs_init;
+      dir.first_dir_item:=nil;
+      dir.last_dir_item:=nil;
+
+      -- tabulka globalnich typu
+      gtypes.flags:=2;
+      gtypes.cType:=0;
+      gtypes.status:=tcvs_init;
+
+      -- inicializace seznamu modulu
+      first_module:=nil;
+      last_module:=nil;
+      first_gsymbol:=nil;
+      last_gsymbol:=nil;
+      _compi_:=nil;
+      _linkresolver_:=nil;
+      end init;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override linkdebuginfo =
+    -- Inicializace.
+    ------------------------------------------------------------------------------------------------
+    var
+      segment       : tsegment;
+      base          : tunicode_addr;
+
+    begin
+      -- inicializace seznamu modulu
+      _compi_:=_compi;
+      _linkresolver_:=_link;
+
+      -- vybudujeme strom potrenych informaci
+      trace_module(_compi,nil,nil);
+
+      -- vyplnime informace o segmentech
+      for segment in tsegment loop
+        base:=_linkresolver_^.getsegbase(segment);
+        seg[segment].base:=unicode_addr_to_unsigned(base);
+        end loop;
+      end linkdebuginfo;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static add_module =
+    -- Zaregistruje modul prekladace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vytvorime objekt modulu
+      new _cvmodule;
+
+      -- inicializace
+      _cvmodule^.status:=tcvs_init;
+      _cvmodule^._module_:=_module;
+      _cvmodule^.next:=nil;
+      _cvmodule^.first_code:=nil;
+      _cvmodule^.last_code:=nil;
+      _cvmodule^.first_alignsym:=nil;
+      _cvmodule^.last_alignsym:=nil;
+
+      -- zaradime do seznamu
+      _cvmodule^.prev:=last_module;
+      if last_module<>nil then last_module^.next:=_cvmodule; end if;
+      last_module:=_cvmodule;
+      if first_module=nil then first_module:=_cvmodule; end if;
+      end add_module;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static remove_module =
+    -- Odregistruje modul.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vyradime prvek z retezu
+      if _cvmodule^.next=nil then
+        last_module:=_cvmodule^.prev;
+      else
+        _cvmodule^.next^.prev:=_cvmodule^.prev;
+        end if;
+
+      if _cvmodule^.prev=nil then
+        first_module:=_cvmodule^.next;
+      else
+        _cvmodule^.prev^.next:=_cvmodule^.next;
+        end if;
+
+      -- uvolnime alokovanou pamet
+      discard _cvmodule;
+      end remove_module;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static add_code =
+    -- Zaregistruje code segment prekladace.
+    ------------------------------------------------------------------------------------------------
+    var
+      codesegment  : p_codeview_code;            -- codeview code objekt
+      alignsym     : p_codeview_alignsym;        -- symbol reprezentujici kod
+
+    begin
+      -- pokud neni kam kod zaregistrovat, tak to delat nebudeme
+      if _cvmodule=nil then return; end if;
+
+      -- vytvorime objekt modulu
+      new codesegment;
+
+      -- inicializace
+      codesegment^._code_:=_code;
+      codesegment^._instance_:=_instance;
+      codesegment^.status:=tcvs_init;
+      codesegment^._segment_:=tseg_code;             -- !!! neobecne, pouze pro stavajici Flex !!!
+      codesegment^.Src:=nil;
+
+      -- zaradime do seznamu
+      codesegment^.prev:=_cvmodule^.last_code;
+      if _cvmodule^.last_code<>nil then _cvmodule^.last_code^.next:=codesegment; end if;
+      _cvmodule^.last_code:=codesegment;
+      if _cvmodule^.first_code=nil then _cvmodule^.first_code:=codesegment; end if;
+
+      -- pro zname typy kodu vytvorime odpovidajici symbol
+      if _code^.etype in tentitytypeset:[et_procedure,et_static,et_special,et_compile,et_program,et_override,et_virtual] then
+        -- vytvorime objekt modulu
+        new alignsym;
+
+        -- spolecne informace
+        alignsym^._code_:=_code;
+        alignsym^._instance_:=_instance;
+        alignsym^._segment_:=tseg_code;              -- !!! neobecne, pouze pro stavajici Flex !!!
+
+        -- jedna se o proceduru
+        if _code^.etype in tentitytypeset:[et_procedure,et_static,et_special,et_compile,et_program,et_override,et_virtual] then
+          -- jedna se o lokani nebo globalni proceduru ?
+          if _code^.visible=etv_public then
+            alignsym^.tentity:=s_gproc32;
+          else
+            alignsym^.tentity:=s_lproc32;
+            end if;
+          end if;
+
+        -- zaradime do seznamu.
+        if _cvalign=nil then
+          -- ..lokalnich symbolu modulu
+          alignsym^.prev:=_cvmodule^.last_alignsym;
+          if _cvmodule^.last_alignsym<>nil then _cvmodule^.last_alignsym^.next:=alignsym; end if;
+          _cvmodule^.last_alignsym:=alignsym;
+          if _cvmodule^.first_alignsym=nil then _cvmodule^.first_alignsym:=alignsym; end if;
+        else
+          -- ..ve stromu lokalnich symbolu
+          alignsym^.prev:=_cvalign^.last_child;
+          if _cvalign^.last_child<>nil then _cvalign^.last_child^.next:=alignsym; end if;
+          _cvalign^.last_child:=alignsym;
+          if _cvalign^.first_child=nil then _cvalign^.first_child:=alignsym; end if;
+          alignsym^.parent:=_cvalign;
+          end if;
+
+        -- vratime novy rodicovsky kod
+        _cvalign:=alignsym;
+        end if;
+      end add_code;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static add_type =
+    -- Zaregistruje code segment prekladace.
+    ------------------------------------------------------------------------------------------------
+    var
+      gtype        : p_codeview_type;            -- codeview type
+      gsymbol      : p_codeview_symbol;          -- codeview symbol
+
+    begin
+      -- vytvorime objekt modulu
+      new gtype;
+
+      -- inicializace
+      gtype^._type_:=_type;
+      gtype^.status:=tcvs_init;
+
+      -- zaradime do seznamu
+      gtype^.prev:=gtypes.type_first;
+      if gtypes.type_last<>nil then gtypes.type_last^.next:=gtype; end if;
+      gtypes.type_last:=gtype;
+      if gtypes.type_first=nil then gtypes.type_first:=gtype; end if;
+
+      -- pridame informaci o typu do globalnich symbolu - teda pokud ma jmeno
+      if (_type^.id<>nil) and (_type^.id^<>'') then
+        new gsymbol;
+
+        -- vyplnime informce o typu
+        gsymbol^.status:=tcvs_init;
+        gsymbol^._symbol_:=pentity(_type);
+        gsymbol^.tentity:=s_udt;
+
+        gsymbol^.prev:=last_gsymbol;
+        if last_gsymbol<>nil then last_gsymbol^.next:=gsymbol; end if;
+        last_gsymbol:=gsymbol;
+        if first_gsymbol=nil then first_gsymbol:=gsymbol; end if;
+        end if;
+      end add_type;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static add_local_variable =
+    -- Zaregistruje lokalni promennou modulu.
+    ------------------------------------------------------------------------------------------------
+    var
+      alignsym     : p_codeview_alignsym;        -- codeview alignsym objekt
+
+    begin
+      -- pokud neni kam promennou zaregistrovat, tak to delat nebudeme
+      if _cvmodule=nil then return; end if;
+
+      -- vytvorime objekt modulu
+      new alignsym;
+
+      -- inicializace
+      alignsym^._var_:=_alignsym;
+      alignsym^.status:=tcvs_init;
+      alignsym^._segment_:=tseg_code;                -- !!! neobecne, pouze pro stavajici Flex !!!
+      alignsym^.offset:=_addr;
+      alignsym^.tentity:=s_bprel32;
+
+      -- zaradime do seznamu..
+      if _cvalign=nil then
+        -- ..lokalnich symbolu modulu
+        alignsym^.prev:=_cvmodule^.last_alignsym;
+        if _cvmodule^.last_alignsym<>nil then _cvmodule^.last_alignsym^.next:=alignsym; end if;
+        _cvmodule^.last_alignsym:=alignsym;
+        if _cvmodule^.first_alignsym=nil then _cvmodule^.first_alignsym:=alignsym; end if;
+      else
+        -- ..ve stromu lokalnich symbolu
+        alignsym^.prev:=_cvalign^.last_child;
+        if _cvalign^.last_child<>nil then _cvalign^.last_child^.next:=alignsym; end if;
+        _cvalign^.last_child:=alignsym;
+        if _cvalign^.first_child=nil then _cvalign^.first_child:=alignsym; end if;
+        alignsym^.parent:=_cvalign;
+        end if;
+      end add_local_variable;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static add_variable =
+    -- Zaregistruje promennou modulu.
+    ------------------------------------------------------------------------------------------------
+    var
+      alignsym     : p_codeview_alignsym;        -- codeview alignsym objekt
+      gsymbol      : p_codeview_symbol;          -- codeview symbol
+
+    begin
+      -- pokud neni kam promennou zaregistrovat, tak to delat nebudeme
+      if _cvmodule=nil then return; end if;
+
+      -- nebyla vygenerovana
+      if _alignsym^.codegen=nil then return; end if;
+
+      -- vytvorime objekt modulu
+      new alignsym;
+
+      -- inicializace
+      alignsym^._var_:=_alignsym;
+      alignsym^.status:=tcvs_init;
+      alignsym^._segment_:=tseg_code;                -- !!! neobecne, pouze pro stavajici Flex !!!
+
+      -- globalni nebo lokalni promenna modulu
+      if _alignsym^.visible=etv_public then
+        alignsym^.tentity:=s_gdata32;
+        -- zaradime do tabulky globalnich symbolu
+        new gsymbol;
+
+        -- vyplnime informce o typu
+        gsymbol^.status:=tcvs_init;
+        gsymbol^.asymbol:=alignsym;
+        gsymbol^.tentity:=s_dataref;
+        gsymbol^.modul:=_cvmodule;
+
+        gsymbol^.prev:=last_gsymbol;
+        if last_gsymbol<>nil then last_gsymbol^.next:=gsymbol; end if;
+        last_gsymbol:=gsymbol;
+        if first_gsymbol=nil then first_gsymbol:=gsymbol; end if;
+
+      else
+        alignsym^.tentity:=s_ldata32;
+        end if;
+
+      -- promenne modulu dame jeste pred procedury, takze je budeme skladat od zacatku
+      if _cvmodule^.first_alignsym<>nil then _cvmodule^.first_alignsym^.prev:=alignsym; end if;
+      alignsym^.next:=_cvmodule^.first_alignsym;
+      _cvmodule^.first_alignsym:=alignsym;
+      if _cvmodule^.last_alignsym=nil then _cvmodule^.last_alignsym:=_cvmodule^.first_alignsym; end if;
+      end add_variable;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static remove_code =
+    -- Odregistruje code segment prekladace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vyradime prvek z retezu
+      if _cvcode^.next=nil then
+        _cvmodule^.last_code:=_cvcode^.prev;
+      else
+        _cvcode^.next^.prev:=_cvcode^.prev;
+        end if;
+
+      if _cvcode^.prev=nil then
+        _cvmodule^.first_code:=_cvcode^.next;
+      else
+        _cvcode^.prev^.next:=_cvcode^.next;
+        end if;
+
+      -- uvolnime alokovanou pamet
+      discard _cvcode;
+      end remove_code;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static trace_module =
+    -- Zpracuje strom modulu a prislusnych codesegmentu.
+    ------------------------------------------------------------------------------------------------
+    var
+      codeinst     : picodeinst;                 -- instance code segmentu
+      block        : pimemblock;                 -- p©idˆlen˜ blok pamˆti
+      tentity      : pentity;                    -- pomocny pointer na symbol
+      cvalign      : p_codeview_alignsym;        -- lokalni symbol modulu
+      i            : t_unsigned;                 -- index
+      xcvmodule    : p_codeview_module;          -- kopie cvmodule
+      xcvalign     : p_codeview_alignsym;        -- lokalni symbol modulu
+      j            : t_unsigned;
+      rcategory    : tregioncategory;
+      context      : tcontext;                   -- generovan˜ symbol
+
+    begin
+      -- schovame si pointer na rodicovsky symbol
+      cvalign:=_cvalign;
+      xcvmodule:=_cvmodule;
+      xcvalign:=_cvalign;
+
+      -- jiz prosle symboly ignorujeme
+      if _symbol^.debugstat<>as_none then return; end if;
+
+      -- symbol je pr vˆ analyzov n
+      _symbol^.debugstat:=as_analyzing;
+
+      -- typ
+      if (_symbol^.etype=et_type) then
+        add_type(pentity_type(_symbol));
+        end if;
+
+      -- modul
+      if (_symbol^.etype in ets_container) then
+        add_module(pentity_module(_symbol),xcvmodule);
+        -- +Radek 12.9.2002 - pro novy modul zacneme skladat novy stromecek
+        xcvalign:=nil;
+        end if;
+
+      -- kod
+      if (_symbol^.etype in ets_code) then
+        -- zaregistrujeme vsechny instance
+        codeinst:=picodegen_subprog(pentity_code(_symbol)^.codegen)^.ifirst;
+        while codeinst<>nil loop
+          add_code(pentity_code(_symbol),codeinst,xcvmodule,xcvalign);
+
+          -- zaregistrovat parametry modulu
+          if codeinst^.profile.par<>nil then
+            for j in codeinst^.profile.par^:range loop
+              codeinst^.profile.par^[j].pparam^.debugstat:=as_analyzing;
+
+              -- provedeme registraci
+              add_local_variable(codeinst^.profile.par^[j].pparam,codeinst^.profile.par^[j].ofs,xcvmodule,xcvalign);
+          
+              codeinst^.profile.par^[j].pparam^.debugstat:=as_analyzed;
+              end loop;
+            end if;
+
+          -- zaregistrovat lokalni promenne
+          block:=codeinst^.layout.first;
+          while block<>nil loop
+            -- je blok lokalni promennou ?
+            if block^.pvar<>nil then
+              -- neni lokalni promenna jeste zaregistrovana ?
+
+              if block^.pvar^.debugstat=as_none then
+                -- dame priznak ze ji analyzujeme
+                block^.pvar^.debugstat:=as_analyzing;
+
+                -- provedeme registraci
+                add_local_variable(block^.pvar,block^.ofs,xcvmodule,xcvalign);
+
+                -- zaregsitrovano
+                block^.pvar^.debugstat:=as_analyzed;
+                end if;
+              end if;
+
+            -- dalsi blok
+            block:=block^.next;
+            end loop;
+
+          -- dalsi instance
+          codeinst:=codeinst^.next;
+          end loop;
+        end if;
+
+      -- promenna
+      if (_symbol^.etype=et_var) then
+        -- provedeme registraci
+        add_variable(pentity_value(_symbol),xcvmodule);
+        end if;
+
+      -- zpracovat WITH/USE ve v¨ech regionech
+      for rcategory in tregioncategory loop
+        if _symbol^.regions[rcategory]<>nil then 
+          if _symbol^.regions[rcategory]^.withtable<>nil then
+            for i in _symbol^.regions[rcategory]^.withtable^:range loop
+              trace_module(_symbol^.regions[rcategory]^.withtable^[i].entity.getcentity,xcvmodule,xcvalign);
+              end loop;
+            end if;
+          end if;
+        end loop;
+
+      -- analyzovat v¨echny podsymboly
+      if _symbol^.etype in ets_enclosing then
+        for rcategory in tregioncategory loop
+          if _symbol^.regions[rcategory]<>nil then 
+            context:=sym_build_context(_symbol,_symbol^.regions[rcategory]);
+            tentity:=context.region^.entities.first;
+            while tentity<>nil loop
+              trace_module(tentity,xcvmodule,xcvalign);
+              tentity:=tentity^.next;
+              end loop;
+            end if;
+          end loop;
+        end if;
+
+      -- symbol byl analyzov n
+      _symbol^.debugstat:=as_analyzed;
+      end trace_module;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override generate =
+    -- Vygeneruje codeview debug informace.
+    ------------------------------------------------------------------------------------------------
+    var
+      modul        : p_codeview_module;          -- codeview modul
+      codesegment  : p_codeview_code;            -- codeview code segment
+      alignsym     : p_codeview_alignsym;        -- lokalni symbol
+      typ          : p_codeview_type;            -- codeview type
+
+    begin
+      -- provedeme optimalizaci zaregistrovanych struktur
+      optimize;
+
+      -- vygenerujeme debug informace pro typy
+      typ:=gtypes.type_first;
+      while typ<>nil loop
+        -- vygenerujeme typ
+        generate_type(typ,gtypes);
+
+        -- dalsi typ v seznamu
+        typ:=typ^.next;
+        end loop;
+
+      -- projdeme vsechny zaregistrovane moduly
+      modul:=first_module;
+      while modul<>nil loop
+        -- vypocteme potebne hodnoty v modulu
+        modul^.cSeg:=0;
+        modul^.iLib:=0;                             -- !! aktualizovat az bude modul knihoven !!       
+        modul^.Style:=$5643;
+        modul^.ovlNumber:=0;                        -- !! ??? !!                                       
+
+        -- v modulu prozkoumame vsechny code segmenty
+        codesegment:=modul^.first_code;
+        while codesegment<>nil loop
+          -- vypocteme hodnoty v code segmentu
+          generate_code(codesegment);
+
+          -- dalsi codesegment
+          codesegment:=codesegment^.next;
+
+          -- zapocteme codesegment do modulu
+          succ modul^.cSeg;
+          end loop;
+
+        -- namapujeme adresy na zdrojove kody
+        map_source_file_to_module(modul);
+
+        -- v modulu prozkoumame vsechny lokalni symboly
+        alignsym:=modul^.first_alignsym;
+        while alignsym<>nil loop
+          -- vygenerujeme lokalni symbol
+          generate_alignsym(alignsym,gtypes);
+
+          -- dalsi lokalni symbol
+          alignsym:=alignsym^.next;
+          end loop;
+
+        -- dalsi modul
+        modul:=modul^.next;
+        end loop;
+
+      -- tabulka globalnich symbolu
+      if first_gsymbol<>nil then
+        generate_symbol_table(first_gsymbol,gtypes);
+        end if;
+      end generate;
+                              
+
+
+    ------------------------------------------------------------------------------------------------
+    override linkimage =
+    -- Vygeneruje codeview debug informace.
+    ------------------------------------------------------------------------------------------------
+    var
+      modul        : p_codeview_module;          -- codeview module
+      modulenum    : t_word;                     -- cislo modulu
+      codesegment  : p_codeview_code;            -- codeview code segment
+      diritem      : p_codeview_dir_item;        -- polozka adresare podsekci
+      typ          : p_codeview_type;            -- codeview type
+      typdump      : p_codeview_type_dump;       -- dump jednoho typu
+      ifo          : t_unsigned32;               -- offset v dubug informacich
+      size         : t_unsigned32;               -- velikost dumpnutych dat
+      i            : t_unsigned32;               -- index
+      j            : t_unsigned32;               -- index
+      k            : t_unsigned32;               -- index
+
+
+
+        --------------------------------------------------------------------------------------------
+        procedure add_dir_item (
+            _dir_item    : in out p_codeview_dir_item;  -- alokovana a zarazena polozka adresare
+            _subsection  : in t_codeview_dir_item_type; -- typ polozky
+            _imod        : in t_word;                   -- cislo souvisejiciho modulu
+            _ifo         : in t_unsigned32              -- offset polozky
+            ) = 
+        --------------------------------------------------------------------------------------------
+        begin
+          -- inicializace
+          new _dir_item;
+
+          -- zaradime do seznamu
+          _dir_item^.prev:=dir.last_dir_item;
+          if dir.last_dir_item<>nil then dir.last_dir_item^.next:=_dir_item; end if;
+          dir.last_dir_item:=_dir_item;
+          if dir.first_dir_item=nil then dir.first_dir_item:=_dir_item; end if;
+
+          -- vyplnime co muzeme
+          _dir_item^.iMod:=_imod;
+          _dir_item^.subsection_type:=_subsection;
+          _dir_item^.subsection:=codeview_dir_item_type_code[_subsection];
+          _dir_item^.Ifo:=_ifo;
+
+          -- zvetsime pocet podsekci
+          succ dir.cDir;
+          end add_dir_item;
+
+
+
+    begin
+      -- inicializujeme informace o adresari podsekci
+--      fillz(dir,t_codeview_dir:size);
+      dir.cbDirHeader:=16;
+      dir.cbDirEntry:=12;
+      dir.status:=tcvs_init;
+
+      -- naplnime polozky adresare podsekci
+      ifo:=8;
+
+      -- 1. moduly
+      -- projdeme vsechny zaregistrovane moduly
+      modul:=first_module; modulenum:=1;
+      while modul<>nil loop
+        -- vytvorime polozku adresare
+        add_dir_item(diritem,sst_module,modulenum,ifo);
+
+        -- dump modulu
+        dump_module(modul,modulenum,diritem^.dump_data,size,diritem^.dump_length);
+
+        -- inkrementujeme offset na dalsi podsekci
+        ifo:=ifo+size;
+        diritem^.cb:=diritem^.dump_length;
+
+        -- dalsi modul
+        modul:=modul^.next;
+        succ modulenum;
+        end loop;
+
+      -- predgenerujeme dump debug informaci o typech
+      typ:=gtypes.type_first;
+      while typ<>nil loop
+        -- vygenerujeme typ
+        dump_codeview_type(typ,gtypes);
+
+        -- dalsi typ v seznamu
+        typ:=typ^.next;
+        end loop;
+
+      -- 2. lokalni symboly a zdrojove texty modulu
+      -- projdeme vsechny zaregistrovane moduly
+      modul:=first_module; modulenum:=1;
+      while modul<>nil loop
+
+        -- 2.1 lokalni symboly
+        if modul^.first_alignsym<>nil then
+          add_dir_item(diritem,sst_alignsym,modulenum,ifo);
+
+          -- dump lokalnich symbolu
+          dump_alignsym(modul^.first_alignsym,diritem^.dump_data,size,diritem^.dump_length);
+
+          -- inkrementujeme offset na dalsi podsekci
+          ifo:=ifo+size;
+          diritem^.cb:=diritem^.dump_length;
+          end if;
+
+        -- 2.2 mapovani na zdrojak
+        -- mame zdrojak ?
+        if modul^.Src<>nil then
+          -- vytvorime polozku adresare
+          add_dir_item(diritem,sst_srcmodule,modulenum,ifo);
+
+          -- dump modulu
+          dump_src_module(modul^.Src,diritem^.dump_data,size,diritem^.dump_length);
+
+          -- inkrementujeme offset na dalsi podsekci
+          ifo:=ifo+size;
+          diritem^.cb:=diritem^.dump_length;
+          end if;
+
+        -- dalsi modul
+        modul:=modul^.next;
+        succ modulenum;
+        end loop;
+
+      -- 3. tabulka globalnich symbolu
+      if first_gsymbol<>nil then
+        add_dir_item(diritem,sst_globalsym,$FFFF,ifo);
+
+        dump_symbol_table(first_gsymbol,diritem^.dump_data,size,diritem^.dump_length);
+
+        -- inkrementujeme offset na dalsi podsekci
+        ifo:=ifo+size;
+        diritem^.cb:=diritem^.dump_length;
+        end if;
+
+      -- 3. pouzite knihovny
+      -- !!! dodelat !!!
+      add_dir_item(diritem,sst_libraries,$FFFF,ifo);
+      new diritem^.dump_data range 4;
+      diritem^.dump_length:=1;
+
+      -- inkrementujeme offset na dalsi podsekci
+      ifo:=ifo+4;
+      diritem^.cb:=1;
+
+      -- 4. globalni typy
+      -- zaregistrujeme dump typu
+      add_dir_item(diritem,sst_globaltypes,$FFFF,ifo);
+
+      size:=4+4+(t_unsigned32(gtypes.indextype)*4)+gtypes.size;
+      new diritem^.dump_data range size;
+
+      i:=2; k:=0;
+      advanced.low_level.unchecked_memory_access.memory_copy(i,diritem^.dump_data^[k],4); k:=k+4;
+      advanced.low_level.unchecked_memory_access.memory_copy(gtypes.indextype,diritem^.dump_data^[k],4); k:=k+4;
+      j:=k+(t_unsigned32(gtypes.indextype)*4); i:=0;
+
+      typdump:=gtypes.dump_first;
+      while typdump<>nil loop
+        -- info o offsetu
+        advanced.low_level.unchecked_memory_access.memory_copy(i,diritem^.dump_data^[k],4); k:=k+4;
+        advanced.low_level.unchecked_memory_access.memory_copy(typdump^.buffer^,diritem^.dump_data^[j+i],typdump^.size);
+        i:=i+typdump^.size;
+
+        -- dalsi dump typu
+        typdump:=typdump^.next;
+        end loop;
+
+      -- inkrementujeme offset na dalsi podsekci
+      ifo:=ifo+size; diritem^.dump_length:=size;
+      diritem^.cb:=diritem^.dump_length;
+
+      -- 5. tabulka sekci
+      -- vytvorime polozku pro fileindex
+      add_dir_item(diritem,sst_segmap,$FFFF,ifo);
+
+      dump_segment_map(seg,diritem^.dump_data,size,diritem^.dump_length);
+
+      -- inkrementujeme offset na dalsi podsekci
+      ifo:=ifo+size;
+      diritem^.cb:=diritem^.dump_length;
+
+
+      -- 6. fileindex
+      -- vytvorime polozku pro fileindex
+      add_dir_item(diritem,sst_fileindex,$FFFF,ifo);
+
+      -- dump fileindexu
+      dump_fileindex(diritem^.dump_data,size,diritem^.dump_length);
+
+      -- inkrementujeme offset na dalsi podsekci
+      ifo:=ifo+size;
+      diritem^.cb:=diritem^.dump_length;
+
+
+      -- vysledny dump
+      -- spocteme velikost potrebneho bufferu
+      _length:=4+4+ifo+dir.cbDirHeader+(dir.cbDirEntry*dir.cDir)+4+4;
+
+      -- alokujeme buffer
+      new _buffer range _length;
+
+      -- vlastni dump
+      advanced.low_level.unchecked_memory_access.memory_copy(codeview_version[1],_buffer^[0],4);
+      advanced.low_level.unchecked_memory_access.memory_copy(ifo,_buffer^[4],4);
+      advanced.low_level.unchecked_memory_access.memory_copy(dir.cbDirHeader,_buffer^[ifo],2);
+      advanced.low_level.unchecked_memory_access.memory_copy(dir.cbDirEntry,_buffer^[ifo+2],2);
+      advanced.low_level.unchecked_memory_access.memory_copy(dir.cDir,_buffer^[ifo+4],4);
+      advanced.low_level.unchecked_memory_access.memory_copy(dir.IfoNextDir,_buffer^[ifo+8],4);
+      advanced.low_level.unchecked_memory_access.memory_copy(dir.flags,_buffer^[ifo+12],4);
+
+      -- dump vsech podsekci
+      diritem:=dir.first_dir_item; i:=0;
+      while diritem<>nil loop
+        -- ulozime data
+        advanced.low_level.unchecked_memory_access.memory_copy(diritem^.dump_data^[0],_buffer^[diritem^.Ifo],diritem^.cb);
+        advanced.low_level.unchecked_memory_access.memory_copy(diritem^.subsection,_buffer^[ifo+dir.cbDirHeader+(i*dir.cbDirEntry)],dir.cbDirEntry);
+
+        -- dalsi podsekce
+        succ i;
+        diritem:=diritem^.next;
+        end loop;
+
+      -- vlastni dump
+      advanced.low_level.unchecked_memory_access.memory_copy(codeview_version[1],_buffer^[_length-8],4);
+      advanced.low_level.unchecked_memory_access.memory_copy(_length,_buffer^[_length-4],4);
+
+      -- vyplnime co muzeme do PE die entry
+      PE_dir_entry.Characteristic:=0;
+      PE_dir_entry.TimeDataStamp:=0;--getdatim;
+      PE_dir_entry.MajorVersion:=0;
+      PE_dir_entry.MinorVersion:=0;
+      PE_dir_entry.Typ:=2; -- CodeView debug information
+      PE_dir_entry.SizeOfData:=_length;
+      PE_dir_entry.AddressOfRawData:=0;
+      PE_dir_entry.PointerToRawData:=0;
+      end linkimage;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static register_segment =
+    -- Zaregistruje segment.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- ulozime informace o segmentu
+      seg[_type].Seg:=t_signed16(_Seg);
+      seg[_type].flags:=_flags;
+      seg[_type].ovl:=0;
+      seg[_type].group:=0;
+      seg[_type].frame:=_Seg;
+      seg[_type].iSegName:=$FFFF;
+      seg[_type].iClassName:=$FFFF;
+      seg[_type].offset:=_offset;
+      seg[_type].cbseg:=_size;
+      end register_segment;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static optimize =
+    -- Odstrani redundantni informace.
+    ------------------------------------------------------------------------------------------------
+    var
+      modul            : p_codeview_module;          -- codeview module
+      oldmodule        : p_codeview_module;          -- odstranovany codeview module
+      codesegment      : p_codeview_code;            -- codeview code segment
+      oldcodesegment   : p_codeview_code;            -- odstranovany code segment
+
+    begin
+      -- projdeme vsechny zaregistrovane moduly
+      modul:=first_module;
+      while modul<>nil loop
+        -- v modulu prozkoumame vsechny code segmenty
+        codesegment:=modul^.first_code;
+        while codesegment<>nil loop
+          -- dalsi code segment v poradi
+          oldcodesegment:=codesegment;
+          codesegment:=codesegment^.next;
+
+          -- pokud neni kod pouzit, nebudeme pro nej generovat debug informace
+          if (oldcodesegment^._code_^.linked<>ls_linked) or (oldcodesegment^._instance_^.c^:length=0) then
+            remove_code(oldcodesegment,modul);
+            end if;
+          end loop;
+
+        -- dalsi modul
+        oldmodule:=modul;
+        modul:=modul^.next;
+
+        -- modul bez kodu odregistrujeme
+        if oldmodule^.first_code=nil then remove_module(oldmodule); end if;
+        end loop;
+      end optimize;
+    end t_codeview;
+
+
+end cl_codeview;

@@ -1,0 +1,235 @@
+----------------------------------------------------------------------------------------------------
+module private cx_resolve =
+-- P©eklada‡.
+-- Vyhodnocen¡ nejednozna‡n˜ch typ–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 01.08.2001 : Vytvo©il.
+----------------------------------------------------------------------------------------------------
+
+type
+  tcheckproc       = procedure (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in pexpambiguous;           -- v˜raz
+    ptyp           : in typeview;                -- o‡ek van˜ typ v˜razu
+    typ            : in typeview)                -- testovan˜ typ v˜razu
+                   return t_logical;             -- T-typ vyhovuje
+  pcheckproc       = ^tcheckproc;
+
+----------------------------------------------------------------------------------------------------
+procedure check_equal : tcheckproc =
+-- True, je-li o‡ek van˜ typ a TYP v˜razu shodn˜.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=t_equalview(ptyp,typ);
+  end check_equal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure check_compatible : tcheckproc =
+-- True, jsou-li o‡ek van˜ typ a TYP v˜razu kompatibiln¡.
+----------------------------------------------------------------------------------------------------
+begin
+  if expr^.ntype in nts_operator
+    then result:=t_compatible(curr,toc_transform,pexpnoper(expr)^.assign,ptyp,typ,false)
+    else result:=t_compatible(curr,toc_transform,false,ptyp,typ,false);
+    end if;
+  end check_compatible;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure check_all : tcheckproc =
+-- True.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=true;
+  end check_all;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_resolve_find (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in pexpambiguous;           -- v˜raz
+    ptyp           : in typeview;                -- o‡ek van˜ typ v˜razu
+    check          : in pcheckproc;              -- kontroln¡ procedura
+    found          : out t_logical;              -- T-nalezeno
+    index          : out typeindex) =            -- index vyhovuj¡c¡ho typu
+-- Pokus¡ se nal‚zt jednozna‡nˆ vyhovuj¡c¡ typ v˜razu.                        
+-- Pokud nalezne v¡ce nejednozna‡n˜ch alternativ, hl s¡ chybu.                
+----------------------------------------------------------------------------------------------------
+var
+  typ              : ptypeview;                  -- zkouman˜ typ                                
+  eli              : typeindex;                  -- indexy zdrojov˜ch typ–
+  eri              : typeindex;                  -- indexy zdrojov˜ch typ–
+  psym             : pentity;                    -- souvisej¡c¡ symbol                          
+  langindex        : typeindex;                  -- index vyhovuj¡c¡ho jazykem def. oper toru   
+  langcount        : t_unsigned;                 -- po‡et vyhovuj¡c¡ch jazykem def. oper tor–   
+  operindex        : typeindex;                  -- index vyhovuj¡c¡ho p©et¡‘en‚ho oper toru    
+  opercount        : t_unsigned;                 -- po‡et vyhovuj¡c¡ch p©et¡‘en˜ch oper tor–
+  i                : t_unsigned;
+
+begin
+  langcount:=0;
+  opercount:=0;
+  for i in 0..expr^.gettypecount-1 loop
+    -- zjistit informace o typu
+    expr^.gettypeinfo(i,typ,eli,eri,psym);
+
+    -- jak jsme na tom s kompatibilitou ?
+    if check^(curr,expr,ptyp,typ^) then
+      if psym<>nil
+
+        -- p©et¡‘en˜ oper tor 
+        then
+          succ opercount;
+          operindex:=i;
+
+        -- jazykem definovan˜ oper tor 
+        else
+          succ langcount;
+          langindex:=i;
+          end if;
+      end if;
+    end loop;
+
+  -- jednozna‡nˆ ur‡en p©et¡‘en˜ oper tor 
+  if opercount=1 then
+    found:=true;
+    index:=operindex;
+
+  -- jednozna‡nˆ ur‡en jazykem definovan˜ oper tor 
+  elsif langcount=1 then
+    found:=true;
+    index:=langindex;
+
+  -- nejednozna‡nˆ ur‡en˜ oper tor
+  elsif (opercount>1) or (langcount>1) then
+    ce^.seterror({CCERR=}000001,ce_ambiguous);
+    expr^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+
+  -- nenalezen ‘ dn˜ vyhovuj¡c¡ oper tor
+  else
+    found:=false;
+    end if;
+  end a_resolve_find;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_resolve_propagate (
+    expr           : in pexpambiguous) =         -- v˜raz
+-- ›¡©en¡ zvolen‚ho typu do podv˜raz–.
+----------------------------------------------------------------------------------------------------
+var
+  eli              : typeindex;                  -- indexy zdrojov˜ch typ–
+  eri              : typeindex;                  -- indexy zdrojov˜ch typ–
+  x                : pexpnode;
+
+begin
+  -- zjistit zdrojov‚ typy
+  expr^.gettypeorigin(0,eli,eri);
+
+  -- lev˜ podv˜raz
+  x:=expr^.sub;
+  if x^.ntype in nts_ambiguous then
+    -- zvolit typ 
+    pexpambiguous(x)^.resolve(eli);
+
+    -- ¨¡©it do podv˜raz– 
+    a_resolve_propagate(pexpambiguous(x));
+    end if;
+
+  -- prav˜ podv˜raz 
+  x:=x^.next;
+  if (x<>nil) and (x^.ntype in nts_ambiguous) then
+    -- zvolit typ 
+    pexpambiguous(x)^.resolve(eri);
+
+    -- ¨¡©it do podv˜raz– 
+    a_resolve_propagate(pexpambiguous(x));
+    end if;
+  end a_resolve_propagate;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_resolve =
+-- Vyhodnocen¡ uzlu s nejednozna‡n˜mi typy.                                   
+----------------------------------------------------------------------------------------------------
+
+var
+  typ              : ptypeview;                  -- typ v˜razu
+  found            : t_logical;                  -- T-nalezen jednozna‡n˜ typ
+  index            : typeindex;                  -- index jednozna‡n‚ho typu
+
+begin
+  -- v¨echny nejasnosti by ji‘ mˆly b˜t vy©¡zeny
+  if expr^.isresolved then
+    verify(299,expr^.gettypecount<>1);
+    return;
+    end if;
+
+  -- nejednozna‡nˆ ur‡en˜ typ => nal‚zt jednozna‡n˜
+  if expr^.gettypecount>1 then
+    ----- %%LANG Vyhodnocen¡ typ– ------------------------------------
+    -- Pravidla pro v˜bˆr mezi v¡ce typy v˜razu jsou tato:                
+    --   - o‡ek van˜ typ v˜razu je p©¡mo jeden z typ– v˜razu,             
+    --  (- o‡ek van˜ typ v˜razu je p©edek/potomek jednoho z typ– v˜razu,) 
+    --   - o‡ek van˜ typ v˜razu je kompatibiln¡ s jedn¡m z typ– v˜razu,
+    --   - bez ohledu na o‡ek van˜ typ v˜razu m  p©ednost p©et¡‘en˜       
+    --     oper tor.                                                      
+    -- Pokud je vhodn˜ch alternativ v¡ce, m  p©ednost p©et¡‘en˜ oper tor  
+    -- (ale mus¡ b˜t jen jeden).                                          
+    -- V ostatn¡ch p©¡padech je v˜sledek v˜razu nejednozna‡n˜.            
+    ------------------------------------------------------------------
+
+    -- omezit mno‘inu typ– podle po‘adovan‚ho typu v˜razu 
+    if ptyp.tview<>tview_null
+
+      -- je zn m o‡ek van˜ typ v˜razu => omezit podle nˆj 
+      then
+        a_resolve_find(curr,expr,ptyp,^check_equal,found,index);
+--      if not found then
+--        find(curr,expr,ptyp,^check_related,found,index);
+--        end if;
+          {%%X ^^^ Domyslet }
+        if not found then
+          a_resolve_find(curr,expr,ptyp,^check_compatible,found,index);
+          end if;
+
+      -- nem me typ, ale to nemus¡ nutnˆ vadit
+      else
+        found:=false;
+        end if;
+
+    -- bez ohledu na typ m  p©ednost p©et¡‘en˜ oper tor
+    if not found then
+      a_resolve_find(curr,expr,ptyp,^check_all,found,index);
+      end if;
+
+    -- nenalezen jednozna‡n˜ typ => chyba 
+    if not found then
+      {%%X Tohle je dost podobn  situace jako kdy‘ je v˜raz }
+      -- nekompatibiln¡ v–‡i po‘adovan‚mu typu v˜razu. Jen‘e 
+      -- tady je mo‘n˜ch typ– v˜razu v¡c.                    
+      ce^.seterror({CCERR=}000002,ce_ambiguous);
+      expr^.errpos;
+      {%%RESUME ce^.raiseerror;}
+      ce^.resumeerror;
+      end if;
+
+    -- dosadit zvolen˜ typ 
+    expr^.resolve(index);
+    end if;
+
+  -- ¨¡©en¡ typu do podv˜raz– 
+  a_resolve_propagate(expr);
+  end a_resolve;
+
+
+
+end cx_resolve;

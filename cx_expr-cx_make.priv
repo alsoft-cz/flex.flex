@@ -1,0 +1,444 @@
+----------------------------------------------------------------------------------------------------
+module private cx_make =
+-- P©eklada‡ Flexu.
+-- Vytv ©en¡ kompil torem generovan˜ch uzl– stromu.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 12.11.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cx_imm,cx_rta,cx_util;
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_op_assign =
+-- :=
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_operator);
+
+  -- oper tor
+  result^.oper:=op_assign;
+  result^.assign:=true;
+
+  -- operandy
+  result^.join(el,er);
+
+  -- typ v˜razu
+  result^.t:=el^.t;
+
+  -- t©¡da
+  result^.nclass:=nc_var;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_op_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_op_logical (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    info           : in expinfo;                 -- kontext
+    oper           : in expopertype;             -- oper tor
+    el             : in pexpnode;                -- operandy
+    er             : in pexpnode)                -- operandy
+                   return pexpoper =             -- sestaven˜ uzel
+-- Oper tor s type v˜sledku Univerz ln¡ logical.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_operator);
+
+  -- oper tor
+  result^.oper:=oper;
+
+  -- operandy
+  result^.join(el,er);
+
+  -- typ v˜razu
+  result^.t.init(curr,def_unilogical);
+
+  -- t©¡da
+  result^.nclass:=nc_value;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_op_logical;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_op_eq =
+-- =
+----------------------------------------------------------------------------------------------------
+begin
+  result:=x_make_op_logical(curr,info,op_eq,el,er);
+  end x_make_op_eq;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_op_ne =
+-- <>
+----------------------------------------------------------------------------------------------------
+begin
+  result:=x_make_op_logical(curr,info,op_ne,el,er);
+  end x_make_op_ne;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_op_and_then =
+-- AND THEN
+----------------------------------------------------------------------------------------------------
+begin
+  -- vygenerovat p©¡kaz
+  result:=x_make_op_logical(curr,info,op_and_then,el,er);
+
+  -- AND THEN je obecnˆ n- rn¡ p©¡kaz
+  result^.arity:=eoa_n;
+  end x_make_op_and_then;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_component_var =
+-- Promˆnn .
+----------------------------------------------------------------------------------------------------
+var
+  ptyp             : pentity_type;               -- typ promˆnn‚
+
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_component);
+
+  -- ulo‘it promˆnnou
+  result^.id:=pvar^.id;
+  result^.s.set_entity(pvar);
+
+  -- typ v˜razu (promˆnn  nemus¡ m¡t nutnˆ typ)
+  ptyp:=pvar^.typ.getutype;
+  if ptyp=nil
+    then result^.t.initunchecked(nil);
+    else result^.t.init(curr,ptyp);
+    end if;
+{
+  -- co je promˆnn  za‡ ?
+  if t_is_sts(result^.t,dts_class)
+
+    -- je to t©¡da, ta m  sv‚ atributy jist‚
+    then result^.rta:=rtas_class
+
+    -- nˆco jin‚ho, p©evz¡t z promˆnn‚
+    else
+      result^.rta:=pvar^.allrta
+      end if;
+}
+  -- t©¡da
+  result^.nclass:=nc_var;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_component_var;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_component_type =
+-- Typ.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_component);
+
+  -- ulo‘it typ
+  result^.id:=ptyp^.id;
+  result^.s.set_entity(ptyp);
+
+  -- typ v˜razu
+  if ptyp=nil
+    then result^.t.initunchecked(nil);
+    else result^.t.init(curr,ptyp);
+    end if;
+
+  -- t©¡da
+  result^.nclass:=nc_type;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_component_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_component_selector =
+-- Selektor recordu/t©¡dy.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_component);
+
+  -- za©adit podv˜raz
+  result^.sub:=el;
+
+  -- ulo‘it promˆnnou
+  result^.id:=pitem^.id;
+  result^.s.set_entity(pitem);
+
+  -- typ v˜razu (slo‘ka t©¡dy/recordu jistˆ nˆjak˜ typ m )
+  result^.t.init(curr,pitem^.typ.getctype);
+
+  -- t©¡da
+  result^.nclass:=el^.nclass;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_component_selector;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_component_index =
+-- Selektor recordu/t©¡dy.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_index);
+
+  -- za©adit podv˜razy
+  result^.join(prefix,index);
+
+  -- typ v˜razu
+  result^.t.init(curr,prefix^.t.getctype^.base.getctype);
+
+  -- t©¡da
+  result^.nclass:=prefix^.nclass;
+
+  -- v˜sledkem je jednotliv˜ prvek
+  result^.itype:=eix_component;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_component_index;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_deref =
+-- Dereference.
+----------------------------------------------------------------------------------------------------
+begin
+  -- poznamenat do podv˜razu, ‘e bude dereferencov n
+  el^.nflags+nodeflagset:[nf_dereference];
+
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_deref);
+
+  -- za©adit podv˜raz
+  result^.sub:=el;
+
+  -- typ v˜razu (slo‘ka t©¡dy/recordu jistˆ nˆjak˜ typ m )
+  result^.t.init(curr,el^.t.getctype^.base.getctype);
+
+  -- t©¡da
+  result^.nclass:=x_get_deref_nclass(el);
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_deref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_this =
+-- THIS.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_this);
+
+  -- typ v˜razu (slo‘ka t©¡dy/recordu jistˆ nˆjak˜ typ m )
+  result^.t.init(curr,ptyp);
+
+  -- t©¡da
+  result^.nclass:=nc_var;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_this;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_call_spec =
+-- Vol n¡ speci ln¡ metody.
+----------------------------------------------------------------------------------------------------
+begin
+  --verify(580,not ((el<>nil) xor (pspec<>nil)));
+
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_callspec);
+
+  -- za©adit podv˜razy
+  result^.qualified:=el<>nil;
+  result^.join(el,arglist);
+
+  -- ulo‘it speci ln¡ metodu
+  result^.spectype:=spectype;
+  result^.spec:=pspec;
+
+  -- v˜raz nem  typ
+
+  -- t©¡da: nic, nevrac¡ hodnotu
+  result^.nclass:=nc_none;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_call_spec;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_attribute =
+-- Jazykem definovan˜ atribut.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_attrib);
+
+  -- za©adit podv˜raz
+  result^.sub:=el;
+
+  -- ulo‘it atribute
+  result^.aclass:=aclass;
+  result^.atf:=atf;
+  result^.ata:=ata;
+
+  -- typ v˜razu
+  if ptyp=nil
+    then result^.t.initunchecked(nil);
+    else result^.t.init(curr,ptyp);
+    end if;
+
+  -- t©¡da
+  result^.nclass:=el^.nclass;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_attribute;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_imm =
+-- P©¡m  hodnota.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_imm);
+  result^.immkind:=immkind;
+
+  -- ulo‘it dodanou p©¡mou hodnotu
+  store_imm(result^.imm,imm);
+
+  -- typ v˜razu
+  result^.t.init(curr,ptyp);
+
+  -- t©¡da
+  result^.nclass:=nc_value;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_imm_nil =
+-- NIL.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_imm);
+
+  -- ulo‘it NIL
+  store_nil(result^.imm);
+
+  -- typ v˜razu
+  result^.t.init(curr,ptyp);
+
+  -- t©¡da
+  result^.nclass:=nc_value;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_imm_nil;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_imm_uniint =
+-- Univerz ln¡ integer.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_imm);
+
+  -- ulo‘it ‡¡slo
+  store_ordinal(result^.imm,ui);
+
+  -- typ v˜razu
+  result^.t.init(curr,def_uniint);
+
+  -- t©¡da
+  result^.nclass:=nc_value;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_imm_uniint;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_make_param =
+-- Polo‘ka seznamu v˜raz– typu EI_EXPR.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat uzel
+  newnode(pexpnode(result),info,nt_item);
+
+  -- podv˜raz
+  result^.join(el,nil);
+
+  -- doplnit £daje
+  result^.itype:=ei_expr;
+  result^.sym:=pparam;
+
+  -- typ v˜razu
+  x_set_param_type(curr,pparam,el);
+
+  -- t©¡da
+  result^.nclass:=el^.nclass;
+
+  -- ur‡it dynamick‚ atributy
+  x_rta_provided_attributes(curr,result);
+  x_rta_check_attributes(curr,result);
+  end x_make_param;
+
+
+
+end cx_make;

@@ -1,0 +1,267 @@
+type
+  -- language defined data types
+{%%TODO(RTL) Zve©ejnit, zakomentov no, abychom to omylem nepou‘¡vali.
+  char             = character 32;
+  boolean          = logical 8;
+  integer          = signed #environment target_machine_bits;;
+  natural          = unsigned #environment target_machine_bits;;
+  real             = digits 15;
+}
+  exception        = message;
+
+const
+  -- language defined constants
+  false            = 0<>0;
+  true             = 0 =0;
+
+message
+  -- language defined messages
+  program_error        : exception;
+  memory_error         extend program_error;
+  tasking_error        extend program_error;
+  numeric_error        extend program_error;
+  constraint_error     extend program_error;
+  implementation_error extend program_error;
+  generic_error        extend program_error;
+  task_abort           : exception;
+
+----------------------------------------------------------------------------------------------------
+module flex =
+-- Flex Run-time Library
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+private
+
+{!!}
+type
+  char             = character 32;
+  boolean          = logical 8;
+  integer          = signed #environment target_machine_bits;;
+  natural          = unsigned #environment target_machine_bits;;
+  real             = digits 15;
+
+#if not #declared rtl_debug; then;
+const
+  -- runtime-time library debugging mode
+  rtl_debug        = false{true};
+#end if;
+
+const
+  -- operating system selection (to ease conditional compilation)
+  os_win32         = #environment target_os_family;='WIN32';
+  os_linux         = #environment target_os_family;='UNIX' and then #environment target_os_type;='LINUX';
+
+  -- subsystem
+  sub_console      = #environment target_os_subsystem_type;='CONSOLE';
+  sub_gui          = #environment target_os_subsystem_type;='GUI';
+
+#if rtl_debug then;
+  #display 'Run-time Library debugging mode';
+  #if os_win32 then;
+    #display 'Platform: Win32';
+  #elsif os_linux then;
+    #display 'Platform: Linux';
+  #else;
+    #error 'RTL Internal Error: Unrecognized operating system 1';
+  #end if;
+#end if;
+
+type
+  -- common data types
+  t_rtl_signed8    = signed 8;
+  t_rtl_signed16   = signed 16;
+  t_rtl_signed32   = signed 32;
+  t_rtl_unsigned8  = unsigned 8;
+  t_rtl_unsigned16 = unsigned 16;
+  t_rtl_unsigned32 = unsigned 32;
+  t_rtl_logical32  = logical 32;
+  t_rtl_pointer    = ^unchecked for machine_pointer use true;
+  t_rtl_unsigned8array = array of t_rtl_unsigned8;
+  p_rtl_unsigned32 = ^t_rtl_unsigned32;
+  t_rtl_tag        = tag;
+
+#if os_win32 then;
+  t_syschar        = character 16;
+  t_sysbool        = logical 8;
+#elsif os_linux then;
+  t_syschar        = character 8;
+  t_sysbool        = logical 8;
+#else;
+  #error 'RTL Internal Error: Unrecognized operating system 2';
+#end if;
+  t_syscharustr    = string of t_syschar;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_error_write (
+    msgz           : in t_syscharustr) =         -- \0 terminated string
+-- Displays a fatal error message.
+----------------------------------------------------------------------------------------------------
+#if os_win32 then;
+  #if sub_console then;
+    var
+      written            : t_rtl_unsigned32;
+
+    const
+      STD_INPUT_HANDLE   : t_rtl_unsigned32 = $FFFFFFF6; { ((DWORD)-10) }
+      STD_OUTPUT_HANDLE  : t_rtl_unsigned32 = $FFFFFFF5; { ((DWORD)-11) }
+      STD_ERROR_HANDLE   : t_rtl_unsigned32 = $FFFFFFF4; { ((DWORD)-12) }
+
+    ------------------------------------------------------------------------------------------------
+    procedure GetStdHandle (
+        nStdHandle                 : in t_rtl_unsigned32)
+        return t_rtl_unsigned32;
+    #pragma convention(GetStdHandle,stdcall);
+    #pragma import(GetStdHandle,'GetStdHandle','KERNEL32.DLL');
+    ------------------------------------------------------------------------------------------------
+    procedure WriteConsole (
+        hConsoleOutput             : in t_rtl_unsigned32;
+        lpBuffer                   : in unchecked;
+        nNumberOfCharsToWrite      : in t_rtl_unsigned32;
+        lpNumberOfCharsWritten     : out t_rtl_unsigned32;
+        lpReserved                 : in t_rtl_pointer)
+        return t_sysbool;
+    #pragma convention(WriteConsole,stdcall);
+    #pragma import(WriteConsole,'WriteConsoleW','KERNEL32.DLL');
+    ------------------------------------------------------------------------------------------------
+  #elsif sub_gui then;
+    var
+      title    : static const array 1..22 of t_syschar := 'Flex Run-time Library'\0;
+
+    ------------------------------------------------------------------------------------------------
+    procedure messagebox (handle : t_rtl_unsigned32; lpText: in unchecked; lpCaption: in unchecked {char16array}; uType: t_rtl_unsigned32) return t_sysbool;
+    #pragma convention(messagebox,stdcall);
+    #pragma import(messagebox,'MessageBoxW','USER32.DLL');
+    ------------------------------------------------------------------------------------------------
+  #else;
+    #error 'RTL Internal Error: Unrecognized subsystem';
+  #end if;
+#elsif os_linux then;
+  const
+    nr_sys_write   =     4; {#syscallnr(nr_sys_write,           4 ,      4 ,      4 ,      4 ); -- write to a object descriptor}
+
+  const
+    sys_stderr     = 2;        -- standard error output
+#else;
+  #error 'RTL Internal Error: Unrecognized operating system 3';
+#end if;
+
+begin
+#if os_win32 then;
+  #if sub_console then;
+    if writeconsole(getstdhandle(std_error_handle),msgz[1],msgz:length-1,written,nil) then
+      -- ignore errors
+      end if;
+  #elsif sub_gui then;
+    if messagebox(0,msgz[1],title,0) then
+      -- ignore errors
+      end if;
+  #else;
+    #error 'RTL Internal Error: Unrecognized subsystem';
+  #end if;
+#elsif os_linux then;
+  #syntax asm;
+    mov  eax,msgz              -- address of MSGZ
+    mov  edx,[eax]             -- number of bytes to write
+    dec  edx                   -- (\0 terminated)
+    lea  ecx,[eax+4]           -- MSGZ
+    mov  ebx,sys_stderr        -- file/object descriptor
+    mov  eax,nr_sys_write      -- syst‚mov  slu‘ba "write"
+    int  $80                   -- volat kernel
+    -- ignore errors
+    #end asm;
+#else;
+  #error 'RTL Internal Error: Unrecognized operating system 4';
+#end if;
+  end rtl_error_write;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_terminate (
+    code           : in t_rtl_unsigned32) =      -- process exit code passed to the OS
+-- Terminates the program with exit-code CODE.
+----------------------------------------------------------------------------------------------------
+
+#if os_win32 then;
+  --------------------------------------------------------------------------------------------------
+  procedure exitprocess (code : t_rtl_unsigned32);
+  #pragma convention(exitprocess,stdcall);
+  #pragma import(exitprocess,'ExitProcess','KERNEL32.DLL');
+  --------------------------------------------------------------------------------------------------
+#elsif os_linux then;
+  const
+    nr_sys_exit    =     1; {#syscallnr(nr_sys_exit,            1 ,      1 ,      1 ,      1 ); -- terminate the calling process}                                          
+#else;
+  #error 'RTL Internal Error: Unrecognized operating system 5';
+#end if;
+
+begin
+#if os_win32 then;
+  exitprocess(code);
+#elsif os_linux then;
+  #syntax asm;
+    mov   ebx,code                               -- exit status of the calling process
+    mov   eax,nr_sys_exit                        -- kernel syscall "terminate the calling process"
+    int   $80                                    -- call to kernel
+    #end asm;
+#else;
+  #error 'RTL Internal Error: Unrecognized operating system 6';
+#end if;
+  end rtl_terminate;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_terminate0 =
+-- Terminates the program with exit-code 0.
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_terminate(0);
+  end rtl_terminate0;
+
+
+
+----------------------------------------------------------------------------------------------------
+#separate public synchronization;
+#separate private synchronization;
+-- Synchronization manager.
+----------------------------------------------------------------------------------------------------
+#separate public memory;
+#separate private memory;
+-- Memory manager.
+----------------------------------------------------------------------------------------------------
+#separate public messages;
+#separate private messages;
+-- Messages.
+----------------------------------------------------------------------------------------------------
+#separate public exceptions;
+#separate private exceptions;
+-- Exceptions (asynchronous messages).
+----------------------------------------------------------------------------------------------------
+#separate public tags;
+#separate private tags;
+-- Tags.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+exit =
+-- Normal program termination.
+----------------------------------------------------------------------------------------------------
+begin
+  -- terminate (and do not stay resident)
+  rtl_terminate(0);
+  end exit;
+
+
+
+---- Compiler magic --------------------------------------------------------------------------------
+#pragma assign(terminate,flex.rtl_terminate0);
+----------------------------------------------------------------------------------------------------
+
+
+
+end flex;

@@ -1,0 +1,1538 @@
+----------------------------------------------------------------------------------------------------
+module private cc_pre =
+-- P©eklada‡ Flexu.
+-- Preprocesor.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 11.04.2000 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+with
+  cc_def.cc_codes,
+  cc_def.cc_var,
+  cc_def.cc_env,
+  cc_def.cc_files,
+  cc_base.cc_sym,
+  cc_base.cc_rtl,
+  cd_decl,
+  cd_decl.cd_create,
+  cx_expr,
+  cx_expr.cx_def,
+  cx_expr.cx_compile;
+
+type
+  -- akce pro zpracov n¡ metap©¡kazu
+  tmetaaction      = procedure (
+      curr         : in tcontext);               -- aktu ln¡ kontext
+  pmetaaction      = ^tmetaaction;
+
+var
+  metatab          : array tmetacmd of pmetaaction;
+
+----------------------------------------------------------------------------------------------------
+procedure searchmeta (
+    id             : in tentityident;            -- identifik tor
+    meta           : out tmetacmd) =             -- metap©¡kaz
+-- P©evede identifik tor na metap©¡kaz.
+----------------------------------------------------------------------------------------------------
+with
+  standard,console,conversions;
+
+var
+  zac              : t_unsigned; -- metacmdtab:range;
+  stred            : t_unsigned; -- metacmdtab:range;
+  kon              : t_unsigned; -- metacmdtab:range;
+
+begin
+#if not #declared fip; then;
+  --write('searchmeta: hleda se:');write_line(entityident_to_string(id));
+#end if;
+
+  zac:=metacmdtab:first;
+  kon:=metacmdtab:last;
+  loop
+  #if not #declared fip; then;
+    --write('searchmeta: zkousi se:');write_line(entityident_to_string(metacmdtab[stred].txt));write('>>');
+    --write(unsigned_to_string(zac:ord));write('..');write(unsigned_to_string(kon:ord));
+  #end if;
+    stred:=(zac+kon) div 2;
+  #if not #declared fip; then;
+    --write('-->');write(unsigned_to_string(stred:ord));write('-->');
+  #end if;
+    if id>metacmdtab[stred].txt
+      then zac:=stred+1;
+      else kon:=stred;
+      end if;
+  #if not #declared fip; then;
+    --write(unsigned_to_string(zac:ord));write('..');write(unsigned_to_string(kon:ord));
+    --write_line('<<');
+  #end if;
+    until zac>=kon;
+#if not #declared fip; then;
+  --write('searchmeta: (ne)nalezeno:');write_line(entityident_to_string(metacmdtab[zac].txt));
+#end if;
+  if id=metacmdtab[zac].txt
+    -- nalezeno
+    then meta:=metacmdtab[zac].meta
+    -- nenalezeno
+    else meta:=meta_unknown;
+    end if;
+  end searchmeta;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_skipunknown (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    num            : in t_unsigned;              -- ‡¡slo varov n¡
+    warn           : in twarningcode;            -- varov n¡
+    id             : in tentityident) =          -- identifik tor
+-- P©esko‡¡ text nezn m‚ho metap©¡kazu.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- varov n¡
+  ce^.setwarning(num,warn);
+  ce^.setparam(entityident_to_string(id));
+  ce^.loadpos;
+
+  -- vy‡¡st symboly a‘ do st©edn¡ku
+  loop
+    getlex(curr,lex);
+    case lex
+      when lex_scol     do break;
+      when lex_eof      do checkmeta; return;
+      end case;
+    end loop;
+  end p_skipunknown;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_pragma_import (
+    curr           : in tcontext) =              -- aktu ln¡ kontext
+-- Pragma IMPORT.
+----------------------------------------------------------------------------------------------------
+use
+  cc_sym.cc_advanced;
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  x1               : pexpnode;                   -- v˜raz
+  x2               : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  proc             : pentity_procedure;          -- procedura
+  extname          : t_char32str;                -- jm‚no knihovny
+  libname          : t_char32str;                -- jm‚no knihovny
+  pos              : lexposblock;                -- pozice
+
+begin
+  -- lev  z vorka
+  if followlex(curr,lex_lpar) then
+    ce^.seterror({CCERR=}000153,ce_x_lpar);
+    ce^.loadpos;
+    end if;
+
+  -- jm‚no procedury
+  x_vyraz(curr,x1,es_name);
+  x_evaluate(curr,x1,ek_sym_proc,nil,eu_formal,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  pentity(proc):=x1^.getsymbol;
+
+  -- ‡ rka
+  if followlex(curr,lex_comma) then
+    ce^.seterror({CCERR=}000154,ce_x_comma);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- extern¡ jm‚no
+  x_vyraz(curr,x2,es_expr);
+  x_evaluate(curr,x2,ek_const_str,nil,eu_read,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  x_const_sysstr(x2,extname);
+
+  -- ‡ rka
+  if followlex(curr,lex_comma) then
+    ce^.seterror({CCERR=}000155,ce_x_comma);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- jm‚no knihovny
+  x_vyraz(curr,x2,es_expr);
+  x_evaluate(curr,x2,ek_const_str,nil,eu_read,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  x_const_sysstr(x2,libname);
+
+  -- prav  z vorka
+  if followlex(curr,lex_rpar) then
+    ce^.seterror({CCERR=}000156,ce_x_rpar);
+    ce^.loadpos;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000157,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- procedura u‘ je importovan 
+  if proc^.import<>nil then
+    ce^.seterror({CCERR=}000158,ce_imported);
+    ce^.setparam(sym_get_qid(proc));
+    x1^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- procedura mus¡ b˜t forward
+  x1^.getpos(pos);
+{
+  e_symbol(proc,pos,sd_forward,true);
+}
+  if proc^.declared<>etd_incomplete or proc^.evaluated<>etd_incomplete then
+    ce^.seterror({CCERR=}000159,ce_cantimport);
+    x1^.errpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- importovat
+  os^.importproc(proc,extname,libname);
+
+  -- proceduru ozna‡it jako deklarovanou a vyhodnocenou
+  cc_sym.cc_advanced.sym_set_evaluated(proc);
+  end p_pragma_import;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_pragma_convention (
+    curr           : in tcontext) =              -- aktu ln¡ kontext
+-- Pragma CONVENTION.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  proc             : pentity_procedure;          -- procedura
+  id               : pentityident;               -- identifik tor volac¡ konvence
+
+begin
+  -- lev  z vorka
+  if followlex(curr,lex_lpar) then
+    ce^.seterror({CCERR=}000160,ce_x_lpar);
+    ce^.loadpos;
+    end if;
+
+  -- jm‚no procedury
+  x_vyraz(curr,expr,es_name);
+  x_evaluate(curr,expr,ek_sym_proc,nil,eu_formal,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  pentity(proc):=expr^.getsymbol;
+
+  -- ‡ rka
+  if followlex(curr,lex_comma) then
+    ce^.seterror({CCERR=}000161,ce_x_comma);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- identifik tor
+  getlex(curr,lex);
+  if lex<>lex_id then
+    ce^.seterror({CCERR=}000162,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  id:=getlexid;
+
+  -- prav  z vorka
+  if followlex(curr,lex_rpar) then
+    ce^.seterror({CCERR=}000163,ce_x_rpar);
+    ce^.loadpos;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000164,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- nastavit volac¡ konvenci
+  os^.setconvention(proc,id^);
+  end p_pragma_convention;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_pragma_stackframe (
+    curr           : in tcontext) =              -- aktu ln¡ kontext
+-- Pragma STACKFRAME.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  proc             : pentity_procedure;          -- procedura
+  id               : pentityident;               -- identifik tor volac¡ konvence
+
+begin
+  -- lev  z vorka
+  if followlex(curr,lex_lpar) then
+    ce^.seterror({CCERR=}000165,ce_x_lpar);
+    ce^.loadpos;
+    end if;
+
+  -- jm‚no procedury
+  x_vyraz(curr,expr,es_name);
+  x_evaluate(curr,expr,ek_sym_proc,nil,eu_formal,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  pentity(proc):=expr^.getsymbol;
+
+  -- ‡ rka
+  if followlex(curr,lex_comma) then
+    ce^.seterror({CCERR=}000166,ce_x_comma);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- identifik tor
+  getlex(curr,lex);
+  if lex<>lex_id then
+    ce^.seterror({CCERR=}000167,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  id:=getlexid;
+
+  -- prav  z vorka
+  if followlex(curr,lex_rpar) then
+    ce^.seterror({CCERR=}000168,ce_x_rpar);
+    ce^.loadpos;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000169,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- nastavit volac¡ konvenci
+  cpu^.setstackframe(proc,id^);
+  end p_pragma_stackframe;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_pragma_assign (
+    curr           : in tcontext) =              -- aktu ln¡ kontext
+-- Pragma ASSIGN.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  proc             : pentity_procedure;          -- procedura
+  id               : pentityident;               -- identifik tor volac¡ konvence
+
+begin
+  -- lev  z vorka
+  if followlex(curr,lex_lpar) then
+    ce^.seterror({CCERR=}000170,ce_x_lpar);
+    ce^.loadpos;
+    end if;
+
+  -- identifik tor vazby
+  getlex(curr,lex);
+  if lex<>lex_id then
+    ce^.seterror({CCERR=}000171,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  id:=getlexid;
+
+  -- ‡ rka
+  if followlex(curr,lex_comma) then
+    ce^.seterror({CCERR=}000172,ce_x_comma);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- jm‚no procedury
+  x_vyraz(curr,expr,es_name);
+  x_evaluate(curr,expr,ek_sym_proc,nil,eu_formal,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  pentity(proc):=expr^.getsymbol;
+
+  -- prav  z vorka
+  if followlex(curr,lex_rpar) then
+    ce^.seterror({CCERR=}000173,ce_x_rpar);
+    ce^.loadpos;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000174,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- vytvo©it vazbu na p©eklada‡
+  rtl_set_proc(id^,proc);
+  end p_pragma_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_include : tmetaaction =
+-- Metap©¡kaz #INCLUDE.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  n1               : t_char32str;                -- jm‚no includovan‚ho souboru
+  n2               : t_char32str;                -- jm‚no includovan‚ho souboru
+
+begin
+  -- jm‚no souboru
+  x_vyraz(curr,expr,es_expr);
+  x_evaluate(curr,expr,ek_const_str,nil,eu_read,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  x_const_sysstr(expr,n1);
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000175,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- nal‚zt soubor
+  --%%TODO(FILENAME) n2:=findfilename(src.modimpl,srcext,src.modlist,spathname(lex_input^.name),n1);  
+  if n1[1]="w" and then n1[6]="\" then n2:='p:\ol40\lib\sys\' & n1;
+  elsif n1[1]="w" then n2:='p:\ol40\lib\sys\win32\' & n1;
+  elsif n1[1]="c" then n2:='p:\ol40\flex\' & n1;
+  else n2:='p:\ol40\lib\smpl\' & n1;
+  end if;
+
+  if n2='' then
+    ce^.seterror({CCERR=}000176,ce_f_notfound);
+    ce^.setparam(n1);
+    expr^.errpos;
+    ce^.raiseerror;
+    end if;
+
+  -- includovat soubor
+  openfile(n2,true);
+  end p_meta_include;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_separate : tmetaaction =
+-- Metap©¡kaz #SEPARATE.
+----------------------------------------------------------------------------------------------------
+with
+  standard,console;
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  n1               : t_char32str;                -- jm‚no includovan‚ho souboru
+  n2               : t_char32str;                -- jm‚no includovan‚ho souboru
+  part             : t_part;                     -- %%TODO(FILENAME)    
+  psym             : pentity;                           
+
+begin
+  -- PUBLIC/PRIVATE/nic
+  getlex(curr,lex);
+  case lex
+    when lex_public  do part:=part_public;
+    when lex_private do part:=part_private;
+    when others do
+        part:=part_all;
+        ungetlex;
+    end case;
+
+  -- identifik tor modulu
+  getlex(curr,lex);
+  if lex<>lex_id then
+    ce^.seterror({CCERR=}000177,ce_x_id);
+    ce^.loadpos;
+    ce^.resumeerror;
+    end if;
+  n1:=entityident_to_string(getlexid^){+ext};
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000178,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- sestavit jm‚no modulu "poml‡kovou konvenc¡"
+  psym:=curr.entity;
+  while psym<>nil loop
+    -- modul/program/t©¡da
+    if psym^.etype in tentitytypeset:[et_program,et_module,et_class] then
+      n1:=entityident_to_string(psym^.id^) & '-' & n1;
+
+    -- kompila‡n¡ jednotka
+    elsif psym^.etype=et_compile then
+      -- nic nedˆlat
+
+    -- nˆco jin‚ho => chyba
+    else
+      ce^.seterror({CCERR=}000179,ce_meta_i_separate);
+      ce^.loadpos;
+      ce^.resumeerror;
+      end if;
+
+    -- nad©azen˜ symbol
+    psym:=psym^.context.entity;
+    end loop;
+
+  -- nal‚zt soubor
+  --%%TODO(FILENAME) get_source_file_name(n1,ext,n2);
+  n2:=cfg_files^.get_source_file_name(n1,part);
+  if n2='' then
+    ce^.seterror({CCERR=}000180,ce_f_notfound);
+    ce^.setparam(n1);
+    ce^.loadpos;
+    ce^.raiseerror;
+    end if;
+
+  -- includovat soubor
+  openfile(n2,true);
+  end p_meta_separate;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_option : tmetaaction =
+-- Metap©¡kaz #OPTION.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  idopt            : pentityident;               -- identifik tor parametru
+  idwarning        : pentityident;               -- identifik tor warningu
+  warnings         : t_logical;                  -- T-jedn  se o nastaven¡ warning–
+  ul               : tunilogical;
+  eval             : tentityeval;
+
+begin
+  -- identifik tor
+  if followlex(curr,lex_id) then
+    ce^.seterror({CCERR=}000181,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  idopt:=getlexid;
+
+  -- nen¡ to nastaven¡ warov n¡ ?
+  warnings:=idopt^=opt_warning;
+
+  -- lev  z vorka
+  if followlex(curr,lex_lpar) then
+    ce^.seterror({CCERR=}000182,ce_x_lpar);
+    ce^.loadpos;
+    end if;
+
+  -- identifik tor warningu
+  if warnings then
+    -- identifik tor
+    if followlex(curr,lex_id) then
+      ce^.seterror({CCERR=}000000,ce_x_id);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      ce^.resumeerror;
+      end if;
+    idwarning:=getlexid;
+
+    -- ‡ rka
+    if followlex(curr,lex_comma) then
+      ce^.seterror({CCERR=}000000,ce_x_comma);
+      ce^.loadpos;
+      end if;
+    end if;
+
+  -- v˜raz
+  x_vyraz(curr,expr,es_expr);
+  x_evaluate(curr,expr,ek_const_logical,nil,eu_use,true,eval);
+  verify(285,eval<>ete_evaluated);
+
+  -- hodnota v˜razu
+  x_const_logical(expr,ul);
+
+  -- prav  z vorka
+  if followlex(curr,lex_rpar) then
+    ce^.seterror({CCERR=}000183,ce_x_rpar);
+    ce^.loadpos;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000184,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- nastavit
+  if warnings
+    then sym_set_warning(curr,idwarning^,ul=ul_true);
+    else sym_set_option(curr,idopt^,ul=ul_true);
+    end if;
+  end p_meta_option;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_pragma : tmetaaction =
+-- Metap©¡kaz #PRAGMA.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  id               : pentityident;               -- identifik tor
+
+begin
+  -- identifik tor
+  if followlex(curr,lex_id) then
+    ce^.seterror({CCERR=}000188,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  id:=getlexid;
+
+  -- %%X Tohle vymyslet nˆjak l¡p - aby to parametry na‡¡talo
+  -- a p©edzpracov valo samo a ne v ka‘d‚m pragma znovu
+
+  -- #pragma convention
+  if id^=pragma_convention then
+    p_pragma_convention(curr);
+
+  -- #pragma import
+  elsif id^=pragma_import then
+    p_pragma_import(curr);
+
+  -- #pragma assign
+  elsif id^=pragma_assign then
+    p_pragma_assign(curr);
+
+  -- #pragma stackframe
+  elsif id^=pragma_stackframe then
+    p_pragma_stackframe(curr);
+
+  -- nezn m‚ pragma
+  else 
+    p_skipunknown(curr,{CCERR=}000189,cw_unknown_pragma,id^);
+    end if;
+  end p_meta_pragma;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_environment : tmetaaction =
+-- Metap©¡kaz #ENVIRONMENT.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  id               : pentityident;               -- identifik tor
+  env              : tenvvar;                    -- #environment promˆnn 
+  val              : lexval;                     -- hodnota #environment promˆnn‚
+
+begin
+  -- identifik tor
+  if followlex(curr,lex_id) then
+    ce^.seterror({CCERR=}000190,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  id:=getlexid;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000191,ce_x_scol);
+    ce^.loadpos;
+    end if;
+
+  -- zjistit, o jakou #environment promˆnnou se jedn 
+  env_search(id^,env);
+
+  -- zpracovat
+  if env=env_none
+
+    -- nenalezeno, p©edat NIL
+    then
+      -- varov n¡
+      ce^.setwarning({CCERR=}000192,cw_unknown_environment);
+      ce^.setparam(entityident_to_string(id^));
+      ce^.loadpos;
+
+      -- p©edat NIL
+      setlex(lex_nil);
+      ungetlex;
+
+    -- nalezeno, p©edat jej¡ hodnotu
+    else
+      -- zjistit hodnotu
+      env_get_var(env,lex,val);
+
+      -- p©edat do zdroj ku
+      setlex(lex);
+      setlexval(val);
+      ungetlex;
+      end if;
+  end p_meta_environment;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_syntax : tmetaaction =
+-- Metap©¡kaz #SYNTAX.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  id               : pentityident;               -- identifik tor
+  ms               : tmetastackitem;             -- polo‘ka z sobn¡ku blokov˜ch metap©¡kaz–
+
+begin
+  -- zapamatovat si po‡ te‡n¡ pozici metap©¡kazu
+  getlexpos(ms.pos.b,ll_curr,false);
+  
+  -- identifik tor
+  if followlex(curr,lex_id) then
+    ce^.seterror({CCERR=}000193,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  id:=getlexid;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000194,ce_x_scol);
+    ce^.loadpos;
+    end if;
+
+  -- zapamatovat si koncovou pozici metap©¡kazu
+  getlexpos(ms.pos.e,ll_curr,true);
+
+  -- p©ipravit z znam na stacku vno©en¡ metap©¡kaz–
+  ms.open:=meta_syntax;
+  ms.id:=id;
+--ms.flag:=0;
+  lex_input^.metastack & ms;
+
+  -- #SYNTAX ASM
+  if id^=metaid_asm then
+    -- nasledujici blok symbolu bude zpracovan jako kod assembleru
+    setlex(lex_asm);
+    ungetlex;
+
+  -- jin‚ jazyky zat¡m neum¡me
+  else
+    -- varov n¡
+    ce^.setwarning({CCERR=}000195,cw_unknown_syntax);
+    ce^.setparam(entityident_to_string(id^));
+    ce^.loadpos;
+
+    -- p©esko‡it text do p©¡slu¨n‚ho #END <id>
+    loop
+      getlex(curr,lex);
+      case lex
+        when lex_meta_end do break;
+        when lex_eof      do checkmeta; return;
+        end case;
+      end loop;
+    end if;
+  end p_meta_syntax;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_and_then : tmetaaction =
+-- Metap©¡kaz #AND THEN.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- THEN
+  if followlex(curr,lex_then) then
+    ce^.seterror({CCERR=}000419,ce_x_then);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000420,ce_x_scol);
+    ce^.loadpos;
+    end if;
+
+  -- vr tit lexik ln¡ metaelement #AND THEN;
+  setlex(lex_meta_and_then);
+  ungetlex;
+  end p_meta_and_then;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_or_else : tmetaaction =
+-- Metap©¡kaz #or else.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- ELSE
+  if followlex(curr,lex_else) then
+    ce^.seterror({CCERR=}000421,ce_x_else);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000422,ce_x_scol);
+    ce^.loadpos;
+    end if;
+
+  -- vr tit lexik ln¡ metaelement #or else;
+  setlex(lex_meta_or_else);
+  ungetlex;
+  end p_meta_or_else;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_metaerr : tmetaaction =
+-- Chyba v metap©¡kazu #IF #ELSIF #ELSE #ENDIF #ASM #ENDASM.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;
+
+begin
+  ce^.seterror({CCERR=}000196,ce_meta_i_use);
+  ce^.setparam(lexcharstr_to_string(getlextxt^));
+  ce^.loadpos;
+  {%%RESUME ce^.raiseerror;}
+  resumelex(curr,lex,lex_scol,rl_skip,lex_scol,rt_skip);
+  end p_meta_metaerr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_if_cont (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    _cmd           : in tmetacmd) =              -- metap©¡kaz
+-- Metap©¡kaz #IF #ELSIF #ELSE #ENDIF.
+----------------------------------------------------------------------------------------------------
+use
+  cc_lex0;
+
+label
+  k1;
+
+{%%TODO(TYPE)
+var
+  lextxt           : const array lex_meta_and_then..lex_meta_or_else of t_char32str := [
+     for lex_meta_and_then use '#and then;',
+     for lex_meta_or_else  use '#or else;');
+}
+    procedure lextxt (lex : in lexsym) return t_char32str =
+    begin
+      case lex
+        when lex_meta_and_then do result:='#and then;';
+        when lex_meta_or_else  do result:='#or else;';
+        end case;
+      end lextxt;
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  lexoper          : lexsym;                     -- metaoper tor
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  vysl             : t_logical;                  -- vysledek vyhodnoceni podminky
+  xval             : lexval;                     -- hodnota symbolu
+  xline            : lexline;                    -- radek na kterem je prvek
+  xcol             : lexcolumn;                  -- sloupec na kterem je prvek
+  xdelka           : lexlength;                  -- delka prvku
+  level            : t_unsigned;                 -- £rove¤ vno©en¡ podm¡nˆn‚ho p©ekladu
+  oldlevel         : t_unsigned;                 -- level p©ed aktu ln¡m symbolem
+  ul               : tunilogical;
+  ms               : tmetastackitem;             -- polo‘ka z sobn¡ku blokov˜ch metap©¡kaz–
+  cmd              : tmetacmd;                   -- metap©¡kaz
+
+begin
+  cmd:=_cmd;
+  loop
+    case cmd
+      -- #if
+      when meta_if do
+          -- zapamatovat si po‡ te‡n¡ pozici metap©¡kazu
+          getlexpos(ms.pos.b,ll_curr,false);
+
+          -- p©ipravit polo‘ku z sobn¡ku blokov˜ch metap©¡kaz–
+          ms.open:=meta_if;
+        --ms.flag:=0;
+
+      -- #elsif, #end
+      when meta_elsif, meta_end do
+          if lex_input^.metastack:length=0 or lex_input^.metastack[lex_input^.metastack:length].open<>meta_if then
+            p_meta_metaerr(curr);
+            return;
+            end if;
+
+      -- #else
+      when meta_else do
+         if lex_input^.metastack:length=0 
+         or lex_input^.metastack[lex_input^.metastack:length].open<>meta_if
+         or lex_input^.metastack[lex_input^.metastack:length].flag>1 then
+           p_meta_metaerr(curr);
+           return;
+           end if;
+           
+      when others do verify(120,true);
+      end case;
+
+    -- po #if a #elsif nasleduje podminka
+    if cmd in tmetacmdset:[meta_if,meta_elsif] then
+      begin
+        -- zpracovat metav˜raz
+        lexoper:=lex_nul;
+        loop
+          -- p©elo‘it v˜raz
+          x_vyraz(curr,expr,es_expr);
+
+          -- vyhodnotit v˜raz, je-li to prvn¡ v˜raz v ©adˆ
+          if (lexoper=lex_nul)
+          -- nebo je oddˆlen #and then; a v˜sledek je st le ovlivniteln˜
+          or else (lexoper=lex_meta_and_then and vysl)
+          -- nebo je oddˆlen #or else; a v˜sledek je st le ovlivniteln˜
+          or else (lexoper=lex_meta_or_else and not vysl) then
+            -- vyhodnotit v˜raz
+            x_evaluate(curr,expr,ek_const_logical,nil,eu_read,true,eval);
+            {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+
+            -- zazpracovat meziv˜sledek podle posledn¡ho metaoper toru
+            x_const_logical(expr,ul);
+            case lexoper
+              when lex_nul           do vysl:=ul=ul_true;
+              when lex_meta_and_then do vysl:=vysl and ul=ul_true;
+              when lex_meta_or_else  do vysl:=vysl or ul=ul_true;
+              when others do verify(553,true);
+              end case;
+            end if;
+
+          -- metaoper tor nebo konec v˜razu
+          getlex(curr,lex);
+          if lex not in lexsymset:[lex_meta_and_then,lex_meta_or_else] then
+            ungetlex;
+            break;
+            end if;
+
+          -- kolik t˜ metaoper tor to je ?
+          if lexoper=lex_nul
+
+            -- prvn¡ => zapamatovat si ho, mus¡ b˜t v¨echny stejn‚
+            then lexoper:=lex
+
+            -- dal¨¡ => zkontrolovat, jestli je st le stejn˜
+            else
+              if lex<>lexoper then
+                ce^.seterror({CCERR=}000423,ce_i_operator);
+                --%%TODO(LIB) ce^.sethint(formats2(hint_meta_a_and_b_or_c,lextxt(lexoper),lextxt(lex)));
+                ce^.loadpos2;
+                end if;
+              end if;
+
+          end loop;
+
+        -- THEN
+        if followlex(curr,lex_then) then
+          ce^.seterror({CCERR=}000000,ce_x_then);
+          ce^.loadpos;
+          {%%RESUME ce^.raiseerror;}
+          end if;
+
+      catch
+        when resume_error do
+            resumelex(curr,lex,lex_scol,rl_leave,lex_scol,rt_leave);
+            vysl:=false;
+        end
+
+    -- #else
+    elsif cmd=meta_else then
+      -- vysledek (bere se vazne jen pokud jeste nebyl vyhodnocen zadny blok podmineneho prekladu)
+      vysl:=true and (lex_input^.metastack[lex_input^.metastack:length].flag=0);
+
+      -- uz nesmi nasledovat zadny ELSE
+      succ lex_input^.metastack[lex_input^.metastack:length].flag;
+
+    -- #end
+    elsif cmd=meta_end then
+      -- IF
+      if followlex(curr,lex_if) then
+        ce^.seterror({CCERR=}000197,ce_meta_x_end_if);
+        ce^.loadpos2;
+        {%%RESUME ce^.raiseerror;}
+        end if;
+
+      -- dekrementovat pocet podminenych prekladu
+      pred lex_input^.metastack:length;
+      end if;
+
+    -- st©edn¡k
+    if followlex(curr,lex_scol) then
+      ce^.seterror({CCERR=}000198,ce_x_scol);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      end if;
+
+    -- je-li to za‡ tek podm¡nˆn‚ho p©ekladu, pak ulo‘it na stack blokov˜ch metap©¡kaz– 
+    if cmd=meta_if then
+      -- zapamatovat si koncovou pozici metap©¡kazu
+      getlexpos(ms.pos.e,ll_curr,true);
+
+      -- za©adit na stack
+      lex_input^.metastack & ms;
+
+    -- podm¡nˆn˜ p©eklad ji‘ nepokra‡uje
+    elsif cmd=meta_end then 
+      return; 
+      end if;
+
+    if vysl
+
+      -- je-li podminka platna, nasleduje blok, ktery se bere vazne
+      then
+        -- zmenit priznak
+        succ lex_input^.metastack[lex_input^.metastack:length].flag;
+        -- a konec
+        return;
+
+      -- jinak vy‡¡st az do dalsiho podmineneho symbolu
+      else
+        level:=0;
+        loop
+          -- p©e‡¡st symbol
+          cc_lex0.getlexsym(lex,xval,xline,xcol,xdelka);
+
+          -- konec souboru
+          if lex=lex_eof then
+            checkmeta;
+            return;
+            end if;
+
+          -- analyzovat metap©¡kaz
+          if lex=lex_meta_id then
+            -- vyhledat
+            searchmeta(xval.id^,cmd);
+
+            -- zpracovat nˆkter‚ metap©¡kazy
+            case cmd
+              -- za‡ tek p rov‚ho metap©¡kazu
+              when meta_if, meta_syntax, meta_template do 
+                  succ level;
+
+              -- dal¨¡ vˆtev #if
+              when meta_elsif, meta_else do
+                  -- nen¡ na¨e vˆtev ?
+                  if level=0 then break; end if;
+
+              -- konec p rov‚ho metap©¡kazu
+              when meta_end do
+                  -- nen¡ to n ¨ #end ?
+                  if level=0
+                    -- ano => konec #if
+                    then break
+                    -- ne => pokra‡ovat d l
+                    else
+                      pred level
+                      end if;
+
+              -- jin‚ metap©¡kazy n s nezaj¡maj¡
+              end case;
+            end if;
+          end loop;
+        end if;
+    end loop;
+  end p_meta_if_cont;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_if : tmetaaction =
+-- Metap©¡kaz #IF.
+----------------------------------------------------------------------------------------------------
+begin
+  p_meta_if_cont(curr,meta_if);
+  end p_meta_if;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_elsif : tmetaaction =
+-- Metap©¡kaz #ELSIF.
+----------------------------------------------------------------------------------------------------
+begin
+  p_meta_if_cont(curr,meta_elsif);
+  end p_meta_elsif;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_else : tmetaaction =
+-- Metap©¡kaz #ELSE.
+----------------------------------------------------------------------------------------------------
+begin
+  p_meta_if_cont(curr,meta_else);
+  end p_meta_else;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_end_syntax : tmetaaction =
+-- Metap©¡kaz #END ukon‡uj¡c¡ #SYNTAX.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- identifik tor
+  if followlex(curr,lex_id) or else (getlexid^<>lex_input^.metastack[lex_input^.metastack:length].id^) then
+    ce^.seterror({CCERR=}000200,ce_meta_x_end_id);
+    ce^.setparam(entityident_to_string(lex_input^.metastack[lex_input^.metastack:length].id^));
+    ce^.loadpos2;
+    end if;
+
+  -- zru¨it ze stacku polo‘ku
+  pred lex_input^.metastack:length;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000201,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- nasledujici symbol znamena konec sekce #syntax
+  setlex(lex_endasm);
+  ungetlex;
+  end p_meta_end_syntax;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_end : tmetaaction =
+-- Metap©¡kaz #END.
+----------------------------------------------------------------------------------------------------
+begin
+  -- provadi se nejaky blok metaprikazu ?
+  if lex_input^.metastack:length>0
+    then 
+      case lex_input^.metastack[lex_input^.metastack:length].open
+        when meta_if     do p_meta_if_cont(curr,meta_end);
+        when meta_syntax do p_meta_end_syntax(curr);
+        when others      do verify(146,true);
+        end case;
+    else
+      p_meta_metaerr(curr);
+      end if;
+  end p_meta_end;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_error : tmetaaction =
+-- Metap©¡kaz #ERROR.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  msg              : t_char32str;                -- zpr va
+
+begin
+  -- zpr va
+  x_vyraz(curr,expr,es_expr);
+  x_evaluate(curr,expr,ek_const_str,nil,eu_read,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  x_const_sysstr(expr,msg);
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000204,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- vygenerovat chybu
+  ce^.seterror({CCERR=}000205,ce_meta_error);
+  ce^.setparam(msg);
+  ce^.loadpos;
+  ce^.raiseerror;
+  end p_meta_error;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_warning : tmetaaction =
+-- Metap©¡kaz #WARNING.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  msg              : t_char32str;                -- zpr va
+
+begin
+  -- zpr va
+  x_vyraz(curr,expr,es_expr);
+  x_evaluate(curr,expr,ek_const_str,nil,eu_read,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  x_const_sysstr(expr,msg);
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000206,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- vygenerovat varov n¡
+  ce^.setwarning({CCERR=}000207,cw_meta_warning);
+  ce^.setparam(msg);
+  ce^.loadpos;
+  end p_meta_warning;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_display : tmetaaction =
+-- Metap©¡kaz #DISPLAY.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;                -- vyhodnocen¡
+  msg              : t_char32str;                -- zpr va
+
+begin
+  -- zpr va
+  x_vyraz(curr,expr,es_expr);
+  x_evaluate(curr,expr,ek_const_str,nil,eu_read,true,eval);
+  {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
+  x_const_sysstr(expr,msg);
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000208,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- vygenerovat zpr vu
+  ce^.setmsg({CCERR=}000209,msg);
+  ce^.loadpos;
+  end p_meta_display;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_declared : tmetaaction =
+-- Metap©¡kaz #DECLARED.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  id               : pentityident;               -- identifik tor
+  srch             : tentitysearch;              -- hled tko
+
+begin
+  -- identifik tor
+  if followlex(curr,lex_id) then
+    ce^.seterror({CCERR=}000210,ce_x_id);
+    ce^.loadpos;
+    ce^.resumeerror;
+    end if;
+  id:=getlexid;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000211,ce_x_scol);
+    ce^.loadpos;
+    end if;
+
+  -- zkusit vyhledat
+  srch.find_global(curr,id^);
+
+  -- ulo‘it v˜sledek
+  ungetlex;
+  if srch.psym<>nil
+    then setlex(lex_meta_true);
+    else setlex(lex_meta_false);
+    end if;
+  --unimplemented(102);
+  end p_meta_declared;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_template : tmetaaction =
+-- Metap©¡kaz #TEMPLATE.
+----------------------------------------------------------------------------------------------------
+use
+  cc_lex0;
+
+var
+  ptemplate        : pentity_template;           -- ¨ablona
+  template_context : tcontext;                   -- kontext ¨ablony
+  pos              : lexposblock;                -- pozice ¨ablony
+  pparam           : pentity_tparam;             -- parametr
+  param_context    : tcontext;                   -- kontext parametru
+  parampos         : lexposblock;                -- pozice parametru
+  depth            : t_unsigned;                 -- hloubka vno©en¡ p rov˜ch metap©¡kaz–
+  srch             : tentitysearch;              -- hled tko
+  lexnode          : plexnode;                   -- jeden lexik ln¡ element ¨ablony
+  lexlast          : plexnode;                   -- zat¡m posledn¡ zpracovan˜ element ¨ablony
+
+  xlex             : lexsym;                     -- ziskany symbol
+  xval             : lexval;                     -- hodnota symbolu
+  xline            : lexline;                    -- radek na kterem je prvek
+  xcol             : lexcolumn;                  -- sloupec na kterem je prvek
+  xdelka           : lexlength;                  -- delka prvku
+  meta             : tmetacmd;                   -- vno©en˜ metap©¡kaz
+
+begin
+  -- za‡ tek deklarace
+  d_create(curr,pentity(ptemplate),template_context,et_template,pos);
+
+  -- m–‘e n sledovat seznam parametr–
+  if checklex(template_context,lex_lpar) then
+    loop
+      -- zalo‘it parametr
+      d_create(template_context,pentity(pparam),param_context,et_tparam,parampos);
+
+      -- konec deklarace
+      d_end(pparam^,parampos);
+      until not checklex(template_context,lex_comma);
+
+    -- prav  z vorka
+    if followlex(template_context,lex_rpar) then
+      ce^.seterror({CCERR=}000424,ce_x_rpar);
+      ce^.loadpos2;
+      ce^.resumeerror;
+      end if;
+    end if;
+
+  -- st©edn¡k
+  if followlex(template_context,lex_scol) then
+    ce^.seterror({CCERR=}000425,ce_x_scol);
+    ce^.loadpos2;
+    ce^.resumeerror;
+    end if;
+
+  -- tˆlo deklarace
+  d_next(ptemplate^,pos);
+
+  -- zpracovat v¨echny lexik ln¡ elementy a‘ do odpov¡daj¡c¡ho #end;
+  depth:=0;
+  lexlast:=nil;
+  loop
+    -- p©e‡¡st lexik ln¡ symbol
+    cc_lex0.getlexsym(xlex,xval,xline,xcol,xdelka);
+    if xlex=lex_eof then break; end if;
+
+    -- p©edzpracovat
+    if xlex=lex_meta_id then
+      searchmeta(xval.id^,meta);
+      case meta
+        -- za‡ tek p rov‚ho metap©¡kazu
+        when meta_if, meta_syntax, meta_template do 
+            succ depth;
+
+        -- konec p rov‚ho metap©¡kazu
+        when meta_end do
+            -- nen¡ to n ¨ #end ?
+            if depth=0
+              -- ano => konec #template
+              then break
+              -- ne => pokra‡ovat d l
+              else
+                pred depth
+                end if;
+
+        -- jin‚ metap©¡kazy n s nezaj¡maj¡
+        end case;
+      end if;
+
+    -- je-li to identifik tor, tak zkusit naj¡t parametr
+    if xlex=lex_id then
+      srch.find_local_all(template_context,xval.id^);
+      end if;
+
+    -- jak to dopadlo ?
+    if (xlex=lex_id) and (srch.psym<>nil)
+
+      -- zalo‘it jako odkaz na parametr
+      then
+        verify(554,srch.psym^.etype<>et_tparam);
+        
+        -- alokovat pamˆŸ
+        new plexnode_param(lexnode);
+
+        -- doplnit £daje
+        plexnode_param(lexnode)^.pparam:=pentity_tparam(srch.psym);
+
+      -- zalo‘it jako lexik ln¡ element
+      else
+        -- alokovat pamˆŸ
+        new plexnode_lex(lexnode);
+
+        -- doplnit £daje
+        plexnode_lex(lexnode)^.xlex:=xlex;
+        plexnode_lex(lexnode)^.xval:=xval;
+        plexnode_lex(lexnode)^.xline:=xline;
+        plexnode_lex(lexnode)^.xcol:=xcol;
+        plexnode_lex(lexnode)^.xdelka:=xdelka;
+        end if;
+
+    -- za©adit na konec
+    if lexlast<>nil
+      then lexlast^.next:=lexnode;
+      else ptemplate^.plex:=lexnode;
+      end if;
+    lexlast:=lexnode;
+    end loop;
+
+  -- identifik tor
+  if followlex(template_context,lex_id) or else (getlexid^<>ptemplate^.id^) then
+    ce^.seterror({CCERR=}000426,ce_meta_x_end_id);
+    ce^.setparam(entityident_to_string(ptemplate^.id^));
+    ce^.loadpos2;
+    ce^.resumeerror;
+    end if;
+
+  -- st©edn¡k
+  if followlex(template_context,lex_scol) then
+    ce^.seterror({CCERR=}000427,ce_x_scol);
+    ce^.loadpos2;
+    ce^.resumeerror;
+    end if;
+
+  -- konec deklarace
+  d_end(ptemplate^,pos);
+  end p_meta_template;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_unknown : tmetaaction =
+-- Nezn m˜ metap©¡kaz.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  p_skipunknown(curr,{CCERR=}000212,cw_unknown_meta,getlexid^);
+  end p_meta_unknown;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_metacmd (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    id             : in tentityident) =          -- identifik tor metap©¡kazu
+-- Vyhodnot¡ metap©¡kaz.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  meta             : tmetacmd;                   -- metap©¡kaz
+
+begin
+  -- schovat roz¨¡©en¡ lexik ln¡ anal˜zy
+  lex_set_behavior(nil,false);
+
+  -- vyhledat
+  searchmeta(id,meta);
+
+  -- zpracovat
+  verify(88,^metatab[meta]=nil);
+  metatab[meta]^(curr);
+
+catch
+  when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_scol,rt_skip);
+
+leave
+  -- vr tit zpˆt roz¨¡©en¡ lexik ln¡ anal˜zy
+  lex_clear_behavior;
+  end p_metacmd;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_preprocessor =
+-- Preprocesor.
+----------------------------------------------------------------------------------------------------
+begin
+  -- identifik tor
+  if xlex=lex_id then
+    {%%X}
+    konec:=true;
+
+  -- metap©¡kaz
+  elsif xlex=lex_meta_id then
+    p_metacmd(curr,xval.id^);
+    konec:=false;
+
+  -- nˆco jin‚ho
+  else 
+    konec:=true;
+    end if;
+  end p_preprocessor;
+
+
+
+----------------------------------------------------------------------------------------------------
+entry =
+-- Inicializace.
+----------------------------------------------------------------------------------------------------
+begin
+  metatab[meta_unknown]    :=^p_meta_unknown;
+  metatab[meta_include]    :=^p_meta_include;
+  metatab[meta_option]     :=^p_meta_option;
+  metatab[meta_pragma]     :=^p_meta_pragma;
+  metatab[meta_environment]:=^p_meta_environment;
+  metatab[meta_syntax]     :=^p_meta_syntax;
+  metatab[meta_error]      :=^p_meta_error;
+  metatab[meta_if]         :=^p_meta_if;
+  metatab[meta_elsif]      :=^p_meta_elsif;
+  metatab[meta_else]       :=^p_meta_else;
+  metatab[meta_end]        :=^p_meta_end;
+  metatab[meta_and]        :=^p_meta_and_then;
+  metatab[meta_or]         :=^p_meta_or_else;
+  metatab[meta_warning]    :=^p_meta_warning;
+  metatab[meta_display]    :=^p_meta_display;
+  metatab[meta_declared]   :=^p_meta_declared;
+  metatab[meta_template]   :=^p_meta_template;
+  metatab[meta_separate]   :=^p_meta_separate;
+  end entry;
+
+
+
+end cc_pre;

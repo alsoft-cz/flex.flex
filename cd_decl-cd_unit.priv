@@ -1,0 +1,1941 @@
+----------------------------------------------------------------------------------------------------
+module private cd_unit =
+-- P©eklada‡ Flexu.
+-- P©eklad kompila‡n¡ jednotky.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 28.04.2000 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_var,
+  cc_def.cc_files,
+  cb_block,
+  cb_block.cb_def,
+  cb_block.cb_compile,
+  cd_decl.cd_create,
+  cd_decl.cd_eval,
+  cd_decl.cd_type,
+  cd_decl.cd_attr,
+  cd_decl.cd_util,
+  cx_expr,
+  cx_expr.cx_def,
+  cx_expr.cx_compile;
+
+use
+  cc_base.cc_sym.cc_advanced;
+
+----------------------------------------------------------------------------------------------------
+procedure p_declare (
+    curr           : in tcontext);               -- pr vˆ p©ekl dan˜ prvek
+-- Deklarace.   
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_body (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    part_extend    : in t_logical;               -- T-extend
+    part_with      : in t_logical;               -- T-with/use
+    part_spec      : in t_logical;               -- T-speci ln¡ metody
+    part_stmt      : in t_logical);              -- T-p©¡kazy
+-- P©eklad deklara‡n¡ a p©¡kazov‚ ‡ sti symbolu.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_type (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Deklarace typ–.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+  ptyp             : pentity_type;               -- typ
+  ptyp_context     : tcontext;                   -- kontext deklarace
+  compat           : typecompat;                 -- determinace kompatibility
+  pos              : lexposblock;                -- pozice symbolu
+  expr             : pexpnode;                   -- po‡ te‡n¡ hodnota
+  newdecl          : t_logical;                  -- T-je to £pln  deklarace nov‚ho typu
+
+begin
+  loop
+    begin
+      -- zat¡m nev¡me, co je deklarace za‡
+      newdecl:=false;
+
+      -- za‡ tek deklarace
+      d_create(curr,pentity(ptyp),ptyp_context,et_type,pos);
+
+      if ptyp^.declared=etd_incomplete
+
+        -- Type declaration completion/Private extension declaration
+        then
+          if followlex(ptyp_context,lex_eq) then
+            ce^.seterror({CCERR=}000321,ce_x_eq);
+            ce^.sethint(hint_x_completion);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            end if;
+
+        -- Incomplete type declaration/Full type declaration
+        else
+          -- dal¨¡ symbol
+          getlex(ptyp_context,lex);
+          case lex
+
+            -- Incomplete type declaration
+            when lex_scol do d_end(ptyp^,pos);
+
+            -- Full type declaration
+            when lex_eq   do
+                -- p©ej¡t do dal¨¡ f ze p©ekladu
+                d_next(ptyp^,pos);
+
+                -- poznamenat si, ‘e je to £pln  deklarace nov‚ho typu
+                newdecl:=true;
+
+            -- cokoliv jin‚ho je chyba
+            when others do
+                ce^.seterror({CCERR=}000322,ce_x_eq_scol);
+                ce^.sethint(hint_def_or_forward);
+                ce^.loadpos;
+                {%%RESUME ce^.raiseerror;}
+                ce^.resumeerror;
+            end case;
+          end if;
+
+      -- p©elo‘it definici
+      if ptyp^.compiling=etd_full then
+
+        -- nen¡ to n hodou Private extension Declaration ?
+        if ptyp^.derive=td_private_extension
+
+          -- ano => definice extenze
+          then
+            p_private_extension(curr,ptyp^,ptyp_context);
+
+          -- ne => norm ln¡ deklarace typu/dokon‡en¡ deklarace
+          else
+            -- dal¨¡ symbol
+            getlex(ptyp_context,lex);
+
+            -- mohla by to b˜t determinace kompatibility
+            case lex
+              -- determinace "protected"
+              when lex_protected do compat:=tc_protected;
+
+              -- determinace "private"
+              when lex_private   do compat:=tc_private;
+
+              when others do
+                 compat:=tc_norm;
+                 ungetlex;
+              end case;
+
+            -- definice typu
+            p_typeedef(curr,ptyp^,ptyp_context,compat);
+
+            -- atributy
+            p_attribute(ptyp_context);
+            end if;
+
+        -- := Po‡ te‡n¡ hodnota
+        if checklex(ptyp_context,lex_assign) then
+          -- v˜raz
+          x_vyraz(ptyp_context,expr,es_expr);
+          ptyp^.init.setexpr(expr);
+          end if;
+
+        -- mus¡ n sledovat st©edn¡k
+        if followlex(ptyp_context,lex_scol) then
+          ce^.seterror({CCERR=}000323,ce_x_scol);
+          ce^.loadpos;
+          {%%RESUME ce^.raiseerror;}
+          end if;
+
+        -- pokud je to private extension, tak se vr tit k Incomplete declaration
+        if newdecl and (ptyp^.derive=td_private_extension) then d_rollback(ptyp^); end if;
+
+        -- konec deklarace
+        d_end(ptyp^,pos);
+        end if;
+
+    catch
+      when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_scol,rt_skip);
+      end;
+
+    -- pod¡vat se na dal¨¡ symbol
+    looklex(curr,lex);
+    until lex<>lex_id;
+  end p_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_const (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Deklarace konstant.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+  pconst           : pentity_const;              -- konstanta
+  pconst_context   : tcontext;                   -- prim rn¡ kontext konstanty
+  pos              : lexposblock;                -- pozice
+  expr             : pexpnode;                   -- v˜raz
+
+begin
+  loop
+    begin
+      -- za‡ tek deklarace
+      d_create(curr,pentity(pconst),pconst_context,et_const,pos);
+
+      if pconst^.compiling=etd_none
+
+        -- Incomplete constant declaration/Full constant declaration
+        then
+          -- dal¨¡ symbol
+          getlex(pconst_context,lex);
+
+          -- : Typ
+          if lex=lex_col then
+            -- konstanta m  explicitnˆ uveden˜ typ
+            pconst^.cflags+constflagset:[cf_typed];
+
+            -- p©e‡¡st typ konstanty
+            p_typename(curr,pconst_context,pconst^.typ);
+
+            -- dal¨¡ symbol
+            getlex(pconst_context,lex);
+            end if;
+
+          case lex
+
+            -- Full constant declaration
+            when lex_eq  do d_next(pconst^,pos);
+
+            -- Incomplete constant declaration
+            when lex_scol do
+                -- konstanta mus¡ m¡t uveden typ
+                if not (cf_typed in pconst^.cflags) then
+                  ce^.seterror({CCERR=}000324,ce_x_eq_col);
+                  ce^.sethint(hint_def_or_type);
+                  ce^.loadpos;
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+
+                -- konec delarace
+                d_end(pconst^,pos);
+
+
+            -- cokoliv jin‚ho je chyba
+            when others do
+                if cf_typed in pconst^.cflags
+                  then
+                    ce^.seterror({CCERR=}000325,ce_x_eq_scol);
+                    ce^.sethint(hint_def_or_forward);
+                  else
+                    ce^.seterror({CCERR=}000326,ce_x_eq_col);
+                    ce^.sethint(hint_def_or_type);
+                    end if;
+                ce^.loadpos;
+                {%%RESUME ce^.raiseerror;}
+                ce^.resumeerror;
+            end case;
+
+        -- Full constant declaration
+        else
+
+          -- dal¨¡ symbol
+          getlex(pconst_context,lex);
+          case lex
+            -- rovn¡tko
+            when lex_eq do { v po© dku };
+
+            -- dvojte‡ka
+            when lex_col do
+                ce^.seterror({CCERR=}000327,ce_x_eq);
+                ce^.sethint(hint_already_forward);
+                ce^.loadpos;
+                {%%RESUME ce^.raiseerror;}
+                resumelex(pconst_context,lex,lex_eq,rl_skip,lex_scol,rt_resume);
+
+
+            -- cokoliv jin‚ho
+            when others do
+                ce^.seterror({CCERR=}000328,ce_x_eq);
+                ce^.sethint(hint_x_completion);
+                ce^.loadpos;
+                {%%RESUME ce^.raiseerror;}
+                ce^.resumeerror;
+            end case;
+          end if;
+
+      -- p©elo‘it definici
+      if pconst^.compiling=etd_full then
+        -- konstantn¡ v˜raz
+        x_vyraz(pconst_context,expr,es_expr);
+        pconst^.init.setexpr(expr);
+
+        -- mus¡ n sledovat st©edn¡k
+        if followlex(pconst_context,lex_scol) then
+          ce^.seterror({CCERR=}000329,ce_x_scol);
+          ce^.loadpos;
+          {%%RESUME ce^.raiseerror;}
+          end if;
+
+        -- konec deklarace
+        d_end(pconst^,pos);
+        end if;
+
+    catch
+      when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_scol,rt_skip);
+      end;
+
+    -- pod¡vat se na dal¨¡ symbol
+    looklex(curr,lex);
+    until lex<>lex_id;
+  end p_const;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_var (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Deklarace promˆnn˜ch.
+----------------------------------------------------------------------------------------------------
+label 
+  R1;
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+  pvar             : pentity_var;                -- promˆnn 
+  pvar_context     : tcontext;                   -- kontext promˆnn‚
+  expr             : pexpnode;                   -- po‡ te‡n¡ hodnota
+  pos              : lexposblock;                -- pozice
+
+begin
+  loop
+    begin
+      -- za‡ tek deklarace
+      d_create(curr,pentity(pvar),pvar_context,et_var,pos);
+
+      -- zvolit implicitn¡ pamˆŸovou t©¡du podle typu nad©azen‚ho prvku
+      case curr.entity^.etype
+        when et_compile   do pvar^.mclass:=mc_static;
+        when et_program   do pvar^.mclass:=mc_static;
+        when et_module    do pvar^.mclass:=mc_static;
+        when et_class     do pvar^.mclass:=mc_class;
+        when et_special   do pvar^.mclass:=mc_auto;
+        when et_procedure do pvar^.mclass:=mc_auto;
+        when et_static    do pvar^.mclass:=mc_auto;
+        when et_virtual   do pvar^.mclass:=mc_auto;
+        when et_task      do pvar^.mclass:=mc_auto;
+        when et_override  do pvar^.mclass:=mc_auto;
+        when et_macro     do pvar^.mclass:=mc_auto;
+        when others do verify(320,true);
+        end case;
+
+      -- dvojte‡ka
+      if followlex(pvar_context,lex_col) then
+        ce^.seterror({CCERR=}000330,ce_x_col);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        end if;
+
+      -- pamˆŸov  t©¡da
+      getlex(pvar_context,lex);
+      case lex
+        -- STATIC
+        when lex_static do
+            -- dovoleno v¨ude kromˆ makra
+            if etc_macro in curr.entity^.compile then
+              ce^.seterror({CCERR=}000331,ce_i_memclass);
+              ce^.sethint(hint_static_in_macro);
+              ce^.loadpos;
+              {%%RESUME ce^.raiseerror;}
+              goto R1;
+              end if;
+
+            -- poznamenat
+            pvar^.mclass:=mc_static;
+
+        -- CLASS
+        when lex_class  do
+            -- dovoleno v¨ude kromˆ makra
+            -- (co kdyby bylo makro v t©¡dˆ, ‘e)
+            if etc_macro in curr.entity^.compile then
+              ce^.seterror({CCERR=}000332,ce_i_memclass);
+              ce^.sethint(hint_class_in_macro);
+              ce^.loadpos;
+              {%%RESUME ce^.raiseerror;}
+              goto R1;
+              end if;
+          
+            -- promˆnn  mus¡ b˜t v t©¡dˆ
+            if not sym_check_container(curr.entity,et_class) then
+              ce^.seterror({CCERR=}000333,ce_i_memclass);
+              ce^.sethint(hint_class_in_class);
+              ce^.loadpos;
+              {%%RESUME ce^.raiseerror;}
+              goto R1;
+              end if;
+
+            -- poznamenat
+            pvar^.mclass:=mc_class;
+
+        -- TASK
+        when lex_task   do
+            -- dovoleno v¨ude kromˆ makra
+            if etc_macro in curr.entity^.compile then
+              ce^.seterror({CCERR=}000334,ce_i_memclass);
+              ce^.sethint(hint_task_in_macro);
+              ce^.loadpos;
+              {%%RESUME ce^.raiseerror;}
+              goto R1;
+              end if;
+
+            -- poznamenat
+            pvar^.mclass:=mc_task;
+
+        -- neuvedeno, zvolit default
+        when others do
+            -- vr tit posledn¡ prvek do vstupu
+            ungetlex;
+        end case;
+
+    R1:
+      -- determinace p©¡stupu
+      p_varaccess(pvar_context,pvar^.vaccess);
+
+      -- typ
+      p_typeidef(curr,pvar_context,pvar^.typ);
+
+      -- implicitn¡ hodnota ?
+      if checklex(pvar_context,lex_assign) then
+        x_vyraz(pvar_context,expr,es_expr);
+        pvar^.init.setexpr(expr);
+        end if;
+
+      -- st©edn¡k
+      if followlex(pvar_context,lex_scol) then
+        ce^.seterror({CCERR=}000335,ce_x_scol);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        end if;
+
+      -- pozice
+      getlexpos(pos.e,ll_curr,true);
+
+      -- konec deklarace
+      d_end(pvar^,pos);
+
+    catch
+      when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_scol,rt_skip);
+      end;
+
+    -- pod¡vat se na dal¨¡ symbol
+    looklex(curr,lex);
+    until lex<>lex_id;
+  end p_var;
+
+
+
+------------------------------------------------------------------------------------------------------
+--procedure p_alias (
+--    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+---- Deklarace alias–.
+------------------------------------------------------------------------------------------------------
+--var
+--  lex,lex2         : lexsym;                     -- lexik ln¡ symbol
+--  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+--  palias           : pentity_alias;              -- promˆnn 
+--  expr             : pexpnode;                   -- v˜raz
+--  pos              : lexposblock;                -- pozice
+--
+--begin
+--  loop
+--    begin
+--      -- za‡ tek deklarace
+--      d_create(curr,pentity(palias),et_alias,pos);
+--
+--      -- dvojte‡ka
+--      if followlex(lex_col) then
+--        ce^.seterror({CCERR=}000336,ce_x_col);
+--        ce^.loadpos;
+--        {%%RESUME ce^.raiseerror;}
+--        end if;
+--
+--      -- typ
+--      p_typename(curr,palias^,palias^.typ);
+--
+--      -- mus¡ n sledovat IN nebo OUT
+--      getlex(lex);
+--      if lex not in lexsymset:[lex_in,lex_out] then
+--        ce^.seterror({CCERR=}000337,ce_x_in_out);
+--        ce^.loadpos;
+--        {%%RESUME ce^.raiseerror;}
+--        ce^.resumeerror;
+--        end if;
+--
+--      -- IN [ OUT ]
+--      if lex=lex_in then
+--        -- t©eba je to IN OUT
+--        getlex(lex2);
+--        if lex2<>lex_out then ungetlex; end if;
+--
+--        -- v˜raz
+--        x_vyraz(curr,expr,es_name);
+--        palias^.write.setexpr(expr);
+--        if lex2=lex_out then palias^.read.setexpr(expr); end if;
+--
+--        -- m–‘e n sledovat OUT
+--        if lex2<>lex_out then
+--          getlex(lex);
+--          if lex<>lex_out then ungetlex; end if;
+--          end if;
+--        end if;
+--
+--      -- OUT
+--      if lex=lex_out then
+--        -- v˜raz
+--        x_vyraz(curr,expr,es_name);
+--        palias^.read.setexpr(expr);
+--        end if;
+--
+--      -- st©edn¡k
+--      if followlex(lex_scol) then
+--        ce^.seterror({CCERR=}000338,ce_x_scol);
+--        ce^.loadpos;
+--        {%%RESUME ce^.raiseerror;}
+--        end if;
+--
+--      -- konec deklarace
+--      d_end(palias^,pos);
+--
+--    catch
+--      when resume_error do resumelex(lex,lex_scol,rl_skip,lex_scol,rt_skip);
+--      end;
+--
+--    -- pod¡vat se na dal¨¡ symbol
+--    looklex(lex);
+--    until lex<>lex_id;
+--  end p_alias;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_label (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Deklarace n vˆ¨t¡.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  plabel           : pentity_label;              -- n vˆ¨t¡
+  plabel_context   : tcontext;                   -- context n vˆ¨t¡
+  pos              : lexposblock;                -- pozice
+
+begin
+  -- n vˆ¨t¡ nelze deklarovat v modulu a v t©¡dˆ
+  if curr.entity^.etype in ets_modular then
+    ce^.seterror({CCERR=}000339,ce_baddecl);
+    ce^.sethint(hint_decl_label);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  loop
+    -- za‡ tek deklarace
+    d_create(curr,pentity(plabel),plabel_context,et_label,pos);
+
+    -- st©edn¡k
+    if followlex(plabel_context,lex_scol) then
+      ce^.seterror({CCERR=}000340,ce_x_scol);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      end if;
+
+    -- konec deklarace
+    d_end(plabel^,pos);
+
+    -- pod¡vat se na dal¨¡ symbol
+    looklex(curr,lex);
+    until lex<>lex_id;
+  end p_label;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_with_module (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    mode           : in twithmode) =             -- WITH/USE
+-- P©eklad WITH/USE.
+----------------------------------------------------------------------------------------------------
+label R1;
+
+var
+  ek_context       : static const array twithmode of expkind := [
+      for twm_use      use ek_context_use,
+      for twm_with     use ek_context_with];
+  ce_i             : static const array twithmode of terrorcode := [
+      for twm_use      use ce_i_use,
+      for twm_with     use ce_i_with];
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  psym             : pentity;                    -- symbol (modul/t©¡da)
+  eval             : tentityeval;
+
+begin
+  -- WITH/USE
+  if ((mode=twm_with) and not checklex(curr,lex_with))
+  or ((mode=twm_use) and not checklex(curr,lex_use)) then 
+    return; 
+    end if;
+
+  begin
+    loop
+      -- v˜raz
+      x_vyraz(curr,expr,es_name);
+      x_evaluate(curr,expr,ek_context[mode],nil,eu_formal,true,eval);
+      verify(141,eval<>ete_evaluated);
+
+      -- symbol
+      x_get_symbol(expr,psym);
+
+      -- nelze udˆlat WITH na nad©azen˜ symbol
+      if sym_is_included(curr.entity,psym) then
+        ce^.seterror({CCERR=}000341,ce_i[mode]);
+        ce^.sethint(hint_with_super);
+        expr^.errpos;
+        {%%RESUME ce^.raiseerror;}
+        goto R1;
+        end if;
+
+      -- nelze udˆlat WITH na vno©en˜ symbol
+      -- Pozn mka: Tato situace m–‘e opravdu nastat: ve WITH v private body
+      -- by mohlo b˜t jm‚no modulu deklarovan‚ho v public body
+      if sym_is_included(psym,curr.entity) then
+        ce^.seterror({CCERR=}000342,ce_i[mode]);
+        ce^.sethint(hint_with_sub);
+        expr^.errpos;
+        {%%RESUME ce^.raiseerror;}
+        goto R1;
+        end if;
+
+      -- nelze udˆlat WITH na sv‚ho p©edka
+      if sym_is_ancestor(psym,curr.entity) then
+        ce^.seterror({CCERR=}000343,ce_i[mode]);
+        ce^.sethint(hint_with_ancestor);
+        expr^.errpos;
+        {%%RESUME ce^.raiseerror;}
+        goto R1;
+        end if;
+
+      -- nelze udˆlat WITH na sv‚ho potomka
+      if sym_is_descendant(psym,curr.entity) then
+        ce^.seterror({CCERR=}000344,ce_i[mode]);
+        ce^.sethint(hint_with_descendant);
+        expr^.errpos;
+        {%%RESUME ce^.raiseerror;}
+        goto R1;
+        end if;
+
+      -- mus¡ b˜t zn ma alespo¤ specifikace
+      {e_symbol(psym,psym^.pos[etp_spec],sd_specified,true);}
+
+
+      -- doplnit do WITH tabulky
+      if psym^.declared=etd_full
+        -- £pln  vazba
+        then 
+          cc_base.cc_sym.cc_advanced.sym_add_with(curr,expr,psym,mode,twt_all)
+        -- ‡ ste‡n  vazba
+        else
+          cc_base.cc_sym.cc_advanced.sym_add_with(curr,expr,psym,mode,twt_partial)
+          end if;
+
+    R1:
+      -- dal¨¡ symbol
+      until not checklex(curr,lex_comma);
+
+    -- st©edn¡k
+    if followlex(curr,lex_scol) then
+      ce^.seterror({CCERR=}000345,ce_x_scol);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      end if;
+
+  catch
+    when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_end,rt_leave);
+    end;
+  end p_with_module;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_extend (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- P©eklad EXTEND.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;
+  expr             : pexpnode;                   -- v˜raz
+  psym             : pentity;                    -- symbol (modul/t©¡da)
+  eval             : tentityeval;
+
+begin
+  -- EXTEND
+  if not checklex(curr,lex_extend) then return; end if;
+
+  begin
+    -- v˜raz
+    x_vyraz(curr,expr,es_name);
+    x_evaluate(curr,expr,ek_context_extend,nil,eu_formal,true,eval);
+    verify(143,eval<>ete_evaluated);
+
+    -- symbol
+    x_get_symbol(expr,psym);
+
+    -- nelze dˆlat EXTEND na sv‚ho potomka
+    if sym_is_descendant(psym,curr.entity) then
+      ce^.seterror({CCERR=}000346,ce_i_extend);
+      ce^.sethint(hint_extend_descendant);
+      expr^.errpos;
+      {%%RESUME ce^.raiseerror;};
+      ce^.resumeerror;
+      end if;
+
+    -- nelze dˆlat EXTEND na nad©azen˜ modul
+    if sym_is_included(curr.entity,psym) then
+      ce^.seterror({CCERR=}000347,ce_i_extend);
+      ce^.sethint(hint_extend_enclosing);
+      expr^.errpos;
+      {%%RESUME ce^.raiseerror;};
+      ce^.resumeerror;
+      end if;
+
+    -- nelze dˆlat EXTEND na WITH/USEnut˜ modul
+    if sym_is_used(psym,curr,twithmodeset:full,twithtypeset:full) then
+      ce^.seterror({CCERR=}000348,ce_i_extend);
+      expr^.errpos;
+      {%%RESUME ce^.raiseerror;};
+      ce^.resumeerror;
+      end if;
+
+    -- mus¡ b˜t zn ma alespo¤ specifikace
+    --%%X !!
+    {e_symbol(psym,psym^.pos[etp_spec],sd_specified,true);}
+
+    -- za©adit jako p©edka
+    curr.entity^.ancestor.setexpr(expr);
+    curr.entity^.ancestor.setentity(psym);
+
+    -- st©edn¡k
+    if followlex(curr,lex_scol) then
+      ce^.seterror({CCERR=}000349,ce_x_scol);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      end if;
+
+  catch
+    when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_end,rt_leave);
+    end;
+  end p_extend;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_special (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- P©eklad speci ln¡ch metod.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  declared         : set of tuserspectype;       -- ji‘ deklarovan‚ speci ln¡ metody
+
+    ------------------------------------------------------------------------------------------------
+    procedure deklarace (
+        spectype   : in tuserspectype) =         -- typ speci ln¡ metody
+    -- Deklarace speci ln¡ metody.
+    ------------------------------------------------------------------------------------------------
+    var
+      ce_dup       : const array tuserspectype of terrorcode := [
+          for tst_entry  use ce_dupentry,
+          for tst_exit   use ce_dupexit,
+          for tst_adjust use ce_dupadjust];
+
+      ce_x_end     : const array tuserspectype of terrorcode := [
+          for tst_entry  use ce_x_end_entry,
+          for tst_exit   use ce_x_end_exit,
+          for tst_adjust use ce_x_end_adjust];
+
+    var
+      pspec        : pentity_special;            -- speci ln¡ metoda
+      pspec_context: tcontext;                   -- kontext speci ln¡ metody
+      pos          : lexposblock;                -- pozice
+
+    begin
+      -- nebyla ji‘ metoda deklarov na ?
+      if spectype in declared then
+        ce^.seterror({CCERR=}000350,ce_dup[spectype]);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        end if;
+
+      -- za‡ tek deklarace
+      d_create_without_name(curr,pentity(pspec),pspec_context,et_special,tspectypeid[spectype],pos);
+
+      -- ulo‘it typ speci ln¡ metody
+      pspec^.spectype:=spectype;
+
+      -- ur‡it typ objektu, ke kter‚mu se metoda vztahuje
+      case curr.entity^.etype
+        when et_class   do pspec^.specobj:=tso_class;
+        when et_module  do pspec^.specobj:=tso_module;
+        when others     do verify(573,true);
+        end case;
+
+      -- bude se p©ed vat instance ?
+      case curr.entity^.etype
+        when et_class   do pspec^.instance:=tip_pass;
+        when et_module  do pspec^.instance:=tip_none;
+        when others     do verify(409,true);
+        end case;
+
+      -- za©adit do tabulky speci ln¡ch metod
+      if curr.entity^.etype=et_class then
+        pentity_type(curr.entity)^.stable[spectype].setentity(pspec);
+        end if;
+
+      -- rovn¡tko
+      if followlex(pspec_context,lex_eq) then
+        ce^.seterror({CCERR=}000351,ce_x_eq);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        end if;
+
+      -- p©elo‘it deklarace
+      p_body(pspec_context,false,true,false,true);
+
+      -- END kw
+      if followendkw(pspec_context,lex) then
+        ce^.seterror({CCERR=}000352,ce_x_end[spectype]);
+        ce^.loadpos2;
+        {%%RESUME ce^.raiseerror;}
+        end if;
+
+      -- st©edn¡k
+      if followlex(pspec_context,lex_scol) then
+        ce^.seterror({CCERR=}000353,ce_x_scol);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        end if;
+
+      -- konec deklarace
+      d_end(pspec^,pos);
+      end deklarace;
+
+begin
+  declared:=[];
+  loop
+    -- dal¨¡ symbol
+    getlex(curr,lex);
+
+    case lex
+      -- ENTRY
+      when lex_entry do deklarace(tst_entry);
+
+      -- EXIT
+      when lex_exit  do deklarace(tst_exit);
+
+      -- ADJUST
+      when lex_adjust do
+          -- ADJUST sm¡ b˜t pouze v t©¡dˆ
+          if curr.entity^.etype=et_class then
+            ce^.seterror({CCERR=}000354,ce_i_adjust);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            end if;
+
+          -- p©elo‘it deklaraci
+          deklarace(tst_adjust);
+
+      -- jin‚ symboly n s nezaj¡maj¡
+      when others do
+          ungetlex;
+          return;
+      end case;
+    end loop;
+  end p_special;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_body =
+-- P©eklad deklara‡n¡ a p©¡kazov‚ ‡ sti symbolu.
+----------------------------------------------------------------------------------------------------
+var
+  bl               : pblnode;
+
+begin
+  -- klauzule WITH/USE
+  if part_with then
+    -- klauzule WITH
+    p_with_module(curr,twm_with);
+
+    -- klauzule USE
+    p_with_module(curr,twm_use);
+    end if;
+
+  -- klauzule EXTEND
+  if part_extend then
+    p_extend(curr);
+    end if;
+
+  -- deklarace
+  p_declare(curr);
+
+  -- speci ln¡ metody
+  if part_spec then
+    p_special(curr);
+    end if;
+
+  -- p©¡kazy
+  if part_stmt then
+    -- BEGIN
+    if followlex(curr,lex_begin) then
+      ce^.seterror({CCERR=}000355,ce_x_begin);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      end if;
+
+    -- p©¡kazov  ‡ st
+    b_block(curr,bl);
+    pentity_code(curr.entity)^.bl.setblock(bl);
+{
+    -- vyhodnotit
+    b_evaluate(curr,pentity_(^curr)bl,false,curr.eval);
+}
+    end if;
+  end p_body;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_end_ident (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- P©elo‘¡ END <identifik tor>;
+----------------------------------------------------------------------------------------------------
+begin
+  -- END <identifik tor>
+  if followendid(curr,curr.entity^.id^) then
+    ce^.seterror({CCERR=}000356,ce_x_end_body);
+    ce^.setparam(entityident_to_string(curr.entity^.id^));
+    ce^.loadpos2;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- mus¡ n sledovat st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000357,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+  end p_end_ident;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_subprogram (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    _etype         : in tentitytype) =           -- typ podprogramu
+-- Deklarace podprogramu.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+  pproc            : pentity_subprogram;         -- podprogram
+  pproc_context    : tcontext;                   -- kontext podprogramu
+  pos              : lexposblock;                -- pozice
+  tpos             : lexposblock;                -- pozice implicitn¡ deklarace typu
+  ipass            : tinstancepass;              -- p©ed v n¡ instance
+  etype            : tentitytype;                -- pracovn¡ kopie parametru _ETYPE
+  rtyp             : pentity_type;               -- typ n vratov‚ hodnoty
+  rtyp_context     : tcontext;                   -- kontext typu n vratov‚ hodnoty
+
+begin
+  etype:=_etype;
+
+  -- STATIC sm¡ b˜t jen v t©¡dˆ
+  if (etype=et_static) and (curr.entity^.etype<>et_class) then
+    ce^.seterror({CCERR=}000358,ce_baddecl);
+    ce^.sethint(hint_static_class);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    etype:=et_procedure;
+
+  -- VIRTUAL sm¡ b˜t jen v t©¡dˆ, modulu, programu, kompila‡n¡ jednotce
+  elsif etype=et_virtual and curr.entity^.etype not in ets_container then
+    ce^.seterror({CCERR=}000431,ce_baddecl);
+    ce^.sethint(hint_virtual_container);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    etype:=et_procedure;
+    end if;
+
+  -- za‡ tek deklarace
+  d_create(curr,pentity(pproc),pproc_context,etype,pos);
+
+  if pproc^.declared=etd_incomplete
+
+    -- Declaration completion
+    then
+      -- dal¨¡ symbol
+      getlex(pproc_context,lex);
+
+      case lex
+        -- rovn¡tko
+        when lex_eq     do ;
+
+        -- dvojte‡ka nebo lev  z vorka
+        when lex_lpar, lex_return, lex_col do
+            ce^.seterror({CCERR=}000359,ce_x_eq);
+            ce^.sethint(hint_pars_defined);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+
+
+        -- nˆco jin‚ho
+        when others do
+            ce^.seterror({CCERR=}000360,ce_x_eq);
+            ce^.sethint(hint_x_completion);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+        end case;
+
+    -- Incomplete declaration/Full declaration
+    else
+      -- p©ed v n¡ instance
+      -- v t©¡dˆ
+      if curr.entity^.etype=et_class then
+         if etype=et_virtual and curr.region^.vsect<>etv_private then pproc^.instance:=tip_dispatch
+         elsif etype=et_procedure then pproc^.instance:=tip_optional
+         else pproc^.instance:=tip_pass;
+         end if;
+      -- v modulu/programu/kompila‡n¡ jednotku
+      elsif curr.entity^.etype in tentitytypeset:[et_module,et_program,et_compile] then pproc^.instance:=tip_none
+      -- v overridu
+      elsif curr.entity^.etype=et_override then pproc^.instance:=tip_pass
+      -- v procedu©e
+      elsif curr.entity^.etype in ets_subprogram then begin
+        -- nezapomenou konvertovat tip_dispatch na tip_pass
+        if pentity_subprogram(curr.entity)^.instance=tip_dispatch
+          then pproc^.instance:=tip_pass
+          else pproc^.instance:=pentity_subprogram(curr.entity)^.instance
+          end if;
+        end
+      else
+        verify(238,true)
+        end if;
+
+      if checklex(pproc_context,lex_col)
+
+        -- : Typ
+        then p_typename(curr,pproc_context,pproc^.typ)
+
+        -- ( ... ) RETURN Typ
+        else
+          -- za‡ tek deklarace
+          d_create_without_name(pproc_context,pentity(rtyp),rtyp_context,et_type,nil,tpos);
+          pproc^.typ.settype(rtyp);
+          d_next(rtyp^,tpos);
+
+          -- p©elo‘it definici
+          p_def_procedure(pproc_context,rtyp^,rtyp_context);
+
+          -- konec deklarace
+          d_end(rtyp^,tpos);
+          end if;
+
+      -- dal¨¡ symbol
+      getlex(pproc_context,lex);
+      case lex
+
+        -- rovn¡tko => Full declaration
+        when lex_eq   do d_next(pproc^,pos);
+
+        -- st©edn¡k => Incomplete declaration
+        when lex_scol do d_end(pproc^,pos);
+
+        -- cokoliv jin‚ho je chyba
+        when others do
+            ce^.seterror({CCERR=}000361,ce_x_eq_scol);
+            ce^.sethint(hint_def_or_forward);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+        end case;
+      end if;
+
+  -- p©elo‘it definici
+  if pproc^.compiling=etd_full then
+    -- p©ekl d  se rovnou ‡ st PRIVATE
+    pproc_context.region^.vsect:=etv_private;
+
+    -- vygenerovat lok ln¡ promˆnn‚ podle parametr–
+    p_genlocvar(pproc^);
+
+    -- p©elo‘it deklarace
+    p_body(pproc_context,false,true,false,true);
+    p_end_ident(pproc_context);
+
+    -- konec deklarace
+    d_end(pproc^,pos);
+    end if;
+  end p_subprogram;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_override (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Deklarace p©et¡‘en¡ virtu ln¡ metody.
+----------------------------------------------------------------------------------------------------
+var
+  poverride        : pentity_override;           -- p©et¡‘en¡ virtu ln¡ metody
+  poverride_context: tcontext;                   -- context p©et¡‘en¡ virtu ln¡ metody
+  pos              : lexposblock;                -- pozice
+  expr             : pexpnode;                   -- v˜raz
+  eval             : tentityeval;
+
+begin
+  -- OVERRIDE sm¡ b˜t jen v t©¡dˆ, modulu, programu, kompila‡n¡ jednotce
+  if not (curr.entity^.etype in ets_container) then
+    ce^.seterror({CCERR=}000432,ce_baddecl);
+    ce^.sethint(hint_override_container);
+    ce^.loadpos;
+    ce^.resumeerror;
+    end if;
+
+  -- za‡ tek deklarace
+  d_create_without_name(curr,pentity(poverride),poverride_context,et_override,nil,pos);
+
+  -- jm‚no virtu ln¡ metody
+  x_vyraz(curr,expr,es_name);
+  x_evaluate(curr,expr,ek_sym_virtual,nil,eu_formal,true,eval);
+  verify(239,eval<>ete_evaluated);
+  poverride^.virt.setexpr(expr);
+
+  -- specifikace typ– ©¡d¡c¡ch parametr–
+  if checklex(poverride_context,lex_with) then
+    unimplemented(158);
+    end if;
+
+  -- =
+  if followlex(poverride_context,lex_eq) then
+    ce^.seterror({CCERR=}000433,ce_x_eq);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- je to v‘dy Full declaration
+  d_next(poverride^,pos);
+
+  -- p©ekl d  se rovnou ‡ st PRIVATE
+  poverride_context.region^.vsect:=etv_private;
+
+  -- vygenerovat lok ln¡ promˆnn‚ podle parametr–
+  p_genlocvar_override(poverride^);
+
+  -- p©elo‘it deklarace
+  p_body(poverride_context,false,true,false,true);
+
+  -- %%TECH Zde nelze pou‘¡t procedure P_END_IDENT, proto‘e override je          
+  -- nepojmenovan˜ objekt a uv d¡ se identifik tor souvisej¡c¡ virtu ln¡ metody
+
+  -- END <identifik tor>
+  if followendid(poverride_context,poverride^.virt.getcentity^.id^) then
+    ce^.seterror({CCERR=}000356,ce_x_end_body);
+    ce^.setparam(entityident_to_string(poverride^.virt.getcentity^.id^));
+    ce^.loadpos2;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- mus¡ n sledovat st©edn¡k
+  if followlex(poverride_context,lex_scol) then
+    ce^.seterror({CCERR=}000357,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- konec deklarace
+  d_end(poverride^,pos);
+  end p_override;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_overload (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Deklarace p©et¡‘en¡.
+----------------------------------------------------------------------------------------------------
+type
+  p_machine_pointer= ^unchecked for machine_pointer use true;
+
+const
+  overloadinit     = 4;
+  overloaddelta    = 4;
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  poverload        : pentity_overload0;          -- p©et¡‘en¡
+  poverload_context: tcontext;                   -- kontext p©et¡‘en¡
+  pos              : lexposblock;                -- pozice
+  expr             : pexpnode;                   -- v˜raz
+  psym             : pentity;                    -- symbol
+  oop              : tooperator;                 -- p©et¡‘iteln˜ oper tor
+  eval             : tentityeval;
+  _table           : poverloadtable;
+  _overload        : ^toverloaddesc;
+
+begin
+  begin
+    -- dal¨¡ symbol
+    getlex(curr,lex);
+
+    -- deklarace p©et¡‘en¡
+    if lex=lex_id then
+      -- vr tit zpˆt do vstupu
+      ungetlex;
+
+      -- za‡ tek deklarace
+      d_create(curr,pentity(poverload),poverload_context,et_overload,pos);
+
+    -- deklarace oper toru
+    elsif lex in lex_operator then
+      -- vyhledat odpov¡daj¡c¡ p©et¡‘iteln˜ oper tor
+      oop:=oop:first;
+      while (oop<=oop:last) and (ooperinfo[oop].lex<>lex) loop succ oop; end loop;
+      verify(276,oop>oop:last);
+
+      -- %%X Tohle je nˆco jako z plata, ale nevˆdˆl jsem, jak to vy©e¨it l¡p 
+
+      -- zmˆnit lexik ln¡ element na identifik tor
+      setlex(lex_id);
+      setlexid(^ooperinfo[oop].txt);
+      ungetlex;
+
+      -- za‡ tek deklarace
+      d_create(curr,pentity(poverload),poverload_context,et_operator,pos);
+
+      -- doplnit oper tor
+      pentity_operator(poverload)^.oop:=oop;
+
+    -- cokoliv jin‚ho je chyba
+    else
+      ce^.seterror({CCERR=}000362,ce_x_id_operator);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      ce^.resumeerror;
+      end if;
+
+    -- dvojte‡ka
+    if followlex(poverload_context,lex_col) then
+      ce^.seterror({CCERR=}000363,ce_x_col);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      end if;
+
+    -- seznam jmen procedur
+    loop
+      -- jm‚no procedury
+      x_vyraz(curr,expr,es_name);
+      x_evaluate(curr,expr,ek_sym_proc,nil,eu_formal,true,eval);
+      verify(273,eval<>ete_evaluated);
+
+      -- symbol
+      x_get_symbol(expr,psym);
+
+      -- relokovat pamˆŸ
+      if poverload^.table=nil then
+        new poverload^.table range overloadinit;
+      elsif poverload^.table^:length=poverload^.table^:last then
+        --%%TODO(ADJUST)
+        new _table range poverload^.table^:last+overloaddelta;
+        _table^:=poverload^.table^;
+        discard poverload^.table;
+        poverload^.table:=_table;
+        end if;
+
+      -- za©adit do tabulky %%TODO(AGGREGATE), %%TODO(STRING_ADJUST)
+      new _overload;
+      _overload^.psym.setexpr(expr);
+      _overload^.psym.setentity(psym);
+      poverload^.table^ & _overload^;
+      discard p_machine_pointer(_overload);
+
+      until not checklex(poverload_context,lex_comma);
+
+    -- st©edn¡k
+    if followlex(poverload_context,lex_scol) then
+      ce^.seterror({CCERR=}000364,ce_x_scol);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      end if;
+
+    -- konec deklarace
+    d_end(poverload^,pos);
+
+  catch
+    when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_end,rt_leave);
+    end;
+  end p_overload;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_module (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    etype          : in tentitytype) =           -- modul/t©¡da
+-- Deklarace modulu/t©¡dy.
+-- %%X dodˆlat RESUME                                                          
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  lex1             : lexsym;                     -- lexik ln¡ symbol
+  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+  psym             : pentity;                    -- modul
+  psym_context     : tcontext;                   -- kontext modulu
+  pos              : lexposblock;                -- pozice
+
+begin
+  -- za‡ tek deklarace
+  d_create(curr,psym,psym_context,etype,pos);
+
+  -- Incomplete declaration/Full declaration
+  if psym^.compiling=etd_none then
+    -- = nebo ;
+    getlex(psym_context,lex);
+    case lex
+
+      -- Full declaration
+      when lex_eq do
+          -- dal¨¡ ‡ st deklarace
+          d_next(psym^,pos);
+
+          -- Full body
+          p_body(psym_context,true,true,true,false);
+          p_end_ident(psym_context);
+
+          -- konec deklarace
+          d_end(psym^,pos);
+
+
+      -- Incomplete declaration
+      when lex_scol do d_end(psym^,pos);
+
+      -- cokoliv jin‚ho je chyba
+      when others do
+          ce^.seterror({CCERR=}000365,ce_x_eq_scol);
+          ce^.sethint(hint_def_or_forward);
+          ce^.loadpos;
+          {%%RESUME ce^.seterror;}
+          ce^.resumeerror;
+      end case;
+
+  -- Full body declaration
+  elsif (psym^.compiling=etd_full) and (psym^.declared=etd_incomplete) then
+    -- rovn¡tko
+    if followlex(psym_context,lex_eq) then
+      ce^.seterror({CCERR=}000366,ce_x_eq);
+      ce^.loadpos;
+      end if;
+
+    -- Full body
+    p_body(psym_context,true,true,true,false);
+    p_end_ident(psym_context);
+
+    -- konec deklarace
+    d_end(psym^,pos);
+
+  -- Public body declaration
+  elsif psym^.compiling=etd_public then
+    -- rovn¡tko
+    if followlex(psym_context,lex_eq) then
+      ce^.seterror({CCERR=}000367,ce_x_eq);
+      ce^.loadpos;
+      end if;
+
+    -- Public body
+    p_body(psym_context,true,true,false,false);
+    p_end_ident(psym_context);
+
+    -- konec deklarace
+    d_end(psym^,pos);
+
+  -- Private body declaration
+  elsif (psym^.declared=etd_public) and (psym^.compiling=etd_full)then
+    -- rovn¡tko
+    if followlex(psym_context,lex_eq) then
+      ce^.seterror({CCERR=}000368,ce_x_eq);
+      ce^.loadpos;
+      end if;
+
+    -- Private body
+    p_body(psym_context,false,true,true,false);
+    p_end_ident(psym_context);
+
+    -- konec deklarace
+    d_end(psym^,pos);
+
+  else
+    verify(155,true)
+    end if;
+
+  -- za©adit do fronty na prov dˆn¡ ENTRY/EXIT
+  if psym^.etype=et_module and psym^.declared=etd_full then
+    entrylist.add(psym);
+    end if;
+  end p_module;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_message (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Deklarace zpr vy.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  pmsg             : pentity_message;            -- zpr va
+  pmsg_context     : tcontext;                   -- kontext zpr vy
+  pos              : lexposblock;                -- pozice
+  tpos             : lexposblock;                -- pozice implicitn¡ deklarace typu
+  expr             : pexpnode;                   -- v˜raz
+  psym             : pentity;                    -- p©edek
+  mtyp             : pentity_type;               -- typ zpr vy
+  mtyp_context     : tcontext;                   -- kontext typu zpr vy
+  eval             : tentityeval;
+
+begin
+  loop
+    begin
+      -- za‡ tek deklarace
+      d_create(curr,pentity(pmsg),pmsg_context,et_message,pos);
+
+      -- dal¨¡ symbol
+      getlex(pmsg_context,lex);
+      case lex
+        -- : Typ
+        when lex_col do
+            p_typename(curr,pmsg_context,pmsg^.typ);
+
+        -- EXTEND Zpr va
+        when lex_extend do
+            -- v˜raz
+            x_vyraz(pmsg_context,expr,es_name);
+            x_evaluate(pmsg_context,expr,ek_context_message,nil,eu_formal,true,eval);
+            verify(143,eval<>ete_evaluated);
+
+            -- symbol
+            x_get_symbol(expr,psym);
+
+            -- Jistˆ to nen¡ potomek t‚to zpr vy
+            -- D–kaz: Nelze udˆlat dop©ednou deklaraci zpr vy => tato zpr va
+            -- nebyla vidˆt v p©edchoz¡ch deklarac¡ch. N sleduj¡c¡ deklarace
+            -- je¨tˆ nejsou vidˆt
+            verify(234,sym_is_descendant(psym,pmsg));
+
+            -- za©adit jako p©edka
+            pmsg^.ancestor.setexpr(expr);
+            pmsg^.ancestor.setentity(psym);
+
+        -- implicitn¡ deklarace typu
+        when others do
+            -- symbol vr tit zpˆt
+            ungetlex;
+
+            -- za‡ tek deklarace
+            d_create_without_name(pmsg_context,pentity(mtyp),mtyp_context,et_type,nil,tpos);
+            pmsg^.typ.settype(mtyp);
+            d_next(mtyp^,tpos);
+
+            -- p©elo‘it definici
+            p_def_message(curr,mtyp^,mtyp_context);
+
+            -- konec deklarace
+            d_end(mtyp^,tpos);
+        end case;
+
+      -- st©edn¡k
+      if followlex(pmsg_context,lex_scol) then
+        ce^.seterror({CCERR=}000369,ce_x_scol);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        end if;
+
+      -- konec deklarace
+      d_end(pmsg^,pos);
+
+    catch
+      when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_scol,rt_skip);
+      end;
+
+    -- pod¡vat se na dal¨¡ symbol
+    looklex(curr,lex);
+    until lex<>lex_id;
+  end p_message;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_program (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- Deklarace programu
+-- %%X dodˆlat RESUME                                                         
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  lex1             : lexsym;                     -- lexik ln¡ symbol
+  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+  pprog            : pentity_program;            -- program
+  pprog_context    : tcontext;                   -- kontext programu
+  pos              : lexposblock;                -- pozice
+
+begin
+  -- za‡ tek deklarace
+  d_create(curr,pentity(pprog),pprog_context,et_program,pos);
+
+  -- rovn¡tko
+  if followlex(pprog_context,lex_eq) then
+    ce^.seterror({CCERR=}000370,ce_x_eq);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- p©ekl d  se rovnou ‡ st PRIVATE
+  pprog_context.region^.vsect:=etv_private;
+
+  -- p©elo‘it deklaraci
+  p_body(pprog_context,false,true,false,true);
+  p_end_ident(pprog_context);
+
+  -- konec deklarace
+  d_end(pprog^,pos);
+  end p_program;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_private (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- € st PRIVATE
+----------------------------------------------------------------------------------------------------
+begin
+  -- ‡ st PRIVATE sm¡ b˜t jen v modulu a t©¡dˆ
+  if curr.entity^.etype not in ets_modular then
+    ce^.seterror({CCERR=}000371,ce_badprivate);
+    ce^.sethint(hint_part_no_private);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;};
+    return;
+    end if;
+
+  -- PRIVATE mus¡ n sledovat po PUBLIC/PROTECTED
+  if not (curr.region^.vsect<etv_private) then
+    ce^.seterror({CCERR=}000372,ce_badprivate);
+    ce^.sethint(hint_part_bad_private);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+
+  -- PRIVATE sm¡ b˜t jen ve Full body
+  if curr.entity^.compiling<>etd_full then
+    ce^.seterror({CCERR=}000373,ce_badprivate);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+
+  -- n stavit ‡ st PRIVATE
+  curr.region^.vsect:=etv_private;
+  end p_private;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_protected (
+    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+-- € st PROTECTED
+----------------------------------------------------------------------------------------------------
+begin
+  -- ‡ st PROTECTED sm¡ b˜t jen v modulu a t©¡dˆ
+  if curr.entity^.etype not in ets_modular then
+    ce^.seterror({CCERR=}000374,ce_badprotected);
+    ce^.sethint(hint_part_no_protected);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;};
+    return;
+    end if;
+
+  -- protected mus¡ n sledovat po PUBLIC
+  if not (curr.region^.vsect<etv_protected)then
+    ce^.seterror({CCERR=}000375,ce_badprotected);
+    ce^.sethint(hint_part_bad_protected);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+
+  -- n stavit ‡ st protected
+  curr.region^.vsect:=etv_protected;
+  end p_protected;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_declare =
+-- Deklarace.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  loop
+    begin
+      -- p©e‡¡st ze vstupu lexik ln¡ symbol
+      getlex(curr,lex);
+
+      -- zpracovat
+      case lex
+        -- deklarace
+        --- POZOR: p©i doplnˆn¡ dal¨¡ho kl¡‡ov‚ho slova prom¡tnout ---
+        --- i do obsluhy RESUME_ERROR za t¡mto CASE                ---
+        when lex_type      do p_type(curr);
+        when lex_const     do p_const(curr);
+        when lex_var       do p_var(curr);
+      --when lex_define    do unimplemented(40);
+        when lex_procedure do p_subprogram(curr,et_procedure);
+        when lex_static    do p_subprogram(curr,et_static);
+        when lex_virtual   do p_subprogram(curr,et_virtual);
+        when lex_task      do p_subprogram(curr,et_task);
+        when lex_override  do p_override(curr);
+        when lex_macro     do unimplemented(40);
+        when lex_class     do p_module(curr,et_class);
+      --when lex_interface do unimplemented(40);
+        when lex_message   do p_message(curr);
+      --when lex_alias     do p_alias(curr);
+        when lex_label     do p_label(curr);
+        when lex_overload  do p_overload(curr);
+        when lex_module    do p_module(curr,et_module);
+
+        -- viditelnost
+        when lex_private   do p_private(curr);
+        when lex_protected do p_protected(curr);
+
+        -- konec bloku deklarac¡
+        when lex_eof,lex_entry,lex_exit,lex_adjust,lex_program,lex_begin,lex_end do
+            -- naposledy p©e‡ten˜ symbol vr tit do vstupu
+            ungetlex;
+            return;
+
+        -- nˆjak˜ bl bol
+        when others do
+            ce^.seterror({CCERR=}000376,ce_x_decl);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror; }
+            ce^.resumeerror;
+        end case;
+
+    catch
+      when resume_error do
+          loop
+            getlex(curr,lex);
+            if lex in lexsymset:[lex_eof,lex_program,lex_begin,lex_end] then return{goto k1}; end if;
+            until lex in lexsymset:[lex_type,lex_const,lex_var,lex_define,lex_procedure,
+              lex_static,lex_virtual,lex_macro,lex_class,{lex_interface,}
+              lex_private,lex_protected,lex_message,{lex_alias,}lex_label,
+              lex_overload,lex_module,{lex_entry,lex_exit,lex_adjust,}lex_task];
+            ungetlex;
+      end;
+    end loop;
+{ -- To se udˆl  samo
+  -- zkontrolovat, zda nez–staly nˆjak‚ ne£pln‚ deklarace
+  e_all(curr,e);
+}
+  end p_declare;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_compfile (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    name           : in t_char32str;             -- jm‚no souboru
+    part           : in t_part;                  -- %%TODO(FILENAME)
+    nalez          : in out t_logical) =         -- T-soubor nalezen
+-- P©elo‘¡ soubor. P©¡znak NALEZ se nenuluje, jen nastavuje.
+----------------------------------------------------------------------------------------------------
+with
+  cc_text;
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  fname            : t_char32str;                -- jm‚no souboru
+
+begin
+  -- sestavit jm‚no souboru
+  --%%TODO(FILENAME) fname:=findfilename(src.modimpl,srcext,src.modlist,'',name);
+  fname:=cfg_files^.get_source_file_name(name,part);
+  if fname='' then return; end if;
+
+  -- otev©¡t soubor
+  openfile(fname,false{%%TODO(FILENAME),false});
+
+  -- p©elo‘it deklarace
+  p_declare(curr);
+
+  -- konec textu
+  getlex(curr,lex);
+  if lex<>lex_eof then
+    ce^.seterror({CCERR=}000377,ce_x_eof);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- zav©¡t soubor
+  popfile;
+
+  nalez:=true;
+  end p_compfile;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_loadmodule =
+-- Na‡te modul ze souboru.
+----------------------------------------------------------------------------------------------------
+var
+  compi            : tcontext;                   -- kompila‡n¡ jednotka
+  found            : t_logical;                  -- T-soubor nalezen
+
+begin
+  found:=false;
+
+  -- naj¡t kompila‡n¡ jednotku
+  compi:=sym_primary_context(sym_get_enclosing_or_self(curr.entity,et_compile)^);
+  verify(86,{%%TODO(OPT) compi=nil => Internal error 131}compi.entity=nil);
+
+  -- p©elo‘it soubor *.SRC
+  p_compfile(compi,entityident_to_string(id),part_all,found);
+
+  -- p©elo‘it soubor *.PUB
+  p_compfile(compi,entityident_to_string(id),part_public,found);
+
+  -- p©elo‘it soubor *.PRIV
+  p_compfile(compi,entityident_to_string(id),part_private,found);
+
+  -- p©elo‘ilo se aspo¤ nˆco ?
+  if not found then
+    ce^.seterror({CCERR=}000378,ce_f_notfound);
+    ce^.setparam(entityident_to_string(id));
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+  end p_loadmodule;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_compinit (
+    compi          : in tcontext) =              -- kompila‡n¡ jednotka
+-- Dopln¡ implicitn¡ deklarace do kompila‡n¡ jednotky.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure newunitype (
+        dtype      : in tdatatype;               -- datov˜ typ
+        size       : in tunidata_size;           -- velikost
+        ptyp       : out pentity_type) =         -- vznikl˜ typ
+    -- Nov˜ univerz ln¡ typ.
+    ------------------------------------------------------------------------------------------------
+    var
+      ptyp_context : tcontext;                   -- kontext typu
+
+    begin
+      d_create_internal(compi,pentity(ptyp),ptyp_context,et_type,nil);
+      ptyp^.stype:=dtype;
+      ptyp^.size:=size;
+      d_end_internal(ptyp^,false);
+      end newunitype;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure newdefaultord (
+        id         : in pentityident;            -- identifik tor
+        dtype      : in tdatatype;               -- datov˜ typ
+        ptyp       : out pentity_type) =         -- vznikl˜ typ
+    -- Nov˜ ordin ln¡ typ.
+    ------------------------------------------------------------------------------------------------
+    var
+      ptyp_context : tcontext;                   -- kontext typu
+
+    begin
+      d_create_internal(compi,pentity(ptyp),ptyp_context,et_type,nil);
+      ptyp^.stype:=dtype;
+      cpu^.getdefaultord(dtype,ptyp^.bits,ptyp^.size,ptyp^.lval,ptyp^.hval);
+      d_end_internal(ptyp^,false);
+      end newdefaultord;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure newdefaulttag (
+        ptyp       : out pentity_type) =         -- vznikl˜ typ
+    -- Nov˜ typ :tag.
+    ------------------------------------------------------------------------------------------------
+    var
+      ptyp_context : tcontext;                   -- kontext typu
+
+    begin
+      d_create_internal(compi,pentity(ptyp),ptyp_context,et_type,nil);
+      ptyp^.stype:=dt_tag;
+      cpu^.getrtattribsize(rta_tag,ptyp^.size);
+      d_end_internal(ptyp^,false);
+      end newdefaulttag;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure newdefaultptr (
+        base       : in pentity_type;            -- b zov˜ typ
+        pflags     : in ptrflagsset;             -- parametry pointeru
+        pclass     : in ptrclass;                -- t©¡da b ze
+        pbase      : in ptrbase;                 -- kompatibilita b ze
+        pattrib    : in rtattribset;             -- dynamick‚ atributy
+        ptyp       : out pentity_type) =         -- vznikl˜ typ
+    -- Nov˜ typ pointer.
+    ------------------------------------------------------------------------------------------------
+    var
+      ptyp_context : tcontext;                   -- kontext typu
+
+    begin
+      d_create_internal(compi,pentity(ptyp),ptyp_context,et_type,nil);
+      ptyp^.stype:=dt_pointer;
+      ptyp^.base.settype(base);
+      ptyp^.pflags:=pflags;
+      ptyp^.pclass:=pclass;
+      ptyp^.pbase:=pbase;
+      ptyp^.pattrib:=pattrib;
+      cpu^.getptrsize(ptyp^.pattrib,ptyp^.size);
+      d_end_internal(ptyp^,false);
+      end newdefaultptr;
+
+var
+  pconst           : pentity_const;              -- p©eddefinovan  konstanta
+
+begin
+  ---- univerz ln¡ typ UNIINT ----
+  newunitype(dt_uniint,unsigned_to_unidata_size(tuniint:size),def_uniint);
+
+  ---- univerz ln¡ typ UNIREAL ----
+  newunitype(dt_unireal,unsigned_to_unidata_size(tunireal:size),def_unireal);
+
+  ---- univerz ln¡ typ UNICHAR ----
+  newunitype(dt_unichar,unsigned_to_unidata_size(tunichar:size),def_unichar);
+
+  ---- univerz ln¡ typ UNILOGICAL ----
+  newunitype(dt_unilogical,unsigned_to_unidata_size(tunilogical:size),def_unilogical);
+
+  ---- univerz ln¡ typ UNISTR (univerz ln¡ pole of UNICHAR) ----
+  newunitype(dt_uniarray,uds_0,def_unistr);
+  def_unistr^.base.settype(def_unichar);
+
+  ---- univerz ln¡ NIL ----
+  newunitype(dt_uninil,uds_0,def_uninil);
+
+  ---- typ intern¡ slo‘ky t©¡dy @TAG ----
+  newdefaulttag(inttype_tag);
+
+  ---- typ intern¡ slo‘ky t©¡dy @STATUS ----
+  newdefaultord(nil,dt_unsigned,inttype_status);
+
+  ---- strojov˜ pointer ----
+  newdefaultptr(nil,ptrflagsset:[pf_machine],pc_data,pb_unchecked,[],inttype_machine_pointer);
+  end p_compinit;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_compunit =
+-- P©eklad kompila‡n¡ jednotky.
+----------------------------------------------------------------------------------------------------
+with
+  cc_def.cc_list;
+
+var
+  compi_context    : tcontext;                   -- kontext kompila‡n¡ jednotky
+
+begin
+  -- vytvo©it entitu a prim rn¡ region
+  cc_base.cc_sym.cc_advanced.sym_new_entity(et_compile,pentity(compi));
+  cc_base.cc_sym.cc_advanced.sym_new_region(rt_primary,compi^.regions[rc_primary]);
+  compi_context:=sym_primary_context(compi^);
+
+  -- p©i©adit identifik tor
+  -- (je to v˜jimka jen pro kompila‡n¡ jednotku, taxem to
+  -- udˆlal p©¡mo takhle m¡sto jako proceduru do CC_SYM)
+  new compi^.id range id_compilation:length;
+  compi^.id^:=id_compilation;
+
+  -- %%TECH V p©edchoz¡ verzi p©eklada‡e bylo COMPI^.OWNER=COMPI.
+  -- Zde jsem to zru¨il, proto‘e je to k ni‡emu.
+
+  -- doplnit implicitn¡ deklarace
+  p_compinit(compi_context);
+
+  -- p©elo‘it modul FLEX
+  if not cfg_noruntime then 
+    p_loadmodule(compi_context,id_flex); 
+    end if;
+
+  -- zapnout varov n¡
+  -- (a‘ po p©ekladu FLEX, aŸ to neopruzuje)
+  compi^.compv.warns:=compi^.compv.warns:full;
+
+  -- glob ln¡ deklarace
+  p_declare(compi_context);
+
+  -- deklarace programu
+  if checklex(compi_context,lex_program) then
+    p_program(compi_context);
+    end if;
+
+  -- konec textu
+  if not checklex(compi_context,lex_eof) then
+    ce^.seterror({CCERR=}000379,ce_x_eof);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- ozna‡it deklaraci jako ukon‡enou
+  compi^.declared:=etd_full;
+
+  -- vyhodnotit definici
+  {e_symbol(compi,pos,sd_declared,true);}
+  end p_compunit;
+
+
+  
+end cd_unit;

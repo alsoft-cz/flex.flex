@@ -1,0 +1,180 @@
+----------------------------------------------------------------------------------------------------
+module private cd_util =
+-- P©eklada‡ Flexu.
+-- Pomocn‚ procedury pro p©eklad ‡ st¡ deklarac¡.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 07.11.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure p_varaccess =
+-- P©eklad determinate p©¡stupu.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  psym             : pentity;
+
+begin
+  -- p©edpokl dejme bez omezen¡
+  vaccess:=va_norm;
+
+  getlex(curr,lex);
+  case lex
+    -- PROTECTED
+    when lex_protected do
+        -- dovoleno pouze v modulu a t©¡dˆ
+        psym:=sym_get_enclosing_or_self_ex(curr.entity,ets_enclosing);
+        if psym=nil or psym^.etype not in tentitytypeset:[et_module,et_class] then
+          ce^.seterror({CCERR=}000072,ce_i_varaccess);
+          ce^.sethint(hint_protected_in_module);
+          ce^.loadpos;
+          {%%RESUME ce^.raiseerror;}
+          return;
+          end if;
+
+        -- a to jen v ‡ sti PUBLIC/PROTECTED
+        if curr.region^.vsect=etv_private then
+          ce^.seterror({CCERR=}000073,ce_i_varaccess);
+          ce^.sethint(hint_protected_in_private);
+          ce^.loadpos;
+          {%%RESUME ce^.raiseerror;}
+          return;
+          end if;
+
+        -- poznamenat
+        vaccess:=va_protected;
+
+    -- CONST
+    when lex_const do 
+        -- const lze pou‘¡t v¨ude
+        vaccess:=va_const;
+
+    -- neuvedeno, zvolit default
+    when others do
+        -- vr tit posledn¡ prvek do vstupu
+        ungetlex;
+    end case;
+  end p_varaccess;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_gensinglelocvar (
+    proc           : in tcontext;                -- p©ekl dan˜ prvek
+    pparam         : in pentity_param;           -- parametr
+    ptyp           : in pentity_type) =          -- typ parametru
+-- Pro zadan˜ parametr a jeho typ vygeneruje lok ln¡ promˆnnou
+----------------------------------------------------------------------------------------------------
+with
+  cd_decl.cd_create;
+
+var
+  pvar             : pentity_var;                -- promˆnn 
+  pvar_context     : tcontext;                   -- kontext promˆnn‚
+
+begin
+  -- zalo‘it nov˜ symbol
+  d_create_at_position(proc,pentity(pvar),pvar_context,et_var,pparam^.id,pparam^.pos[etp_header]);
+
+  -- souvisej¡c¡ parametr
+  pvar^.pparam:=pparam;
+
+  -- typ promˆnn‚
+  pvar^.typ.settype(ptyp);
+
+  -- pamˆŸov  t©¡da
+  pvar^.mclass:=mc_auto;
+
+  -- zp–sob p©ed n¡
+  if pparam^.pass in pps_ref
+    -- odkazem
+    then pvar^.vmode:=vm_ref
+    -- hodnotou
+    else
+      pvar^.vmode:=vm_direct
+      end if;
+
+  -- determinace p©¡stupu
+  if pparam^.mode=pm_in
+    then pvar^.vaccess:=va_const;
+    else pvar^.vaccess:=va_norm;
+    end if;
+
+  -- dynamick‚ atributy
+  pvar^.rta_avail:=pparam^.rta_avail;
+  pvar^.rta_used:=pparam^.rta_used;
+
+  -- pozice symbolu
+  pvar^.pos:=pparam^.pos;
+
+  -- konec deklarace
+  d_end_at_position(pvar^,pparam^.pos[etp_def],true);
+  end p_gensinglelocvar;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_genlocvar =
+-- Podle parametr– procedury vygeneruje lok ln¡ promˆnn‚.
+----------------------------------------------------------------------------------------------------
+var
+  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+  ptyp             : pentity_type;               -- typ procedury
+  pvar             : pentity_var;                -- promˆnn 
+  proc_context     : tcontext;                   -- prim rn¡ kontext podprogramu
+
+begin
+  -- typ procedury
+  ptyp:=proc.typ.getctype;
+
+  -- sestavit prim rn¡ kontext
+  proc_context:=sym_primary_context(proc);
+
+  -- zpracovat v¨echny parametry
+  srch.find_et_first(ptyp,rc_primary,et_param,[]);
+  while srch.psym<>nil loop
+    -- odvodit lok ln¡ promˆnnou
+    p_gensinglelocvar(proc_context,pentity_param(srch.psym),pentity_param(srch.psym)^.typ.getutype);
+
+    -- dal¨¡ parametr
+    srch.find_et_next;
+    end loop;
+  end p_genlocvar;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_genlocvar_override =
+-- Podle parametr– procedury vygeneruje lok ln¡ promˆnn‚.
+----------------------------------------------------------------------------------------------------
+var
+  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
+  ptyp             : pentity_type;               -- typ procedury
+  pvar             : pentity_var;                -- promˆnn 
+  partyp           : pentity_type;               -- typ parametru
+  proc_context     : tcontext;                   -- prim rn¡ kontext podprogramu
+
+begin
+  -- typ procedury
+  ptyp:=pentity_virtual(proc.virt.getcentity)^.typ.getctype;
+
+  -- sestavit prim rn¡ kontext
+  proc_context:=sym_primary_context(proc);
+
+  -- zpracovat v¨echny parametry
+  srch.find_et_first(ptyp,rc_primary,et_param,[]);
+  while srch.psym<>nil loop
+    -- dohledat p©et¡‘en˜ typ
+    {%%X}partyp:=pentity_param(srch.psym)^.typ.getutype;
+
+    -- vygenerovat odpov¡daj¡c¡ lok ln¡ promˆnnou
+    p_gensinglelocvar(proc_context,pentity_param(srch.psym),partyp);
+
+    -- dal¨¡ parametr
+    srch.find_et_next;
+    end loop;
+  end p_genlocvar_override;
+
+
+
+end cd_util;

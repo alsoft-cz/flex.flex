@@ -1,0 +1,542 @@
+----------------------------------------------------------------------------------------------------
+module private cc_lex =
+-- P©eklada‡ Flexu.
+-- Lexik ln¡ analyz tor.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 25.04.2000 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_var,cc_def.cc_codes;
+{
+use
+  -- %%TODO(getlex) !!!!! odstranit spolu s __todo_context
+  cc_def.cc_entity;
+}
+type
+  -- popis chov n¡ lexik ln¡ho analyz toru
+  lexbehavior;
+  plexbehavior     = ^lexbehavior;
+  lexbehavior      = record
+      extproc      : plexextproc;
+      eol          : t_logical;
+      next         : plexbehavior;
+      end record;
+
+var
+  -- aktu ln¡ roz¨¡©en¡ lexik ln¡ anal˜zy
+  behaviorlist     : {%%TODO(TASK)} plexbehavior;
+
+----------------------------------------------------------------------------------------------------
+#separate public cc_lex0;
+-- Lexik ln¡ analyz tor, oddˆlen¡ lexik ln¡ch element–.
+----------------------------------------------------------------------------------------------------
+#separate public cc_pre;
+-- Preprocesor. 
+----------------------------------------------------------------------------------------------------
+#separate private cc_lex0;
+-- Lexik ln¡ analyz tor, oddˆlen¡ lexik ln¡ch element–.
+----------------------------------------------------------------------------------------------------
+#separate private cc_pre;
+-- Preprocesor. 
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure getlex =
+-- P©e‡te ze vstupu jeden lexik ln¡ element.
+----------------------------------------------------------------------------------------------------
+with
+  cc_lex0;
+
+var
+  xlex             : lexsym;                     -- ziskany symbol
+  xval             : lexval;                     -- hodnota symbolu
+  xline            : lexline;                    -- radek na kterem je prvek
+  xcol             : lexcolumn;                  -- sloupec na kterem je prvek
+  xlength          : lexlength;                  -- delka prvku
+  xend             : t_logical;                  -- T-konec ‡ten¡ symbol–
+
+begin
+  loop
+    -- nˆjak˜ umˆle vlo‘en˜ symbol je ji‘ nezaj¡mav˜
+    --input^.lastins:=lex_nul;
+
+    -- je k dispozici nˆjak˜ lexik ln¡ element v bufferu ?
+    if lex_input^.lastvalid
+
+      -- ano => pou‘¡t ji‘ jednou zpracovan˜ lexik ln¡ element
+      then
+        xend:=true;
+
+      -- ne => na‡¡st ze vstupu
+      else
+        -- p©e‡¡st symbol ze vstupu
+        getlexsym(xlex,xval,xline,xcol,xlength);
+
+        -- um¡stit do bufferu
+        lex_input^.lastlex.lex:=xlex;
+        lex_input^.lastlex.val:=xval;
+        lex_input^.posbuf[ll_prev]:=lex_input^.posbuf[ll_curr];
+        lex_input^.posbuf[ll_curr].line:=xline;
+        lex_input^.posbuf[ll_curr].col :=xcol;
+        lex_input^.posbuf[ll_curr].len :=xlength;
+        lex_input^.posbuf[ll_curr].num :=lex_input^.num;
+{%%TODO(AGGREGATE)
+        lex_input^.lastlex:=[
+            for lex use xlex,
+            for val use xval];
+        lex_input^.posbuf:=[
+            for ll_prev use lex_input^.posbuf[ll_curr],
+            for ll_curr use [
+                for line use xline,
+                for col  use xcol,
+                for len  use xlength,
+                for num  use lex_input^.num]
+            ];
+}
+        lex_input^.lastvalid:=false;
+
+        -- je tento symbol zaj¡mav˜ pro preprocesor ?
+        if xlex in lexsymset:[lex_meta_id,lex_id]
+
+          -- ano => zavolat preprocesor
+          then cc_pre.p_preprocessor(context,xlex,xval,xend);
+
+          -- ne => konec
+          else xend:=true;
+          end if;
+        end if;
+    until xend;
+
+  -- v bufferu je teƒ pou‘iteln˜ lexik ln¡ element
+  lex:=lex_input^.lastlex.lex;
+  lex_input^.lastvalid:=false;
+  end getlex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure ungetlex =
+-- Poslednˆ p©e‡ten˜ lexik ln¡ element vr t¡ zpˆt do vstupu.
+-- Flex je LL(1), tak‘e se lze vr tit v‘dy jen o jeden symbol.
+----------------------------------------------------------------------------------------------------
+begin
+  lex_input^.lastvalid:=true;
+  end ungetlex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure looklex =
+-- P©e‡te ze vstupu jeden lexik ln¡ element, ale neodstran¡ ho ze vstupu (getlex+ungetlex).
+----------------------------------------------------------------------------------------------------
+begin
+  getlex(context,lex);
+  ungetlex;
+  end looklex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure checklex =
+-- Pod¡v  se na n sleduj¡c¡ lexik ln¡ element, a pokud je shodn˜ se zadan˜m, tak vr t¡ True
+-- a odstran¡ ho ze vstupu. V opa‡n‚m p©¡padˆ vr t¡ False a vstup nezmˆn¡.
+----------------------------------------------------------------------------------------------------
+var
+  lex1             : lexsym;
+
+begin
+  getlex(context,lex1);
+  result:=lex=lex1;
+  if not result then
+    ungetlex;
+    end if;
+  end checklex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure ignorelex =
+-- Je-li n sleduj¡c¡ symbol LEX, tak ho odignoruje, jinak ponech .
+----------------------------------------------------------------------------------------------------
+var
+  lex1             : lexsym;
+
+begin
+  getlex(context,lex1);
+  if lex<>lex1 then ungetlex; end if;
+  end ignorelex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure followlex =
+-- P©e‡te ze vstupu lexik ln¡ element a zkontroluje ho proti zadan‚mu. Pokud se shoduj¡, vr t¡
+-- False a element odstran¡ ze vstupu. V opa‡n‚m p©¡padˆ vr t¡ True a element a) ponech  ve
+-- vstupu, b) odstran¡ ze vstupu, pokud je podobn˜ zadan‚mu.
+----------------------------------------------------------------------------------------------------
+var
+  xlex             : lexsym;
+  i                : lexsimilar:range;
+
+begin
+  -- p©e‡¡st symbol
+  getlex(context,xlex);
+  if lex=xlex
+
+    -- stejn‚, nen¡ co ©e¨it
+    then
+      result:=false;
+      return;
+
+    -- rozd¡ln‚, ur‡itˆ chyba
+    else
+      result:=true;
+      end if;
+
+  -- nejsou podobn‚ ?
+  for i in lexsimilar:range loop
+    if (lexsimilar[i].l1=lex and lexsimilar[i].l2=xlex)
+    or (lexsimilar[i].l1=xlex and lexsimilar[i].l2=lex)
+    then return end if;
+    end loop;
+
+  {%%X je¨tˆ by to mohl b˜t identifik tor podobn˜ kl¡‡ov‚mu slovu }
+
+  -- jsou rozd¡ln‚, odsimulovat
+  ungetlex;
+  lex_input^.lastins:=lex;
+  end followlex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure followendkw =
+-- P©e‡te ze vstupu sekvenci "END <kl¡‡ov‚ slovo>".
+-- Procedura se chov  obdobnˆ jako FOLLOWLEX.
+----------------------------------------------------------------------------------------------------
+var
+  lex1             : lexsym;                     -- lexik ln¡ symboly
+  lex2             : lexsym;                     -- lexik ln¡ symboly
+
+begin
+  -- p©e‡¡st prvn¡ symbol (END)
+  getlex(context,lex1);
+  if lex1 not in lexsymset:[lex_end,lex_id] then
+    result:=true;
+    ungetlex;
+    return
+    end if;
+
+  -- p©e‡¡st druh˜ symbol (kl¡‡ov‚ slovo)
+  getlex(context,lex2);
+
+  -- END <kl¡‡ov‚ slovo>
+  if lex1=lex_end and lex2=kw then
+    result:=false
+
+  -- END <st©edn¡k>
+  -- <identifik tor> <st©edn¡k>
+  elsif lex2=lex_scol then
+    result:=true;
+    ungetlex;
+
+  -- END <identifik tor>
+  -- <identifik tor> <kl¡‡ov‚ slovo>
+  -- <identifik tor> <identifik tor>
+  -- <jin˜ bl bol>
+  else
+    result:=true;
+    end if;
+  end followendkw;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure followendid =
+-- P©e‡te ze vstupu sekvenci "END <identifik tor>".
+-- Procedura se chov  obdobnˆ jako FOLLOWLEX.
+----------------------------------------------------------------------------------------------------
+var
+  lex1             : lexsym;                     -- lexik ln¡ symboly
+  lex2             : lexsym;                     -- lexik ln¡ symboly
+
+begin
+  -- p©e‡¡st prvn¡ symbol (END)
+  getlex(context,lex1);
+  if lex1 not in lexsymset:[lex_end,lex_id] then
+    result:=true;
+    ungetlex;
+    return;
+    end if;
+
+  -- p©e‡¡st druh˜ symbol (kl¡‡ov‚ slovo)
+  getlex(context,lex2);
+
+  -- END <identifik tor>
+  if (lex1=lex_end and lex2=lex_id) and then getlexid^=id then
+    result:=false
+
+  -- END <st©edn¡k> 
+  -- <identifik tor> <st©edn¡k> 
+  elsif lex2=lex_scol then
+    result:=true;
+    ungetlex;
+
+  -- END <kl¡‡ov‚ slovo> 
+  -- <identifik tor> <kl¡‡ov‚ slovo>
+  -- <identifik tor> <identifik tor> 
+  -- <jin˜ bl bol> 
+  else
+    result:=true;
+    end if;
+  end followendid;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure resumelex =
+-- Vy‡¡t  symboly, dokud nenaraz¡ na hledan˜ symbol nebo na termin tor.       
+----------------------------------------------------------------------------------------------------
+begin
+  loop
+    -- dal¨¡ symbol 
+    getlex(context,xlex);
+
+    -- nalezen LEX 
+    if xlex=lex then
+      case rl
+        when rl_skip  do {nic};
+        when rl_leave do ungetlex;
+        when others   do verify(188,true);
+        end case;
+      break;
+
+    -- nalezen TERM 
+    elsif xlex=term then
+      case rt
+        when rt_skip   do {nic};
+        when rt_leave  do ungetlex;
+        when rt_resume do ungetlex; ce^.resumeerror;
+        when rt_fail   do ce^.raiseerror;
+        when others    do verify(189,true);
+        end case;
+      break;
+
+    -- konec textu 
+    elsif xlex=lex_eof then 
+      ce^.raiseerror;
+      end if;
+    end loop;
+{
+  -- symbol byl p©ed chv¡l¡ p©e‡ten (nebo vlo‘en) 
+  -- (kontroluj¡ se i vy‡ten‚ symboly) 
+  if {src.lastvalid and} (src.sfile^.lastlex=lex) or (src.sfile^.lastins=lex) then
+    src.sfile^.lastvalid:=false;
+    return;
+    end if;
+
+  -- termin tor byl p©ed chv¡l¡ p©e‡ten 
+  if (src.sfile^.lastlex=term) or (src.sfile^.lastins=term) then ce^.raiseerror;
+
+  -- naj¡t symbol 
+  loop
+    -- p©e‡¡st symbol 
+    getlexsym(xlex,xval,xtxt,xline,xcol,xdelka);
+
+    -- zaradit prvek do bufferu 
+    with src.sfile^ loop
+      lastlex:=xlex;
+      lastval:=xval;
+      lasttxt:=xtxt;
+      lastline[ll_prev{2}]:=lastline[ll_curr{1}];
+      lastcol[ll_prev{2}]:=lastcol[ll_curr{1}];
+      lastdelka[ll_prev{2}]:=lastdelka[ll_curr{1}];
+      lastline[ll_curr{1}]:=xline;
+      lastcol[ll_curr{1}]:=xcol;
+      lastdelka[ll_curr{1}]:=xdelka;
+      lastvalid:=false;
+      end with;
+
+    -- je to hledan˜ prvek 
+    if xlex=lex then break;
+
+    -- je to termin tor nebo konec textu 
+    if (xlex=term) or (xlex=lex_eof) then ce^.raiseerror;
+
+    end loop;
+}
+  end resumelex;
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexpos =
+-- Vr t¡ pozici lexik ln¡ho prvku.
+----------------------------------------------------------------------------------------------------
+begin
+  pos:=lex_input^.posbuf[level];
+  --%%X Vy©e¨it pou‘it¡ AFTER
+  --if after then inc(pos.col,src.sfile^.lastdelka[level]);
+  end getlexpos;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexposall =
+-- Vr t¡ pozici lexik ln¡ho prvku (za‡ tek i konec).
+----------------------------------------------------------------------------------------------------
+begin
+  getlexpos(pos.b,level,false);
+  getlexpos(pos.e,level,true);
+  end getlexposall;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure cmplexposb =
+-- True <=> POS1 < POS2
+----------------------------------------------------------------------------------------------------
+begin
+  result:=(pos1.num=pos2.num) and ((pos1.line<pos2.line) or ((pos1.line=pos2.line) and (pos1.col<pos2.col)));
+  end cmplexposb;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure cmplexposa =
+-- True <=> POS1 > POS2
+----------------------------------------------------------------------------------------------------
+begin
+  result:=(pos1.num=pos2.num) and ((pos1.line>pos2.line) or ((pos1.line=pos2.line) and (pos1.col>pos2.col)));
+  end cmplexposa;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexid =
+-- Poslednˆ p©e‡ten˜ lexik ln¡ element: identifik tor.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=lex_input^.lastlex.val.id;
+  end getlexid;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlextxt =
+-- Poslednˆ p©e‡ten˜ lexik ln¡ element: textov˜ tvar lexik ln¡ho elementu ze vstupu.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=lex_input^.lastlex.val.txt;
+  end getlextxt;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexui =
+-- Poslednˆ p©e‡ten˜ lexik ln¡ element: hodnota celo‡¡seln‚ho liter lu.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%X Doplnit form ln¡ kontrolu
+  result:=lex_input^.lastlex.val.ui;
+  end getlexui;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexur =
+-- Poslednˆ p©e‡ten˜ lexik ln¡ element: hodnota re ln‚ho liter lu.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%X Doplnit form ln¡ kontrolu
+  result:=lex_input^.lastlex.val.ur;
+  end getlexur;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexstring =
+-- Poslednˆ p©e‡ten˜ lexik ln¡ element: hodnota znakov‚ho agreg tu.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%X Doplnit form ln¡ kontrolu
+  result:=lex_input^.lastlex.val.str;
+  end getlexstring;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexcode =
+-- Poslednˆ p©e‡ten˜ lexik ln¡ element: hodnota dopl¤kov‚ho k¢du.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%X Doplnit form ln¡ kontrolu
+  result:=lex_input^.lastlex.val.code;
+  end getlexcode;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure setlex =
+-- Zmˆn¡ poslednˆ p©e‡ten˜ lexik ln¡ element.
+----------------------------------------------------------------------------------------------------
+begin
+  lex_input^.lastlex.lex:=lex;
+  end setlex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure setlexid =
+-- Zmˆn¡ identifik tor souvisej¡c¡ s poslednˆ p©e‡ten˜m lexik ln¡m elementem.
+----------------------------------------------------------------------------------------------------
+begin
+  lex_input^.lastlex.val.id:=id;
+  end setlexid;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure setlexval =
+-- Zmˆn¡ hodnotu poslednˆ p©e‡ten‚ho lexik ln¡ho symbolu.
+----------------------------------------------------------------------------------------------------
+begin
+  lex_input^.lastlex.val:=val;
+  end setlexval;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure lex_set_behavior =
+-- Nastav¡ chov n¡ lexik ln¡ho analyz toru.
+----------------------------------------------------------------------------------------------------
+var
+  behavior           : plexbehavior;
+
+begin
+  new behavior;
+  --%%TODO(AGGREAGTE)
+  behavior^.extproc:=extproc;
+  behavior^.eol:=eol;
+  behavior^.next:=behaviorlist;
+  behaviorlist:=behavior;
+  end lex_set_behavior;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure lex_clear_behavior =
+-- Zru¨¡ posledn¡ zmˆnu chov n¡ lexik ln¡ho analyz toru.
+----------------------------------------------------------------------------------------------------
+var
+  behavior           : plexbehavior;
+
+begin
+  behavior:=behaviorlist;
+  behaviorlist:=behaviorlist^.next;
+  discard behavior;
+  end lex_clear_behavior;
+
+
+
+end cc_lex;

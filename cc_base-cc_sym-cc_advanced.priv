@@ -1,0 +1,450 @@
+----------------------------------------------------------------------------------------------------
+module private cc_advanced =
+-- P©eklada‡ Flexu.
+-- Dal¨¡ pokro‡il‚ funkce pro manipulaci s entitami, regiony, contexty, stromem entit a region–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 04.12.2002 : Oddˆlil od CC_SYM.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Primitiva pro budov n¡ stromu entit a region–
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure LL ( 
+    p              : in out pidnode) =           -- strom                       
+-- Vyv ‘en¡ LL.                                                               
+----------------------------------------------------------------------------------------------------
+var
+  p1               : pidnode;
+
+begin
+  -- lev˜ podstrom se stane vrcholem
+  p1:=p^.left;
+  p^.left:=p1^.right;
+  p1^.right:=p;
+  p^.vaha:=0;
+  p:=p1;
+  p1^.vaha:=0;
+  end LL;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure LR ( 
+    p              : in out pidnode) =           -- strom                       
+-- Vyv ‘en¡ LR.                                                               
+----------------------------------------------------------------------------------------------------
+var
+  p1               : pidnode;
+  p2               : pidnode;
+
+begin
+  -- prav˜ podstrom lev‚ho podstromu se stane vrcholem
+  p1:=p^.left;
+  p2:=p1^.right;
+  p1^.right:=p2^.left;
+  p2^.left:=p1;
+  p^.left:=p2;
+  succ p1^.vaha;
+  LL(p);
+  end LR;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure RR ( 
+    p              : in out pidnode) =           -- strom                       
+-- Vyv ‘en¡ RR.                                                               
+----------------------------------------------------------------------------------------------------
+var
+  p1           : pidnode;
+
+begin
+  -- prav˜ podstrom se stane vrcholem
+  p1:=p^.right;
+  p^.right:=p1^.left;
+  p1^.left:=p;
+  p^.vaha:=0;
+  p:=p1;
+  p^.vaha:=0;
+  end RR;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure RL ( 
+    p              : in out pidnode) =           -- strom                       
+-- Vyv ‘en¡ RL.                                                               
+----------------------------------------------------------------------------------------------------
+var
+  p1               : pidnode;
+  p2               : pidnode;
+
+begin
+  -- lev˜ podstrom prav‚ho podstromu se stane vrcholem
+  p1:=p^.right;
+  p2:=p1^.left;
+  p1^.left:=p2^.right;
+  p2^.right:=p1;
+  p^.right:=p2;
+  pred p1^.vaha;
+  RR(p);
+  end RL;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure addnode (
+    n              : in pidnode;                 -- vkl dan˜ uzel
+    p              : in out pidnode;             -- strom
+    zvys           : out t_logical) =            -- zv˜¨en strom
+-- Vlo‘¡ do stromu uzel.
+----------------------------------------------------------------------------------------------------
+var
+  cmp              : t_unsigned;
+
+begin
+  -- doleva
+  if n^.id^<p^.id^ then
+    if p^.left<>nil
+      -- je¨tˆ d l do lev‚ho podstromu
+      then
+        addnode(n,p^.left,zvys);
+        if zvys then 
+          --%%TODO(ABS) p^.vaha+abs p^.left^.vaha; 
+          if p^.left^.vaha<0
+            then p^.vaha-p^.left^.vaha
+            else p^.vaha+p^.left^.vaha
+            end if;
+          end if;
+      -- u‘ sem
+      else
+        p^.left:=n;
+        succ p^.vaha;
+        zvys:=p^.vaha<>0;
+        end if;
+
+    -- vyv ‘it LL
+    if p^.vaha=2 then
+      if p^.left^.vaha<0
+        then LR(p);
+        else LL(p);
+        end if;
+      zvys:=false;
+      end if;
+
+  -- doprava
+  elsif n^.id^>p^.id^ then
+    if p^.right<>nil
+      -- je¨tˆ d l do prav‚ho podstromu
+      then
+        addnode(n,p^.right,zvys);
+        if zvys then 
+          --%%TODO(ABS) p^.vaha-abs p^.right^.vaha; 
+          if p^.right^.vaha<0
+            then p^.vaha+p^.right^.vaha
+            else p^.vaha-p^.right^.vaha
+            end if;
+          end if;
+      -- u‘ sem
+      else
+        p^.right:=n;
+        pred p^.vaha;
+        zvys:=p^.vaha<>0;
+        end if;
+
+    -- vyv ‘it
+    if p^.vaha=-2 then
+      if p^.right^.vaha>0
+        then RL(p);
+        else RR(p);
+        end if;
+      zvys:=false;
+      end if;
+  
+  -- duplicitni identifikator
+  else
+    ce^.seterror({CCERR=}000318,ce_dupid);
+    ce^.setparam(entityident_to_string(n^.id^));
+    {%%POS}
+    zvys:=false;
+    ce^.raiseerror;
+    end if;
+  end addnode;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_add_ident =
+-- Za©ad¡ zadanou entitu [entity] do kontextu [context] pod identifik torem [id].
+-- Pro identifik tor se nealokuje nov  pamˆŸ, pointer se rovnou p©eb¡r . Pokud entita nem  je¨tˆ
+-- p©i©azen identifik tor, p©i©ad¡ se j¡ automaticky tento jako z kladn¡.
+----------------------------------------------------------------------------------------------------
+var
+  newid            : pidnode;                    -- nove vytvareny uzel tabulky
+  pid              : pidnode;                    -- pro vyhledani uzlu
+  zvys             : t_logical;                  -- zv˜¨en strom
+
+begin
+  -- vytvo©it uzel
+  new newid;
+
+  -- doplnit £daje
+  newid^.entity:=entity;
+  newid^.id:=id;
+
+  -- zaradit
+  if context.region^.idtable=nil
+    
+    -- prvni identifikator v tabulce je zcela bez problemu
+    then
+      context.region^.idtable:=newid;
+
+    -- dalsi se pridavaji komplikovaneji, protoze to nechci delat jako
+    -- rekurzivni funkci, nebot by to zbytecne zralo pamet
+    else
+      addnode(newid,context.region^.idtable,zvys);
+      end if;
+
+  -- poznament si prvni identifikator symbolu
+  if entity^.id=nil then 
+    entity^.id:=id;
+    end if;
+  end sym_add_ident;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_add_with =
+-- V zadan‚m kontextu [context] vytvo©¡ WITH/USE vazbu na entitu [entity].
+----------------------------------------------------------------------------------------------------
+const
+  withtabinit      = 4;
+  withtabdelta     = 16;
+
+type
+  p_machine_pointer= ^unchecked for machine_pointer use true;
+
+var
+  _withtable       : context.region^.withtable:type;
+  _with            : ^context.region^.withtable^:base;
+
+begin
+  -- relokovat pamˆŸ
+  if context.region^.withtable=nil then
+    new context.region^.withtable range withtabinit;
+  elsif context.region^.withtable^:length=context.region^.withtable^:last then
+    --%%TODO(ADJUST) adjust context.region^.withtable^ range context.region^.withtable^:last+withtabdelta;
+    new _withtable range context.region^.withtable^:last+withtabdelta;
+    _withtable^:=context.region^.withtable^;
+    discard context.region^.withtable;
+    context.region^.withtable:=_withtable;
+    end if;
+
+  -- za©adit do tabulky %%TODO(AGGREGATE) %%TODO(STRING_ADJUST)
+  new _with;
+  _with^.entity.setexpr(expr);
+  _with^.entity.setentity(entity);
+  _with^.mode:=mode;
+  _with^.typ:=typ;
+  context.region^.withtable^ & _with^;
+  discard p_machine_pointer(_with);
+  end sym_add_with;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_add_entity =
+-- Za©ad¡ entitu do tabulky entit v zadan‚m kontextu [context].
+-- V entitˆ [entity] nastav¡ pointer na nad©azen˜ kontext a viditelnost.
+-- %%TECH P©edpokl d  se, ‘e pointery PREV a NEXT jsou nastaveny na NIL.
+----------------------------------------------------------------------------------------------------
+begin
+  -- kontext
+  entity^.context:=context;
+
+  -- p©evz¡t viditelnost
+  entity^.visible:=context.region^.vsect;
+
+  -- re‘im p©ekladu
+  entity^.compile:=context.entity^.compile*etcs_modemask;
+
+  -- parametry p©ekladu
+  entity^.compv:=context.entity^.compv;
+
+  -- za©adit do tabulky
+  if context.region^.entities.first=nil
+
+    -- prvn¡ entita
+    then
+      context.region^.entities.first:=entity;
+      context.region^.entities.last :=entity;
+
+    -- dal¨¡ entita
+    else
+      context.region^.entities.last^.next:=entity;
+      entity^.prev:=context.region^.entities.last;
+      context.region^.entities.last :=entity;
+      end if;
+  end sym_add_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_add_region =
+-- P©id  do aktu ln¡ho kontextu [context] zadan˜ region [region].
+----------------------------------------------------------------------------------------------------
+begin
+  -- kontext
+  region^.context:=context;
+
+  -- za©adit do tabulky
+  if context.region^.regions.first=nil 
+
+    -- prvn¡ region
+    then
+      context.region^.regions.first:=region;
+      context.region^.regions.last :=region;
+
+    -- dal¨¡ region
+    else
+      context.region^.regions.last^.next:=region;
+      region^.prev:=context.region^.regions.last;
+      context.region^.regions.last :=region;
+      end if;
+  end sym_add_region;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_new_entity =
+-- Vytvo©¡ novou entitu a jej¡ prim rn¡ region.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat pamˆŸ
+  case etype
+    when et_undef      do new pentity(entity);
+    when et_compile    do new pentity_compile(entity);
+    when et_program    do new pentity_program(entity);
+    when et_module     do new pentity_module(entity);
+    when et_special    do new pentity_special(entity);
+    when et_procedure  do new pentity_procedure(entity);
+    when et_static     do new pentity_static(entity);
+    when et_virtual    do new pentity_virtual(entity);
+    when et_task       do new pentity_task(entity);
+    when et_override   do new pentity_override(entity);
+    when et_macro      do new pentity_macro(entity);
+    when et_overload   do new pentity_overload(entity);
+    when et_operator   do new pentity_operator(entity);
+    when et_var        do new pentity_var(entity);
+    when et_type       do new pentity_type(entity);
+    when et_class      do new pentity_type(entity);
+    when et_const      do new pentity_const(entity);
+    when et_enum       do new pentity_enum(entity);
+    when et_param      do new pentity_param(entity);
+    when et_message    do new pentity_message(entity);
+    when et_label      do new pentity_label(entity);
+    when et_template   do new pentity_template(entity);
+    when et_tparam     do new pentity_tparam(entity);
+    when et_attribute  do new pentity_attribute(entity);
+    when others        do verify(543,true);
+    end case;
+  
+  -- po‡ te‡n¡ naplnˆn¡ entity
+  entity^.etype:=etype;
+  end sym_new_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_new_region =
+-- Vytvo©¡ nov˜ region.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat pamˆŸ
+  new region;
+  
+  -- po‡ te‡n¡ naplnˆn¡ regionu
+  region^.rtype:=rtype;
+  end sym_new_region;
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Nastavov n¡ vlastnost¡ entit a region–.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure sym_set_evaluated =
+-- Ozna‡¡ symbol za vyhodnocen˜ a deklarovan˜.
+----------------------------------------------------------------------------------------------------
+begin
+  psym^.eval:=ete_evaluated;
+  psym^.evaluated:=etd_full;
+  psym^.declared:=etd_full;
+  end sym_set_evaluated;
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Nadstavby pro zjednodu¨en¡ ‡ast˜ch operac¡
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure sym_add_new_entity =
+-- V r mci dodan‚ho kontextu [context] vytvo©¡ novou entitu, jej¡ prim rn¡ region, za©ad¡ ji do 
+-- tabulky entit a tabulky identifik tor–. Vr t¡ kontext [entity_context] sestaven˜ z vytv ©en‚
+-- entity a jej¡ho prim rn¡ho regionu.
+-- %%X Zru¨eno: Je-li [id] nil, nastav¡ se u symbolu p©¡znaky ETC_INTERNAL a ETD_Full.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vytvo©it entitu
+  sym_new_entity(etype,entity);
+
+  -- za©adit
+  sym_add_entity(context,entity);
+
+  -- m me k dispozici identifik tor ?
+  if id<>nil
+
+    -- ano => dosadit
+    then sym_add_ident(context,id,entity)
+
+    -- ne => ozna‡it entitu za intern¡ a plnˆ deklarovanou
+    else
+      --%%X K ‡emu to bylo ?  entity^.compile+tentitycompileset:[etc_internal];
+      --                      entity^.declared:=etd_full;
+      end if;
+
+  -- vytvo©it prim rn¡ region
+  sym_new_region(entitydesc[etype].region,entity^.regions[rc_primary]);
+
+  -- sestavit kontext pro prim rn¡ region
+  entity_context:=sym_primary_context(entity^);
+  end sym_add_new_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_add_new_region =
+-- Vytvo©¡ nov˜ region v r mci zadan‚ho kontextu [context] a kromˆ nˆj vr t¡ i odpov¡daj¡c¡ nov˜ 
+-- kontext [region_context]. Typ nov‚ho kontextu odvod¡ od typu aktu ln¡ho kontextu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vytvo©it region
+  sym_new_region(context.region^.rtype,region);
+
+  -- za©adit
+  sym_add_region(context,region);
+
+  -- sestavit kontext
+  region_context.entity:=context.entity;
+  region_context.region:=region;
+  end sym_add_new_region;
+
+
+
+end cc_advanced;

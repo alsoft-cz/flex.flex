@@ -1,0 +1,1128 @@
+----------------------------------------------------------------------------------------------------
+module private cc_sym =
+-- P©eklada‡ Flexu.
+-- Manipulace s tabulkou symbol–.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 18.06.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_var,
+  cc_def.cc_codes;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private tentitysearch =
+-- Hled tko.
+----------------------------------------------------------------------------------------------------
+
+    var
+      flags        : tesearchflagset;
+      level        : t_unsigned;
+
+      -- pouze pro hled n¡ podle typu entity
+      etype        : tentitytype;                -- typ prvku
+
+    ------------------------------------------------------------------------------------------------
+    static find_ident (
+        idtable    : in pidnode;                 -- tabulka identifikatoru
+        id         : in tentityident;            -- identifikator
+        vis        : in tentityvisibleset;       -- po‘adovan  viditelnost
+        node       : out pidnode) =              -- nalezeny uzel nebo NIL
+    -- Vyhled  identifik tor v tabulce identifik tor–.
+    ------------------------------------------------------------------------------------------------
+    var
+      pid          : pidnode;                    -- pro vyhledani uzlu
+
+    begin
+      pid:=idtable;
+      while pid<>nil loop
+        -- hledat v prave vetvi
+        if id>pid^.id^ then 
+          pid:=pid^.right
+
+        -- hledat v leve vetvi
+        elsif id<pid^.id^ then
+          pid:=pid^.left;
+
+        -- nalezeno
+        else
+          node:=pid;
+          break;
+          end if;
+        end loop;
+
+      -- zkorigovat v˜sledek podle viditelnosti
+      if node<>nil and then node^.entity^.visible not in vis then
+        node:=nil;
+        end if;
+      end find_ident;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static find_link (
+        _ancestor  : in pentity;                 -- symbol obsahujici tab. id.
+        id         : in tentityident;            -- identifikator
+        _vis       : in tentityvisibleset;       -- po‘adovan  viditelnost
+        node       : out pidnode) =              -- nalezeny uzel
+    -- Najde entitu podle identifikatoru v prilinkovane tabulce entit.
+    ------------------------------------------------------------------------------------------------
+    var
+      ancestor     : pentity;                    -- p©edek
+      vis          : tentityvisibleset;
+
+    begin
+      ancestor:=_ancestor;
+      vis:=_vis*tentityvisibleset:[etv_public,etv_protected];
+      while ancestor<>nil loop
+        ---- hledani na lokalni urovni ----
+        find_ident(ancestor^.regions[rc_primary]^.idtable,id,vis,node);
+        if node<>nil then return end if;
+
+        ---- hledat v p©edkovi ----
+        ancestor:=ancestor^.ancestor.getuentity;
+        end loop;
+      end find_link;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static find_with (
+        withtab    : in twithtable;              -- tabulka pou‘it˜ch modul–
+        id         : in tentityident;            -- identifikator
+        node       : out pidnode) =              -- nalezeny uzel nebo NIL
+    -- Najde symbol podle identifik toru ve WITH modulech
+    ------------------------------------------------------------------------------------------------
+    var
+      i            : withtab^:range:type;
+
+    begin
+      if withtab<>nil then
+        for i in withtab^:range loop
+          if withtab^[i].mode=twm_with then
+            find_link(withtab^[i].entity.getcentity,id,tentityvisibleset:[etv_public],node);
+            if node<>nil then break; end if;
+            end if;
+          end loop;
+        end if;
+      end find_with;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static find_global =
+    -- Nalezne entitu podle identifik toru.
+    -- Tabulku entit prohled v  podle pravidel viditelnosti.
+    ------------------------------------------------------------------------------------------------
+    var
+      node             : pidnode;                    -- (ne)nalezeny uzel
+      xcontext         : tcontext;                   -- prohledavany kontext (v hieararchii)
+
+    begin
+      -- kazdopadne predem vynulovat
+      this.level:=0;
+      this.psym:=nil;
+      node:=nil;
+
+      -- prohledat
+      xcontext:=context;
+      loop
+        -- je s aktu ln¡ entitou asociovan˜ nˆjak˜ deklarativn¡ region ?
+        if xcontext.region<>nil 
+        
+          -- entita s deklarativn¡m regionem => prohledat
+          then 
+            -- prohledat tuto £rove¤
+            find_ident(xcontext.region^.idtable,id,tentityvisibleset:full,node);
+            if node<>nil then break end if;
+   
+            -- prohledat p©edka
+            if xcontext.region^.context.region=nil then
+              find_link(xcontext.entity^.ancestor.getuentity,id,tentityvisibleset:[etv_public,etv_protected],node);
+              if node<>nil then break end if;
+              end if;
+      
+            -- prohledat with/use tabulku
+            find_with(xcontext.region^.withtable,id,node);
+            if node<>nil then break end if;
+
+            -- na vy¨¨¡ £rove¤
+            if xcontext.region^.context.region=nil
+              then xcontext:=xcontext.entity^.context;
+              else xcontext:=xcontext.region^.context;
+              end if;
+
+          -- entita bez deklarativn¡ho regionu => na vy¨¨¡ £rove¤
+          else
+            xcontext:=xcontext.entity^.context;
+            end if;
+
+        -- zkusit vy¨¨¡ £rove¤
+        until xcontext.entity=nil;
+
+      -- vratit (ne)nalezeny symbol
+      if node=nil
+        then this.psym:=nil;
+        else this.psym:=node^.entity;
+        end if;
+      end find_global;
+
+
+      
+    ------------------------------------------------------------------------------------------------
+    static find_local =
+    -- Nalezne entitu podle idenfifik toru.
+    -- Hled  na lok ln¡ £rovni a v p©edkovi. Viditelnost symbolu mus¡ b˜t v mno‘inˆ po‘adovan‚
+    -- viditelnosti.
+    ------------------------------------------------------------------------------------------------
+    var
+      node             : pidnode;                    -- (ne)nalezeny uzel
+      xcontext         : tcontext;                   -- prohledavany kontext (v hieararchii)
+
+    begin
+      -- kazdopadne predem vynulovat
+      this.level:=0;
+      this.psym:=nil;
+      node:=nil;
+
+      -- prohledat
+      if context.region<>nil then
+        xcontext:=context;
+        loop
+          -- prohledat tuto £rove¤
+          find_ident(xcontext.region^.idtable,id,visibility,node);
+          if node<>nil then break end if;
+   
+          -- nejsme u‘ v top-level regionu ?
+          if xcontext.region^.context.region=nil then
+            -- je¨tˆ zkusit prohledat p©edka
+            find_link(context.entity^.ancestor.getuentity,id,visibility,node);
+
+            -- a kon‡¡me
+            break;
+            end if;
+
+          -- o £rove¤ v˜¨
+          xcontext:=xcontext.region^.context;
+          end loop;
+        end if;
+                            
+      -- vratit (ne)nalezeny symbol
+      if node=nil
+        then this.psym:=nil;
+        else this.psym:=node^.entity;
+        end if;
+      end find_local;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static find_local_all =
+    -- Nalezne entitu podle idenfifik toru.
+    -- Hled  pouze na lok ln¡ £rovni. Viditelnost symbolu nebere v £vahu.
+    ------------------------------------------------------------------------------------------------
+    var
+      node             : pidnode;                    -- (ne)nalezeny uzel
+      xcontext         : tcontext;                   -- prohledavany kontext (v hieararchii)
+
+    begin
+      -- kazdopadne predem vynulovat
+      this.level:=0;     -- %%TECH Tyto dva © dky jsou jen pro jistotu, jestli to nen¡ v p©eklada‡i t©eba, lze je smazat
+      this.psym:=nil;
+      node:=nil;
+
+      -- hledat na lokalni urovni
+      xcontext:=context;
+      while xcontext.region<>nil loop
+        -- prohledat tuto £rove¤
+        find_ident(xcontext.region^.idtable,id,tentityvisibleset:full,node);
+        if node<>nil then break end if;
+   
+        -- o £rove¤ v˜¨
+        xcontext:=xcontext.region^.context;
+        end loop;
+      
+      -- vratit (ne)nalezeny symbol
+      if node=nil
+        then this.psym:=nil;
+        else this.psym:=node^.entity;
+        end if;
+      end find_local_all;
+
+
+
+    var
+      -- pouze pro hled n¡ podle typu entity
+      rcategory    : tregioncategory;            -- kategorie prohled van‚ho regionu
+
+    ----------------------------------------------------------------------------------------------------
+    static search_et (
+        zdroj      : in tcontext;                -- zdroj entit
+        next       : in out t_logical) =         -- T-hledat n sleduj¡c¡
+    -- Najde prvn¡/n sleduj¡c¡ prvek dan‚ho typu.
+    ----------------------------------------------------------------------------------------------------
+    begin
+      -- zvolit po©ad¡ prohled v n¡
+      if esf_reverse in flags
+
+        -- opa‡n‚ po©ad¡
+        then psym:=zdroj.region^.entities.last
+
+        -- p©¡m‚ po©ad¡
+        else
+          -- nem me nap©ed zkusit p©edka ?
+          if esf_ancestor in flags and then zdroj.entity^.ancestor.isset then
+            search_et(sym_build_context_from_category(zdroj.entity^.ancestor.getcentity,rcategory),next);
+            if psym<>nil then return; end if;
+            end if;
+
+          -- teƒ prohledat sebe
+          psym:=zdroj.region^.entities.first;
+          end if;
+
+      -- prohledat
+      while psym<>nil loop
+
+        -- nalezeno
+        if psym^.etype=this.etype or else this.etype=et_undef then
+          -- %%TECH, %%X Tato metoda pamatov n¡ si p©edchoz¡ho symbolu
+          -- nebude fungovat v paraleln¡m p©eklada‡i.
+          if next
+
+            -- tenhle ji‘ byl jednou nalezen
+            then
+              next:=sf_last not in psym^.flags;
+              psym^.flags-tentityflagsset:[sf_last]
+
+            -- novˆ nalezen
+            else
+              psym^.flags+tentityflagsset:[sf_last];
+              return;
+              end if;
+          end if;
+      {   
+        -- o £rove¤ n¡‘
+        elsif psym^.etype=et_with {(psym^.ptype=et_link) and (pdeflink(psym)^.ltype=lt_full)} {%%X and (pdeflink(psym)^.sym<>psym^.owner)} then
+          -- generick˜ nebo nevyhodnocen˜ odkaz, d le nic nezkoumat
+          -- %%X nemˆlo by se volat E_SYMBOL ? 
+          if pdefwith(psym)^.typ.e<>ete_evaluated then return; end if;
+          --if pdeflink(psym)^.sym.e<>se_evaluated then exit; end if;
+
+          -- zkusit vyhledat
+          --search_et(pvnoreny,pdeflink(psym)^.sym.getcentity,ptype,reverse,adr,next);
+          search_et(pvnoreny,pdefwith(psym)^.typ.getctype,ptype,flags{reverse},adr,next);
+          if pvnoreny<>nil then
+            --udadd(adr,pdeflink(psym)^.ofs);
+            udadd(adr,pdefwith(psym)^.ofs);
+            psym:=pvnoreny;
+            return;
+            end if;
+          end;
+      }
+        
+        -- dal¨¡ symbol
+        if esf_reverse in flags
+          then psym:=psym^.prev;
+          else psym:=psym^.next;
+          end if;
+        end loop;
+
+      -- st le nenalezeno => p©i opa‡n‚m po©ad¡ by ¨lo zkusit p©edka
+      if psym=nil and then esf_reverse in flags and then esf_ancestor in flags and then zdroj.entity^.ancestor.isset then
+        search_et(sym_build_context_from_category(zdroj.entity^.ancestor.getcentity,rcategory),next);
+        if psym<>nil then return; end if;
+        end if;
+      end search_et;
+
+
+
+    var
+      -- pouze pro hled n¡ podle typu entity
+      zdroj        : tcontext;                   -- zdroj prvk–
+
+    ------------------------------------------------------------------------------------------------
+    static find_et_first =
+    -- Nalezne prvn¡ entitu zadan‚ho typu. Je-li ETYPE=ET_UNDEF, najde libovoln˜.
+    -- Norm lnˆ se hled  v p©¡m‚m po©ad¡, s flagem ESF_REVERSE v opa‡n‚m.
+    ------------------------------------------------------------------------------------------------
+    var
+      next             : t_logical;
+
+    begin
+      this.flags:=flags;
+      this.level:=0;
+      this.zdroj:=sym_build_context_from_category(zdroj,rcategory);
+      this.rcategory:=rcategory;
+      this.etype:=etype;
+      next:=false;
+      search_et(this.zdroj,next);
+      end find_et_first;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static find_et_first_in_context =
+    -- Nalezne prvn¡ entitu zadan‚ho typu v uveden‚m kontextu. 
+    -- Nesm¡ b˜t uveden p©¡znak ESF_ANCESTOR. 
+    -- V ostatn¡ch ohledech se chov  stejnˆ jako FIND_ET_FIRST.
+    ------------------------------------------------------------------------------------------------
+    var
+      next             : t_logical;
+
+    begin
+      verify(626,esf_ancestor in flags);
+      this.flags:=flags;
+      this.level:=0;
+      this.zdroj:=context;
+      this.etype:=etype;
+      next:=false;
+      search_et(this.zdroj,next);
+      end find_et_first_in_context;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static find_et_next =
+    -- Nalezne dal¨¡ prvek zadan‚ho typu.
+    ------------------------------------------------------------------------------------------------
+    var
+      next             : t_logical;
+
+    begin
+      this.level:=0;
+      next:=true;
+      search_et(this.zdroj,next);
+      end find_et_next;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static count_et =
+    -- Vr t¡t po‡et entit vyhovuj¡c¡ch zadan˜m parametr–m.
+    ------------------------------------------------------------------------------------------------
+    begin
+      find_et_first(zdroj,rcategory,etype,flags);
+      while psym<>nil loop
+        succ result;
+        find_et_next;
+        end loop;
+      end count_et;
+
+
+
+    var
+      -- pouze pro hled n¡ v¡ce entit se stejn˜m identifik torem
+      xcontext     : tcontext;
+      ycontext     : tcontext;
+      windex       : twithtable^:range;
+      sv           : tentityvisibleset;
+      status       : enum
+          search_this;
+          search_local;
+          search_with;
+          search_context;
+          end enum;      
+      next         : status:type;
+      id           : pentityident;
+
+    ------------------------------------------------------------------------------------------------
+    static find_id_first =
+    -- Nalezne prvn¡ entitu podle identifik toru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- kazdopadne predem vynulovat
+      this.level:=0;
+      this.psym:=nil;
+
+      -- po‡ te‡n¡ stav automatu
+      this.status:=search_this;
+      this.xcontext:=context{where};
+      this.id:=id;
+
+      -- hledat
+      find_id_next;
+      end find_id_first;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static find_id_next =
+    -- Nalezne dal¨¡ entitu podle identifik toru.
+    ------------------------------------------------------------------------------------------------
+    var
+      node         : pidnode;                    -- (ne)nalezeny uzel
+      xcontext     : tcontext;                   -- symbol prohled van˜ v ose x
+      ycontext     : tcontext;                   -- symbol prohled van˜ v ose y
+      windex       : twithtable^:range;          -- index do with-tabulky
+      sv           : tentityvisibleset;          -- maska viditelnosti
+
+    begin
+      -- naplnit pracovn¡ promˆnn‚
+      xcontext:=this.xcontext;
+      ycontext:=this.ycontext;
+      windex:=this.windex;
+      sv:=this.sv;
+
+      -- hledat
+      node:=nil;
+      while node=nil and xcontext.entity<>nil loop
+        case this.status
+          -- hled n¡ na lok ln¡ £rovni a v p©edkovi
+          when search_this  do
+              -- zavolat podprogram
+              ycontext:=xcontext;
+              this.status:=search_local;
+              sv:=tentityvisibleset:full;
+
+              -- p©¡¨tˆ se bude prohled vat with-tabulka
+              windex:=windex:first;
+              this.next:=search_with;
+
+          -- hled n¡ v ose y
+          when search_local do
+              -- prohledat lok ln¡ tabulku symbol–
+              find_ident(ycontext.region^.idtable,this.id^,sv,node);
+
+              -- dal¨¡ region
+              if ycontext.region^.context.region=nil
+
+                -- pod¡vat se k p©edkovi
+                then
+                  -- p©edek
+                  if ycontext.entity^.ancestor.getuentity=nil
+
+                    -- neexistuje => dal¨¡ krok
+                    then this.status:=this.next
+ 
+                    -- existuje => omezit masku viditelnosti a prohledat
+                    else 
+                      -- je¨tˆ doplnit prim rn¡ region
+                      ycontext:=sym_primary_context(ycontext.entity^.ancestor.getuentity^);
+
+                      -- omezit masku viditelnosti
+                      sv*tentityvisibleset:[etv_public,etv_protected]
+                    end if;
+
+                -- o region v˜¨e
+                else
+                  -- context nad©azen‚ho regionu
+                  ycontext:=ycontext.region^.context;
+
+                  -- %%TECH Pokud bychom povolili WITH/USE i v DECLARE bloku, tak by se zde
+                  -- muselo doplnit prohled n¡ lok ln¡ WITH tabulky.
+                  end if;
+
+          -- hled n¡ ve with-tabulce
+          when search_with  do
+              -- nal‚zt prvn¡ p©¡pustnou polo‘ku
+              if xcontext.region^.withtable<>nil then 
+                while windex<=xcontext.region^.withtable^:length
+                and ((xcontext.region^.withtable^[windex].mode<>twm_with)
+                or (xcontext.region^.withtable^[windex].typ<>twt_all)) loop 
+                  succ windex; 
+                  end loop;
+                end if;
+
+              if xcontext.region^.withtable=nil or else windex>xcontext.region^.withtable^:length
+
+                -- prohledat nad©azen˜ kontext
+                then this.status:=search_context
+
+                -- prohledat with tabulku
+                else
+                  -- zavolat podprogram
+                  ycontext:=sym_primary_context(xcontext.region^.withtable^[windex].entity.getcentity^);
+                  this.status:=search_local;
+                  sv:=[etv_public];
+
+                  -- p©¡¨tˆ se bude prohled vat dal¨¡ polo‘ka ve with-tabulce
+                  this.next:=search_with;
+                  succ windex;
+                  end if;
+
+          -- hled n¡ v nad©azen‚m kontextu
+          when search_context do
+              xcontext:=xcontext.entity^.context;
+              this.status:=search_this;
+
+          when others do verify(289,true);
+          end case;
+        end loop;
+
+      -- vratit (ne)nalezeny symbol
+      if node=nil
+        then this.psym:=nil;
+        else this.psym:=node^.entity;
+        end if;
+
+      -- ulo‘it pracovn¡ promˆnn‚
+      this.xcontext:=xcontext;
+      this.ycontext:=ycontext;
+      this.windex:=windex;
+      this.sv:=sv;
+      end find_id_next;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static set_entity =
+    -- Umˆle napln¡ v˜sledek hled n¡.
+    ------------------------------------------------------------------------------------------------
+    begin
+      this.psym:=psym;
+      end set_entity;
+
+    end tentitysearch;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_primary_context =
+-- Sestav¡ prim rn¡ kontext entity.                                                                
+----------------------------------------------------------------------------------------------------
+begin
+  result.entity:=^curr;
+  result.region:=curr.regions[rc_primary];
+  end sym_primary_context;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_build_context =
+-- Ze zadan‚ entity a regionu sestav¡ kontext.
+----------------------------------------------------------------------------------------------------
+begin
+  result.entity:=entity;
+  result.region:=region;
+  end sym_build_context;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_build_context_from_category =
+-- Ze zadan‚ entity a kategorie regionu sestav¡ kontext.
+----------------------------------------------------------------------------------------------------
+begin
+  result.entity:=entity;
+  result.region:=entity^.regions[rcategory];
+  end sym_build_context_from_category;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_relative_context =
+-- Sestav¡ (prim rn¡) kontext zadan‚ entity s ohledem na aktu ln¡ kontext. Pokud je ENTITY shodn 
+-- nebo nad©azen  k CURR.ENTITY, pak vr t¡ kontext, ke kter‚mu lze dotrasovat p©es CURR, jinak
+-- vr t¡ prost˜ prim rn¡ kontext.
+----------------------------------------------------------------------------------------------------
+begin
+  -- zkusit dohledat relativn¡ kontext od CURR
+  result:=curr;
+  while result.entity<>nil and then result.entity<>entity loop
+    result:=result.entity^.context;
+    end loop;
+
+  -- nenalezlo-li se, tak sestavit prim rn¡ kontext
+  if result.entity=nil then
+    result:=sym_primary_context(entity^);
+    end if;
+  end sym_relative_context;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_qid =
+-- Sestav¡ kvalifikovan˜ identifik tor entity a vr t¡ ho jako ©etˆzec.
+----------------------------------------------------------------------------------------------------
+var
+  psym             : pentity;
+
+begin
+  psym:=_psym;
+
+  -- nen¡ to rovnou kompila‡n¡ jednotka
+  if psym<>nil and then psym^.etype=et_compile
+
+    -- ano => vr tit p©¡mo identifik tor
+    then result:=entityident_to_string(psym^.id^)
+
+    -- ne => sestavit kvalifikovan˜ identifik tor
+    else
+      -- zpracovat postupnˆ v¨echny entity v hierarchii
+      while psym<>nil and then psym^.etype<>et_compile loop
+        --  typ bez identifik toru => dosadit atribut
+        if psym^.id=nil and then psym^.etype in tentitytypeset:[et_type,et_class] then 
+          result:='.#type' & result
+
+        -- speci ln¡ metoda
+        elsif psym^.etype=et_special then 
+          result:='.' & entityident_to_string(psym^.id^){%%TODO(SLICE)[2..psym^.id^:length]} & result
+
+        -- override
+        elsif psym^.etype=et_override then
+          result:='.#override(' & sym_get_qid(pentity_override(psym)^.virt.getcentity) & ')' & result
+
+        -- nˆjak  entita bez identifik toru
+        elsif psym^.id=nil then 
+          result:='.?' & entitydesc[psym^.etype].id & '?' & result
+
+        -- entita s identifik torem
+        else 
+          result:='.' & entityident_to_string(psym^.id^) & result;
+          end if;
+
+        -- nad©azen  entita
+        psym:=psym^.context.entity;
+        end loop;
+
+      if result<>'' then 
+        {%%TODO(SLICE) result:=result[2..result:length];}
+        end if;
+      end if; 
+  end sym_get_qid;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_temp_id =
+-- Vygeneruje intern¡ pracovn¡ identifik tor entity.
+----------------------------------------------------------------------------------------------------
+with
+  standard.conversions,
+  cc_var;
+
+var
+  s                : t_char32str;
+  i                : s:type:range;
+
+begin
+  -- zv˜¨it ‡¡ta‡
+  succ temp_counter;
+
+  -- p©ev‚st na ©etˆzec
+  s:=unsigned_to_string(temp_counter);
+
+  -- nabrat pamˆŸ
+  new result range id_int_temp:length+s:length;
+
+  -- z klad v¨ech intern¡ch pracovn¡ch identifik tor– je stejn˜
+  result^:=id_int_temp;
+
+  -- p©idat ‡¡ta‡ na konec identifik toru
+  for i in s:range loop
+    result^ & tidentchar(s[i]);
+    end loop;
+  end sym_get_temp_id;
+  
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_is_fully_visible =
+-- True, je-li ve WHERE viditeln  £pln  deklarace WHAT.
+----------------------------------------------------------------------------------------------------
+var
+  ancestor         : pentity;                    -- p©edek
+  where            : tcontext;
+
+begin
+  where:=_where;
+
+  -- ani nem  £plnou deklaraci
+  if what^.declared<>etd_full then
+    result:=false;
+    return;
+    end if;
+
+  -- —pln  deklarace symbolu je vidˆt pokud plat¡ alespo¤ jedna z podm¡nek:
+  --   1) WHAT je deklarov no ve WHERE
+  --   2) WHAT je deklarov no v nˆkter‚m symbolu nad©azen‚m WHERE
+  --   3) WHAT je deklarov no v p©edkovi WHERE
+  --   4) WHAT je deklarov no v p©edkovi symbolu nad©azen‚m WHERE
+  -- P©i‡em‘ podm¡nky 3) a 4) maj¡ smysl pouze pokud je £pln  deklarace WHAT
+  -- v ‡ sti PROTECTED
+  while where.entity<>nil and then where.entity<>what^.context.entity loop
+    -- test p©edk–
+    if what^.full=etv_protected then
+      ancestor:=where.entity^.ancestor.getuentity;
+      while ancestor<>nil and then ancestor<>what^.context.entity loop
+        ancestor:=ancestor^.ancestor.getuentity;
+        end loop;
+      if ancestor<>nil then
+        break;
+        end if;
+      end if;
+
+    -- nad©azen˜ prvek
+    where:=where.entity^.context;
+    end loop;
+  result:=where.entity<>nil;
+  end sym_is_fully_visible;
+
+
+     
+----------------------------------------------------------------------------------------------------
+procedure sym_is_included =
+-- True, je-li symbol WHAT v tabulce symbol– symbolu WHERE (p©¡mo i nep©¡mo). 
+----------------------------------------------------------------------------------------------------
+var
+  what             : pentity;
+
+begin
+  what:=_what;
+  while what<>nil and then what<>where loop
+    what:=what^.context.entity{owner};
+    end loop;
+  result:=what<>nil;
+  end sym_is_included;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_is_included_or_ancestor =
+-- True, je-li symbol WHAT v tabulce symbol– symbolu WHERE (p©¡mo i nep©¡mo), nebo v nˆkter‚m 
+-- z p©edk– nad©azen˜ch symbol– WHERE.
+----------------------------------------------------------------------------------------------------
+var
+  what             : pentity;
+
+begin
+  what:=_what;
+  loop
+    -- nen¡ where=what nebo where p©edek what ?
+    if sym_is_ancestor(where,what) then
+      result:=true;
+      return;
+      end if;
+
+    -- zkusit nad©azen˜ symbol
+    what:=what^.context.entity;
+    until what=nil;
+  end sym_is_included_or_ancestor;
+
+
+                
+----------------------------------------------------------------------------------------------------
+procedure sym_is_used =
+-- True, je-li symbol WHAT withnut/usenut (v z vislosti na MODE/TYPE) v symbolu WHERE.                                                           
+----------------------------------------------------------------------------------------------------
+var
+  i                : t_unsigned;
+
+begin
+  result:=false;
+  -- Ondra 5.4.2002 : Hled n¡ nem  b˜t rekurzivn¡ vzhledem k nad©azen˜m entit m.
+{
+  while where<>nil loop
+}
+    if where.region^.withtable<>nil then
+      for i in where.region^.withtable^:range loop
+        {%%X Ondra 21.6.2001 : Pro‡ jsem ten typ vazby vlastnˆ zav dˆl? }
+        -- Nefungovalo to s t¡m, tak jsem to zakomentoval
+        if where.region^.withtable^[i].mode in _mode {and then (where^.withtab^[i].typ in _typ)} 
+        and then where.region^.withtable^[i].entity.getcentity=what then
+          result:=true;
+          return;
+          end if;
+        end loop;
+      end if;
+  {
+    where:=where^.context;
+    end loop;
+  }
+  end sym_is_used;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_is_descendant =
+-- True, je-li S1 potomek S2.
+----------------------------------------------------------------------------------------------------
+var
+  e1               : pentity;
+
+begin
+  -- Pozn mka: Stejn  procedura je i v CC_TYPE, ale pro typy (T_DESCENDANT) 
+  e1:=_e1;
+  while e1<>nil and then e1<>e2 loop e1:=e1^.ancestor.getuentity; end loop;
+  result:=e1=e2;
+  end sym_is_descendant;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_is_ancestor =
+-- True, je-li S1 p©edek S2.
+----------------------------------------------------------------------------------------------------
+var
+  e2               : pentity;
+
+begin
+  -- Pozn mka: Stejn  procedura je i v CC_TYPE, ale pro typy (T_ANCESTOR) 
+  e2:=_e2;
+  while e2<>nil and then e1<>e2 loop e2:=e2^.ancestor.getuentity; end loop;
+  result:=e1=e2;
+  end sym_is_ancestor;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_container =
+-- Nejbli‘¨¡ nad©azen˜ nebo stejn˜ kontejner typu modul/t©¡da/program/kompila‡n¡ jednotka.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=curr;
+  while result<>nil and then result^.etype not in ets_container loop 
+    result:=result^.context.entity;
+    end loop;
+  end sym_get_container;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_check_container =
+-- True, je-li nejbli‘¨¡ kontejnerov  entita typu ETYPE.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(619,etype not in ets_container);
+
+  -- souhlas¡ ?
+  result:=sym_get_container(curr)^.etype=etype;
+  end sym_check_container;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_enclosing_or_self =
+-- Najbli‘¨¡ nad©azen  nebo stejn  entita typu ETYPE.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=curr;
+  while result<>nil and then result^.etype<>etype loop 
+    result:=result^.context.entity;
+    end loop;
+  end sym_get_enclosing_or_self;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_enclosing_or_self_ex =
+-- Najbli‘¨¡ nad©azen  nebo stejn  entita typu ETYPE.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=curr;
+  while result<>nil and then result^.etype not in etype loop 
+    result:=result^.context.entity;
+    end loop;
+  end sym_get_enclosing_or_self_ex;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_check_enclosing_or_self =
+-- True, existuje-li nad©azen  nebo stejn  entita typu ETYPE.
+----------------------------------------------------------------------------------------------------
+begin
+  -- existuje ?
+  result:=sym_get_enclosing_or_self(curr,etype)<>nil;
+  end sym_check_enclosing_or_self;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_check_special =
+-- True, pokud entita obsahuje zadanou speci ln¡ metodu.
+----------------------------------------------------------------------------------------------------
+var
+  srch             : tentitysearch;
+
+begin
+  srch.find_et_first(context.entity,rc_primary,et_special,tesearchflagset:[]);
+  while srch.psym<>nil and then pentity_special(srch.psym)^.spectype<>spec loop
+    srch.find_et_next;
+    end loop;
+  result:=srch.psym<>nil;
+  end sym_check_special;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_visibility =
+-- Viditelnost symbol– vno©en˜ch v symbolu SEARCH s ohledem na aktu ln¡ kontext CONTEXT.
+----------------------------------------------------------------------------------------------------
+var
+  psym             : pentity;
+
+begin
+  -- CONTEXT je obsa‘en v SEARCH => je vidˆt v¨e
+  if sym_is_included(context,search) then
+    visibility:=tentityvisibleset:full;
+    return;
+    end if;
+
+  -- co je prohled van˜ symbol za‡ ?
+  if search^.etype in tentitytypeset:[et_module,et_class]
+
+    -- prohled van˜ symbol je modul/t©¡da
+    then
+      -- mohl by to b˜t p©edek nˆkter‚ho z modul–/t©¡d nad©azen˜ch CONTEXT
+      psym:=context;
+      while psym<>nil loop
+        -- nalezen potomek => je vidˆt v¨e public a protected
+        if (psym^.etype=search^.etype) and sym_is_descendant(psym,search) then
+          visibility:=tentityvisibleset:[etv_public,etv_protected];
+          return;
+          end if;
+        psym:=psym^.context.entity;
+        end loop;
+
+      -- mohl by b˜t WITH/USE v CONTEXT nebo nˆkter‚m nad©azen‚m symbolu
+      psym:=context;
+      while psym<>nil loop
+        -- nalezen u‘ivatel => je vidˆt v¨e public
+        if sym_is_used(search,sym_primary_context(psym^),twithmodeset:[twm_use,twm_with],twithtypeset:[twt_all]) then
+          visibility:=tentityvisibleset:[etv_public];
+          return;
+          end if;
+        psym:=psym^.context.entity;
+        end loop;
+
+      if search^.etype=et_class
+        -- z t©¡dy jsou v‘dy vidˆt aspo¤ public vˆci
+        -- %%X Nemˆlo by tohle b˜t trochu slo‘itˆj¨¡ ?? Co t©eba p©¡pad: 
+        --  class c =
+        --    var i : integer;
+        --    end c;
+        --  module m =
+        --    ... c.i:=0;     -- je zde I vidˆt ? nemˆl bych dˆlat WITH ?
+        --    end m;
+        then visibility:=tentityvisibleset:[etv_public]
+
+        -- Ondra 27.6.2001 : Z modulu je nˆco vidˆt pouze pokud je vno©en v
+        -- modulu/t©¡dˆ/programu/kompila‡n¡ jednotce nejvnit©eji obaluj¡c¡
+        -- context.
+        else
+          if sym_is_included(search,sym_get_container(context))
+            then visibility:=tentityvisibleset:[etv_public];
+            else visibility:=tentityvisibleset:[];
+            end if;
+          end if;
+      {
+        -- z modulu nen¡ vidˆt nic
+        else visibility:=[];
+      }
+
+    -- z ostatn¡ch symbol– jsou vidˆt jen public symboly
+    else 
+      visibility:=tentityvisibleset:[etv_public];
+      end if;
+  end sym_get_visibility;
+
+
+  
+----------------------------------------------------------------------------------------------------
+procedure sym_set_option =
+-- Nastav¡ parametr p©eklada‡e pro dan˜ symbol.                               
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+var
+  zac              : toptiontab:range;
+  kon              : toptiontab:range;
+  stred            : toptiontab:range;
+
+begin
+  -- vyhledat
+  zac:=toptiontab:first;
+  kon:=toptiontab:last;
+  loop
+    stred:=(zac+kon) div 2;
+    if id>toptiontab[stred].txt
+      then zac:=stred+1;
+      else kon:=stred;
+      end if;
+    until zac>=kon;
+  if id<>toptiontab[zac].txt then
+    ce^.setwarning({CCERR=}000320,cw_unknown_option);
+    ce^.setparam(entityident_to_string(id));
+    ce^.loadpos;
+    end if;
+
+  -- nastavit
+  --%%TODO(UNION)
+  --if value
+  --  then curr.compv.opts+toptionset:[toptiontab[zac].opt]
+  --  else curr.compv.opts-toptionset:[toptiontab[zac].opt];
+  --  end if;
+  if value
+    then bit_set(context.entity^.compv.opts,t_bit_index(toptiontab[zac].opt:ord));
+    else bit_reset(context.entity^.compv.opts,t_bit_index(toptiontab[zac].opt:ord));
+    end if;
+  end sym_set_option;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_set_warning =
+-- Nastav¡ stav warningu pro danou entitu.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+var
+  zac              : toptiontab:range;
+  kon              : toptiontab:range;
+  stred            : toptiontab:range;
+
+begin
+  -- nen¡ to nastaven¡ pro v¨echny varov n¡ ?
+  if id=cc_warning_id_all
+
+    -- ano => nastavit v¨echny
+    then
+      if value
+        then context.entity^.compv.warns:=twarningcodeset:full;
+        else context.entity^.compv.warns:=[];
+        end if;
+
+    -- ne => vyhledat konkr‚tn¡ varov n¡
+    else
+      -- vyhledat
+      zac:=cc_warning_desc:first;
+      kon:=cc_warning_desc:last;
+      loop
+        stred:=(zac+kon) div 2;
+        if id>cc_warning_desc[stred].id
+          then zac:=stred+1;
+          else kon:=stred;
+          end if;
+        until zac>=kon;
+      if id<>cc_warning_desc[zac].id then
+        ce^.setwarning({CCERR=}000320,cw_unknown_option);
+        ce^.setparam(entityident_to_string(id));
+        ce^.loadpos;
+        end if;
+
+      -- nastavit
+      if value
+        then bit_set(context.entity^.compv.warns,t_bit_index(cc_warning_desc[zac].warn:ord));
+        else bit_reset(context.entity^.compv.warns,t_bit_index(cc_warning_desc[zac].warn:ord));
+        end if;
+      end if;
+  end sym_set_warning;
+
+
+----------------------------------------------------------------------------------------------------
+#separate private cc_advanced;
+-- Dal¨¡ pokro‡il‚ funkce pro manipulaci s entitami, regiony, contexty, stromem entit a region–.
+----------------------------------------------------------------------------------------------------
+
+
+
+end cc_sym;

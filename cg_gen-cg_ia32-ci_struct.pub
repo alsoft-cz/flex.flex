@@ -1,0 +1,161 @@
+----------------------------------------------------------------------------------------------------
+module public ci_struct =
+-- P©eklada‡ Flexu.
+-- Definice intern¡ch run-time struktur p©eklada‡e.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 05.04.2002 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cp_cpu.cp_32.cp_def;
+
+----- V˜jimky a Return-control frame ---------------------------------------------------------------
+
+----- %%TECH Layout stacku podprogramu -------------------------------------------------------------
+-- Detailn¡ popis exception a return-control fram– viz flex-excetions.priv.
+----------------------------------------------------------------------------------------------------
+
+type
+  -- exception frame
+  ixframe          = record
+      frameesp     : tdata32;                    -- ESP tohoto r mce
+      frameebp     : tdata32;                    -- ESP tohoto r mce
+      currpar      : tpointer32;                 -- pointer na parametry aktu ln¡ v˜jimky
+      currtag      : ttag32;                     -- tag aktu ln¡ v˜jimky
+      currexc      : timm32;                     -- aktu ln¡ v˜jimka
+      handler      : tprg32;                     -- pointer na obshulu v˜jimky
+      uplink       : tpointer32;                 -- pointer na nad©azen¡ exception-frame (EBP)
+      end record
+          for alignment use 1
+          for size      use 28;
+
+const
+  -- offsety polo‘ek exception frame
+  ixframe_frameesp = timm32(0);
+  ixframe_frameebp = timm32(4);
+  ixframe_currpar  = timm32(8);
+  ixframe_currtag  = timm32(12);
+  ixframe_currexc  = timm32(16);
+  ixframe_handler  = timm32(20);
+  ixframe_uplink   = timm32(24);
+
+type
+  -- return-control frame
+  ircframe         = record
+      action       : timm32;                     -- k¢d akce
+      dest         : tprg32;                     -- adresa c¡lov‚ho n vˆ¨t¡
+      end record
+          for alignment use 1
+          for size      use 8;
+
+const
+  -- offsety polo‘ek return-control framu
+  ircframe_action  = timm32(0);
+  ircframe_dest    = timm32(4);
+
+
+
+----- Tagy typ– ------------------------------------------------------------------------------------
+
+----- %%TECH Layout deskriptoru typu/t©¡dy ---------------------------------------------------------
+--   +-------------+
+--   | :size       | +0         \
+--   +-------------+            |
+--   | datov˜ typ  | +4         |
+--   +-------------+            |
+--   | :tag p©edka | +8         |
+--   +-------------+            |
+--   | ^@init   *) | +12        | v¨echny typy
+--   +-------------+            |
+--   | ^entry      | +16        |
+--   +-------------+            |
+--   | ^exit       | +20        |
+--   +-------------+            |
+--   | ^adjust     | +24        /
+--   +-------------+
+--   | ^virtual_1  | +28        \
+--   |    ...      |            | pouze t©¡dy
+--   | ^virtual_n  | +28 + 4*n  /
+--   +-------------+
+--
+--   *) pro t©¡dy v‘dy NIL
+----------------------------------------------------------------------------------------------------
+
+type
+  -- dop©edn‚ deklarace
+  itypedesc;       pitypedesc       = ^class itypedesc;   
+  iclassdesc;      piclassdesc      = ^class iclassdesc;
+  iclassdescv;     piclassdescv     = ^class iclassdescv;
+
+  -- k¢d typu
+  idatatypecode    = private unsigned 32;
+
+  -- deskriptor typu (:tag)
+  itypedesc        = record
+      size         : tdata32;                    -- atribut :size     
+      datatype     : idatatypecode;              -- datov˜ typ
+      ancestor     : ttag32;                     -- :tag p©edka
+      specptr      : array tspectype of tprg32;
+      end record
+          for alignment use 1
+          for size      use 28;
+--__itypedesc      = true..itypedesc:size=28;
+
+  -- deskriptor t©¡dy (:tag)
+  iclassdesc       = itypedesc with record
+      end record
+          for alignment use 1
+          for size      use 28;
+--__iclassdesc     = true..iclassdesc:size=28;
+
+  -- deskriptor t©¡dy v‡etnˆ tabulky virtu ln¡ch metod
+  iclassdescv      = iclassdesc with record
+      vptr         : array 0..$FFFFFFF of tprg32;
+      end record;
+
+var
+  -- k¢dy datov˜ch typ–
+  idatatypecodetab : array tdatatype of idatatypecode := [
+      for dt_undef      use idatatypecode(0),
+      for dt_uniint     use idatatypecode(0),
+      for dt_unireal    use idatatypecode(0),
+      for dt_unilogical use idatatypecode(0),
+      for dt_unichar    use idatatypecode(0),
+      for dt_uniarray   use idatatypecode(0),
+      for dt_uninil     use idatatypecode(0),
+      for dt_ordinal    use idatatypecode(0),
+      for dt_signed     use idatatypecode(1),
+      for dt_unsigned   use idatatypecode(2),
+      for dt_float      use idatatypecode(3),
+      for dt_char       use idatatypecode(4),
+      for dt_logical    use idatatypecode(5),
+      for dt_string     use idatatypecode(7),
+      for dt_ustring    use idatatypecode(8),
+      for dt_array      use idatatypecode(9),
+      for dt_uarray     use idatatypecode(10),
+      for dt_record     use idatatypecode(11),
+      for dt_class      use idatatypecode(12),
+      for dt_interface  use idatatypecode(13),
+      for dt_enum       use idatatypecode(6),
+      for dt_set        use idatatypecode(14),
+      for dt_pointer    use idatatypecode(15),
+      for dt_tag        use idatatypecode(16),
+      for dt_message    use idatatypecode(17),
+      for dt_procedure  use idatatypecode(18),
+      for dt_task       use idatatypecode(19)];
+
+const
+  -- offsety polo‘ek deskriptoru typu/t©¡dy
+  itypedesc_size     = timm32(0);
+  itypedesc_datatype = timm32(4);
+  itypedesc_ancestor = timm32(8);
+
+var
+  -- offsety pointer– na speci ln¡ metody
+  iclassdesc_spec    : const array tspectype of timm32 := [
+      for tst_init   use timm32(12),
+      for tst_entry  use timm32(16),
+      for tst_exit   use timm32(20),
+      for tst_adjust use timm32(24)];
+
+end ci_struct;

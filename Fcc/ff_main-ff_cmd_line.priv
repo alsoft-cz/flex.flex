@@ -1,0 +1,238 @@
+----------------------------------------------------------------------------------------------------
+module private ff_cmd_line =
+-- Zpracov n¡ p©¡kazov‚ © dky.
+----------------------------------------------------------------------------------------------------
+
+with
+  standard.strings,
+  standard.program_control;
+
+type
+  pp_char32ustr    = ^p_char32ustr;
+
+----------------------------------------------------------------------------------------------------
+procedure check_parameter (
+    param          : in t_char32ustr;            -- testovan˜ parametr
+    prefix         : in t_char32ustr;            -- prefix parametru
+    value          : in t_logical)           -- <>NIL, sm¡-li m¡t parametr hodnotu
+    return t_logical =
+-- Zkontroluje, jestli parameter odpov¡d  zadan‚mu prefixu
+----------------------------------------------------------------------------------------------------
+begin
+  result:=param<>'' and then (param[1]="-" or param[1]="/") and then prefix=str_to_upper(str_copy(param,2,prefix:length+1)) 
+          and then (value or else param:length=prefix:length+1);
+  end check_parameter;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure retrieve_file_name (
+    param          : in t_char32ustr;            -- testovan˜ parametr
+    prefix         : in t_char32ustr;            -- prefix parametru
+    value          : out p_text_name) =          -- jm‚no souboru
+-- Z parametru odseparuje jm‚no souboru.
+----------------------------------------------------------------------------------------------------
+begin
+  new value range param:length-prefix:length-1;
+  value^:=str_copy(param,prefix:length+2,param:length);
+  end retrieve_file_name;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure check_unprefixed (
+    param          : in t_char32ustr)            -- parametr
+    return t_logical =
+-- True, jestli‘e parametr nem  prefix.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=param='' or else not (param[1]="-" or param[1]="/");
+  end check_unprefixed;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure print_help (
+    os             : in c_output_text_stream) =
+-- Vyp¡¨e n povˆdu k © dkov˜m parametr–m do uveden‚ho streamu.
+----------------------------------------------------------------------------------------------------
+begin
+  os.write_line('Syntax: FCC { <option> } <source file name> { <option> }');
+  os.write_line('');
+  os.write_line('Target system specification:');
+  os.write_line('    -TO:<os>     Target Operating system');
+  os.write_line('    -TS:<subsys> Target Subsystem');
+  os.write_line('    -TC:<cpu>    Target CPU');
+  os.write_line('');
+  os.write_line('Directories:');
+  os.write_line('    -SD:<dir>    Search Directory');
+  os.write_line('    -SDR:<dir>   Search Directory - Recursive');
+  os.write_line('    -ODX:<dir>   Output Directory for the eXecutable');
+  os.write_line('    -ODM:<dir>   Output Directory for precompiled Modules');
+  os.write_line('');
+  os.write_line('Compilation options:');
+  os.write_line('    -NL          No Listing');
+  os.write_line('    -NR          No Run-time');
+  os.write_line('    -SCO         Syntax Check Only');
+  os.write_line('');
+  os.write_line('Miscellaneous:');
+  os.write_line('    -NS          No Shared file access');
+  os.write_line('    -H           prints this page');
+  os.write_line('    -VER         displays full version information');
+  os.write_line('');
+  os.write_line('All parameters are case-insensitive');
+  os.write_line('See documentation for the list of supported values of specific parameters');
+  end print_help;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure print_version (
+    os             : in c_output_text_stream) =
+-- Vyp¡¨e informace o verzi.
+----------------------------------------------------------------------------------------------------
+with
+  standard.conversions;
+
+begin
+  os.write('Revision:         '); os.write_line(unsigned_to_string(flex_revision));
+  os.write('Build:            '); os.write_line(unsigned_to_string(flex_build));
+--os.write('Time stamp (UTC): '); os.write(#environment compile_date;);os.write(' ');os.write_line(#environment compile_time;);
+  end print_version;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure parse_command_line =
+-- Zpracuje p©¡kazovou © dku p©eklada‡e.
+----------------------------------------------------------------------------------------------------
+with
+  ff_files;
+
+use
+  cc_def,
+  cc_def.cc_var;
+  
+var
+  cmd_line         : p_command_line_parameters;  -- blok © dkov˜ch parametr–
+  search_dir       : p_text_name;                -- adres © pro vyhled v n¡                               
+  value            : p_char32ustr;
+  i                : t_unsigned;
+
+begin
+  -- z¡skat blok parametr–
+  get_command_line_parameters(cmd_line);
+
+  -- jsou v–bec nˆjak‚ ?
+  if cmd_line^:length=0 then
+    print_help(os);
+    raise fcc_error;
+    end if;   
+
+  -- zpracovat
+  for i in cmd_line^:range loop
+
+    -- SD = Search Directory
+    if check_parameter(cmd_line^[i]^,'SD:',true) then
+      -- z¡skat jm‚no souboru
+      retrieve_file_name(cmd_line^[i]^,'SD:',search_dir);
+
+      -- doplnit do seznamu adres ©– pro vyhled v n¡
+      p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_search_path(search_dir^,false);
+
+      -- uvolnit pamˆŸ
+      discard search_dir;
+                                          
+    -- SD = Search Directory - Recursive
+    elsif check_parameter(cmd_line^[i]^,'SDR:',true) then
+      -- z¡skat jm‚no souboru
+      retrieve_file_name(cmd_line^[i]^,'SDR:',search_dir);
+
+      -- doplnit do seznamu adres ©– pro vyhled v n¡
+      p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_search_path(search_dir^,true);
+
+      -- uvolnit pamˆŸ
+      discard search_dir;
+
+    -- ODX = Output Directory for eXecutables
+    elsif check_parameter(cmd_line^[i]^,'ODX:',true) then
+      -- z¡skat jm‚no adres ©e
+      retrieve_file_name(cmd_line^[i]^,'ODX:',exe_directory);
+      -- %%TODO(LIB) zkontrolovat existenci adres ©e
+
+    -- ODX = Output Directory for Modules
+    elsif check_parameter(cmd_line^[i]^,'ODM:',true) then
+      -- z¡skat jm‚no adres ©e
+      retrieve_file_name(cmd_line^[i]^,'ODM:',mod_directory);
+      -- %%TODO(LIB) zkontrolovat existenci adres ©e
+
+    -- XE = eXecutable Extension
+    elsif check_parameter(cmd_line^[i]^,'XE:',true) then
+      -- z¡skat p©¡ponu
+      retrieve_file_name(cmd_line^[i]^,'XE:',exe_extension);
+
+    -- TO = Target Operating system
+    elsif check_parameter(cmd_line^[i]^,'TO:',true) then
+      -- %%FLEX
+
+    -- TS = Target Subsystem
+    elsif check_parameter(cmd_line^[i]^,'TS:',true) then
+      -- %%FLEX
+
+    -- TC = Target CPU
+    elsif check_parameter(cmd_line^[i]^,'TC:',true) then
+      -- %%FLEX
+
+    -- NL = No Listing
+    elsif check_parameter(cmd_line^[i]^,'NL',nil) then
+      cc_def.cc_var.cfg_listing:=false;
+
+    -- NR = No Run-time
+    elsif check_parameter(cmd_line^[i]^,'NR',nil) then
+      cc_def.cc_var.cfg_noruntime:=true;
+
+    -- NS = No Shared file access
+    elsif check_parameter(cmd_line^[i]^,'NS',nil) then
+      cc_def.cc_var.cfg_sharing:=false;
+
+    -- SCO = Syntax Check Only
+    elsif check_parameter(cmd_line^[i]^,'SCO',nil) then
+      cc_def.cc_var.cfg_syntaxcheckonly:=true;
+
+    -- H, ? = Help
+    elsif check_parameter(cmd_line^[i]^,'H',nil) or check_parameter(cmd_line^[i]^,'?',nil) then
+      print_help(os);
+      raise fcc_error;
+
+    -- VER = display VERsion information
+    elsif check_parameter(cmd_line^[i]^,'VER',nil) then
+      print_version(os);
+      raise fcc_error;
+
+    -- parametr bez prefixu je jm‚no p©ekl dan‚ho souboru
+    elsif check_unprefixed(cmd_line^[i]^) then     
+      -- nebylo ji‘ jm‚no p©ekl dan‚ho soubnoru ur‡eno?
+      if src_name<>nil then
+        os.write_line('Duplicate source file name');
+        raise fcc_error;
+        end if;
+
+      -- nastavit jako jm‚no souboru
+      new src_name range cmd_line^[i]^:length;
+      src_name^:=cmd_line^[i]^;
+
+    -- ostatn¡ parametry nezn me
+    else
+      --%%TODO(DYNAMIC) os.write_line('Unknown parameter "' & cmd_line^[i]^ & """);
+      os.write('Unknown parameter "'); os.write(cmd_line^[i]^); os.write_line('"');
+      raise fcc_error;
+      end if;
+    end loop;
+
+leave
+  -- parametry u‘ nebudou pot©eba
+  discard_command_line_parameters(cmd_line);
+  discard search_dir;
+  end parse_command_line;
+
+end ff_cmd_line;
