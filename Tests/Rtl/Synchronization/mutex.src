@@ -1,0 +1,160 @@
+----------------------------------------------------------------------------------------------------
+program mutex =
+-- Rtl library only
+-- Programming Language Flex Samples.
+-- Copyright (C) 2003 A && L soft, s.r.o.
+----------------------------------------------------------------------------------------------------
+with
+    flex,
+    flex.thread,
+    flex.synchronization
+    --,testlib
+    ,standard
+    ,standard.console
+    ,standard.conversions
+    ;
+
+const
+    maxcount       = $400_000;
+
+var
+
+    wr1            : t_thread_ref;
+    wr2            : t_thread_ref;
+    wr3            : t_thread_ref;
+    re1            : t_thread_ref;
+    wa1            : t_thread_ref;
+    m1             : t_rtl_mutex;
+    wrcounter      : t_rtl_native_signed;
+    recounter      : t_rtl_native_signed;
+    aproxlen       : t_rtl_native_signed;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure writet:t_rtl_thread_entry =
+----------------------------------------------------------------------------------------------------
+var
+    oldcounter     : t_rtl_native_signed;
+    item           : p_rtl_native_signed;
+    item2          : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastcount      : t_rtl_native_signed;
+
+begin
+  write_line('write begin');
+  loop
+    new item;
+    new item2;
+    rtl_interlocked_inc_out(^aproxlen,len);
+    rtl_interlocked_inc_out(^wrcounter,lastcount);
+    if aproxlen>$1_0000 then
+      rtl_sleep(10);
+      end if;
+    item^:=lastcount;
+    rtl_mutex_lock(m1);
+    -- nop
+    len + 5;
+    len + 5;
+    len + 5;
+    len + 5;
+    len + 5;
+    len + 5;
+    len + 5;
+    rtl_mutex_unlock(m1);
+    discard item;
+    discard item2;
+    if lastcount>=maxcount then
+      break;
+      end if;
+    end loop;
+catch 
+  when others do
+  write_line('write exception pending');
+leave
+  write_line('write end');
+  end writet;
+
+----------------------------------------------------------------------------------------------------
+procedure readt:t_rtl_thread_entry =
+----------------------------------------------------------------------------------------------------
+var
+    oldcounter     : t_rtl_native_signed;
+    item           : p_rtl_native_signed;
+    item2          : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastcount      : t_rtl_native_signed;
+
+begin
+  write_line('read begin');
+  loop
+    if aproxlen>0 then
+      new item;
+      rtl_interlocked_dec_out(^aproxlen,len);
+      rtl_interlocked_inc_out(^recounter,lastcount);
+      item^:=lastcount;
+      rtl_mutex_lock(m1);
+      -- nop
+      len + 5;
+      len + 5;
+      len + 5;
+      len + 5;
+      len + 5;
+      len + 5;
+      len + 5;
+      rtl_mutex_unlock(m1);
+      discard item;
+      if lastcount>=maxcount then
+        break;
+        end if;
+    else
+      rtl_sleep(10);
+      end if;
+    end loop;
+catch 
+  when others do
+  write_line('read exception pending');
+leave
+  write_line('read end');
+  end readt;
+
+
+----------------------------------------------------------------------------------------------------
+procedure watcht:t_rtl_thread_entry =
+----------------------------------------------------------------------------------------------------
+begin
+  loop
+    write(signed_to_string(wrcounter,false));
+    write(' ');
+    write(signed_to_string(recounter,false));
+    write(' ');
+    write_line(signed_to_string(aproxlen,false));
+    rtl_sleep(1000);
+    end loop;
+leave
+  write('watch end ');
+  write(signed_to_string(wrcounter,false));
+  write(' ');
+  write(signed_to_string(recounter,false));
+  write(' ');
+  write_line(signed_to_string(aproxlen,false));
+  end watcht;
+
+
+begin
+  rtl_mutex_new(m1);
+
+  rtl_start_thread(^wa1,^watcht,false,thread_priority_normal,nil);
+  rtl_start_thread(^re1,^readt,false,thread_priority_normal,nil);
+  rtl_start_thread(^wr1,^writet,false,thread_priority_normal,nil);
+  rtl_start_thread(^wr2,^writet,false,thread_priority_normal,nil);
+  --run
+  --rtl_sleep(10000);
+  rtl_wait_and_finish_thread(wr1);
+  rtl_wait_and_finish_thread(wr2);
+  rtl_wait_and_finish_thread(re1);
+  rtl_kill_when_need_and_finish_thread(wa1);
+
+  
+  rtl_mutex_discard(m1);
+  end mutex;

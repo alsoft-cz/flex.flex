@@ -8,7 +8,8 @@ module private cx_util =
 
 with
   cc_def.cc_lexsym,cc_sym,
-  cx_expr.cx_imm;
+  cx_expr.cx_imm,
+  cx_expr.cx_rta;
 
 ----------------------------------------------------------------------------------------------------
 procedure x_refine_binary =
@@ -687,6 +688,129 @@ begin
     when others       do arg^.settype(curr,param^.typ.getctype);
     end case;
   end x_set_param_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_set_ref_type =
+-- Vypo‡¡t  typ a t©¡du uzlu typu reference.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜raz
+  pclass           : ptrclass;                   -- t©¡da pointeru
+  pbase            : ptrbase;                    -- kompatibilita b ze                          
+  paccess          : varaccess;                  -- determinace p©¡stupu
+
+begin
+  -- referencovan˜ podv˜raz pro zjednodu¨en¡
+  expr^.get(el);
+
+  -- ur‡it parametry typu
+  case el^.nclass
+    -- promˆnn 
+    when nc_var  do
+        -- ur‡it kompatibilitu b ze
+        case el^.t.tview
+          -- Unchecked view => unchecked
+          when tview_unchecked  do
+              pbase:=pb_unchecked;
+
+          -- Partial view, Incomplete view, Full view => class nebo strict podle (ne)p©¡tomnosti dynamick‚ho atributu :tag
+          when tview_partial, tview_incomplete, tview_full do  
+              if x_rta_is_available(el,rta_tag)
+                then pbase:=pb_class
+                else pbase:=pb_strict;
+                end if;
+
+          when others do verify(693,true);
+          end case;
+
+        -- t©¡da pointeru
+        pclass:=pc_data;
+
+        -- vypo‡¡tat determinaci p©¡stupu
+        paccess:=va_norm;
+      { Tohle zat¡m nefunguje.
+        --%%X Na tohle udˆlat funkci ! 
+        -- %%X Takhle jednoduch‚ to snad nem–‘e b˜t, ne ? Mus¡ se to prohled vat do hloubky. 
+        case el^.ntype
+          when nt_component do
+              verify(545,(pexpcomponent(el)^.s.psym=nil) or (pexpcomponent(el)^.s.psym^.ptype<>et_var));
+              case pentity_var(pexpcomponent(el)^.s.psym)^.vaccess
+                when va_norm      do paccess:=va_norm;
+                when va_protected do unimplementedx(188,el^.pos);
+                when va_const     do paccess:=va_const;
+                when others do verify(544,true);
+                end case;
+
+          when nt_attrib do paccess:=va_norm;
+          when nt_index  do {%%X !! prohledat do hloubky}paccess:=va_norm; end loop;
+          when nt_deref  do paccess:=el^.sub^.t.getpaccess;
+          when others do verify(546,true);
+          end case;
+      }
+
+    -- procedura
+    when nc_proc do
+        -- kompatibilita b ze
+        pbase:=pb_strict;
+        {if el^.t.tagged
+          then pbase:=pb_class
+          else pbase:=pb_strict;
+          end if;}
+
+        -- t©¡da pointeru
+        pclass:=pc_subprogram;
+
+        -- determinace p©¡stupu: v‘dy norm ln¡
+        paccess:=va_norm;
+
+    -- zpr va
+    when nc_message     do
+        -- kompatibilita b ze
+        pbase:=pb_strict;
+        {if el^.t.tagged
+          then pbase:=pb_class
+          else pbase:=pb_strict;
+          end if;}
+
+        -- t©¡da pointeru
+        pclass:=pc_message;
+
+        -- determinace p©¡stupu: v‘dy norm ln¡
+        paccess:=va_norm;
+
+    when others do verify(692,true);
+    end case;
+
+  -- odvodit typ reference
+  declare var
+    ptyp           : pentity_type;               -- typ pointer                                 
+    size           : tunidata_size;              -- velikost pointeru
+    pattrib        : rtattribset{ptrattribset};  -- voliteln‚ atributy pointeru    
+
+  begin
+    -- vypo‡¡tat dynamick‚ atributy ulo‘en‚ v pointeru
+    t_get_pointer_rtattrib(pbase,pclass,el^.t.getutype,pattrib);
+
+    -- vypo‡¡tat velikost pointeru
+    cpu^.getptrsize({pclass,pbase,false,}pattrib,size);
+
+    -- zalo‘it nov˜ typ
+    expr^.newtype(curr,dt_pointer,size);
+    ptyp:=expr^.t.getutype;
+ 
+    -- nastavit z kladn¡ parametry
+    ptyp^.pclass:=pclass;
+    ptyp^.pbase:=pbase;
+    ptyp^.pattrib:=pattrib;
+    ptyp^.paccess:=paccess;
+    ptyp^.base.settype(el^.t.getutype);
+    end declare;
+
+  -- t©¡da uzlu: hodnota
+  expr^.nclass:=nc_value;
+  end x_set_ref_type;
 
 
 

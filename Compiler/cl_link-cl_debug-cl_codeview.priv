@@ -493,6 +493,13 @@ begin
               end if;
             end if;
 
+        -- vsechno nezname
+        elsif (lalignsym^._code_^.etype<>et_static) and (lalignsym^._code_^.etype<>et_virtual) then
+
+          -- udelame z toho void
+          lalignsym^.typ:=nil;
+
+        -- u podprogramu se pokusime dohledat typ
         elsif (pentity_subprogram(lalignsym^._code_)^.typ.getutype=nil) or
            not (get_codeview_type_container(pentity_subprogram(lalignsym^._code_)^.typ.getutype,_typebase,lalignsym^.typ)) then
 
@@ -1329,14 +1336,14 @@ procedure dump_segment_map (
 ----------------------------------------------------------------------------------------------------
 var
   num              : t_word;                     -- pocet platnych sekci
-  flags_map        : t_word;                     -- bitova mapa priznaku sekce
+  flags_map        : t_mod_word;                 -- bitova mapa priznaku sekce
   flag             : t_codeview_seg_flag;        -- priznak sekce
 
 
 
     ------------------------------------------------------------------------------------------------
     procedure code_flags (
-        _code      : in out t_word;               -- bitova mapa priznaku sekce
+        _code      : in out t_mod_word;           -- bitova mapa priznaku sekce
         _flags     : in out t_codeview_seg_flags  -- priznaky sekce
         ) = 
     ------------------------------------------------------------------------------------------------
@@ -1348,19 +1355,17 @@ var
       for flag in t_codeview_seg_flag loop
         if flag in (_flags) then
           case flag
-            when tcvsf_group    do _code:=_code or $1000;
-            when tcvsf_abs      do _code:=_code or $0200;
-            when tcvsf_sel      do _code:=_code or $0100;
-            when tcvsf_32bit    do _code:=_code or $0008;
-            when tcvsf_execute  do _code:=_code or $0004;
-            when tcvsf_write    do _code:=_code or $0002;
-            when tcvsf_read     do _code:=_code or $0001;
+            when tcvsf_group    do _code or $1000;
+            when tcvsf_abs      do _code or $0200;
+            when tcvsf_sel      do _code or $0100;
+            when tcvsf_32bit    do _code or $0008;
+            when tcvsf_execute  do _code or $0004;
+            when tcvsf_write    do _code or $0002;
+            when tcvsf_read     do _code or $0001;
             end case;
           end if;
         end loop;
       end code_flags;
-
-
 
 begin
   -- inicializace
@@ -1698,6 +1703,11 @@ class private t_codeview =
       gtype^._type_:=_type;
       gtype^.status:=tcvs_init;
 
+      -- ulozime zpetny pointer na deebuginformace z typu
+      if _type<>nil then
+        _type^.debuginfo:=gtype;
+        end if;
+
       -- zaradime do seznamu
       gtype^.prev:=gtypes.type_first;
       if gtypes.type_last<>nil then gtypes.type_last^.next:=gtype; end if;
@@ -1846,11 +1856,42 @@ class private t_codeview =
     var
       codeinst     : picodeinst;                 -- instance code segmentu
       block        : pimemblock;                 -- p©idˆlen˜ blok pamˆti
-      tentity      : pentity;                    -- pomocny pointer na symbol
       cvalign      : p_codeview_alignsym;        -- lokalni symbol modulu
       xcvmodule    : p_codeview_module;          -- kopie cvmodule
       xcvalign     : p_codeview_alignsym;        -- lokalni symbol modulu
-      context      : tcontext;                   -- generovan˜ symbol
+
+
+        ----------------------------------------------------------------------------------------------
+        procedure trace_region (
+            _context     : tcontext;              -- region context
+            _cvrmodule   : in p_codeview_module;  -- rodicovsky modul
+            _cvralign    : in p_codeview_alignsym -- rodicovsky kod
+            ) =  
+        -- Zpracuej jeden region
+        ----------------------------------------------------------------------------------------------
+        var
+          tentity  : pentity;                     -- pomocny pointer na symbol
+          region   : pregion;                     -- zpracov van˜ region
+
+        begin
+		  -- zpracujeme v¨echny symboly
+          tentity:=_context.region^.entities.first;
+          while tentity<>nil loop
+            trace_module(tentity,_cvrmodule,_cvralign);
+            tentity:=tentity^.next;
+            end loop;
+
+          -- a v¨echny podregiony
+          region:=_context.region^.regions.first;
+          while region<>nil loop
+            -- vygenerovat
+            trace_region(sym_build_context(_context.entity,region),_cvrmodule,_cvralign);
+
+            -- dal¨¡ region
+            region:=region^.next;
+            end loop;
+	      end trace_region;
+
 
     begin
       -- schovame si pointer na rodicovsky symbol
@@ -1944,13 +1985,8 @@ class private t_codeview =
       if _symbol^.etype in ets_enclosing then
         for rcategory in tregioncategory loop
           if _symbol^.regions[rcategory]<>nil then 
-            context:=sym_build_context(_symbol,_symbol^.regions[rcategory]);
-            tentity:=context.region^.entities.first;
-            while tentity<>nil loop
-              trace_module(tentity,xcvmodule,xcvalign);
-              tentity:=tentity^.next;
-              end loop;
-            end if;
+            trace_region(sym_build_context(_symbol,_symbol^.regions[rcategory]),xcvmodule,xcvalign);
+			end if;
           end loop;
         end if;
 

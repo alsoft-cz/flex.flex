@@ -6,7 +6,7 @@
 ----------------------------------------------------------------------------------------------------
 
 var
-    memory_blocks_conter  : t_rtl_native_unsigned; -- block age helper
+  memory_blocks_conter : t_rtl_native_unsigned; -- block age helper
 
 type
   --%%TODO fill of unchecked array 
@@ -23,12 +23,16 @@ begin
   result:=size + mem_headersize + mem_footersize;
   end addheader;
 
+
+
 ------------------------------------------------------------------------------------------------
 procedure adr2hdr =
 ------------------------------------------------------------------------------------------------
 begin
   result:unchecked := t_rtl_native_unsigned(addr:unchecked) - (mem_headersize);
   end adr2hdr;
+
+
 
 ------------------------------------------------------------------------------------------------
 procedure hdr2adr =
@@ -37,12 +41,27 @@ begin
   result:unchecked := t_rtl_native_unsigned(hdr:unchecked) + (mem_headersize);
   end hdr2adr;
 
+
+
 ------------------------------------------------------------------------------------------------
 procedure hdr2ftr =
 ------------------------------------------------------------------------------------------------
 begin
   result:unchecked:=t_rtl_native_unsigned(hdr:unchecked) + (mem_headersize) + size;
   end hdr2ftr;
+
+
+
+------------------------------------------------------------------------------------------------
+#template hdr_checksum (hdr);
+------------------------------------------------------------------------------------------------
+  (    t_rtl_native_mod_unsigned((hdr)^.dealocator:unchecked) 
+   xor t_rtl_native_mod_unsigned((hdr)^.num)
+   xor t_rtl_native_mod_unsigned((hdr)^.size) 
+   xor t_rtl_native_mod_unsigned((hdr)^.age))
+  #end hdr_checksum;
+
+
 
 -----------------------------------------------------------------------------------------------
 procedure set_header_alloc =
@@ -65,7 +84,7 @@ begin
   -- PavelS
   memory_blocks_conter + 1;
   hdr^.age:=memory_blocks_conter;
-  -- ftr^.thread:=0; -- %%TODO ? dodelat zjisteni threadu
+  hdr^.thread:=t_rtl_pointer(rtl_get_current_thread);
   -- hdr^.hints:=0; --%%TODO ?
 
   -- zaradit do retezu
@@ -76,16 +95,20 @@ begin
     hdr^.prev:=nil;
     end if;
 
-  --%%TODO fillz of unchecked array 
-  -- fuj
-  for i in mem_headersize..(size-1+mem_headersize) loop
-    p_rtl_unsigned8array_not_unchecked(hdr:unchecked)^[i]:=0;
-    end loop;
-  -- /fuj
+  if dofillzero then
+    --%%TODO fillz of unchecked array 
+    -- fuj
+    for i in mem_headersize..(size-1+mem_headersize) loop
+      p_rtl_unsigned8array_not_unchecked(hdr:unchecked)^[i]:=0;
+      end loop;
+    -- /fuj
+    end if;
 
   ftr:=hdr2ftr(hdr,size);
-  ftr^.checksum:=((t_rtl_native_unsigned(hdr^.dealocator:unchecked) xor hdr^.num) xor (hdr^.size xor hdr^.age));
+  ftr^.checksum:=hdr_checksum(hdr);
   end set_header_alloc;
+
+
 
 ------------------------------------------------------------------------------------------------
 procedure set_header_free =
@@ -105,47 +128,56 @@ begin
     addchainroot^.add(p_rtl_chain_item(hdr:unchecked));
     end if;
   
-  --%%TODO fill $fd of unchecked array 
-  -- fuj
-  for i in mem_headersize..(hdr^.size-1+mem_headersize) loop
-    p_rtl_unsigned8array_not_unchecked(hdr:unchecked)^[i]:=$FD;
-    end loop;
-  -- /fuj
-
+  if dofillzero then
+    --%%TODO fill $fd of unchecked array 
+    -- fuj
+    for i in mem_headersize..(hdr^.size-1+mem_headersize) loop
+      p_rtl_unsigned8array_not_unchecked(hdr:unchecked)^[i]:=$FD;
+      end loop;
+    -- /fuj
+    end if;
   
   ftr:=hdr2ftr(hdr,hdr^.size);
-  ftr^.checksum:=((t_rtl_native_unsigned(hdr^.dealocator:unchecked) xor hdr^.num) xor (hdr^.size xor hdr^.age));
+  ftr^.checksum:=hdr_checksum(hdr);
   end set_header_free;
+
+
 
 ------------------------------------------------------------------------------------------------
 procedure check_free_header =
 ------------------------------------------------------------------------------------------------
 var
-  ftr          : p_rtl_memmgr_footer;
+  ftr              : p_rtl_memmgr_footer;
+
 begin
-    ftr:=hdr2ftr(hdr,hdr^.size);
-    if ftr^.checksum <> ((t_rtl_native_unsigned(hdr^.dealocator:unchecked) xor hdr^.num) xor (hdr^.size xor hdr^.age)) then
-      raise memory_corrupt_error;
-      end if;
+  ftr:=hdr2ftr(hdr,hdr^.size);
+  if ftr^.checksum <> hdr_checksum(hdr) then
+    raise memory_corrupt_error;
+    end if;
 {%%TODO catch
   when others do
     raise memory_corrupt_error;}
   end check_free_header;
 
+
+
 ------------------------------------------------------------------------------------------------
 procedure check_allocated_header =
 ------------------------------------------------------------------------------------------------
 var
-  ftr          : p_rtl_memmgr_footer;
+  ftr              : p_rtl_memmgr_footer;
+
 begin
-    ftr:=hdr2ftr(hdr,hdr^.size);
-    if ftr^.checksum <> ((t_rtl_native_unsigned(hdr^.dealocator:unchecked) xor hdr^.num) xor (hdr^.size xor hdr^.age)) then
-      raise memory_corrupt_error;
-      end if;
+  ftr:=hdr2ftr(hdr,hdr^.size);
+  if ftr^.checksum <> hdr_checksum(hdr) then
+    raise memory_corrupt_error;
+    end if;
 {%%TODO catch
   when others do
     raise memory_corrupt_error;}
   end check_allocated_header;
+
+
 
 ------------------------------------------------------------------------------------------------
 procedure dump_header =

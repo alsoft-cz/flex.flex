@@ -1802,16 +1802,16 @@ begin
     when io_reg, io_imm do return;
 
     -- adresa v pamˆti
-    when io_mem  do case oper.rtype
+    when io_mem  do case oper.relo_info.rtype
         -- nic
         when irt_none do -- nic nedˆlat
 
         -- symbol
         when irt_entity do
-            case pentity(oper.rentity)^.etype
+            case pentity(oper.relo_info.rentity)^.etype
               -- promˆnn 
               when et_var do
-                  case pentity_var(oper.rentity)^.mclass
+                  case pentity_var(oper.relo_info.rentity)^.mclass
                     -- automatick 
                     when mc_auto do
                         -- %%X !! nebyl u‘ b zov˜ registr jednou uveden ?
@@ -1822,7 +1822,7 @@ begin
                         declare var
                           disp : timm32;         -- offset promˆnn‚ vzhledem k frame pointeru
                         begin
-                          getvaraddr(inst,info,pentity_var(oper.rentity),disp);
+                          getvaraddr(inst,info,pentity_var(oper.relo_info.rentity),disp);
                           oper.shift_displacement(imm32_to_signed{%%FLEX}(disp));
                           end declare;
 
@@ -1843,20 +1843,20 @@ begin
         end case;
 
     -- c¡l skoku
-    when io_rel do case oper.rtype
+    when io_rel do case oper.relo_info.rtype
         -- nic
         when irt_none do -- nic nedˆlat
 
         -- symbol
         when irt_entity do
-            case pentity(oper.rentity)^.etype
+            case pentity(oper.relo_info.rentity)^.etype
               -- n vˆ¨t¡
               when et_label do
                   -- doplnit ‡¡slo n vˆ¨t¡
-                  assign_label_target(pentity_label(oper.rentity),info);
+                  assign_label_target(pentity_label(oper.relo_info.rentity),info);
 
                   -- upravit operand
-                  oper.set_target(picodegen_label(pentity_label(oper.rentity)^.codegen)^.target);
+                  oper.set_target(picodegen_label(pentity_label(oper.relo_info.rentity)^.codegen)^.target);
                   oper.clear_relo_low_level;
 
               -- procedura
@@ -2254,7 +2254,8 @@ begin
   --  adddebuginfo(inst.di,dbt_entry_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_begin].b,nil);
   --  end if;
 
-  -- vyrobit stack-frame
+
+  ----- (1) vyrobit stack-frame --------------------------------------------------------------------
   case inst.frame
     -- ESP-relativn¡
     when isf_sptr do
@@ -2313,8 +2314,9 @@ begin
     when others do verify(125,true);
     end case;
 
+
   if curr.etype in ets_subprogram then
-    ---- profil parametr– ----
+    ----- (2) profil parametr– ---------------------------------------------------------------------
     -- pro r–zn‚ typy podprogram– se to dˆl  jinak
     case curr.etype
       -- procedura, metoda nebo speci ln¡ metoda
@@ -2382,12 +2384,38 @@ begin
           verify(539,(pvirt^.codegen=nil) or (picodegen_subprog(pvirt^.codegen)^.ifirst<>picodegen_subprog(pvirt^.codegen)^.ilast));
           i_copypar(curr,inst,picodegen_subprog(pvirt^.codegen)^.ifirst^);
 
+          -- je-li to override virtu ln¡ metody v exposovan‚m interfacu, pak upravit THIS pointer
+          if pentity_override(^curr)^.interface^.is_exposed then
+            declare var
+              xcontext : iexprcontext;           -- pr zdn˜ kontext generov n¡ v˜razu
+              opthis   : c_operand;              -- THIS poitner
+              opoffset : c_operand;              -- offset instance interfacu v nad©azen‚ instanci
+
+            begin
+              -- THIS pointer
+              i_gen_this_address(inst,opthis);
+
+              -- offset instance interfacu v nad©azen‚ instanci
+              opoffset.create_imm(edt_offset,0,unidata_addr_to_imm32(pentity_var(pentity_override(^curr)^.interface^.instance.getcentity)^.addr));
+ 
+              -- od THIS pointeru ode‡¡st offset instance interfacu a z¡skat tak pointer 
+              -- na nad©azenou instanci
+              addii(inst,info,ii_sub,opthis,opoffset,op0);
+
+            leave
+              -- uvolnit operandy
+              opthis.free(info,xcontext);
+              opoffset.free(info,xcontext);
+              end declare;
+            end if;
+
 
       -- nic jin‚ho neum¡me
       when others do verify(538,true);
       end case;
 
-    ---- profil lok ln¡ch promˆnn˜ch ----
+
+    ----- (3) profil lok ln¡ch promˆnn˜ch ----------------------------------------------------------
     -- %%X Pozor, FIND_ET_FIRST to neprohled  do hloubky. Nen¡ to ¨patnˆ?
     srch.find_et_first(^curr,rc_primary,et_var,[]);
     while srch.psym<>nil loop

@@ -19,6 +19,7 @@ type
       etypes       : tentitytypeset;             -- typy entit pro ktere se vztahuje dane nastaveni
       switch       : t_logical;                  -- F - option se da pouze nastavit, T - da se zapnout a vypnout
       paramtype    : tdatatype;                  -- datovy typ 1. parametru
+      propagate    : t_logical;                  -- T - hleda se nejblizsi nadrazene platna entita od daneho kontextu/entity
       end record;
 
   
@@ -46,15 +47,15 @@ type
   
 var
 {%OFF}
-  -- tabulku je treba drzet setridenou podle [txt]!
+  -- !!! tabulku je treba drzet setridenou podle [txt]!
   optiontab       : const array toption of toptiondesc := [
-      [for txt use 'DUMP'              , for opt use opt_dump             , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
-      [for txt use 'DUMP_CODE'         , for opt use opt_dump_code        , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
-      [for txt use 'DUMP_REGS'         , for opt use opt_dump_regs        , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
-      [for txt use 'IMAGE_BASE'        , for opt use opt_image_base       , for etypes use [et_compile]       ,for switch use false,for paramtype use dt_unsigned],
-      [for txt use 'OVERFLOW_CHECKING' , for opt use opt_overflow_checking, for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
-      [for txt use 'RANGE_CHECKING'    , for opt use opt_range_checking   , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
-      [for txt use 'STACK_RESERVE'     , for opt use opt_stack_reserve    , for etypes use [et_compile]       ,for switch use false,for paramtype use dt_unsigned]];
+      [for txt use 'DUMP'              , for opt use opt_dump             , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate use false],
+      [for txt use 'DUMP_CODE'         , for opt use opt_dump_code        , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate use false],
+      [for txt use 'DUMP_REGS'         , for opt use opt_dump_regs        , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate use false],
+      [for txt use 'IMAGE_BASE'        , for opt use opt_image_base       , for etypes use [et_compile]       ,for switch use false,for paramtype use dt_unsigned, for propagate use true ],
+      [for txt use 'OVERFLOW_CHECKING' , for opt use opt_overflow_checking, for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate use false],
+      [for txt use 'RANGE_CHECKING'    , for opt use opt_range_checking   , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate use false],
+      [for txt use 'STACK_RESERVE'     , for opt use opt_stack_reserve    , for etypes use [et_compile]       ,for switch use false,for paramtype use dt_unsigned, for propagate use true ]];
 {%ON}
 
 
@@ -117,12 +118,31 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure find_entity_by_entity (
     entity         : in pentity;
-    option         : in toption)
+    option         : in toption;
+    setting        : in t_logical)
                      return pentity =
 -- najde nejblizsi platnou entitu pro nastaveni [option] podle [entity]
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=sym_get_enclosing_or_self_ex(entity,optiontab[option].etypes);
+  -- je kde hledat?
+  if entity=nil then return; end if;
+  
+  -- nasli jsme hledanou entitu?
+  if entity^.etype in optiontab[option].etypes then 
+    result:=entity;
+    return;
+    end if;
+
+  -- hledame entitu kvuli zjisteni nastaveni?
+  if not setting then
+    -- ano - je treba se podivat do nadrazene entity
+    result:=find_entity_by_entity(entity^.context.entity,option,setting);
+  
+  -- nebo nastavujeme nastaveni a nastaveni se propaguje na nejblizsi platnou nadrazenou entitu?
+  elsif optiontab[option].propagate then
+    result:=sym_get_enclosing_or_self_ex(entity,optiontab[option].etypes);
+    end if;
+
   end find_entity_by_entity;
 
 
@@ -130,12 +150,13 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure find_entity_by_context (
     context        : in tcontext;
-    option         : in toption)
+    option         : in toption;
+    setting        : t_logical)
                      return pentity =
 -- najde nejblizsi platnou entitu pro nastaveni [option] podle [context]
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=find_entity_by_entity(context.entity,option);
+  result:=find_entity_by_entity(context.entity,option,setting);
   end find_entity_by_context;
 
 
@@ -148,10 +169,10 @@ overload find_entity : find_entity_by_entity,find_entity_by_context;
 
 ----------------------------------------------------------------------------------------------------
 procedure o_is_option_applicable =
--- vrati T - pokud je nastaveni [option] platne pro kontext [context], jinak F 
+-- vrati T - pokud je nastaveni [option] platne pro kontext [context], respektive da se nastavit, jinak F 
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=find_entity_by_context(context,option)<>nil;
+  result:=find_entity_by_context(context,option,{setting}true)<>nil;
   end o_is_option_applicable;
 
 
@@ -175,14 +196,15 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure o_set_option_on =
-var
-  entity    : pentity;
 -- zapne nastaveni [option] v ramci kontextu [context]
 -- hleda se nejblizsi platny kontext, pokud se nenajde vyvola se interni chyba
 ----------------------------------------------------------------------------------------------------
+var
+  entity    : pentity;
+
 begin
   -- najdi entitu, na ktere se provede uprava nastaveni
-  entity:=find_entity_by_context(context,option);
+  entity:=find_entity_by_context(context,option,{setting}true);
 
   -- entita nenalezena?
   verify(676,entity=nil);
@@ -200,14 +222,15 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure o_set_option_off =
-var
-  entity    : pentity;
 -- zapne nastaveni [option] v ramci kontextu [context]
 -- hleda se nejblizsi platny kontext, pokud se nenajde vyvola se interni chyba
 ----------------------------------------------------------------------------------------------------
+var
+  entity    : pentity;
+
 begin
   -- najdi entitu, na ktere se provede uprava nastaveni
-  entity:=find_entity_by_context(context,option);
+  entity:=find_entity_by_context(context,option,{setting}true);
 
   -- entita nenalezena?
   verify(677,entity=nil);
@@ -222,16 +245,17 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure o_is_option_by_entity =
-var
-  foundentity    : pentity;
 -- zjisti jestli je nastaveni [option] zapnute v ramci entity [entity]; T-ano, F-ne
 -- hleda se nejblizsi platny kontext, pokud se nenajde vrati F
 ----------------------------------------------------------------------------------------------------
+var
+  foundentity    : pentity;
+
 begin
   result:=false;
 
   -- najdi entitu, na ktere se provede uprava nastaveni
-  foundentity:=find_entity_by_entity(^entity,option);
+  foundentity:=find_entity_by_entity(^entity,option,{setting}false);
 
   -- entita nenalezena?
   if foundentity=nil then return; end if;
@@ -322,7 +346,7 @@ var
 
 begin
   -- najdi entitu, na ktere se provede uprava nastaveni
-  entity:=find_entity_by_context(context,option);
+  entity:=find_entity_by_context(context,option,{setting}true);
 
   -- entita nenalezena?
   verify(680,entity=nil);
@@ -360,7 +384,7 @@ begin
   result:=false;
 
   -- najdi entitu, na ktere se provede uprava nastaveni
-  pent:=find_entity_by_entity(^entity,option);
+  pent:=find_entity_by_entity(^entity,option,{setting}false);
 
   -- entita nenalezena?
   if pent=nil then return; end if;

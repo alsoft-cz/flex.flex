@@ -5,9 +5,17 @@ module private exceptions =
 -- Copyright (C) 1999-2003 A && L soft
 ----------------------------------------------------------------------------------------------------
 
-with os_api,
-     flex.exceptions,
-     flex.exceptions.seh;
+with  os_api
+     ,flex.exceptions
+     ,flex.exceptions.seh
+     ,error
+     ;
+
+#if rtl_debug_dump_on_exception then;
+var
+  msg_raise_external : static const string 27 of t_syschar := 'raise external exception'\$0d\$0a\$0;
+#end if;
+
 
 ----------------------------------------------------------------------------------------------------
 procedure my_win32_exception_apc : t_winnt_apc_callback=
@@ -24,39 +32,48 @@ procedure rtl_raise_external_exception =
 var
     context        : t_winnt_context;
     handler        : p_external_handler;
-    ntres          : NTSTATUS;
-    qapcres        : DWORD;
-    ntsuspcount    : DWORD;
     callback       : p_winnt_apc_callback;
 
 begin
-	context.contextflags:=winnt_CONTEXT_i486 + winnt_CONTEXT_CONTROL;
-  rtl_event_wait(threadheader^.exceptions.tasks.canwrite);
-  rtl_suspend_thread_internal(threadheader);
-  threadheader^.exceptions.tasks.pending.etag:=etag;
-  threadheader^.exceptions.tasks.pending.edata:=edata;
-  threadheader^.exceptions.tasks.pending.ecode:=ecode;
-  if not threadheader^.exceptions.tasks.issequential then
-    if not GetThreadContext(threadheader^.osthread.threadhandle,^context) then
-      raise tasking_error;
-      end if;
-    handler:=^rtl_external_exception_handler;
-    context.reip:unchecked:=handler;
-    if not SetThreadContext(threadheader^.osthread.threadhandle,^context) then
-      raise tasking_error;
-      end if;
+  rtl_debug_dump_exception(msg_raise_external,ecode,etag,edata);
+  rtl_debuger_break_exception;
+  rtl_critical_lock(threadheader^.locker);
+  if threadheader^.isrunning then
+    rtl_event_wait(threadheader^.exceptions.tasks.canwrite);
+    rtl_suspend_thread_internal(threadheader);
+    threadheader^.exceptions.tasks.pending.etag:=etag;
+    threadheader^.exceptions.tasks.pending.edata:=edata;
+    threadheader^.exceptions.tasks.pending.ecode:=ecode;
+    if not threadheader^.exceptions.tasks.issequential then
+       context.contextflags:=winnt_CONTEXT_i486 + winnt_CONTEXT_CONTROL;
+       if GetThreadContext(threadheader^.osthread.threadhandle,^context)=0 then
+        raise tasking_error;
+        end if;
+      handler:=^rtl_external_exception_handler;
+      context.reip:unchecked:=handler;
+      if SetThreadContext(threadheader^.osthread.threadhandle,^context)=0 then
+        raise tasking_error;
+        end if;
 
-    rtl_resume_thread_internal(threadheader);
+      rtl_resume_thread_internal(threadheader);
 
-    -- nastavuju prazdny alert abych probudil thread ktery spi na nejakem mutexu atd.
-    -- zafunguje pouze pro alertable cekani
-    callback:=^my_win32_exception_apc;
-    if QueueUserAPC(callback,threadheader^.osthread.threadhandle,0)=0 then
-      raise tasking_error;
+      -- nastavuju prazdny alert abych probudil thread ktery spi na nejakem mutexu atd.
+      -- zafunguje pouze pro alertable cekani
+      callback:=^my_win32_exception_apc;
+      if QueueUserAPC(callback,threadheader^.osthread.threadhandle,0)=0 then
+        raise tasking_error;
+        end if;
+    else
+      threadheader^.exceptions.tasks.ispending:=true;
+      rtl_resume_thread_internal(threadheader);
       end if;
+    -- je treba odemknout thread header
+    rtl_critical_unlock(threadheader^.locker);
   else
-    threadheader^.exceptions.tasks.ispending:=true;
-    rtl_resume_thread_internal(threadheader);
+    -- je treba odemknout thread header
+    rtl_critical_unlock(threadheader^.locker);
+    -- uz nebezi
+    raise tasking_task_not_running;
     end if;
   end rtl_raise_external_exception;
 end exceptions;

@@ -1,0 +1,260 @@
+----------------------------------------------------------------------------------------------------
+-- The Single Writer/Multiple Reader Guard (SWMRG)
+-- from eboook Programming Applications for Microsoft Windows / Jeffrey Richter
+----------------------------------------------------------------------------------------------------
+type
+  t_rtl_readers_internal = record
+    record_lock     : t_rtl_critical;            -- Guards all the other members so that manipulating them can be accomplished atomically
+    waiting_readers : t_rtl_native_signed;       -- Indicates the number of reader threads that want to access the resource. 
+                                                 -- Initialized to 0 and is incremented every time a thread calls WaitToRead while m_nActive is -1.
+    waiting_writers : t_rtl_native_signed;       -- Indicates the number of writer threads that want to access the resource. 
+                                                 -- Initialized to 0 and is incremented every time a thread calls WaitToWrite while m_nActive is greater than 0.
+    active          : t_rtl_native_signed;       -- Reflects the current state of the shared resource. If the value is 0, no thread is accessing 
+                                                 -- the resource. If the value is greater than 0, the value indicates the number of threads that are currently 
+                                                 -- reading from the resource. If the number is negative, a writer is writing to the resource. The only valid negative number is -1.
+
+    sem_writers     : t_rtl_semaphore;           -- When threads call WaitToWrite but are denied access because m_nActive is greater than 0,
+                                                 -- the writer threads all wait on this semaphore. While a writer thread is waiting, 
+                                                 -- new reader threads are denied access to the resource. This prevents reader threads from monopolizing 
+                                                 -- the resource. When the last reader thread that currently has access to the resource calls Done, 
+                                                 -- this semaphore is released with a count of 1, waking one waiting writer thread.
+    sem_readers     : t_rtl_semaphore;           -- When threads call WaitToRead but are denied access because m_nActive is -1, the reader 
+                                                 -- threads all wait on this semaphore. When the last waiting writer thread calls Done, 
+                                                 -- this semaphore is released with a count of m_nWaitingReaders, waking all waiting reader threads.
+    end record;
+  t_rtl_readers      = t_rtl_readers_internal;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_readers_new =
+----------------------------------------------------------------------------------------------------
+begin
+  readers_object.waiting_readers:=0;
+  readers_object.waiting_writers:=0;
+  readers_object.active:=0;
+  rtl_critical_new(readers_object.record_lock);
+  rtl_semaphore_new_owned(readers_object.sem_writers,1,1);
+  rtl_semaphore_new_owned(readers_object.sem_readers,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
+  end rtl_readers_new;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_readers_discard =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_critical_discard(readers_object.record_lock);
+  rtl_semaphore_discard(readers_object.sem_writers);
+  rtl_semaphore_discard(readers_object.sem_readers);
+  end rtl_readers_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_readers_try_read =
+----------------------------------------------------------------------------------------------------
+var
+    write_pending  : t_rtl_logical8;
+#if rtl_debug then;
+  longloop         : t_rtl_native_signed;
+#end if;
+
+begin
+  result:=false;
+
+  -- Ensure exclusive access to the member variables
+  rtl_critical_lock(readers_object.record_lock);
+  
+  -- Are there writers waiting or is a writer writing?
+  write_pending:=((readers_object.waiting_writers<>0) or (readers_object.active < 0));
+  if write_pending then
+    -- This reader must wait, increment the count of waiting readers
+    readers_object.waiting_readers + 1;
+  else
+    --This reader can read, increment the count of active readers
+    readers_object.active + 1;
+    result:=true;
+    end if;
+
+  -- Allow other threads to attempt reading/writing
+  rtl_critical_unlock(readers_object.record_lock);
+
+  if (write_pending) then
+    -- This thread must wait
+    result:=rtl_semaphore_try_lock(readers_object.sem_readers,milisec);
+    -- if timeouted
+    #if rtl_debug then;
+      longloop:=0;
+    #end if;
+    while not result loop
+      -- Ensure exclusive access to the member variables
+      rtl_critical_lock(readers_object.record_lock);
+      if readers_object.waiting_readers>0 then
+        readers_object.waiting_readers - 1;
+        -- Allow other threads to attempt reading/writing
+        rtl_critical_unlock(readers_object.record_lock);
+        return;
+      else
+        -- Allow other threads to attempt reading/writing
+        rtl_critical_unlock(readers_object.record_lock);
+        result:=rtl_semaphore_try_lock(readers_object.sem_readers,milisec);
+        #if rtl_debug then;
+          longloop + 1;
+          if longloop>100 then
+            rtl_debug_debuger_break;
+            raise synchronization_error;
+            end if;
+        #end if;
+        end if;
+      end loop;
+    end if;
+  end rtl_readers_try_read;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_readers_try_write =
+----------------------------------------------------------------------------------------------------
+var
+    resource_owned : t_rtl_logical8;
+#if rtl_debug then;
+  longloop         : t_rtl_native_signed;
+#end if;
+
+begin
+  result:=false;
+  -- Ensure exclusive access to the member variables
+  rtl_critical_lock(readers_object.record_lock);
+
+  -- Are there any threads accessing the resource?
+  resource_owned:=(readers_object.active <> 0);
+
+  if resource_owned then
+    -- This writer must wait, increment the count of waiting writers
+    readers_object.waiting_writers + 1;
+  else
+    -- This writer can write, decrement the count of active writers
+    readers_object.active:= -1;
+    result:=true;
+    end if;
+
+  -- Allow other threads to attempt reading/writing
+  rtl_critical_unlock(readers_object.record_lock);
+
+  if resource_owned then
+    -- This thread must wait
+    result:=rtl_semaphore_try_lock(readers_object.sem_writers,milisec);
+    -- if timeouted
+    #if rtl_debug then;
+      longloop:=0;
+    #end if;
+    while not result loop
+      -- Ensure exclusive access to the member variables
+      rtl_critical_lock(readers_object.record_lock);
+      if readers_object.waiting_writers>0 then
+        readers_object.waiting_writers - 1;
+        -- Allow other threads to attempt reading/writing
+        rtl_critical_unlock(readers_object.record_lock);
+        return;
+      else
+        -- Allow other threads to attempt reading/writing
+        rtl_critical_unlock(readers_object.record_lock);
+        result:=rtl_semaphore_try_lock(readers_object.sem_writers,milisec);
+        #if rtl_debug then;
+          longloop + 1;
+          if longloop>100 then
+            rtl_debug_debuger_break;
+            raise synchronization_error;
+            end if;
+        #end if;
+        end if;
+      end loop;
+    end if;
+  end rtl_readers_try_write;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_readers_read =
+----------------------------------------------------------------------------------------------------
+begin
+  if not rtl_readers_try_read(readers_object,t_rtl_wait_infinite) then
+    raise synchronization_error;
+    end if;
+  end rtl_readers_read;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_readers_write =
+----------------------------------------------------------------------------------------------------
+begin
+  if not rtl_readers_try_write(readers_object,t_rtl_wait_infinite) then
+    raise synchronization_error;
+    end if;
+  end rtl_readers_write;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_readers_done =
+-- Unlock readers.
+----------------------------------------------------------------------------------------------------
+var
+    sem            : t_rtl_semaphore;
+    count          : t_rtl_native_signed;
+
+begin
+  -- Ensure exclusive access to the member variables
+  rtl_critical_lock(readers_object.record_lock);
+
+  if (readers_object.active > 0) then
+    -- Readers have control so a reader must be done
+    readers_object.active - 1;
+  else 
+    -- Writers have control so a writer must be done
+    readers_object.active + 1;
+    end if;
+
+  -- Assume no threads are waiting
+  sem:=rtl_invalid_semaphore;  
+  -- Assume only 1 waiter wakes; always true for writers
+  count:=1;     
+
+  if readers_object.active = 0 then
+    -- No thread has access, who should wake up?
+    -- NOTE: It is possible that readers could never get access
+    --       if there are always writers wanting to write
+
+    if (readers_object.waiting_writers > 0) then
+       -- Writers are waiting and they take priority over readers
+       -- A writer will get access
+       readers_object.active:=-1;          
+       -- One less writer will be waiting
+       readers_object.waiting_writers - 1;
+       -- Writers wait on this semaphore
+       sem:=readers_object.sem_writers;    
+       -- NOTE: The semaphore will release only 1 writer thread
+
+    elsif (readers_object.waiting_readers > 0) then
+       -- Readers are waiting and no writers are waiting
+       -- All readers will get access
+       readers_object.active:=readers_object.waiting_readers;
+       -- No readers will be waiting
+       readers_object.waiting_readers:=0;
+       -- Readers wait on this semaphore
+       sem:=readers_object.sem_readers;            
+       -- Semaphore releases all readers
+       count:=readers_object.active;              
+    --else then
+      -- There are no threads waiting at all; no semaphore gets released
+      end if;
+    end if;
+
+  if sem <> rtl_invalid_semaphore then
+    -- Some threads are to be released
+    rtl_semaphore_unlock_multi(sem,count);
+    end if;
+
+  -- Allow other threads to attempt reading/writing
+  rtl_critical_unlock(readers_object.record_lock);
+
+  end rtl_readers_done;

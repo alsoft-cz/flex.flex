@@ -61,60 +61,6 @@ begin
   end arraysize;
 
 
-
-----------------------------------------------------------------------------------------------------
-procedure adjustvtable (
-    pclass         : in pentity_type;            -- t©¡da
-    resize         : in t_logical) =             -- T-chceme p©idat nˆjak˜ prvek
--- Zajist¡, aby ‘e je alokov na virtu ln¡ tabulka a pop©¡padˆ ji realokuje.
-----------------------------------------------------------------------------------------------------
-const
-  vtableinit       = 5;
-  vtabledelta      = 20;
-
-var
-  pancestor        : pentity_type;           -- p©edek t©¡dy
-  _vtable          : pclass^.vtable:type;
-
-begin
-  -- byla u‘ virtu ln¡ tabulka alokov na ?
-  if pclass^.vtable=nil
-
-    -- ne
-    then
-      -- zkusit naj¡t p©edka s virtu ln¡ tabulkou
-      pancestor:=pentity_type(pclass^.ancestor.getuentity);
-      while (pancestor<>nil) and (pancestor^.vtable=nil) loop 
-        pancestor:=pentity_type(pancestor^.ancestor.getuentity); 
-        end loop;
-
-      -- na¨el se ?
-      if pancestor<>nil
-
-        -- ano => zkop¡rovat, resp. alokovat dostate‡nˆ velkou
-        then
-          new pclass^.vtable range pancestor^.vtable^:length+vtableinit;
-          pclass^.vtable^:length:=pancestor^.vtable^:length;
-
-        -- ne => alokovat v z kladn¡ velikosti
-        else
-          new pclass^.vtable range vtableinit;
-          end if;
-
-    -- ano
-    else
-      -- zajistit voln‚ m¡sto, pokud je to po‘adov no
-      if resize and then pclass^.vtable^:length=pclass^.vtable^:last then
-        --%%TODO(ADJUST) adjust pclass^.vtable range pclass^.vtable^:last+vtabledelta;
-        new _vtable range pclass^.vtable^:last+vtabledelta;
-        _vtable^:=pclass^.vtable^;
-        discard pclass^.vtable;
-        pclass^.vtable:=_vtable;
-        end if;
-      end if;
-  end adjustvtable;
-
-
   
 ----------------------------------------------------------------------------------------------------
 procedure type_setsize (
@@ -214,7 +160,7 @@ begin
     p:=curr.region^.entities.first;
     while p<>nil loop
       -- pokud nebyl pou‘it, ohl sit varov n¡
-      if (p^.stat_usage=0) and (p^.id<>nil) and not (etc_generated in p^.compile) then
+      if p^.stat_usage=0 and p^.id<>nil and etc_generated not in p^.compile then
         ce^.setwarning({CCERR=}000000,cw_unused_entity);
         ce^.setpos(p^.pos[etp_header]);
         ce^.setparam(entityident_to_string(p^.id^));
@@ -665,7 +611,7 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure e_spec_float : tevalspecproc =
--- Vyhodnot¡ definici ordin ln¡ho typu SIGNED, UNSIGNED, LOGICAL, CHARACTER.
+-- Vyhodnot¡ definici floating-point typu.
 ----------------------------------------------------------------------------------------------------
 var
   ui               : tuniint;                    -- v˜sledek
@@ -732,6 +678,16 @@ begin
   -- dosadit velikost v bitech
   curr.bits:=uniint_to_unidata_bitsize(ui);
   end e_spec_float;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure e_spec_fixed : tevalspecproc =
+-- Vyhodnot¡ definici fixed-point typu.
+----------------------------------------------------------------------------------------------------
+begin
+  unimplemented(204);
+  end e_spec_fixed;
 
 
 
@@ -1076,7 +1032,7 @@ begin
 
   -- sestavit mno‘inu voliteln˜ch atribut–
   if pf_machine not in curr.pflags then
-    t_getptrattrib(curr.pbase,curr.pclass,base,curr.pattrib);
+    t_get_pointer_rtattrib(curr.pbase,curr.pclass,base,curr.pattrib);
     end if;
 
   -- velikost pointeru
@@ -1195,7 +1151,10 @@ begin
       }
 
         -- typ promˆnn‚
-        e_reftype(curr_context,curr.typ,ek_typename,ttypeviewset:[tview_partial,tview_full],sts,curr.context.entity^.compiling=etd_public or curr.pparam<>nil,curr.pparam<>nil{true,false},true);
+        e_reftype(curr_context,curr.typ,ek_typename,ttypeviewset:[tview_partial,tview_full],sts,
+            {for allow_class    use} curr.context.entity^.compiling=etd_public or curr.vimplements in vis_incomplete_class,
+            {for allow_abstract use} curr.vimplements in vis_abstract{true,false},
+            true);
         if e_part(curr.eval,curr.typ.geteval) then return; end if;
 
         -- explicitnˆ ur‡en  pozice slo‘ky
@@ -1518,7 +1477,7 @@ begin
               cpu^.getstrparams(curr.stype,size,isize,curr.base.getctype^.size,delka);
 
               -- odvodit typ rozsahu
-              {%%X Zde se pro odvozen¡ typu rozsahu ©etˆzce pou‘¡v  jin˜ mechanismus, }
+              -- %%X Zde se pro odvozen¡ typu rozsahu ©etˆzce pou‘¡v  jin˜ mechanismus,
               -- ne‘ pro odvozen¡ rozsahu pole. To je minim lnˆ divn‚.
               t_derive_string_range(curr,isize,delka);
 
@@ -1848,7 +1807,6 @@ begin
         verify(577,etc_generated in curr.compile);
         curr.eval:=ete_evaluated;
 
-
     -- --> incomplete -- pouze pro intern¡ speci ln¡ metody
     when etd_incomplete  do
         verify(578,etc_generated not in curr.compile);
@@ -1856,7 +1814,6 @@ begin
         -- vyhodnotit typ speci ln¡ metody
         e_reftype(curr_context{%%TODO(Ondra): Pro‡ tu byl parent?: curr.context.entity^},curr.typ,ek_typename,ttypeviewset:[tview_full],tdatatypeset:[dt_procedure],false,false,false);
         if e_part(curr.eval,curr.typ.e) then return; end if;
-
 
     -- --> full
     when etd_full do
@@ -1907,7 +1864,7 @@ begin
               -- m  virtu ln¡ metoda ©¡d¡c¡ parametry
               if rf_virtual in curr.typ.getctype^.rflags
 
-                -- ale m  => komplexn¡ vol n¡
+                -- ano m  => komplexn¡ vol n¡
                 then
                   pentity_virtual(^curr)^.vcall:=tvct_complex;
 
@@ -1915,17 +1872,19 @@ begin
 
                 -- nem  => jednoduch‚ vol n¡
                 else
-                  -- zp–sob vol n¡
-                  pentity_virtual(^curr)^.vcall:=tvct_simple_index;
+                  declare var
+                    interface : p_class_interface;
 
-                  -- realokovat pamˆŸ
-                  adjustvtable(pclass,true);
+                  begin
+                    -- zp–sob vol n¡
+                    pentity_virtual(^curr)^.vcall:=tvct_simple_index;
 
-                  -- poznamenat do tabulky
-                  pclass^.vtable^ & pentity_subprogram(^curr);
+                    -- naj¡t nativn¡ interface
+                    interface:=pclass^.interfaces^.get_native_interface;
 
-                  -- p©idˆlit index
-                  pentity_virtual(^curr)^.vindex:=pclass^.vtable^:length;
+                    -- p©idˆlit index a za©adit do virtu ln¡ tabulky
+                    interface^.add_virtual_method(^curr);
+                    end declare;
                   end if;
 
             -- v modulu, programu nebo kompila‡n¡ jednotce => mus¡ m¡t ©¡d¡c¡ parametry
@@ -1969,8 +1928,6 @@ procedure e_override (
 ----------------------------------------------------------------------------------------------------
 var
   pvirt            : pentity_virtual;        -- souvisej¡c¡ virtu ln¡ metoda
-  pclass_v         : pentity_type;           -- t©¡da souvisej¡c¡ s virt. metodou
-  pclass_o         : pentity_type;           -- t©¡da souvisej¡c¡ s override
 
 begin
   case level
@@ -1993,38 +1950,50 @@ begin
               {%%X}
               end if;
 
-            -- pro zjednodu¨en¡: pointer na t©¡du
-            pclass_v:=pentity_type(pvirt^.context.entity);
-            pclass_o:=pentity_type(curr.context.entity);
-
-            -- aktu ln¡ t©¡da mus¡ b˜t potomkem t©¡dy s virtu ln¡ metodou
-            if not sym_is_descendant(pclass_o,pclass_v) then
-              {%%X}
+            -- m  virtu ln¡ metoda nˆjak‚ ©¡d¡c¡ parametry ?
+            if rf_virtual in pvirt^.typ.getctype^.rflags then
+              unimplemented(162);
               end if;
 
-            -- m  virtu ln¡ metoda nˆjak‚ ©¡d¡c¡ parametry ?
-            if rf_virtual in pvirt^.typ.getctype^.rflags
+            declare var
+              pclass_virt : pentity_type;        -- t©¡da ve kter‚ je virtu ln¡ metoda
+              pclass_this : pentity_type;        -- t©¡da ve kter‚ je override = tato t©¡da
 
-              -- ano
-              then
-                unimplemented(162);
+            begin
+              -- pro zjednodu¨en¡: pointer na t©¡du
+              x_get_context(curr.virt.getcexpr,pclass_virt); 
+            --pclass_virt:=pentity_type(pvirt^.context.entity);
+              pclass_this:=pentity_type(curr.context.entity);
 
-              -- ne
-              else
-                -- zajistit, aby byla virtu ln¡ tabulka korektnˆ alokovan 
-                adjustvtable(pclass_o,false);
+              -- vyhledat interface
+              if sym_is_ancestor(pclass_virt,pclass_this)
 
-                -- nebyla u‘ metoda v t‚to t©¡dˆ jednou p©et¡‘ena ?
-                if pclass_o^.vtable^[pvirt^.vindex]<>nil then
-                  ce^.seterror({CCERR=}000430,ce_multioverride);
-                  ce^.setparam(sym_get_qid(pvirt));
-                  ce^.setpos(curr.pos[etp_header]);
-                  ce^.raiseerror;
-                  end if;
+                -- overridujeme metodu p©edka => nativn¡ interface
+                then curr.interface:=pclass_this^.interfaces^.find_interface(pclass_this);
 
-                -- poznamenat do virtu ln¡ tabulky pointer na aktu ln¡ p©et¡‘en¡
-                pclass_o^.vtable^[pvirt^.vindex]:=pentity(^curr);
+                -- overridujeme jinou metodu => nˆjak˜ exposovan˜ interface
+                else curr.interface:=pclass_this^.interfaces^.find_interface(pclass_virt);
                 end if;
+
+              -- nena¨el-li se interface, nem  tu override co dˆlat
+              if curr.interface=nil then
+                ce^.seterror({CCERR=}000000,ce_i_override);
+                pexpnode(curr.virt.getcexpr)^.errpos;
+                ce^.raiseerror;
+                end if;
+              verify(697,curr.interface^.is_exposed<>not sym_is_ancestor(pclass_virt,pclass_this));
+
+              -- nebyla u‘ metoda jednou p©et¡‘ena ?
+              if curr.interface^.is_virtual_method_overriden(pvirt) then
+                ce^.seterror({CCERR=}000430,ce_multioverride);
+                ce^.setparam(sym_get_qid(pvirt));
+                ce^.setpos(curr.pos[etp_header]);
+                ce^.raiseerror;
+                end if;
+
+              -- p©et¡‘it virtu ln¡ metodu
+              curr.interface^.override_virtual_method(pvirt,^curr);
+              end declare;
 
           -- v modulu, programu ‡i kompila‡n¡ jednotce
           else
@@ -2276,6 +2245,10 @@ procedure e_class (
     final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
 -- Vyhodnot¡ deklaraci t©¡dy.
 ----------------------------------------------------------------------------------------------------
+with
+  standard.classes,
+  standard.classes.lists;
+
 var
   e                : tentityeval;
   varofs           : tunidata_addr;              -- aktu ln¡ offset v t©¡dˆ
@@ -2324,30 +2297,71 @@ var
 
 
     ------------------------------------------------------------------------------------------------
-    #template e_ancestor;
+    procedure e_ancestor =
     -- Vyhodnot¡ p©edka.
     ------------------------------------------------------------------------------------------------
+    begin
       -- vyhodnotit p©edka
       if curr.ancestor.isset then
+        -- vyhodnotit
         e_refsymbol_from_typename(curr_context,curr.ancestor,etd_incomplete,ttypeviewset:[tview_full,tview_incomplete],dts_class,true,true,final);
         if e_part(curr.eval,curr.ancestor.geteval) then return; end if;
+
+        -- p©evz¡t informace o v¨ech interfacech z p©edka
+        curr.interfaces^.merge_interface_list(pentity_type(curr.ancestor.getcentity)^.interfaces);
         end if;
-      #end e_ancestor;
+      end e_ancestor;
 
 
 
     ------------------------------------------------------------------------------------------------
-    #template e_exposed;
+    procedure e_exposed =
     -- Vyhodnot¡ interfacy.
     ------------------------------------------------------------------------------------------------
-      -- vyhodnotit interfacy
-      if curr.exposed.count>0 then
-        for i in curr.exposed.list^:range loop
-          e_refsymbol_from_typename(curr_context,curr.exposed.list^[i],etd_incomplete,ttypeviewset:[tview_full,tview_incomplete],dts_class,true,true,final);
-          if e_part(curr.eval,curr.exposed.list^[i].geteval) then return; end if;
-          end loop;
+    begin
+      -- vyhodnotit interfacy (1. je nativn¡, nen¡ pot©eba vyhodnocovat)
+      if curr.interfaces^.count>1 then
+        declare var
+          it       : c_list_iterator;            -- iter tor
+          interface: p_class_interface;          -- interface t©¡dy
+
+        begin
+          -- p©ipravit iter tor
+          curr.interfaces^.get_exposed_interfaces(it);
+
+          -- zpracovat v¨echny interfacy
+          while it.get(interface) loop
+            -- vyhodnotit
+            e_refsymbol_from_typename(curr_context,interface^.refclass,etd_incomplete,ttypeviewset:[tview_full,tview_incomplete],dts_class,true,true,final);
+            if e_part(curr.eval,interface^.refclass.geteval) then return; end if;
+
+            -- pokud se tak ji‘ nestalo, tak zalo‘it skrytou promˆnnou odpov¡daj¡c¡ interfacu
+            if not interface^.instance.isset then 
+              declare var
+                instance         : pentity_var;-- novˆ zalo‘en  instance interfacu
+                instance_context : tcontext;   -- kontext instance interfacu
+
+              begin
+                verify(685,curr.ancestor.isset and then pentity_type(curr.ancestor.getcentity)^.interfaces^.is_exposed_interface(interface^.refclass.getcentity));
+
+                -- zalo‘it instanci interfacu
+                d_create_internal(curr_context,pentity(instance),instance_context,et_var,nil);
+                instance^.compile-tentitycompileset:[etc_generated];
+                instance^.typ.settype(pentity_type(interface^.refclass.getcentity));
+                instance^.mclass     :=mc_class;
+                instance^.vmode      :=vm_direct;
+                instance^.vaccess    :=va_norm;
+                instance^.vimplements:=vi_interface;
+                d_end_internal(instance^,true);
+
+                -- doplnit do popisu interfacu
+                interface^.instance.setentity(instance);
+                end declare;
+              end if;
+            end loop;
+          end declare;
         end if;
-      #end e_exposed;
+      end e_exposed;
 
 begin
   case level
@@ -2360,6 +2374,12 @@ begin
 
         -- t©¡da je regul rn¡ typ
         curr.tkind:=tk_regular;
+
+        -- zalo‘it tabulku interfac–
+        new curr.interfaces;
+
+        -- t©¡da je sama sobˆ nativn¡m interfacem
+        curr.interfaces^.add_interface(nil,^curr);
 
         -- vyhodnotit atributy
         e_refexpr(curr_context,curr.attr_align,ek_const_int,nil,eu_use,true);
@@ -2499,6 +2519,12 @@ begin
         e_reftype(curr.context{curr.context.entity^},curr.typ,ek_typename,ttypeviewset:[tview_incomplete,tview_partial,tview_full],dts_regular,true,true,final);
         if e_part(curr.eval,curr.typ.geteval) then return; end if;
 
+        -- sestavit pohled na typ parametru
+        if curr.typ.getutype=nil
+          then typ.initunchecked(curr.typ.getutype);
+          else typ.init(curr_context,curr.typ.getutype);
+          end if;
+
         ----- %%TECH Dopo‡et volac¡ konvence -----------------------------
         -- Volac¡ konvence parametru z–stane neur‡ena (PP_DEFAULT) pouze
         -- v tˆchto p©¡padech:
@@ -2512,7 +2538,7 @@ begin
 
         -- dopo‡¡tat volac¡ konvenci
         if curr.pass=pp_default then
-          if t_composite(curr_context,curr.typ.getctype)
+          if t_is_composite(typ)
             -- kompozitn¡ typy se p©ed vaj¡ referenc¡
             then curr.pass:=pp_ref
             -- jednoduch‚ typy se p©ed vaj¡ hodnotou
@@ -2520,16 +2546,11 @@ begin
             end if;
           end if;
 
-        -- sestavit pohled na typ parametru
-        if curr.typ.getutype=nil
-          then typ.initunchecked(curr.typ.getutype);
-          else typ.init(curr_context,curr.typ.getutype);
-          end if;
-
         -- %%LANG S parametrem se p©ed vaj¡ n sleduj¡c¡ dynamick‚ atributy:
         --   -- pro parametr typu t©¡da ‘ dn‚,
         if t_is_stype(typ,dt_class) then
           -- nic
+
         --   -- pro class a virtual parametry atribut :tag, je-li typ
         --      takov‚ho parametru unconstrained, pak taky :last,
         elsif curr.pass in pps_tagged then
@@ -2537,33 +2558,32 @@ begin
           if t_is_sts(typ,dts_unconstrained) then
             curr.rta_avail+rtattribset:[rta_last];
             end if;
+
         --   -- pro beztypov˜ unchecked parametr atributy :tag a :size,
         --   -- pro unchecked parametr s constrained typem atribut :tag,
         --   -- pro unchecked parametr s unconstrained typem atributy :tag
         --      :size (nikoliv :last!),
         elsif curr.pass=pp_unchecked then
           curr.rta_avail+rtattribset:[rta_tag];
-          if (typ.tview=tview_unchecked) or t_is_sts(typ,dts_unconstrained) then
+          if typ.tview=tview_unchecked or t_is_sts(typ,dts_unconstrained) then
             curr.rta_avail+rtattribset:[rta_size];
             end if;
+
         --   -- pro libovoln˜ jin˜ parametr s unconstrained typem atribut
         --      :last (nikoliv :size).
         elsif t_is_sts(typ,dts_unconstrained) then
           curr.rta_avail+rtattribset:[rta_last];
           end if;
 
-        {%%X z plata: nen¡ udˆlan‚ dynamick‚ zji¨Ÿov n¡ RTA_USED }
+        -- %%X %%TODO(TAG) z plata: nen¡ udˆlan‚ dynamick‚ zji¨Ÿov n¡ RTA_USED
         curr.rta_used:=curr.rta_avail;
 
-{
-        -- bude se p©ed vat atribut :tag ?
-        if curr.pass in pps_tagged then curr.allrta+rtattribset:[rta_tag]; end if;
-        -- bude se p©ed vat atribut :size ?
-        if (curr.pass in pps_tagged) or ((curr.pass in pps_ref)
-        and t_unknownsize(curr,curr.typ.getutype)) then curr.allrta+rtattribset:[rta_size]; end if;
-        -- bude se p©ed vat atribut :last ?
-        if (curr.pass in pps_ref) and t_unknownsize(curr,curr.typ.getutype) then curr.allrta+rtattribset:[rta_last]; end if;
-}
+        -- vyhodnotit implicitn¡ hodnotu
+        if curr.init.isset then
+          -- vyhodnotit hodnotu
+          e_refimm(curr_context,curr.init,ek_const,curr.typ.getutype,final);
+          if e_part(curr.eval,curr.init.geteval) then return; end if;
+          end if
 
     when others do verify(168,true);
     end case;
@@ -2888,6 +2908,7 @@ begin
   e_spec_tab[dt_signed    ]:=^e_spec_ordinal;
   e_spec_tab[dt_unsigned  ]:=^e_spec_ordinal;
   e_spec_tab[dt_float     ]:=^e_spec_float;
+  e_spec_tab[dt_fixed     ]:=^e_spec_fixed;
   e_spec_tab[dt_char      ]:=^e_spec_ordinal;
   e_spec_tab[dt_logical   ]:=^e_spec_ordinal;
   e_spec_tab[dt_enum      ]:=^e_spec_enum;

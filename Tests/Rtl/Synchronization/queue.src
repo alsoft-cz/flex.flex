@@ -1,0 +1,263 @@
+----------------------------------------------------------------------------------------------------
+program squeue =
+-- Rtl library only
+-- Programming Language Flex Samples.
+-- Copyright (C) 2003 A && L soft, s.r.o.
+----------------------------------------------------------------------------------------------------
+with
+     flex
+    ,flex.thread
+    ,flex.synchronization
+    ,flex.os_api
+    --,testlib
+    ,standard
+    ,standard.console
+    ,standard.conversions
+    ;
+
+const
+    maxcount       = $40_0000;
+
+var
+    wr1            : t_thread_ref;
+    wr2            : t_thread_ref;
+    wr3            : t_thread_ref;
+    re1            : t_thread_ref;
+    re2            : t_thread_ref;
+    wa1            : t_thread_ref;
+    s              : t_rtl_squeue;
+    wrcounter      : t_rtl_native_signed;
+    recounter      : t_rtl_native_signed;
+    aproxlen       : t_rtl_native_signed;
+
+
+----------------------------------------------------------------------------------------------------
+procedure simple = 
+----------------------------------------------------------------------------------------------------
+var
+    item           : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    relast         : t_rtl_native_signed;
+
+begin
+  {
+  -- dlouhe cteni z prazdne fronty
+  len:=$1_0000;
+  while (len>0) loop
+    rtl_squeue_draw_out(s,t_rtl_pointer(item));
+    len - 1;
+    end loop;
+    }
+
+  {
+  new item;
+  rtl_interlocked_inc_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^wrcounter,item^);
+  rtl_squeue_append(s,item);
+
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_squeue_draw_out(s,t_rtl_pointer(item));
+  discard item;
+
+  -- test cteni za poslednim prvkem
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_squeue_draw_out(s,t_rtl_pointer(item));
+  discard item;
+  }
+  
+  
+  --push
+  new item;
+  rtl_interlocked_inc_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^wrcounter,item^);
+  rtl_squeue_append(s,item);
+  new item;
+  rtl_interlocked_inc_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^wrcounter,item^);
+  rtl_squeue_append(s,item);
+  new item;
+  rtl_interlocked_inc_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^wrcounter,item^);
+  rtl_squeue_append(s,item);
+  new item;
+  rtl_interlocked_inc_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^wrcounter,item^);
+  rtl_squeue_append(s,item);
+  new item;
+  rtl_interlocked_inc_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^wrcounter,item^);
+  rtl_squeue_append(s,item);
+
+  --pop
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^recounter,relast);
+  rtl_squeue_draw_out(s,t_rtl_pointer(item));
+  discard item;
+
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^recounter,relast);
+  rtl_squeue_draw_out(s,t_rtl_pointer(item));
+  discard item;
+
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^recounter,relast);
+  rtl_squeue_draw_out(s,t_rtl_pointer(item));
+  discard item;
+
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^recounter,relast);
+  rtl_squeue_draw_out(s,t_rtl_pointer(item));
+  discard item;
+
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^recounter,relast);
+  rtl_squeue_draw_out(s,t_rtl_pointer(item));
+  discard item;
+
+  recounter:=0;
+  wrcounter:=0;
+  end simple;
+
+----------------------------------------------------------------------------------------------------
+procedure writet:t_rtl_thread_entry =
+----------------------------------------------------------------------------------------------------
+var
+    oldcounter     : t_rtl_native_signed;
+    item           : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastitem       : t_rtl_native_signed;
+
+begin
+  write_line('write begin');
+  loop
+    new item;
+    rtl_interlocked_inc_out(^aproxlen,len);
+    rtl_interlocked_inc_out(^wrcounter,lastitem);
+    item^:=lastitem;
+    rtl_squeue_append(s,item);
+    if lastitem>=maxcount then
+      break;
+      end if;
+
+    -- chytracky zpomalovac
+    if len>$1_0000 then
+      rtl_sleep(10);
+      end if;
+
+
+    {
+    -- samoregulujici zpomalovac
+    loop
+      for i in 0 to len loop 
+        item:=nil;
+        end loop;
+      len:=len+5;
+      len:=len-6;
+      if len<=0 then
+        break;
+        end if;
+      end loop;
+    }
+    end loop;
+catch 
+  when others do
+  write_line('write exception pending');
+leave
+  write_line('write end');
+  end writet;
+
+----------------------------------------------------------------------------------------------------
+procedure readt:t_rtl_thread_entry =
+----------------------------------------------------------------------------------------------------
+var
+    item           : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastitem       : t_rtl_native_signed;
+
+begin
+  write_line('read begin');
+  loop
+    rtl_squeue_draw_out(s,t_rtl_pointer(item));
+    if item<>nil then
+      rtl_interlocked_dec_out(^aproxlen,len);
+      rtl_interlocked_inc_out(^recounter,lastitem);
+      if lastitem>=maxcount then
+        break;
+        end if;
+      --very low performance write_line
+      --write_line(signed_to_string(item^,false));
+      discard item;
+    else
+      --write_line('Sleep');
+      rtl_sleep(0);
+      end if;
+    end loop;
+catch 
+  when others do
+  write_line('read exception pending');
+leave
+  write('read end ');
+  write_line(signed_to_string(lastitem,false));
+  end readt;
+
+
+----------------------------------------------------------------------------------------------------
+procedure watcht:t_rtl_thread_entry =
+----------------------------------------------------------------------------------------------------
+begin
+  loop
+    write(signed_to_string(wrcounter,false));
+    write(' ');
+    write(signed_to_string(recounter,false));
+    write(' ');
+    write_line(signed_to_string(aproxlen,false));
+    rtl_sleep(1000);
+    end loop;
+leave
+  write('watch end ');
+    write(signed_to_string(wrcounter,false));
+    write(' ');
+    write(signed_to_string(recounter,false));
+    write(' ');
+  write_line(signed_to_string(aproxlen,false));
+  end watcht;
+
+
+
+----------------------------------------------------------------------------------------------------
+-- main
+----------------------------------------------------------------------------------------------------
+var
+    item           : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastitem       : t_rtl_native_signed;
+
+begin
+  rtl_squeue_new(s,true);
+  recounter:=0;
+  wrcounter:=0;
+  simple;
+
+  rtl_start_thread(^wa1,^watcht,false,thread_priority_normal,nil);
+  rtl_start_thread(^re1,^readt,false,thread_priority_normal,nil);
+  --rtl_start_thread(^re2,^readt,false,thread_priority_normal,nil);
+  rtl_start_thread(^wr1,^writet,false,thread_priority_normal,nil);
+  rtl_start_thread(^wr2,^writet,false,thread_priority_normal,nil);
+  --rtl_start_thread(^wr3,^writet,false,thread_priority_normal,nil);
+
+  {
+  new item;
+  rtl_interlocked_inc_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^counter,lastitem);
+  item^:=lastitem;
+  rtl_squeue_append(s,item);
+  }
+
+  rtl_wait_and_finish_thread(wr1);
+  rtl_wait_and_finish_thread(wr2);
+  --rtl_wait_and_finish_thread(wr3);
+  rtl_wait_and_finish_thread(re1);
+  --rtl_wait_and_finish_thread(re2);
+  rtl_kill_when_need_and_finish_thread(wa1);
+  rtl_squeue_discard(s);
+  end squeue;

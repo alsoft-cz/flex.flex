@@ -134,10 +134,10 @@ with
   ci_reg,
   ci_fragment,
   ci_struct,
+  cp_cpu.cp_32.cp_metadata,
+  cp_cpu.cp_32.cp_util,
   cp_cpu.cp_ia32.ci_abi,
   cp_cpu.cp_ia32.ci_instr,
-  cp_cpu.cp_ia32.ci_abi,
-  cp_cpu.cp_32.cp_util,
   cc_options;
 
 ----- %%TECH Re‘imy generov n¡ v˜razu ------------------------------------
@@ -1639,24 +1639,8 @@ begin
                 -- promˆnn  t©¡dy
                 when mc_class do
                     -- na‡¡st adresu slo‘ky
-                    i_gen_this_addr(inst,info,context,expr^.t.getsize,pvar^.addr,vysl);
-                {
-                    -- na‡¡st pointer na t©¡du
-                    nullop(optemp,io_mem);
-                    optemp.base.reg:=istackframereg[inst.frame];
-                    imm32load(optemp.disp,inst.profile.thisofs);
-                    optemp.size:=lpointer32;
-                    i_gen_loadreg(inst,info,context,optemp,true,irm_addr);
+                    i_load_this_address(inst,info,context,expr^.t.getsize,pvar^.addr,vysl);
 
-                    -- p©i‡¡st offset slo‘ky
-                    nullop(vysl,io_mem);
-                    i_use(inst,info,context,optemp.reg.reg,vysl.base,idefregsize);
-                    udtoimm32(pvar^.addr,vysl.disp);
-                    vysl.size:=unidata_size_to_unsigned(expr^.t.getsize);
-
-                    -- uvolnit pomocn˜ operand
-                    optemp.free(info,context);
-                }
                     -- chceme ulo‘it i dynamick‚ atributy ?
                     if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
                       i_gen_rtattrib(inst,info,context,expr,vysl);
@@ -1933,7 +1917,7 @@ begin
 
   -- zvolit instanci procedury
   pinst:=nil;
-  if (pproc<>nil) and (pproc^.etype=et_procedure) and (pproc^.codegen<>nil) then
+  if pproc<>nil and then pproc^.etype=et_procedure and then pproc^.codegen<>nil then
     -- %%X zvolit instanci procedury
     pinst:=picodegen_subprog(pproc^.codegen)^.ifirst;
 
@@ -2151,7 +2135,7 @@ begin
 
             -- virtu ln¡ vol n¡
             when tip_dispatch do
-                verify(527,(el^.ntype<>nt_component) or (pexpcomponent(el)^.s.psym=nil) or (pexpcomponent(el)^.s.psym^.etype<>et_virtual));
+                verify(527,el^.ntype<>nt_component or else pproc=nil or else pproc^.etype<>et_virtual);
 
                 declare var
                   instance : pexpnode;           -- v˜raz ur‡uj¡c¡ instanci t©¡dy
@@ -2183,8 +2167,13 @@ begin
                 i_gen_loadreg(inst,info,context,nil,opcall,true,irm_addr);
 
                 -- sestavit adresn¡ operand ukazuj¡c¡ na adresu virtu ln¡ metody
-                opcall.transform_reg_to_mem(edt_address,4);
-                opcall.shift_displacement(t_signed(iclassdesc:size+(pentity_virtual(pexpcomponent(el)^.s.psym)^.vindex-1)*4));
+                declare var
+                  _c_class_interface : c_class_interface;
+                begin
+                  opcall.transform_reg_to_mem(edt_address,4);
+                  opcall.shift_displacement(t_signed(t_desc_class:size+_c_class_interface.normalize_vindex(pentity_virtual(pproc)^.vindex)*4));
+                                                      -- %%TODO(COMPATIBILITY) %%TODO(620) ^^^^^ nahradit p©¡mo typem m¡sto instance
+                  end declare;
 
             when others do verify(509,true);
             end case;
@@ -3184,9 +3173,29 @@ procedure i_gen_this (
 -- Generov n¡ k¢du THIS.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- vygenerovat adresu instance t©¡dy
-  i_gen_this_addr(inst,info,context,expr^.t.getsize,uda_0,vysl);
+  -- vygenerovat a na‡¡st adresu instance t©¡dy
+  i_load_this_address(inst,info,context,expr^.t.getsize,uda_0,vysl);
+  --verify(696,vysl.size<>unidata_size_to_unsigned(expr^.t.getsize));
   end i_gen_this;
+
+
+    
+----------------------------------------------------------------------------------------------------
+procedure i_gen_fake_tag (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
+    context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
+    expr           : in pexpfaketag;             -- fake tag interfacu t©¡dy
+    vysl           : out c_operand) =            -- v˜sledek
+-- Generov n¡ k¢du fake tagu interfacu t©¡dy.
+----------------------------------------------------------------------------------------------------
+begin
+  -- inicializovat operand
+  vysl.create_imm(edt_unsigned,4,0);
+
+  -- doplnit relokaci
+  vysl.set_relo_interface(expr^.interface);
+  end i_gen_fake_tag;
 
 
 
@@ -3245,6 +3254,9 @@ begin
 
     -- THIS
     when nt_this      do i_gen_this(inst,info,context,pexpthis(expr),vysl);
+
+    -- fake tag interfacu t©¡dy
+    when nt_fake_tag  do i_gen_fake_tag(inst,info,context,pexpfaketag(expr),vysl);
 
     -- jin‚ symboly tu nemaj¡ co dˆlat
     when others do

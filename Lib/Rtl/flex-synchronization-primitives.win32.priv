@@ -1,0 +1,250 @@
+#if target_machine_can_be_multiprocesor then;
+#template lockbus; lock #end lockbus;
+#else;
+#template lockbus;#end lockbus;
+#end if;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_compare_exchange =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    mov            ecx,locked_value              --address
+    mov            edx,new_value                 --exchange
+    mov            eax,when_locked_eq            --compare
+    lockbus 
+    cmpxchg [ecx],edx
+    mov            ecx,old_value
+    mov            [ecx],eax                 --result
+    #end asm;
+  end rtl_interlocked_compare_exchange;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_compare_exchange_ptr =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    mov            ecx,locked_value              --address
+    mov            edx,new_value                 --exchange
+    mov            eax,when_locked_eq            --compare
+    lockbus 
+    cmpxchg [ecx],edx
+    mov            ecx,old_value
+    mov            [ecx],eax                 --result
+    #end asm;
+  end rtl_interlocked_compare_exchange_ptr;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_exchange_add =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    mov            ecx,locked_value              --address
+    mov            eax,add_value                 --add
+    lockbus
+    xadd [ecx],eax
+    mov            ecx,old_value
+    mov            [ecx],eax                 --result
+    #end asm;
+  end rtl_interlocked_exchange_add;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_inc_out =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_interlocked_exchange_add(locked_value,1,old_value);
+  end rtl_interlocked_inc_out;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_dec_out =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_interlocked_exchange_add(locked_value,-1,old_value);
+  end rtl_interlocked_dec_out;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_inc =
+----------------------------------------------------------------------------------------------------
+var
+    old_value      : t_rtl_native_signed;
+
+begin
+  rtl_interlocked_exchange_add(locked_value,1,old_value);
+  end rtl_interlocked_inc;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_dec =
+----------------------------------------------------------------------------------------------------
+var
+    old_value      : t_rtl_native_signed;
+
+begin
+  rtl_interlocked_exchange_add(locked_value,-1,old_value);
+  end rtl_interlocked_dec;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_dec_if_greater_than(
+    locked_value   : p_rtl_native_signed;
+    sub_value      : in t_rtl_native_signed;
+    when_locked_gt : in t_rtl_native_signed;
+    old_value      : out t_rtl_native_signed) =
+----------------------------------------------------------------------------------------------------
+var
+    new_value      : t_rtl_native_signed;
+    exch_value     : t_rtl_native_signed;
+
+begin
+  loop
+    old_value:=locked_value^;
+    if old_value>when_locked_gt then
+      new_value:=old_value-sub_value;
+    else
+      new_value:=old_value;
+      end if;
+    rtl_interlocked_compare_exchange(locked_value,new_value,old_value,exch_value);
+    if exch_value=old_value then
+      return;
+      end if;
+    end loop;
+  end rtl_interlocked_dec_if_greater_than;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_intelocked_increment_if_less_than(
+    locked_value   : p_rtl_native_signed;
+    add_value      : in t_rtl_native_signed;
+    when_locked_lt : in t_rtl_native_signed;
+    old_value      : out t_rtl_native_signed) =
+----------------------------------------------------------------------------------------------------
+var
+    new_value      : t_rtl_native_signed;
+    exch_value     : t_rtl_native_signed;
+
+begin
+  loop
+    old_value:=locked_value^;
+    if old_value<when_locked_lt then
+      new_value:=old_value+add_value;
+    else
+      new_value:=old_value;
+      end if;
+    rtl_interlocked_compare_exchange(locked_value,new_value,old_value,exch_value);
+    if exch_value=old_value then
+      return;
+      end if;
+    end loop;
+  end rtl_intelocked_increment_if_less_than;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_exchange_add_half(
+    locked_value   : p_rtl_unsigned16;
+    add_value      : in t_rtl_unsigned16;
+    old_value      : out t_rtl_unsigned16) =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    mov            ecx,locked_value              --address
+    mov            ax,add_value                  --add
+    lockbus
+    xadd [ecx],ax
+    mov            edx,old_value
+    mov            [edx],ax                      --result
+    #end asm;
+  end rtl_interlocked_exchange_add_half;
+
+{
+----------------------------------------------------------------------------------------------------
+procedure rtl_intelocked_increment_if_greater_than_zero(
+    locked_value   : p_rtl_native_signed;
+    add_value      : in t_rtl_native_signed;
+    old_value      : out t_rtl_native_signed) =
+----------------------------------------------------------------------------------------------------
+var
+    new_value      : t_rtl_native_signed;
+    exch_value     : t_rtl_native_signed;
+
+begin
+  loop
+    old_value:=locked_value^;
+    if old_value>0 then
+      new_value:=old_value+add_value;
+    else
+      new_value:=old_value;
+      end if;
+    rtl_interlocked_compare_exchange(locked_value,new_value,old_value,exch_value);
+    if exch_value=old_value then
+      return;
+      end if;
+    end loop;
+  end rtl_intelocked_increment_if_greater_than_zero;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_intelocked_increment_if_lesser_than_zero(
+    locked_value   : p_rtl_native_signed;
+    add_value      : in t_rtl_native_signed;
+    old_value      : out t_rtl_native_signed) =
+----------------------------------------------------------------------------------------------------
+var
+    new_value      : t_rtl_native_signed;
+    exch_value     : t_rtl_native_signed;
+
+begin
+  loop
+    old_value:=locked_value^;
+    if old_value<0 then
+      new_value:=old_value+add_value;
+    else
+      new_value:=old_value;
+      end if;
+    rtl_interlocked_compare_exchange(locked_value,new_value,old_value,exch_value);
+    if exch_value=old_value then
+      return;
+      end if;
+    end loop;
+  end rtl_intelocked_increment_if_lesser_than_zero;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_intelocked_inc_if_greater_than(
+    locked_value   : p_rtl_native_signed;
+    add_value      : in t_rtl_native_signed;
+    when_locked_gt : in t_rtl_native_signed;
+    old_value      : out t_rtl_native_signed) =
+----------------------------------------------------------------------------------------------------
+var
+    new_value      : t_rtl_native_signed;
+    exch_value     : t_rtl_native_signed;
+
+begin
+  loop
+    old_value:=locked_value^;
+    if old_value>when_locked_gt then
+      new_value:=old_value+add_value;
+    else
+      new_value:=old_value;
+      end if;
+    rtl_interlocked_compare_exchange(locked_value,new_value,old_value,exch_value);
+    if exch_value=old_value then
+      return;
+      end if;
+    end loop;
+  end rtl_intelocked_inc_if_greater_than;
+}
+

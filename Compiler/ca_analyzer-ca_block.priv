@@ -146,14 +146,7 @@ with
   ca_analyzer.ca_analyze;
 
 var
-  binfo            : blinfo;                     -- kontext
-  xinfo            : expinfo;                    -- kontext
   base             : typeview;                   -- b zov˜ typ pointeru
-  ptempvar         : pentity_var;                -- pracovn¡ promˆnn 
-  porgvar          : pexpnode;                   -- p–vodn¡ promˆnn 
-  ptag             : pentity_var;                -- slo‘ka @TAG
-  pstatus          : pentity_var;                -- slo‘ka @STATUS
-  srch             : tentitysearch;              -- hled tko
 
 begin
   -- zjistit b zov˜ typ pointeru
@@ -169,100 +162,95 @@ begin
 
   -- b zov˜ typ je t©¡da ?
   if base.isclass then
-    -- naj¡t intern¡ slo‘ky @TAG a @STATUS
-    srch.find_local(sym_primary_context(base.getctype^),id_int_tag   ,etvs_all); ptag   :=pentity_var(srch.psym);
-    srch.find_local(sym_primary_context(base.getctype^),id_int_status,etvs_all); pstatus:=pentity_var(srch.psym);
-    verifyx(479,(ptag=nil) or (pstatus=nil),bl^.pos[bp_begin]);
+    declare var
+      binfo        : blinfo;                     -- kontext
+      xinfo        : expinfo;                    -- kontext
+      porgvar      : pexpnode;                   -- p–vodn¡ promˆnn 
+      ptempvar     : pentity_var;                -- pracovn¡ promˆnn 
+      hidden_fields: c_class_hidden_field_helper;-- manipul tor se skryt˜mi slo‘kami
+  
+    begin
+      -- inicializovat manipul tor se skryt˜mi slo‘kami
+      hidden_fields.set_context(sym_primary_context(base.getctype^));
 
-    -- p©ipravit kontexty
-    a_prepare_info(binfo,xinfo);
+      -- p©ipravit kontexty
+      a_prepare_info(binfo,xinfo);
 
-    if bl^.xtag<>nil then
-      -- m -li explicitnˆ specifikovan˜ tag, tak se :size mus¡ br t z nˆj,
-      -- tak‘e pracovn¡ promˆnn  mus¡ b˜t machine_pointer a range mus¡
-      -- specifikovat jej¡ skute‡nou velikost.
-      unimplementedx(196,bl^.pos[bp_begin]);
-      end if;
+      if bl^.xtag<>nil then
+        -- m -li explicitnˆ specifikovan˜ tag, tak se :size mus¡ br t z nˆj,
+        -- tak‘e pracovn¡ promˆnn  mus¡ b˜t machine_pointer a range mus¡
+        -- specifikovat jej¡ skute‡nou velikost.
+        unimplementedx(196,bl^.pos[bp_begin]);
+        end if;
 
-    -- zalo‘it pracovn¡ promˆnnou
-    a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+      -- zalo‘it pracovn¡ promˆnnou
+      a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
 
-    -- zmˆnit p©¡kaz NEW na alokaci pracovn¡ promˆnn‚
-    porgvar:=bl^.xvar;
-    bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
+      -- zmˆnit p©¡kaz NEW na alokaci pracovn¡ promˆnn‚
+      porgvar:=bl^.xvar;
+      bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
 
-    -- Instance^.@TAG := TAG
-    if bl^.xtag<>nil
+      -- Instance^.@TAG := TAG
+      if bl^.xtag<>nil
 
-      -- explicitnˆ specifikovan˜
-      then
-        a_list_append(bl^.bepilog,
-          b_make_cmd(curr,binfo,
-            x_make_op_assign(curr,xinfo,
-              x_make_component_selector(curr,xinfo,ptag,
-                x_make_deref(curr,xinfo,
-                  x_make_component_var(curr,xinfo,ptempvar)
-                  )
+        -- explicitnˆ specifikovan˜
+        then
+          hidden_fields.a_make_set_tag(curr,bl^.bepilog,binfo,xinfo,
+              -- instance
+              x_make_deref(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar)
                 ),
+              -- tag
               bl^.xtag
-              )
-            )
-          );
+              );
 
-      -- podle typu t©¡dy (Instance^:tag)
-      else
-        a_list_append(bl^.bepilog,
-          b_make_cmd(curr,binfo,
-            x_make_op_assign(curr,xinfo,
-              x_make_component_selector(curr,xinfo,ptag,
-                x_make_deref(curr,xinfo,
-                  x_make_component_var(curr,xinfo,ptempvar)
-                  )
+        -- podle typu t©¡dy (Instance^:tag)
+        else
+          hidden_fields.a_make_set_tag(curr,bl^.bepilog,binfo,xinfo,
+              -- instance
+              x_make_deref(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar)
                 ),
+              -- tag
               x_make_attribute(curr,xinfo,atc_static,atf_tag,ata_type_tag{ata_expr_tag},inttype_tag,
                 x_make_deref(curr,xinfo,
                   x_make_component_var(curr,xinfo,ptempvar)
                   )
                 )
-              )
-            )
-          );
-        end if;
+              );
+          end if;
 
-    -- Instance^.ENTRY
-    a_list_append(bl^.bepilog,
-      b_make_cmd(curr,binfo,
-        x_make_call_spec(curr,xinfo,tst_entry,nil,
+      -- Instance^.ENTRY
+      a_list_append(bl^.bepilog,
+        b_make_cmd(curr,binfo,
+          x_make_call_spec(curr,xinfo,tst_entry,nil,
+            x_make_deref(curr,xinfo,
+              x_make_component_var(curr,xinfo,ptempvar)
+              ),
+            nil
+            )
+          )
+        );
+
+      -- Instance^.@STATUS := STATUS_INITED
+      hidden_fields.a_make_set_status(curr,bl^.bepilog,binfo,xinfo,
+          -- instance
           x_make_deref(curr,xinfo,
             x_make_component_var(curr,xinfo,ptempvar)
             ),
-          nil
-          )
-        )
-      );
+          -- p©¡znaky
+          [csf_initialized]
+          );
 
-    -- Instance^.@STATUS := STATUS_INITED
-    a_list_append(bl^.bepilog,
-      b_make_cmd(curr,binfo,
-        x_make_op_assign(curr,xinfo,
-          x_make_component_selector(curr,xinfo,pstatus,
-            x_make_deref(curr,xinfo,
-              x_make_component_var(curr,xinfo,ptempvar)
-              )
-            ),
-          x_make_imm_uniint(curr,xinfo,cpu^.status_inited)
+      -- Promˆnn  := Instance
+      a_list_append(bl^.bepilog,
+        b_make_cmd(curr,binfo,
+          x_make_op_assign(curr,xinfo,
+            porgvar,
+            x_make_component_var(curr,xinfo,ptempvar))
           )
-        )
-      );
-
-    -- Promˆnn  := Instance
-    a_list_append(bl^.bepilog,
-      b_make_cmd(curr,binfo,
-        x_make_op_assign(curr,xinfo,
-          porgvar,
-          x_make_component_var(curr,xinfo,ptempvar))
-        )
-      );
+        );
+      end declare;
 
   -- v NEW je explicitnˆ specifikov n TAG => m–‘e m¡t metody INIT nebo ENTRY
   elsif bl^.xtag<>nil then
@@ -281,48 +269,56 @@ begin
 --  and then (t_contains_class(base.getctype^) or base.getctype^.stable[tst_init].isset)
   -- => potom je alokace o nˆco slo‘itˆj¨¡
   then
-    verify(589,not base.getctype^.stable[tst_init].isset and not base.getctype^.stable[tst_entry].isset);
+    declare var
+      binfo        : blinfo;                     -- kontext
+      xinfo        : expinfo;                    -- kontext
+      porgvar      : pexpnode;                   -- p–vodn¡ promˆnn 
+      ptempvar     : pentity_var;                -- pracovn¡ promˆnn 
 
-    -- p©ipravit kontexty
-    a_prepare_info(binfo,xinfo);
+    begin
+      verify(589,not base.getctype^.stable[tst_init].isset and not base.getctype^.stable[tst_entry].isset);
 
-    -- zalo‘it pracovn¡ promˆnnou
-    a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+      -- p©ipravit kontexty
+      a_prepare_info(binfo,xinfo);
 
-    -- zmˆnit p©¡kaz NEW na alokaci pracovn¡ promˆnn‚
-    porgvar:=bl^.xvar;
-    bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
+      -- zalo‘it pracovn¡ promˆnnou
+      a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
 
-    -- zavolat metodu INIT
-    if base.getctype^.stable[tst_init].isset then
-      a_list_append(bl^.bepilog,
-        a_type_make_call(curr,binfo,xinfo,tst_init,base.getctype^,
-          x_make_deref(curr,xinfo,
-            x_make_component_var(curr,xinfo,ptempvar)
+      -- zmˆnit p©¡kaz NEW na alokaci pracovn¡ promˆnn‚
+      porgvar:=bl^.xvar;
+      bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
+
+      -- zavolat metodu INIT
+      if base.getctype^.stable[tst_init].isset then
+        a_list_append(bl^.bepilog,
+          a_type_make_call(curr,binfo,xinfo,tst_init,base.getctype^,
+            x_make_deref(curr,xinfo,
+              x_make_component_var(curr,xinfo,ptempvar)
+              )
             )
+          );
+        end if;
+
+      -- zavolat metodu ENTRY
+      if base.getctype^.stable[tst_entry].isset then
+        a_list_append(bl^.bepilog,
+          a_type_make_call(curr,binfo,xinfo,tst_entry,base.getctype^,
+            x_make_deref(curr,xinfo,
+              x_make_component_var(curr,xinfo,ptempvar)
+              )
+            )
+          );
+        end if;
+
+      -- Promˆnn  := Instance
+      a_list_append(bl^.bepilog,
+        b_make_cmd(curr,binfo,
+          x_make_op_assign(curr,xinfo,
+            porgvar,
+            x_make_component_var(curr,xinfo,ptempvar))
           )
         );
-      end if;
-
-    -- zavolat metodu ENTRY
-    if base.getctype^.stable[tst_entry].isset then
-      a_list_append(bl^.bepilog,
-        a_type_make_call(curr,binfo,xinfo,tst_entry,base.getctype^,
-          x_make_deref(curr,xinfo,
-            x_make_component_var(curr,xinfo,ptempvar)
-            )
-          )
-        );
-      end if;
-
-    -- Promˆnn  := Instance
-    a_list_append(bl^.bepilog,
-      b_make_cmd(curr,binfo,
-        x_make_op_assign(curr,xinfo,
-          porgvar,
-          x_make_component_var(curr,xinfo,ptempvar))
-        )
-      );
+      end declare;
     end if;
   end a_block_new;
 
@@ -340,12 +336,7 @@ var
   nulllist         : const bllist;
 
 var
-  binfo            : blinfo;                     -- kontext
-  xinfo            : expinfo;                    -- kontext
   base             : typeview;                   -- b zov˜ typ pointeru
-  ptempvar         : pentity_var;                -- pracovn¡ promˆnn 
-  pstatus          : pentity_var;                -- slo‘ka @STATUS
-  srch             : tentitysearch;              -- hled tko
 
 begin
   -- zjistit b zov˜ typ pointeru
@@ -353,62 +344,60 @@ begin
 
   -- bude se dealokovat t©¡da ?
   if base.isclass then
-    -- naj¡t intern¡ slo‘ku @STATUS
-    srch.find_local(sym_primary_context(base.getctype^),id_int_status,etvs_all); pstatus:=pentity_var(srch.psym);
-    verify(480,pstatus=nil);
+    declare var
+      binfo        : blinfo;                     -- kontext
+      xinfo        : expinfo;                    -- kontext
+      ptempvar     : pentity_var;                -- pracovn¡ promˆnn 
+      hidden_fields: c_class_hidden_field_helper;-- manipul tor se skryt˜mi slo‘kami
 
-    -- p©ipravit kontexty
-    a_prepare_info(binfo,xinfo);
+    begin  
+      -- inicializovat manipul tor se skryt˜mi slo‘kami
+      hidden_fields.set_context(sym_primary_context(base.getctype^));
 
-    -- zalo‘it pracovn¡ promˆnnou
-    a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+      -- p©ipravit kontexty
+      a_prepare_info(binfo,xinfo);
 
-    -- Instance := Promˆnn 
-    a_list_append(bl^.bprolog,
-      b_make_cmd(curr,binfo,
-        x_make_op_assign(curr,xinfo,
+      -- zalo‘it pracovn¡ promˆnnou
+      a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+
+      -- Instance := Promˆnn 
+      a_list_append(bl^.bprolog,
+        b_make_cmd(curr,binfo,
+          x_make_op_assign(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar),
+            bl^.xvar)
+          )
+        );
+
+      -- if Instance <> NIL and then Instance^.@STATUS = STATUS_INITED then
+      --   Instance^.EXIT;
+      --   end if;
+      hidden_fields.a_make_test_status(curr,bl^.bprolog,binfo,xinfo,
+        -- precondition
+        x_make_op_ne(curr,xinfo,
           x_make_component_var(curr,xinfo,ptempvar),
-          bl^.xvar)
-        )
-      );
-
-    -- if Instance <> NIL and then Instance^.@STATUS = STATUS_INITED then
-    --   Instance^.EXIT;
-    --   end if;
-    a_list_append(bl^.bprolog,
-      b_make_if(curr,binfo,
+          x_make_imm_nil(curr,xinfo,ptempvar^.typ.getctype)
+          ),
+        -- instance
+        x_make_deref(curr,xinfo,
+          x_make_component_var(curr,xinfo,ptempvar)
+          ),
+        -- testovan˜ p©¡znak
+        csf_initialized,
+        -- sekvence p©¡kaz–
         b_make_list(
-          b_make_if_cond(curr,binfo,
-            x_make_op_and_then(curr,xinfo,
-              x_make_op_ne(curr,xinfo,
-                x_make_component_var(curr,xinfo,ptempvar),
-                x_make_imm_nil(curr,xinfo,ptempvar^.typ.getctype)
+          b_make_cmd(curr,binfo,
+            x_make_call_spec(curr,xinfo,tst_exit,nil,
+              x_make_deref(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar)
                 ),
-              x_make_op_eq(curr,xinfo,
-                x_make_component_selector(curr,xinfo,pstatus,
-                  x_make_deref(curr,xinfo,
-                    x_make_component_var(curr,xinfo,ptempvar)
-                    )
-                  ),
-                x_make_imm_uniint(curr,xinfo,cpu^.status_inited)
-                )
-              ),
-            b_make_list(
-              b_make_cmd(curr,binfo,
-                x_make_call_spec(curr,xinfo,tst_exit,nil,
-                  x_make_deref(curr,xinfo,
-                    x_make_component_var(curr,xinfo,ptempvar)
-                    ),
-                  nil
-                  )
-                ),
-              nulllist
+              nil
               )
             ),
           nulllist
           )
-        )
-      );
+        );
+      end declare;
     end if;
   end a_block_discard;
 

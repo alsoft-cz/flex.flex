@@ -5,21 +5,48 @@ module private exceptions =
 -- copyright (c) 1999-2003 a && l soft
 ----------------------------------------------------------------------------------------------------
 with
-    synchronization,
-    thread,
-    os_api;
+  synchronization,
+  thread,
+  os_api,
+  error;
+
+var
+  msg_unhandled      : static const string 22 of t_syschar := 'unhandled exception'\$0d\$0a\$0;
+#if rtl_debug_dump_on_exception then;
+  msg_raise          : static const string 18 of t_syschar := 'raise exception'\$0d\$0a\$0;
+  msg_reraise        : static const string 20 of t_syschar := 'reraise exception'\$0d\$0a\$0;
+  msg_raise_system   : static const string 25 of t_syschar := 'raise system exception'\$0d\$0a\$0;
+  msg_pending_system : static const string 27 of t_syschar := 'pending system exception'\$0d\$0a\$0;
+  msg_noncont_system : static const string 31 of t_syschar := 'noncontinue system exception'\$0d\$0a\$0;
+  msg_breakpoint     : static const string 21 of t_syschar := 'debuger breakpoint'\$0d\$0a\$0;
+  msg_discard        : static const string 20 of t_syschar := 'discard exception'\$0d\$0a\$0;
+  msg_memory         : static const string 29 of t_syschar := 'access violation exception'\$0d\$0a\$0;
+#end if;
+
+#if target_machine_can_be_multiprocesor then;
+#template lockbus; lock #end lockbus;
+#else;
+#template lockbus;#end lockbus;
+#end if;
+
 
 
 ----------------------------------------------------------------------------------------------------
 #template start_sequential;
 ----------------------------------------------------------------------------------------------------
-    inc    <t_rtl_unsigned32>[ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.issequential]
+    --inc    <t_rtl_unsigned32>[ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.issequential]
+    mov      edx,1
+    lockbus
+    xadd     [ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.issequential],edx
     #end start_sequential;
 
 ----------------------------------------------------------------------------------------------------
 #template end_sequential_notest;
 ----------------------------------------------------------------------------------------------------
-    dec    <t_rtl_unsigned32>[ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.issequential]
+    --dec    <t_rtl_unsigned32>[ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.issequential]
+    mov      edx,$FFFFFFFF
+    lockbus
+    xadd [ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.issequential],edx
     #end end_sequential_notest;
 
 ----------------------------------------------------------------------------------------------------
@@ -77,8 +104,8 @@ labelid:
 #template restore_ebp_esp_eax_jump (xframe);
 ----------------------------------------------------------------------------------------------------
     -- restore esp and ebp
-    mov    ebp,[xframe+t_rtl_except_frame.framebp]
-    mov    esp,[xframe+t_rtl_except_frame.framesp]
+    mov    ebp,[xframe+t_rtl_except_frame.frame_ebp]
+    mov    esp,[xframe+t_rtl_except_frame.frame_esp]
     mov    eax,[xframe+t_rtl_except_frame.handler]
     #end restore_ebp_esp_eax_jump;
 
@@ -181,7 +208,8 @@ procedure rtl_external_exception_handler=
 -- handle external exception with no sequential
 ----------------------------------------------------------------------------------------------------
 var
-    exceptions     : p_rtl_exceptions;
+  exceptions       : p_rtl_exceptions;
+
 begin
   #syntax asm;
     mov    ecx,fs:[t_winnt_tib.aruserpointer]                            -- get pointer to tib
@@ -205,10 +233,11 @@ procedure rtl_external_pending=
 -- handle external exception with sequential
 ----------------------------------------------------------------------------------------------------
 var
-    ecode          : t_rtl_unsigned32;
-    etag           : t_rtl_unsigned32;
-    edata          : t_rtl_unsigned32; 
-    exceptions     : p_rtl_exceptions;
+  ecode            : t_rtl_unsigned32;
+  etag             : t_rtl_unsigned32;
+  edata            : t_rtl_unsigned32; 
+  exceptions       : p_rtl_exceptions;
+
 begin
   #syntax asm;
     mov    ecx,fs:[t_winnt_tib.aruserpointer]                            -- get pointer to tib
@@ -262,6 +291,8 @@ procedure rtl_raise_exception =
 -- raises an exception.
 ----------------------------------------------------------------------------------------------------
 begin
+  rtl_debug_dump_exception(msg_raise,ecode,etag,edata);
+  rtl_debuger_break_exception;
   #syntax asm;
     get_xframe_stacktop
     start_sequential
@@ -280,6 +311,8 @@ procedure rtl_set_exception =
 -- sets an exception.
 ----------------------------------------------------------------------------------------------------
 begin
+  rtl_debug_dump_exception(msg_reraise,ecode,etag,edata);
+  rtl_debuger_break_exception;
   #syntax asm;
     get_xframe_stacktop
     start_sequential
@@ -310,11 +343,11 @@ begin
  -- mov    edx,0
  -- mov    [edi+t_rtl_except_frame.handler],edx            -- save handler
 
-    mov    [edi+t_rtl_except_frame.exceptbase],ebx         -- save exception stack top address
+    mov    [edi+t_rtl_except_frame.except_base],ebx        -- save exception stack top address
 
-    mov    [edi+t_rtl_except_frame.framebp],ebp            -- save frameebp
+    mov    [edi+t_rtl_except_frame.frame_ebp],ebp          -- save frameebp
     lea    edx,[esp+8]                                     -- eip and xframe addr. is pushed on the stack now
-    mov    [edi+t_rtl_except_frame.framesp],edx            -- save frameesp
+    mov    [edi+t_rtl_except_frame.frame_esp],edx          -- save frameesp
 
     -- set new xframe to tib
     mov    [ecx+t_rtl_exceptions_info.xframe],edi          -- push xframe address
@@ -337,7 +370,7 @@ begin
     mov    edi,[eax+t_rtl_except_frame.uplink]             -- get uplink xframe address
     mov    [ecx+t_rtl_exceptions_info.xframe],edi          -- update actual xframe address to uplink
 
-    mov    eax,[eax+t_rtl_except_frame.exceptbase]         -- get exception stack base adress
+    mov    eax,[eax+t_rtl_except_frame.except_base]        -- get exception stack base adress
     -- test active exception
     cmp    [ecx+t_rtl_exceptions_info.stacktop],eax
     -- jump end sequential
@@ -370,7 +403,7 @@ begin
 
     -- test exception pending in topmost xframe
     -- eax test exception on old xframe
-    mov    eax,[eax+t_rtl_except_frame.exceptbase]         -- get exception stack base adress
+    mov    eax,[eax+t_rtl_except_frame.except_base]        -- get exception stack base adress
     -- test active exception
     cmp    ebx,eax
     je     @1
@@ -391,7 +424,20 @@ begin
   end rtl_end_topmost_xframe;
 
 
-
+#if rtl_debug_dump_on_exception then;
+----------------------------------------------------------------------------------------------------
+procedure rtl_discard_exception_dump =
+----------------------------------------------------------------------------------------------------
+var
+    row            : p_rtl_except_row;
+begin
+  #syntax asm;
+    get_stacktop
+    mov row,ebx
+    #end asm;
+    rtl_debug_dump_exception(msg_discard,row^.ecode,row^.etag,row^.edata);
+  end rtl_discard_exception_dump;
+#end if;
 ----------------------------------------------------------------------------------------------------
 procedure rtl_discard_exception; 
 #pragma stackframe(rtl_discard_exception,stack_pointer_relative);
@@ -399,13 +445,16 @@ procedure rtl_discard_exception =
 -- discards currently raised exception.
 ----------------------------------------------------------------------------------------------------
 begin
+#if rtl_debug_dump_on_exception then;
+  rtl_discard_exception_dump;
+#end if;
   #syntax asm;
     get_xframe_stacktop
     start_sequential
     free_estackrow
     end_sequential_m(@12)
     mov    eax,[ecx+t_rtl_exceptions_info.xframe]          -- get xframe address
-    cmp    [eax+t_rtl_except_frame.exceptbase],ebx         -- test base=stacktop, output in eflags.zf
+    cmp    [eax+t_rtl_except_frame.except_base],ebx        -- test base=stacktop, output in eflags.zf
     #end asm;
   end rtl_discard_exception;
 
@@ -420,7 +469,7 @@ procedure rtl_check_exception =
 begin
   #syntax asm;                                             -- input tag in eax
     get_xframe_stacktop
-    cmp    [eax+t_rtl_except_frame.exceptbase],ebx         -- test base=stacktop, output in eflags.zf
+    cmp    [eax+t_rtl_except_frame.except_base],ebx        -- test base=stacktop, output in eflags.zf
     #end asm;
   end rtl_check_exception;
 
@@ -464,11 +513,8 @@ begin
 procedure rtl_terminate_unhandled_exception =
 -- unhandled exception handler.
 ----------------------------------------------------------------------------------------------------
-var
-  msg : static const string 20 of t_syschar := 'unhandled exception'\0;
-
 begin
-  rtl_error_write(msg);
+  rtl_error_write(msg_unhandled);
   --%%TODO terminate child threads ?
   rtl_terminate_thread;
   end rtl_terminate_unhandled_exception;
@@ -479,7 +525,10 @@ begin
 procedure rtl_raise_unhandled_exception=
 ----------------------------------------------------------------------------------------------------
 begin
-  seh.rtl_raise_system_exception(ecode,etag,edata);
+  rtl_debug_dump_exception(msg_unhandled,ecode,etag,edata);
+  rtl_debuger_break_exception;
+  seh.rtl_pop_task_exceptions_win32;
+  seh.rtl_raise_system_exception(false,ecode,etag,edata);
   end rtl_raise_unhandled_exception;
 
 
@@ -528,4 +577,5 @@ begin
 #pragma assign(begin_sequential   ,flex.exceptions.rtl_begin_sequential);
 #pragma assign(end_sequential     ,flex.exceptions.rtl_end_sequential);
 ----------------------------------------------------------------------------------------------------
+
 end exceptions;

@@ -1,0 +1,522 @@
+----------------------------------------------------------------------------------------------------
+-- ABA referecne counting pointer and item
+----------------------------------------------------------------------------------------------------
+const
+  prime_smaller_than_16_bit_unsigned = 65521;
+  max_thread_locks_on_pointer        =  $1000;
+  lock_pointer_base                  = $10000;
+  lock_thread_base                   =      1;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_abaref_compare_exchange(
+    locked_value   : in p_rtl_abaref_pointer;
+    new_value      : in t_rtl_abaref_pointer;
+    when_locked_eq : in t_rtl_abaref_pointer;
+    old_value      : out t_rtl_abaref_pointer);
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_copy_pointer_both(
+    target_pointer : in out ref t_rtl_abaref_pointer;  -- shared interlocked 
+    when_tg_eq     : in p_rtl_abaref_pointer;          -- nil allowed 
+    source_pointer : in out ref t_rtl_abaref_pointer;  -- shared interlocked 
+    when_sc_eq     : in p_rtl_abaref_pointer;          -- nil allowed 
+    new_target     : in p_rtl_abaref_pointer;          -- nil allowed 
+    success        : out t_rtl_logical8);
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_copy_pointer_target(
+    target_pointer : in out ref t_rtl_abaref_pointer;  -- shared interlocked 
+    when_tg_eq     : in p_rtl_abaref_pointer;          -- nil allowed 
+    source_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
+    new_target     : in p_rtl_abaref_pointer;          -- nil allowed 
+    success        : out t_rtl_logical8);
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_copy_pointer_source(
+    target_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
+    source_pointer : in out ref t_rtl_abaref_pointer;  -- shared interlocked 
+    when_sc_eq     : in p_rtl_abaref_pointer;          -- nil allowed 
+    success        : out t_rtl_logical8);
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_copy_pointer_none(
+    target_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
+    source_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
+    success        : out t_rtl_logical8);
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_discard(
+    target_pointer : in out ref t_rtl_abaref_pointer;  -- thread private
+    success        : out t_rtl_logical8);
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_new(
+    node           : out ref t_rtl_abaref_pointer
+)=
+----------------------------------------------------------------------------------------------------
+begin
+  node:=nil;
+  new node.ptr;
+  node.ptr^.refcount:=lock_pointer_base;
+  end rtl_abaref_new;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_destroy(
+    node           : in out p_rtl_abaref_item
+)=
+----------------------------------------------------------------------------------------------------
+begin
+  if node^.refcount<>0 then
+    raise synchronization_error;
+    end if;
+  discard node;
+  node:=nil;
+  end rtl_abaref_destroy;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_incref(
+    node           : in out p_rtl_abaref_item;   -- [in] musi byt zamknuto pomoci rtl_abaref_incref,  [out]<>nil muze byt uvolneno
+    count          : t_rtl_native_signed
+    ) =    
+----------------------------------------------------------------------------------------------------
+var
+  oldref           : t_rtl_native_signed;
+
+begin
+  if node<>nil then
+    rtl_interlocked_exchange_add(^node^.refcount,count,oldref);
+    end if;
+  end rtl_abaref_incref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_decref(
+    node           : in out p_rtl_abaref_item;   -- [in] musi byt zamknuto pomoci rtl_abaref_incref,  [out]<>nil muze byt uvolneno
+    count          : t_rtl_native_signed
+    ) =    
+----------------------------------------------------------------------------------------------------
+var
+  oldref           : t_rtl_native_signed;
+
+begin
+  if node<>nil then
+    rtl_interlocked_exchange_add(^node^.refcount, -count,oldref);
+    if oldref-count=0 then
+      rtl_abaref_destroy(node);
+      end if;
+    node:=nil;
+    end if;
+  end rtl_abaref_decref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_incref_ptr(
+    locked_pointer : in out ref t_rtl_abaref_pointer;
+    when_old_eq    : in out ref t_rtl_abaref_pointer;
+    count          : t_rtl_signed16;
+    success        : out t_rtl_logical8
+    ) =
+----------------------------------------------------------------------------------------------------
+var
+  newpointer       : t_rtl_abaref_pointer;
+  oldpointer       : t_rtl_abaref_pointer;
+  
+begin
+  loop
+    if locked_pointer.ptr<>when_old_eq.ptr or locked_pointer.abacount<>when_old_eq.abacount then
+      success:=false;
+      return;
+      end if;
+    when_old_eq.refcount:=locked_pointer.refcount;
+    newpointer:=when_old_eq;
+    newpointer.refcount:=newpointer.refcount + count;
+    rtl_interlocked_abaref_compare_exchange(^locked_pointer,
+                                            newpointer,
+                                            when_old_eq,
+                                            oldpointer);
+    if oldpointer=when_old_eq then
+      when_old_eq.refcount:=newpointer.refcount;
+      if newpointer.refcount>max_thread_locks_on_pointer then
+        -- uz je prilis mnoho napocitano v docasnem pocitadle na pointeru
+        -- takze odeberu z pointeru vsechny krome posledni a presunu je na node
+        rtl_abaref_incref(newpointer.ptr,when_old_eq.refcount-1);
+        newpointer.refcount:=1;
+        rtl_interlocked_abaref_compare_exchange(^locked_pointer,
+                                                newpointer,
+                                                when_old_eq,
+                                                oldpointer);
+        if oldpointer<>when_old_eq then
+          -- zmenil se pointer, takze uz to nekdo udelal
+          rtl_abaref_decref(newpointer.ptr,when_old_eq.refcount-1);
+          when_old_eq.refcount:=1;
+          end if;
+        end if;
+      success:=true;
+      return;
+      end if;
+    end loop;
+  end rtl_abaref_incref_ptr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_copy_pointer_both =
+----------------------------------------------------------------------------------------------------
+var
+    old_tg         : t_rtl_abaref_pointer;
+    old_sc         : t_rtl_abaref_pointer;
+    newtemp        : t_rtl_abaref_pointer;
+    oldtemp        : t_rtl_abaref_pointer;
+
+begin
+  -- get comparands
+  if when_tg_eq=nil then
+    old_tg:=target_pointer;
+  else
+    old_tg:=when_tg_eq^;
+    end if;
+
+  -- get comparands
+  if when_sc_eq=nil then
+    old_sc:=source_pointer;
+  else
+    old_sc:=when_sc_eq^;
+    end if;
+
+  -- lock old tg node by thread
+  if old_tg.ptr<>nil then
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    if not success then
+      return;
+      end if;
+    end if;
+
+  -- lock source node by thread
+  if old_sc.ptr<>nil then
+    rtl_abaref_incref_ptr(source_pointer,old_sc,lock_thread_base,success);
+    if not success then
+      -- unlock all locked nodes
+      if old_tg.ptr<>nil then
+        rtl_abaref_decref(old_tg.ptr,lock_thread_base);
+        end if;
+      return;
+      end if;
+
+    -- lock source pointer by potential link
+    rtl_abaref_incref(old_sc.ptr,lock_pointer_base);
+    end if;
+
+
+  newtemp.ptr:=old_sc.ptr;
+  newtemp.refcount:=0;
+  newtemp.abacount:=old_tg.abacount + 1;
+  if newtemp.abacount>=prime_smaller_than_16_bit_unsigned then
+    -- modularni podle prvocisla
+    newtemp.abacount - prime_smaller_than_16_bit_unsigned;
+    end if;
+
+  --zkusim jestli se mi nepodari sebrat si tento node a nebo ho nesebere nekdo jiny
+  loop
+    old_tg.refcount:=target_pointer.refcount;
+    rtl_interlocked_abaref_compare_exchange(^target_pointer,newtemp,old_tg,oldtemp);
+
+    if oldtemp.ptr=old_tg.ptr and oldtemp.abacount=old_tg.abacount and oldtemp.refcount<>old_tg.refcount then
+      -- pokud se zmenilo pouze pocitadlo referenci , prizpusobim se a zkusim to znova
+      -- old_tg.refcount:=target_pointer.refcount;
+    else
+      --bud se mi to povedlo nebo uz to vymenil nekdo jiny
+      success:=(oldtemp.ptr=old_tg.ptr and oldtemp.abacount=old_tg.abacount);
+      break;
+      end if;
+    end loop;
+
+  if not success then
+    -- unlock all locked nodes
+    if old_tg.ptr<>nil then
+      rtl_abaref_decref(old_tg.ptr,lock_thread_base);
+      end if;
+    if old_sc.ptr<>nil then
+      rtl_abaref_decref(old_sc.ptr,lock_thread_base+lock_pointer_base);
+      end if;
+    return;
+    end if;
+  
+  if new_target<>nil then
+    new_target^:=newtemp;
+    end if;
+
+  if old_tg.ptr<>nil then
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    end if;
+  if old_sc.ptr<>nil then
+    rtl_abaref_decref(old_sc.ptr,lock_thread_base);
+    end if;
+  end rtl_abaref_copy_pointer_both;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_copy_pointer_target =
+----------------------------------------------------------------------------------------------------
+var
+    old_tg         : t_rtl_abaref_pointer;
+    old_sc         : t_rtl_abaref_pointer;
+    newtemp        : t_rtl_abaref_pointer;
+    oldtemp        : t_rtl_abaref_pointer;
+
+begin
+  -- get comparands
+  if when_tg_eq=nil then
+    old_tg:=target_pointer;
+  else
+    old_tg:=when_tg_eq^;
+    end if;
+
+  -- get comparands
+  old_sc:=source_pointer;
+
+  -- lock old tg node by thread
+  if old_tg.ptr<>nil then
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    if not success then
+      return;
+      end if;
+    end if;
+
+  -- lock source pointer by potential link
+  if old_sc.ptr<>nil then
+    rtl_abaref_incref(old_sc.ptr,lock_pointer_base);
+    end if;
+
+
+  newtemp.ptr:=old_sc.ptr;
+  newtemp.refcount:=0;
+  newtemp.abacount:=old_tg.abacount + 1;
+  if newtemp.abacount>=prime_smaller_than_16_bit_unsigned then
+    -- modularni podle prvocisla
+    newtemp.abacount - prime_smaller_than_16_bit_unsigned;
+    end if;
+
+  --zkusim jestli se mi nepodari sebrat si tento node a nebo ho nesebere nekdo jiny
+  loop
+    old_tg.refcount:=target_pointer.refcount;
+    rtl_interlocked_abaref_compare_exchange(^target_pointer,newtemp,old_tg,oldtemp);
+
+    if oldtemp.ptr=old_tg.ptr and oldtemp.abacount=old_tg.abacount and oldtemp.refcount<>old_tg.refcount then
+      -- pokud se zmenilo pouze pocitadlo referenci , prizpusobim se a zkusim to znova
+      -- old_tg.refcount:=target_pointer.refcount;
+    else
+      --bud se mi to povedlo nebo uz to vymenil nekdo jiny
+      success:=(oldtemp.ptr=old_tg.ptr and oldtemp.abacount=old_tg.abacount);
+      break;
+      end if;
+    end loop;
+
+  if not success then
+    -- unlock all locked nodes
+    if old_tg.ptr<>nil then
+      rtl_abaref_decref(old_tg.ptr,lock_thread_base);
+      end if;
+    if old_sc.ptr<>nil then
+      rtl_abaref_decref(old_sc.ptr,lock_pointer_base);
+      end if;
+    return;
+    end if;
+  
+  if new_target<>nil then
+    new_target^:=newtemp;
+    end if;
+
+  if old_tg.ptr<>nil then
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    end if;
+  end rtl_abaref_copy_pointer_target;
+
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_copy_pointer_source =
+----------------------------------------------------------------------------------------------------
+var
+    old_tg         : t_rtl_abaref_pointer;
+    old_sc         : t_rtl_abaref_pointer;
+    newtemp        : t_rtl_abaref_pointer;
+    oldtemp        : t_rtl_abaref_pointer;
+
+begin
+  -- get comparands
+  old_tg:=target_pointer;
+
+  -- get comparands
+  if when_sc_eq=nil then
+    old_sc:=source_pointer;
+  else
+    old_sc:=when_sc_eq^;
+    end if;
+
+  -- lock old tg node by thread
+  if old_tg.ptr<>nil then
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    if not success then
+      return;
+      end if;
+    end if;
+
+  -- lock source node by thread
+  if old_sc.ptr<>nil then
+    rtl_abaref_incref_ptr(source_pointer,old_sc,lock_thread_base,success);
+    if not success then
+      -- unlock all locked nodes
+      if old_tg.ptr<>nil then
+        rtl_abaref_decref(old_tg.ptr,lock_thread_base);
+        end if;
+      return;
+      end if;
+
+    -- lock source pointer by potential link
+    rtl_abaref_incref(old_sc.ptr,lock_pointer_base);
+    end if;
+
+
+  oldtemp.refcount:=target_pointer.refcount;
+  success:=true;
+
+  target_pointer.ptr:=old_sc.ptr;
+  target_pointer.refcount:=0;
+  target_pointer.abacount:=old_tg.abacount + 1;
+  if target_pointer.abacount>=prime_smaller_than_16_bit_unsigned then
+    -- modularni podle prvocisla
+    target_pointer.abacount - prime_smaller_than_16_bit_unsigned;
+    end if;
+
+  if old_tg.ptr<>nil then
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    end if;
+  if old_sc.ptr<>nil then
+    rtl_abaref_decref(old_sc.ptr,lock_thread_base);
+    end if;
+  end rtl_abaref_copy_pointer_source;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_copy_pointer_none =
+----------------------------------------------------------------------------------------------------
+var
+    old_tg         : t_rtl_abaref_pointer;
+    old_sc         : t_rtl_abaref_pointer;
+    newtemp        : t_rtl_abaref_pointer;
+    oldtemp        : t_rtl_abaref_pointer;
+
+begin
+  -- get comparands
+  old_tg:=target_pointer;
+
+  -- get comparands
+  old_sc:=source_pointer;
+
+  -- lock old tg node by thread
+  if old_tg.ptr<>nil then
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    if not success then
+      return;
+      end if;
+    end if;
+
+  -- lock source pointer by potential link
+  if old_sc.ptr<>nil then
+    rtl_abaref_incref(old_sc.ptr,lock_pointer_base);
+    end if;
+
+  oldtemp.refcount:=target_pointer.refcount;
+  success:=true;
+
+  target_pointer.ptr:=old_sc.ptr;
+  target_pointer.refcount:=0;
+  target_pointer.abacount:=old_tg.abacount + 1;
+  if target_pointer.abacount>=prime_smaller_than_16_bit_unsigned then
+    -- modularni podle prvocisla
+    target_pointer.abacount - prime_smaller_than_16_bit_unsigned;
+    end if;
+
+  if old_tg.ptr<>nil then
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    end if;
+  end rtl_abaref_copy_pointer_none;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_abaref_discard =
+----------------------------------------------------------------------------------------------------
+var
+    old_tg         : t_rtl_abaref_pointer;
+    old_sc         : t_rtl_abaref_pointer;
+    newtemp        : t_rtl_abaref_pointer;
+    oldtemp        : t_rtl_abaref_pointer;
+
+begin
+  -- get comparands
+  old_tg:=target_pointer;
+
+  -- get comparands
+  old_sc:=nil;
+
+  -- lock old tg node by thread
+  if old_tg.ptr<>nil then
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    if not success then
+      return;
+      end if;
+    end if;
+
+  oldtemp.refcount:=target_pointer.refcount;
+  success:=true;
+
+  target_pointer.ptr:=old_sc.ptr;
+  target_pointer.refcount:=0;
+  target_pointer.abacount:=old_tg.abacount + 1;
+  if target_pointer.abacount>=prime_smaller_than_16_bit_unsigned then
+    -- modularni podle prvocisla
+    target_pointer.abacount - prime_smaller_than_16_bit_unsigned;
+    end if;
+
+  if old_tg.ptr<>nil then
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    end if;
+  end rtl_abaref_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_interlocked_abaref_compare_exchange =
+----------------------------------------------------------------------------------------------------
+begin
+  -- This is a larger and more unwieldy version of CMPXCHG: 
+  -- it compares the 64-bit (eight-byte) value stored at [mem] 
+  -- with the value in EDX:EAX. If they are equal, it sets the 
+  -- zero flag and stores ECX:EBX into the memory area. 
+  -- If they are unequal, it clears the zero flag and leaves 
+  -- the memory area untouched.
+  #syntax asm;
+    mov            esi,locked_value                               --address
+    mov            eax,when_locked_eq
+    mov            edx,[eax].t_rtl_abaref_pointer.refcount        --compare
+    mov            eax,[eax].t_rtl_abaref_pointer.ptr             --compare
+    mov            ecx,new_value
+    mov            ebx,[ecx].t_rtl_abaref_pointer.ptr             --exchange
+    mov            ecx,[ecx].t_rtl_abaref_pointer.refcount        --exchange
+    --lockbus
+    insert         $F0
+    --cmpxchg8b <t_rtl_double_native_unsigned>[esi]
+    insert         $0F
+    insert         $C7 
+    insert         $0E
+    mov            ecx,old_value
+    mov            [ecx].t_rtl_abaref_pointer.refcount,edx        --result
+    mov            [ecx].t_rtl_abaref_pointer.ptr,eax             --result
+    #end asm;
+  end rtl_interlocked_abaref_compare_exchange;

@@ -126,6 +126,47 @@ leave
 
 
 ----------------------------------------------------------------------------------------------------
+procedure addraise =  
+-- Vygeneruje volani jazykem definovane vyjimky bez parametru
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_rtl;
+
+var
+  op_msg_num      : c_operand;
+  entity_message  : pentity_message;
+
+begin
+  -- vyjimka bez parametru - pushnout NIL
+  addii(inst,info,ii_push,op_0,op0,op0);
+
+  -- zjistit vyjimku
+  rtl_get_entity(msg,entity_message);
+
+  verify(683,entity_message=nil);
+
+  -- vytvor cislo vyjimky (resolvne se behem linkovani)
+  op_msg_num.create_imm(edt_unsigned,0,0);
+  op_msg_num.set_relo_entity(entity_message);
+  
+  -- a pushnout cislo vyjimky
+  addii(inst,info,ii_push,op_msg_num,op0,op0);
+  
+  -- tag
+  -- %%TODO(TAG)
+  addii(inst,info,ii_push,op_0,op0,op0);
+
+  -- a zavolat zvedator vyjimek
+  addcallrtl(inst,info,context,rtl_raise_exception);
+
+leave
+  op_msg_num.free(info,context);
+
+  end addraise;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure addcall =
 -- P©id  vol n¡ podprogramu.
 ----------------------------------------------------------------------------------------------------
@@ -399,7 +440,7 @@ begin
                        --and (op.imm>=-32768) and (op.imm<=65535)));
     when op_imm32    do result:=(op.optype=io_imm) and ((op.size=4) or (op.size=0));
     when op_imm8s    do result:=(op.optype=io_imm) and ((op.size=1) or ((op.size=0)
-                         and (op.rtype=irt_none){(op.psym=nil)})) 
+                         and (op.relo_info.rtype=irt_none){(op.psym=nil)})) 
                          and imm32_signed_ge(op.imm,-128) and imm32_signed_le(op.imm,127);
                        --and (op.psym=nil))) and (op.imm>=-128) and (op.imm<=127);
     when op_rm8      do result:=(op.optype in t_operand_type_set:[io_reg,io_mem]) and (op.size=1);
@@ -493,14 +534,15 @@ begin
           end if;
         if op.disp<>timm32(0) then s & signed_to_string(imm32_to_signed(op.disp),true); end if;
         if s<>'' then s:="[" & s & "]"; end if;
-        case op.rtype
-          when irt_none   do ;
-          when irt_entity do
-              if pentity(op.rentity)^.etype=et_type
+        case op.relo_info.rtype
+          when irt_none      do ;
+          when irt_entity    do
+              if pentity(op.relo_info.rentity)^.etype=et_type
                 then s:='(tag) ' & s;
-                else s:="[" & entityident_to_string(pentity(op.rentity)^.id^) & "]" & s;
+                else s:="[" & entityident_to_string(pentity(op.relo_info.rentity)^.id^) & "]" & s;
                 end if;
-          when irt_imm    do s:='(imm) ' & s;
+          when irt_imm       do s:='(imm) ' & s;
+          when irt_interface do s:='(fake tag) ' & s;
           when others do verify(200,true);
           end case;
         result:="<" & unsigned_to_string(op.size) & '> ' & s;
@@ -509,14 +551,15 @@ begin
         if op.disp_target<>iunknowntarget
           then result:='label ' & unsigned_to_string(op.disp_target)
           else
-            case op.rtype
-              when irt_none   do result:='offset ' & signed_to_string(imm32_to_signed(op.rel),true);
-              when irt_entity do
-                  if pentity(op.rentity)^.etype=et_type
-                    then result:='offset tag ' & sym_get_qid(pentity(op.rentity));
-                    else result:='offset ' & sym_get_qid(pentity(op.rentity));
+            case op.relo_info.rtype
+              when irt_none      do result:='offset ' & signed_to_string(imm32_to_signed(op.rel),true);
+              when irt_entity    do
+                  if pentity(op.relo_info.rentity)^.etype=et_type
+                    then result:='offset tag ' & sym_get_qid(pentity(op.relo_info.rentity));
+                    else result:='offset ' & sym_get_qid(pentity(op.relo_info.rentity));
                     end if;
-              when irt_imm    do result:='offset imm ' & signed_to_string(imm32_to_signed(op.rel),true);
+              when irt_imm       do result:='offset imm ' & signed_to_string(imm32_to_signed(op.rel),true);
+              when irt_interface do result:='(fake tag)';
               when others do verify(201,true);
               end case;
             end if;
@@ -540,8 +583,8 @@ var
   sh1              : t_logical;                  -- shoda operandu a adresn¡ho re‘imu 1
   sh2              : t_logical;                  -- shoda operandu a adresn¡ho re‘imu 2
   sh3              : t_logical;                  -- shoda operandu a adresn¡ho re‘imu 3
-  modrm            : t_unsigned8;                -- ModR/M
-  sib              : t_unsigned8;                -- SIB
+  modrm            : t_code_byte;                -- ModR/M
+  sib              : t_code_byte;                -- SIB
   disp             : timm32;                     -- posunut¡
   imm1             : timm32;                     -- p©¡m  hodnota 1
   imm2             : timm32;                     -- p©¡m  hodnota 2
@@ -565,7 +608,7 @@ var
         useimm     : out t_unsigned8) =
     ------------------------------------------------------------------------------------------------
     var
-      scale        : const array 0..8 of t_unsigned8 := [0,0,$40,0,$80,0,0,0,$C0];
+      scale        : const array 0..8 of t_code_byte := [0,0,$40,0,$80,0,0,0,$C0];
 
     begin
       case op.optype
@@ -626,7 +669,7 @@ var
                 usemodrm:=true;
                 sib:=scale[op.scale] or (iregcode[op.index.reg] shl 3) or iregcode[op.base.reg];
                 withib:=true;
-                if op.disp<>timm32(0) or (op.rtype<>irt_none{op.psym<>nil}) or (op.base.reg=ir_ebp) then
+                if op.disp<>timm32(0) or (op.relo_info.rtype<>irt_none{op.psym<>nil}) or (op.base.reg=ir_ebp) then
                   modrm:=modrm or $80;
                   disp:=op.disp;
                   usedisp:=4;
@@ -637,7 +680,7 @@ var
                 usemodrm:=true;
                 sib:=scale[op.scale] or (iregcode[op.index.reg] shl 3) or $05;
                 withib:=true;
-                if op.disp<>timm32(0) or (op.rtype<>irt_none{op.psym<>nil}) then
+                if op.disp<>timm32(0) or (op.relo_info.rtype<>irt_none{op.psym<>nil}) then
                   --modrm:=modrm or $80;
                   disp:=op.disp;
                   usedisp:=4;
@@ -654,7 +697,7 @@ var
                     modrm:=modrm or iregcode[op.base.reg];
                     usemodrm:=true;
                     end if;
-                if op.disp<>timm32(0) or (op.rtype<>irt_none{op.psym<>nil}) or (op.base.reg=ir_ebp) then
+                if op.disp<>timm32(0) or (op.relo_info.rtype<>irt_none{op.psym<>nil}) or (op.base.reg=ir_ebp) then
                   modrm:=modrm or $80;
                   disp:=op.disp;
                   usedisp:=4;
@@ -691,14 +734,14 @@ var
         _size      : in t_unsigned) =
     ------------------------------------------------------------------------------------------------
     var
-      val          : t_unsigned;
+      val          : t_mod_unsigned;
       size         : t_unsigned;
 
     begin
-      val:=_val;
+      val:=t_mod_unsigned(_val);
       size:=_size;
       while size>0 loop
-        inst.c^ & t_unsigned8(val and $FF);
+        inst.c^ & t_code_byte(val and $FF);
         val shr 8;
         pred size;
         end loop;
@@ -779,7 +822,7 @@ begin
          else verify(638,true);
          end if;
     when x_0..x_7 do
-        modrm:=modrm or ((iopcodemap[kod].ex:ord-x_0:ord) shl 3);
+        modrm:=modrm or (t_code_byte(iopcodemap[kod].ex:ord-x_0:ord) shl 3);
         usemodrm:=true;
     end case;
 
@@ -820,24 +863,24 @@ begin
   info.isize:=inst.c^:length-info.iip;
 
   -- doplnit p©¡padnou glob ln¡ relokaci
-  if op1.rtype<>irt_none{op1.psym<>nil} then
-    if ((op1.rtype=irt_entity) and (pentity(op1.rentity)^.etype in ets_disp) and (op1.optype<>io_imm))
-    or ((op1.rtype=irt_imm) and (op1.optype<>io_imm))
-      then addrelo(inst,op1.rtype,op1.rentity,op1.rexpr,inst.c^:length{-1},info.iip+info.idisp,op1.optype<>io_rel{op1.rtype=irt_imm})
-      else addrelo(inst,op1.rtype,op1.rentity,op1.rexpr,inst.c^:length{-1},info.iip+info.iimm1,op1.optype<>io_rel{op1.rtype=irt_imm});
+  if op1.relo_info.rtype<>irt_none{op1.psym<>nil} then
+    if ((op1.relo_info.rtype=irt_entity) and (pentity(op1.relo_info.rentity)^.etype in ets_disp) and (op1.optype<>io_imm))
+    or ((op1.relo_info.rtype=irt_imm) and (op1.optype<>io_imm))
+      then addrelo(inst,op1.relo_info,inst.c^:length{-1},info.iip+info.idisp,op1.optype<>io_rel{op1.rtype=irt_imm})
+      else addrelo(inst,op1.relo_info,inst.c^:length{-1},info.iip+info.iimm1,op1.optype<>io_rel{op1.rtype=irt_imm});
       end if;
   else
     -- Ondra 1.7.2003 : Tato kontrola nen¡ opr vnˆn , absolutn¡ adresa je naprosto leg ln¡
     --verify(631,op1.optype=io_mem and op1.base.reg=ir_none and op1.index.reg=ir_none);
     end if;
-  if op2.rtype<>irt_none{op2.psym<>nil} then
-    if ((op2.rtype=irt_entity) and (pentity(op2.rentity)^.etype in ets_disp) and (op2.optype<>io_imm))
-    or ((op2.rtype=irt_imm) and (op2.optype<>io_imm))
-      then addrelo(inst,op2.rtype,op2.rentity,op2.rexpr,inst.c^:length{-1},info.iip+info.idisp,op2.optype<>io_rel{op2.rtype=irt_imm})
+  if op2.relo_info.rtype<>irt_none{op2.psym<>nil} then
+    if ((op2.relo_info.rtype=irt_entity) and (pentity(op2.relo_info.rentity)^.etype in ets_disp) and (op2.optype<>io_imm))
+    or ((op2.relo_info.rtype=irt_imm) and (op2.optype<>io_imm))
+      then addrelo(inst,op2.relo_info,inst.c^:length{-1},info.iip+info.idisp,op2.optype<>io_rel{op2.rtype=irt_imm})
       else
         if useimm2>0
-          then addrelo(inst,op2.rtype,op2.rentity,op2.rexpr,inst.c^:length{-1},info.iip+info.iimm2,op2.optype<>io_rel{op2.rtype=irt_imm});
-          else addrelo(inst,op2.rtype,op2.rentity,op2.rexpr,inst.c^:length{-1},info.iip+info.iimm1,op2.optype<>io_rel{op2.rtype=irt_imm});
+          then addrelo(inst,op2.relo_info,inst.c^:length{-1},info.iip+info.iimm2,op2.optype<>io_rel{op2.rtype=irt_imm});
+          else addrelo(inst,op2.relo_info,inst.c^:length{-1},info.iip+info.iimm1,op2.optype<>io_rel{op2.rtype=irt_imm});
           end if;
         end if;
   else
@@ -851,7 +894,7 @@ begin
   elsif op1.optype=io_imm and op1.disp_target<>iunknowntarget then 
     addunres(info,op1.disp_target,inst.c^:length,info.iip+info.iimm1,useimm1{op1.size},true);
   else
-    verify(633,op1.optype=io_rel and op1.rtype=irt_none and op1.target=iunknowntarget and op1.disp_target=iunknowntarget and op1.rel=timm32(0));
+    verify(633,op1.optype=io_rel and op1.relo_info.rtype=irt_none and op1.target=iunknowntarget and op1.disp_target=iunknowntarget and op1.rel=timm32(0));
     end if;
   if (op2.optype=io_rel) and (op2.target<>iunknowntarget) then
     addunres(info,op2.target,inst.c^:length{-1},info.iip+info.idisp,usedisp{op2.size},false);
@@ -861,7 +904,7 @@ begin
       else addunres(info,op2.disp_target,inst.c^:length,info.iip+info.iimm1,useimm1{op2.size},true);
       end if;
   else
-    verify(634,op2.optype=io_rel and op2.rtype=irt_none and op2.target=iunknowntarget and op2.disp_target=iunknowntarget and op2.rel=timm32(0));
+    verify(634,op2.optype=io_rel and op2.relo_info.rtype=irt_none and op2.target=iunknowntarget and op2.disp_target=iunknowntarget and op2.rel=timm32(0));
     end if;
   end addii;
 

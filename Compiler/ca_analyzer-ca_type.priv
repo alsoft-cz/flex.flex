@@ -139,7 +139,7 @@ begin
         b_make_cmd(pproc_context,binfo,
           x_make_op_assign(pproc_context,xinfo,
             x_make_component_var(pproc_context,xinfo,pvar),
-            x_make_imm(pproc_context,xinfo,^typ,typ.init.getimm^,iek_none)
+            x_make_imm(pproc_context,xinfo,^typ,typ.init.getimm^,iek_imm)
             )
           )
         );
@@ -156,59 +156,90 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure a_type_class_entry =
+procedure a_type_class_entry_internal (
+    curr           : in tcontext;                -- kontext          
+    prefix         : in pprefixproc;             -- gener tor prefixu
+    data           : in unchecked;               -- dopl¤uj¡c¡ £daje pro gener tor
+    ptyp           : in pentity_type;            -- typ promˆnn‚ (t©¡da)
+    list           : in out bllist;              -- seznam p©¡kaz–
+    binfo          : in blinfo;                  -- kontext generov n¡ p©¡kaz–
+    xinfo          : in expinfo;                 -- kontext generov n¡ v˜razu
+    init_status    : in t_class_status_field;    -- po‡ te‡n¡ hodnota pole @STATUS
+    x_tag          : in pexpnode) =              -- v˜raz reprezentuj¡c¡ tag typu
 -- Inicializace instance t©¡dy a vol n¡ ENTRY.
 ----------------------------------------------------------------------------------------------------
 var
-  srch             : tentitysearch;              -- hled tko
-  ptag             : pentity_var;                -- slo‘ka @TAG
-  pstatus          : pentity_var;                -- slo‘ka @STATUS
+  hidden_fields    : c_class_hidden_field_helper;-- manipul tor se skryt˜mi slo‘kami
 
 begin
   verify(563,ptyp^.etype<>et_class);
 
-  -- naj¡t intern¡ slo‘ky @TAG a @STATUS
-  srch.find_local(sym_primary_context(ptyp^),id_int_tag   ,etvs_all); ptag   :=pentity_var(srch.psym);
-  srch.find_local(sym_primary_context(ptyp^),id_int_status,etvs_all); pstatus:=pentity_var(srch.psym);
-  verify(564,(ptag=nil) or (pstatus=nil));
+  -- inicializovat manipul tor se skryt˜mi slo‘kami
+  hidden_fields.set_context(sym_primary_context(ptyp^));
 
-  -- Instance.@TAG := typ:tag
-  a_list_append(list,
-    b_make_cmd(curr,binfo,
-      x_make_op_assign(curr,xinfo,
-        x_make_component_selector(curr,xinfo,ptag,
-          prefix^(curr,data,ptyp,xinfo) {x_make_component_var(curr,xinfo,pvar)}
-          ),
-        x_make_attribute(curr,xinfo,atc_static,atf_tag,ata_type_tag{ata_expr_tag},inttype_tag,
-          x_make_component_type(curr,xinfo,ptyp)
-          )
-        )
-      )
-    );
+  -- Instance.@TAG := <Typ:tag nebo fake tag interfacu>
+  hidden_fields.a_make_set_tag(curr,list,binfo,xinfo,
+      -- instance
+      prefix^(curr,data,ptyp,xinfo),
+      -- hodnota pole @TAG
+      x_tag
+      );
+
+  -- Instance.@STATUS := <init_status>
+  hidden_fields.a_make_set_status(curr,list,binfo,xinfo,
+      -- instance
+      prefix^(curr,data,ptyp,xinfo),
+      -- po‡ te‡n¡ hodnota pole @STATUS
+      init_status
+      );
 
   -- Instance.ENTRY
   a_list_append(list,
     b_make_cmd(curr,binfo,
       x_make_call_spec(curr,xinfo,tst_entry,nil,
-        prefix^(curr,data,ptyp,xinfo) {x_make_component_var(curr,xinfo,pvar)},
+        prefix^(curr,data,ptyp,xinfo),
         nil
         )
       )
     );
 
-  -- Instance.@STATUS := STATUS_INITED
-  a_list_append(list,
-    b_make_cmd(curr,binfo,
-      x_make_op_assign(curr,xinfo,
-        x_make_component_selector(curr,xinfo,pstatus,
-          prefix^(curr,data,ptyp,xinfo) {x_make_component_var(curr,xinfo,pvar)}
-          ),
-        x_make_imm_uniint(curr,xinfo,cpu^.status_inited)
+  -- Instance.@STATUS + [ <inicializov no> ]
+  hidden_fields.a_make_add_status(curr,list,binfo,xinfo,
+      -- instance
+      prefix^(curr,data,ptyp,xinfo),
+      -- po‡ te‡n¡ hodnota pole @STATUS
+      csf_initialized
+      );
+  end a_type_class_entry_internal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_class_entry =
+-- Inicializace instance t©¡dy a vol n¡ ENTRY.
+----------------------------------------------------------------------------------------------------
+begin
+  a_type_class_entry_internal(curr,prefix,data,ptyp,list,binfo,xinfo,[],
+      -- v˜raz reprezentuj¡c¡ tag typu
+      x_make_attribute(curr,xinfo,atc_static,atf_tag,ata_type_tag{ata_expr_tag},inttype_tag,
+        x_make_component_type(curr,xinfo,ptyp)
         )
-      )
-    );
+      );
   end a_type_class_entry;
 
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_interface_entry =
+-- Inicializace instance interfacu a vol n¡ ENTRY.
+----------------------------------------------------------------------------------------------------
+begin
+  a_type_class_entry_internal(curr,prefix,data,interface^.refclass.getcentity{ptyp},list,binfo,xinfo,[csf_interface],
+      -- v˜raz reprezentuj¡c¡ fake tag interacu
+      x_make_fake_tag(curr,xinfo,interface)
+      );
+  end a_type_interface_entry;
+  
 
 
 ----------------------------------------------------------------------------------------------------
@@ -216,41 +247,33 @@ procedure a_type_class_exit =
 -- Finalizace instance t©¡dy - vol n¡ EXIT.
 ----------------------------------------------------------------------------------------------------
 var
-  srch             : tentitysearch;              -- hled tko
-  pstatus          : pentity_var;                -- slo‘ka @STATUS
+  hidden_fields    : c_class_hidden_field_helper;-- manipul tor se skryt˜mi slo‘kami
 
 begin
   verify(569,ptyp^.etype<>et_class);
 
-  -- naj¡t intern¡ slo‘ku @STATUS
-  srch.find_local(sym_primary_context(ptyp^),id_int_status,etvs_all); pstatus:=pentity_var(srch.psym);
-  verify(570,pstatus=nil);
+  -- inicializovat manipul tor se skryt˜mi slo‘kami
+  hidden_fields.set_context(sym_primary_context(ptyp^));
 
   -- if Instance.@STATUS = STATUS_INITED then
   --   Instance.EXIT;
   --   end if;
-  a_list_append(list,
-    b_make_if(curr,binfo,
-      b_make_list(
-        b_make_if_cond(curr,binfo,
-          x_make_op_eq(curr,xinfo,
-            x_make_component_selector(curr,xinfo,pstatus,
-              prefix^(curr,data,ptyp,xinfo) {x_make_component_var(curr,xinfo,pvar)}
-              ),
-            x_make_imm_uniint(curr,xinfo,cpu^.status_inited)
-            ),
-          b_make_list(
-            b_make_cmd(curr,binfo,
-              x_make_call_spec(curr,xinfo,tst_exit,nil,
-                prefix^(curr,data,ptyp,xinfo) {x_make_component_var(curr,xinfo,pvar)},
-                nil
-                )
-              ),
-            nil
-            )
-          ),
-        nil
-        )
+  hidden_fields.a_make_test_status(curr,list,binfo,xinfo,
+    -- precondition
+    nil,
+    -- instance
+    prefix^(curr,data,ptyp,xinfo),
+    -- testovan˜ p©¡znak
+    csf_initialized,
+    -- sekvence p©¡kaz–
+    b_make_list(
+      b_make_cmd(curr,binfo,
+        x_make_call_spec(curr,xinfo,tst_exit,nil,
+          prefix^(curr,data,ptyp,xinfo),
+          nil
+          )
+        ),
+      nil
       )
     );
   end a_type_class_exit;
@@ -272,7 +295,7 @@ begin
     a_list_append(list,
       b_make_cmd(curr,binfo,
         x_make_call_spec(curr,xinfo,spec,nil,
-          prefix^(curr,data,ptyp,xinfo) {x_make_component_var(curr,xinfo,pvar)},
+          prefix^(curr,data,ptyp,xinfo),
           nil
           )
         )
@@ -409,11 +432,11 @@ begin
 
         -- p©ednost m  po‡ te‡n¡ hodnota promˆnn‚
         then 
-          x_imm:=x_make_imm(pproc_context,xinfo,ptyp,data.pitem^.init.getimm^,iek_none)
+          x_imm:=x_make_imm(pproc_context,xinfo,ptyp,data.pitem^.init.getimm^,iek_imm)
 
         -- po‡ te‡n¡ promˆnn‚ typu
         else
-          x_imm:=x_make_imm(pproc_context,xinfo,ptyp,ptyp^.init.getimm^,iek_none)
+          x_imm:=x_make_imm(pproc_context,xinfo,ptyp,ptyp^.init.getimm^,iek_imm)
           end if;
 
       -- Instance.Item := <imm>
@@ -445,11 +468,11 @@ begin
 
               -- p©ednost m  po‡ te‡n¡ hodnota promˆnn‚
               then 
-                x_imm:=x_make_imm(pproc_context,xinfo,ptyp,data.pvar^.init.getimm^,iek_none)
+                x_imm:=x_make_imm(pproc_context,xinfo,ptyp,data.pvar^.init.getimm^,iek_imm)
 
               -- po‡ te‡n¡ promˆnn‚ typu
               else
-                x_imm:=x_make_imm(pproc_context,xinfo,ptyp,ptyp^.init.getimm^,iek_none)
+                x_imm:=x_make_imm(pproc_context,xinfo,ptyp,ptyp^.init.getimm^,iek_imm)
                 end if;
 
             -- Instance.Item := <imm>

@@ -6,6 +6,7 @@ module private thread =
 ----------------------------------------------------------------------------------------------------
 with
     os_api,
+    rtl_init,
     synchronization,
     flex.exceptions,
     flex.exceptions.seh,
@@ -22,7 +23,8 @@ type
 
     t_thread_physical = record
       threadid     : t_rtl_unsigned32;
-      threadhandle : THANDLE;
+      threadhandle : t_handle;
+      priority     : t_thread_priority;
       end record;
 
     t_thread_header = record
@@ -34,9 +36,13 @@ type
       usagecount   : t_rtl_native_unsigned;
       TIBusrval    : t_thread_sysTIBuservalue;
       knownstart   : t_rtl_logical8;
+      threadpooled : t_rtl_logical8;
+      logicalswitch: t_rtl_logical8;
+      reserve      : t_rtl_logical8;
+      isrunning    : t_rtl_logical32;
+      locker       : t_rtl_critical;
       listnext     : p_thread_header;
       listprev     : p_thread_header;
-      locker       : t_rtl_critical;
       ref_count    : t_rtl_native_unsigned;
       ref_first    : p_thread_ref;
       flexreserve  : array 0..15 of t_rtl_native_unsigned;
@@ -65,6 +71,10 @@ procedure rtl_suspend_thread_internal(
 procedure rtl_resume_thread_internal(
     threadheader   : in p_thread_header);
 ----------------------------------------------------------------------------------------------------
+procedure rtl_set_thread_priority(
+    threadheader   : in p_thread_header;
+    priority       : in t_thread_priority);
+----------------------------------------------------------------------------------------------------
 
 
 ----------------------------------------------------------------------------------------------------
@@ -76,6 +86,7 @@ procedure rtl_resume_thread_internal(
 ----------------------------------------------------------------------------------------------------
 procedure rtl_thread_list_add(
     threadheader   : in p_thread_header) =
+-- zaradi hlavicku threadu do seznamu znamych threadu
 ----------------------------------------------------------------------------------------------------
 begin
   rtl_critical_lock(thread_list_lock);
@@ -92,6 +103,7 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_thread_list_del(
     threadheader   : in p_thread_header) =
+-- vyradi hlavicku threadu ze seznamu znamych threadu
 ----------------------------------------------------------------------------------------------------
 begin
   rtl_critical_lock(thread_list_lock);
@@ -115,6 +127,7 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_get_current_thread_safe =
+-- vrati hlavicku threadu
 ----------------------------------------------------------------------------------------------------
 begin 
   result:unchecked:=TlsGetValue(sthread_header);
@@ -122,6 +135,8 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_get_current_thread =
+-- vrati hlavicku threadu
+-- rychlejsi varianta 
 ----------------------------------------------------------------------------------------------------
 begin 
   #syntax asm;
@@ -132,6 +147,7 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_suspend_thread_internal =
+-- uspi thread
 ----------------------------------------------------------------------------------------------------
 begin 
   if SuspendThread(threadheader^.osthread.threadhandle)=$FFFFFFFF then 
@@ -141,12 +157,37 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_resume_thread_internal =
+-- probudi thread
 ----------------------------------------------------------------------------------------------------
 begin 
   if ResumeThread(threadheader^.osthread.threadhandle)=$FFFFFFFF then 
     raise tasking_error;
     end if;
   end rtl_resume_thread_internal;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_set_thread_priority =
+-- nastavi prioritu threadu
+----------------------------------------------------------------------------------------------------
+var
+    prio           : TPRIO;
+
+begin
+  case priority
+    when thread_priority_idle          do prio:=winnt_thread_priority_idle;
+    when thread_priority_lowest        do prio:=winnt_thread_priority_lowest;
+    when thread_priority_below_normal  do prio:=winnt_thread_priority_below_normal;
+    when thread_priority_normal        do prio:=winnt_thread_priority_normal;
+    when thread_priority_above_normal  do prio:=winnt_thread_priority_above_normal;
+    when thread_priority_highest       do prio:=winnt_thread_priority_highest;
+    when thread_priority_time_critical do prio:=winnt_thread_priority_time_critical;
+    end case;
+  
+  if SetThreadPriority(threadheader^.osthread.threadhandle,prio)=0 then
+    raise tasking_error;
+    end if;
+  end rtl_set_thread_priority;
 
 
 ----------------------------------------------------------------------------------------------------
@@ -243,6 +284,7 @@ begin
     threadheader^.usagecount:=1;
     threadheader^.listnext:=nil;
     threadheader^.listprev:=nil;
+    threadheader^.isrunning:=true;
     threadheader^.knownstart:=knownstart;
     rtl_critical_new(threadheader^.locker);
     threadheader^.ref_count:=0;
@@ -283,19 +325,19 @@ begin
     end if;
 #else;
 var
-  prochandle   : THANDLE;
-  threadhandle : THANDLE;
+  prochandle   : t_handle;
+  threadhandle : t_handle;
   dupresult    : BOOL;
 
 begin
   -- nastavit jako systemovou threadovou promennou
-  if not TlsSetValue(sthread_header,LPVOID(thread_header:unchecked)) then
+  if TlsSetValue(sthread_header,LPVOID(thread_header:unchecked))=0 then
     raise tasking_error;
     end if;
   prochandle:=GetCurrentProcess;
   dupresult:=DuplicateHandle(prochandle,GetCurrentThread,prochandle,^threadhandle:unchecked,0,false,DUPLICATE_SAME_ACCESS);
   thread_header^.osthread.threadhandle:=threadhandle;
-    if not dupresult or thread_header^.osthread.threadhandle=nil then 
+    if dupresult=0 or thread_header^.osthread.threadhandle=nil then 
     raise tasking_error;
     end if;
 #end if;
@@ -307,12 +349,12 @@ procedure rtl_deinit_task_helper(
 ----------------------------------------------------------------------------------------------------
 begin
   rtl_critical_lock(thread_header^.locker);
-  if not CloseHandle(THANDLE(thread_header^.osthread.threadhandle)) then
+  if CloseHandle(t_handle(thread_header^.osthread.threadhandle))=0 then
     raise tasking_error;
     end if;
   thread_header^.osthread.threadhandle:=INVALID_HANDLE;
   thread_header^.osthread.threadid:=INVALID_HANDLE;
-  if not TlsSetValue(sthread_header,nil) then
+  if TlsSetValue(sthread_header,nil)=0 then
     raise tasking_error;
     end if;
   rtl_critical_discard(thread_header^.locker);
@@ -358,7 +400,7 @@ begin
     #end asm;
 
   -- nastavit jako systemovou threadovou promennou
-  if not TlsSetValue(sthread_header,LPVOID(threadheader:unchecked)) then
+  if TlsSetValue(sthread_header,LPVOID(threadheader:unchecked))=0 then
     raise tasking_error;
     end if;
 
@@ -367,9 +409,12 @@ begin
   rtl_init_task_exceptions_win32(^sys_except_handler);
   rtl_init_task_header(true,true,threadheader,threadheader^.parentthread);
 
+  -- set priority
+  rtl_set_thread_priority(threadheader,threadheader^.osthread.priority);
+
   -- allow parent run
   rtl_event_set(p_thread_starter(starter)^.wait_event);
-
+  
   --suspend if need
   if stacpy.suspended then
     rtl_suspend_thread_internal(stacpy.threadheader);
@@ -380,12 +425,17 @@ begin
     begin
       -- volat uzivatelsky kod
       stacpy.thread_entry^(stacpy.userdata);
+    catch
+      when task_abort do ;
     leave
       -- odinicializovat threadove vlastnosti
+      rtl_critical_lock(stacpy.threadheader^.locker);
+      stacpy.threadheader^.isrunning:=false;
       rtl_deinit_task_header(stacpy.threadheader);
-      if not TlsSetValue(sthread_header,nil) then
+      if TlsSetValue(sthread_header,nil)=0 then
         raise tasking_error;
         end if;
+      rtl_critical_unlock(stacpy.threadheader^.locker);
       end;
     -- odinicializovat threadove vlastnosti
     rtl_deinit_task_exceptions(^threadheader^.exceptions);
@@ -401,6 +451,23 @@ begin
 
 
 
+#if rtl_advanced_threads_pooled then;
+#separate private pool;
+----------------------------------------------------------------------------------------------------
+procedure rtl_start_pool_task =
+----------------------------------------------------------------------------------------------------
+begin
+  pool.rtl_start_pool_task(thread_entry,priority,userdata);
+  end rtl_start_pool_task;
+#else;
+----------------------------------------------------------------------------------------------------
+procedure rtl_start_pool_task =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_start_thread(nil,thread_entry,false,priority,userdata);
+  end rtl_start_pool_task;
+#end if;
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_start_thread =
 ----------------------------------------------------------------------------------------------------
@@ -415,6 +482,7 @@ begin
   starter.threadheader:=threadheader;
   starter.suspended:=suspended;
   threadheader^.parentthread:=rtl_get_current_thread;
+  threadheader^.osthread.priority:=priority;
   rtl_event_new(starter.wait_event);
   starter.threadheader^.osthread.threadhandle:=CreateThread(nil,64*1024{%%TODO remove when dynamic stack}*8{},^thread_entry_internal,^starter,STACK_SIZE_PARAM_IS_A_RESERVATION,starter.threadheader^.osthread.threadid);
   if starter.threadheader^.osthread.threadhandle=0 then
@@ -424,7 +492,9 @@ begin
     end if;
   rtl_event_wait(starter.wait_event);
   rtl_event_discard(starter.wait_event);
-  rtl_create_thread_ref(threadheader,thread_ref);
+  if thread_ref<>nil then
+    rtl_create_thread_ref(threadheader,thread_ref^);
+    end if;
   end rtl_start_thread;
 
 
@@ -450,16 +520,19 @@ begin
     threadheader^.TIBusrval.prev:=TBIPrev;
   else
     if ismain then
-      rtl_critical_new(thread_list_lock);
       sthread_header:=TlsAlloc;
       thread_list_count:=0;
       threadheader:=^mainthreadheader;
+      -- prvni inicializace
+      rtl_init_runtime_phase_zero;
+
+      rtl_critical_new(thread_list_lock);
     else
       new threadheader;
       end if;
     threadheader^.TIBusrval.prev:=nil;
     threadheader^.parentthread:=nil;
-    if not TlsSetValue(sthread_header,threadheader) then
+    if TlsSetValue(sthread_header,threadheader)=0 then
       raise tasking_error;
       end if;
     end if;
@@ -520,14 +593,17 @@ begin
     discard tibptr;
     end if;
   if threadheader^.usagecount=0 then
+    rtl_critical_lock(threadheader^.locker);
+    threadheader^.isrunning:=false;
     rtl_deinit_task_header(threadheader);
     rtl_discard_all_thread_ref(threadheader);
     rtl_deinit_task_helper(threadheader);
     rtl_deinit_task_exceptions(^threadheader^.exceptions);
+    rtl_critical_discard(threadheader^.locker);
     dodiscard:=true;
     if ismain then
       rtl_critical_discard(thread_list_lock);
-      if not TlsFree(sthread_header) then
+      if TlsFree(sthread_header)=0 then
 #if #environment compiler_version;='4.0.3.3' then;
         raise tasking_error;
 #else;
@@ -550,6 +626,9 @@ begin
 #else;
     rtl_deinit_task_exceptions_win32(threadheader^.stackheader.seh_handler);
 #end if;
+  #syntax asm;
+    mov    eax,0
+    #end asm;
     end if;
   end rtl_unregister_task;
 
@@ -570,7 +649,7 @@ begin
     end if;
   rtl_critical_lock(threadheader^.locker);
   rtl_discard_all_thread_ref(threadheader);
-  if not CloseHandle(THANDLE(threadheader^.osthread.threadhandle)) then
+  if CloseHandle(t_handle(threadheader^.osthread.threadhandle))=0 then
     raise tasking_error;
     end if;
   threadheader^.osthread.threadhandle:=INVALID_HANDLE;
@@ -582,21 +661,27 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_kill_and_finish_thread =
+procedure rtl_kill_when_need_and_finish_thread =
 ----------------------------------------------------------------------------------------------------
 var
   threadheader : p_thread_header;
 begin
   threadheader:=thread_ref.threadheader;
-  exceptions.rtl_raise_external_exception(threadheader,0,6,0);
+  begin
+    exceptions.rtl_raise_external_exception(threadheader,0,9,0);
+  catch
+    when tasking_task_not_running do ;
+    end;
+
   --%% TODO stale bezi ... na vyjimku nereaguje ? kill ?
   {
-  if not TerminateThread(THANDLE(thread_ref.threadheader^.threadhandle),0) then 
+  if not TerminateThread(t_handle(thread_ref.threadheader^.threadhandle),0) then 
     raise tasking_error;
     end if;
   }
+
   rtl_wait_and_finish_thread(thread_ref);
-  end rtl_kill_and_finish_thread;
+  end rtl_kill_when_need_and_finish_thread;
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_wait_for_finish_thread =

@@ -24,8 +24,6 @@ with
 use
   cc_base.cc_sym.cc_advanced;
 
-
-
 ----------------------------------------------------------------------------------------------------
 procedure p_body (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
@@ -46,7 +44,6 @@ procedure p_type (
 ----------------------------------------------------------------------------------------------------
 var
   lex              : lexsym;                     -- lexik ln¡ symbol
-  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
   ptyp             : pentity_type;               -- typ
   ptyp_context     : tcontext;                   -- kontext deklarace
   compat           : typecompat;                 -- determinace kompatibility
@@ -175,7 +172,6 @@ procedure p_const (
 ----------------------------------------------------------------------------------------------------
 var
   lex              : lexsym;                     -- lexik ln¡ symbol
-  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
   pconst           : pentity_const;              -- konstanta
   pconst_context   : tcontext;                   -- prim rn¡ kontext konstanty
   pos              : lexposblock;                -- pozice
@@ -307,7 +303,6 @@ label
 
 var
   lex              : lexsym;                     -- lexik ln¡ symbol
-  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
   pvar             : pentity_var;                -- promˆnn 
   pvar_context     : tcontext;                   -- kontext promˆnn‚
   expr             : pexpnode;                   -- po‡ te‡n¡ hodnota
@@ -779,6 +774,14 @@ begin
         ce^.resumeerror;
         end if;
 
+      -- nelze dˆlat EXPOSE na sv‚ho p©edka
+      if sym_is_ancestor(psym,curr.entity) then
+        ce^.seterror({CCERR=}000000,ce_i_expose);
+        ce^.sethint(hint_expose_ancestor);
+        expr^.errpos;
+        ce^.resumeerror;
+        end if;
+
       -- nelze dˆlat EXPOSE na nad©azenou t©¡du
       if sym_is_included(curr.entity,psym) then
         ce^.seterror({CCERR=}000000,ce_i_expose);
@@ -795,8 +798,7 @@ begin
         end if;
 
       -- za©adit jako exposovan˜ interface
-      pentity_type(curr.entity)^.exposed.add(expr,psym);
-
+      pentity_type(curr.entity)^.interfaces^.add_interface(expr,psym);
       until not checklex(curr,lex_comma);
 
     -- st©edn¡k
@@ -1060,38 +1062,36 @@ procedure p_subprogram (
 ----------------------------------------------------------------------------------------------------
 var
   lex              : lexsym;                     -- lexik ln¡ symbol
-  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
   pproc            : pentity_subprogram;         -- podprogram
   pproc_context    : tcontext;                   -- kontext podprogramu
   pos              : lexposblock;                -- pozice
-  tpos             : lexposblock;                -- pozice implicitn¡ deklarace typu
-  ipass            : tinstancepass;              -- p©ed v n¡ instance
-  etype            : tentitytype;                -- pracovn¡ kopie parametru _ETYPE
-  rtyp             : pentity_type;               -- typ n vratov‚ hodnoty
-  rtyp_context     : tcontext;                   -- kontext typu n vratov‚ hodnoty
 
 begin
-  etype:=_etype;
+  declare var
+    etype          : tentitytype;                -- pracovn¡ kopie parametru _ETYPE
+  begin
+    etype:=_etype;
 
-  -- STATIC sm¡ b˜t jen v t©¡dˆ
-  if (etype=et_static) and (curr.entity^.etype<>et_class) then
-    ce^.seterror({CCERR=}000358,ce_baddecl);
-    ce^.sethint(hint_static_class);
-    ce^.loadpos;
-    {%%RESUME ce^.raiseerror;}
-    etype:=et_procedure;
+    -- STATIC sm¡ b˜t jen v t©¡dˆ
+    if etype=et_static and curr.entity^.etype<>et_class then
+      ce^.seterror({CCERR=}000358,ce_baddecl);
+      ce^.sethint(hint_static_class);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      etype:=et_procedure;
 
-  -- VIRTUAL sm¡ b˜t jen v t©¡dˆ, modulu, programu, kompila‡n¡ jednotce
-  elsif etype=et_virtual and curr.entity^.etype not in ets_container then
-    ce^.seterror({CCERR=}000431,ce_baddecl);
-    ce^.sethint(hint_virtual_container);
-    ce^.loadpos;
-    {%%RESUME ce^.raiseerror;}
-    etype:=et_procedure;
-    end if;
+    -- VIRTUAL sm¡ b˜t jen v t©¡dˆ, modulu, programu, kompila‡n¡ jednotce
+    elsif etype=et_virtual and curr.entity^.etype not in ets_container then
+      ce^.seterror({CCERR=}000431,ce_baddecl);
+      ce^.sethint(hint_virtual_container);
+      ce^.loadpos;
+      {%%RESUME ce^.raiseerror;}
+      etype:=et_procedure;
+      end if;
 
-  -- za‡ tek deklarace
-  d_create(curr,pentity(pproc),pproc_context,etype,pos);
+    -- za‡ tek deklarace
+    d_create(curr,pentity(pproc),pproc_context,etype,pos);
+    end declare;
 
   if pproc^.declared=etd_incomplete
 
@@ -1126,8 +1126,8 @@ begin
       -- p©ed v n¡ instance
       -- v t©¡dˆ
       if curr.entity^.etype=et_class then
-        if etype=et_virtual and curr.region^.vsect<>etv_private then pproc^.instance:=tip_dispatch
-        elsif etype=et_procedure then pproc^.instance:=tip_optional
+        if pproc^.etype=et_virtual and curr.region^.vsect<>etv_private then pproc^.instance:=tip_dispatch
+        elsif pproc^.etype=et_procedure then pproc^.instance:=tip_optional
         else pproc^.instance:=tip_pass;
         end if;
       -- v modulu/programu/kompila‡n¡ jednotku
@@ -1136,7 +1136,7 @@ begin
       elsif curr.entity^.etype=et_override then pproc^.instance:=tip_pass
       -- v procedu©e
       elsif curr.entity^.etype in ets_subprogram then begin
-        -- nezapomenou konvertovat tip_dispatch na tip_pass
+        -- nezapomenout konvertovat tip_dispatch na tip_pass
         if pentity_subprogram(curr.entity)^.instance=tip_dispatch
           then pproc^.instance:=tip_pass
           else pproc^.instance:=pentity_subprogram(curr.entity)^.instance
@@ -1153,16 +1153,23 @@ begin
 
         -- ( ... ) RETURN Typ
         else
-          -- za‡ tek deklarace
-          d_create_without_name(pproc_context,pentity(rtyp),rtyp_context,et_type,nil,tpos);
-          pproc^.typ.settype(rtyp);
-          d_next(rtyp^,tpos);
+          declare var
+            ptyp         : pentity_type;         -- typ podprogramu
+            ptyp_context : tcontext;             -- kontext typu podprogramu
+            tpos         : lexposblock;          -- pozice implicitn¡ deklarace typu
 
-          -- p©elo‘it definici
-          p_def_procedure(pproc_context,rtyp^,rtyp_context);
+          begin
+            -- za‡ tek deklarace
+            d_create_without_name(pproc_context,pentity(ptyp),ptyp_context,et_type,nil,tpos);
+            pproc^.typ.settype(ptyp);
+            d_next(ptyp^,tpos);
 
-          -- konec deklarace
-          d_end(rtyp^,tpos);
+            -- p©elo‘it definici
+            p_def_procedure(pproc_context,ptyp^,ptyp_context);
+
+            -- konec deklarace
+            d_end(ptyp^,tpos);
+            end declare;
           end if;
 
       -- dal¨¡ symbol
@@ -1232,7 +1239,7 @@ var
 
 begin
   -- OVERRIDE sm¡ b˜t jen v t©¡dˆ, modulu, programu, kompila‡n¡ jednotce
-  if not (curr.entity^.etype in ets_container) then
+  if curr.entity^.etype not in ets_container then
     ce^.seterror({CCERR=}000432,ce_baddecl);
     ce^.sethint(hint_override_container);
     ce^.loadpos;
@@ -1429,8 +1436,6 @@ procedure p_module (
 ----------------------------------------------------------------------------------------------------
 var
   lex              : lexsym;                     -- lexik ln¡ symbol
-  lex1             : lexsym;                     -- lexik ln¡ symbol
-  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
   psym             : pentity;                    -- modul
   psym_context     : tcontext;                   -- kontext modulu
   pos              : lexposblock;                -- pozice
@@ -1461,7 +1466,6 @@ begin
 
           -- konec deklarace
           d_end(psym^,pos);
-
 
       -- Incomplete declaration
       when lex_scol do d_end(psym^,pos);
@@ -1642,9 +1646,6 @@ procedure p_program (
 -- %%X dodˆlat RESUME                                                         
 ----------------------------------------------------------------------------------------------------
 var
-  lex              : lexsym;                     -- lexik ln¡ symbol
-  lex1             : lexsym;                     -- lexik ln¡ symbol
-  srch             : tentitysearch;              -- vyhled v n¡ v tabulce symbol–
   pprog            : pentity_program;            -- program
   pprog_context    : tcontext;                   -- kontext programu
   pos              : lexposblock;                -- pozice
@@ -1929,7 +1930,6 @@ procedure p_compinit (
 
     ------------------------------------------------------------------------------------------------
     procedure newdefaultord (
-        id         : in pentityident;            -- identifik tor
         dtype      : in tdatatype;               -- datov˜ typ
         ptyp       : out pentity_type) =         -- vznikl˜ typ
     -- Nov˜ ordin ln¡ typ.
@@ -1988,9 +1988,6 @@ procedure p_compinit (
       d_end_internal(ptyp^,false);
       end newdefaultptr;
 
-var
-  pconst           : pentity_const;              -- p©eddefinovan  konstanta
-
 begin
   ---- univerz ln¡ typ UNIINT ----
   newunitype(dt_uniint,unsigned_to_unidata_size(tuniint:size),def_uniint);
@@ -2015,10 +2012,7 @@ begin
   newdefaulttag(inttype_tag);
 
   ---- typ intern¡ slo‘ky t©¡dy @STATUS ----
-  newdefaultord(nil,dt_unsigned,inttype_status);
-
-  ---- typ intern¡ slo‘ky t©¡dy @INSTANCE ----
-  newdefaultptr(nil,ptrflagsset:[pf_machine],pc_data,pb_unchecked,[],inttype_instance);
+  newdefaultord(dt_unsigned,inttype_status);
 
   ---- strojov˜ pointer ----
   newdefaultptr(nil,ptrflagsset:[pf_machine],pc_data,pb_unchecked,[],inttype_machine_pointer);
@@ -2065,13 +2059,16 @@ begin
 
   -- deklarace programu nebo knihovny
   if checklex(compi_context,lex_program) 
+    
+    -- p©elo‘it program
     then 
       compi^.compitype:=ct_program;
       p_program(compi_context);
+
+    -- knihovna uz zkompilovana (viz p_declare)
     else 
-      -- knihovna uz zkompilovana (viz. p_declare)
       compi^.compitype:=ct_library;
-    end if;
+      end if;
 
   -- konec textu
   if not checklex(compi_context,lex_eof) then

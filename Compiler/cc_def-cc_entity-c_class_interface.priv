@@ -8,6 +8,7 @@ static init =
 -- Inicializuje interface t©¡dy na zadanou t©¡du [pexpr]/[pclass].
 ----------------------------------------------------------------------------------------------------
 begin
+  -- doplnit £daje
   refclass.setexpr(pexpr);
   refclass.setentity(pclass);
 {
@@ -18,6 +19,191 @@ begin
 
   Opravit intern¡ chybu a deklaraci [c_class_interface] dokon‡it a‘ za deklarac¡ [tentity_type].
 }
+
+  -- zjistit, zda je toto exposovan˜ nebo nativn¡ interface
+  -- pozn  se to tak, ‘e to nen¡ nativn¡ interface souvisej¡c¡ t©¡dy; dot zat se p©¡mo na exposovan˜
+  -- interface v tuto chv¡li nen¡ mo‘n‚; nav¡c je-li seznam interfac– zat¡m pr zdn˜, je tento 
+  -- interface ur‡itˆ nativn¡, proto‘e nativn¡ interface je v‘dy prvn¡ za©azovan˜ do seznamu
+  is_exposed:=not pclass^.interfaces^.is_empty and pclass^.interfaces^.get_native_interface<>^this;
   end init;
+
+
+
+----------------------------------------------------------------------------------------------------
+static get_ancestor return pentity_type =
+-- Vr t¡ "p©edka" k tomuto interfacu. Pro nativn¡ interface je to skute‡n˜ p©edek souvisej¡c¡ t©¡dy,
+-- pro exposovan˜ interface je to souvisej¡c¡ t©¡da sama o sobˆ, proto‘e na £rovni pr ce s interfacy
+-- z le‘¡ na fyzick‚ dˆdi‡nost interfac– a ne t©¡d.
+----------------------------------------------------------------------------------------------------
+begin
+  if is_exposed
+    then result:=pentity_type(refclass.getcentity);
+    else result:=pentity_type(refclass.getcentity^.ancestor.getuentity);
+    end if;
+  end get_ancestor;
+
+
+
+----------------------------------------------------------------------------------------------------
+static adjust_vtable (
+    resize         : in t_logical) =             -- T-chceme p©idat nˆjak˜ prvek
+-- Zajist¡, ‘e je alokov na virtu ln¡ tabulka a pop©¡padˆ ji realokuje.
+----------------------------------------------------------------------------------------------------
+const
+  vtableinit       = 5;
+  vtabledelta      = 20;
+
+begin
+  -- byla u‘ virtu ln¡ tabulka alokov na ?
+  if vtable=nil
+
+    -- ne
+    then
+      declare var
+        pancestor  : pentity_type;               -- p©edek t©¡dy
+        interface  : p_class_interface;          -- intrface p©edka
+
+      begin
+        -- zkusit naj¡t p©edka s virtu ln¡ tabulkou (za‡¡t s m se sebou, proto‘e toto m–‘e b˜t
+        -- pouze exposovan˜ interface, kter˜ p©eb¡r  virtu ln¡ tabulku od sv‚ souvisej¡c¡ t©¡dy)
+        pancestor:=get_ancestor;
+        while pancestor<>nil loop
+          -- naj¡t nativn¡ interface p©edka
+          interface:=pancestor^.interfaces^.find_interface(pancestor);
+          verify(683,interface=nil);
+
+          -- m  interface definov nu virtu ln¡ tabulku?
+          if interface^.vtable<>nil then break end if;
+
+          -- dal¨¡ p©edek
+          pancestor:=pancestor^.ancestor.getuentity;
+          end loop;
+
+        -- na¨el se ? (mus¡ se testovat oba, p©i p©echodu k dal¨¡mu p©edkovi se [interface] neresetuje)
+        if pancestor<>nil and then interface<>nil
+
+          -- ano => zkop¡rovat, resp. alokovat dostate‡nˆ velkou
+          then
+            new vtable range interface^.vtable^:length+vtableinit;
+            vtable^:length:=interface^.vtable^:length;
+
+          -- ne => alokovat v z kladn¡ velikosti
+          else
+            new vtable range vtableinit;
+            end if;
+        end declare;
+
+    -- ano
+    else
+      -- zajistit voln‚ m¡sto, pokud je to po‘adov no
+      if resize and then vtable^:length=vtable^:last then
+        --%%TODO(ADJUST) adjust pclass^.vtable range pclass^.vtable^:last+vtabledelta;
+        declare var
+          _vtable  : vtable:type;
+        begin
+          new _vtable range vtable^:last+vtabledelta;
+          _vtable^:=vtable^;
+        commit 
+          discard vtable;
+          vtable:=_vtable;
+          end declare;
+        end if;
+      end if;
+  end adjust_vtable;
+
+
+
+----------------------------------------------------------------------------------------------------
+static add_virtual_method =
+-- P©id  do interfacu novou virtu ln¡ metodu a p©idˆl¡ j¡ index v tabulce virtu ln¡ metod.
+----------------------------------------------------------------------------------------------------
+begin
+  -- zajistit m¡sto pro novˆ p©id vanou virtu ln¡ metodu
+  adjust_vtable(true);
+
+  -- p©idat
+  vtable^ & pentity_code(pvirtual);
+
+  -- p©idˆlit index
+  pvirtual^.vindex:=vtable^:length;
+  end add_virtual_method;
+
+
+
+----------------------------------------------------------------------------------------------------
+static get_virtual_method =
+-- Nejbli‘¨¡ (vzhledem k p©edk–m) virtu ln¡ metodu nebo jej¡ override odpov¡daj¡c¡ zadan‚mu indexu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- m me-li k dispozici virtu ln¡ tabulku, zkusit naj¡t implementaci v n¡
+  if vtable<>nil then
+    verify(690,{%%TODO(IN)vindex not in vtable^:range}vindex>vtable^:length);
+    result:=vtable^[vindex];
+    end if;
+
+  -- nena¨lo-li se a m me-li p©edka, pak se zeptat jeho
+  if result=nil and then get_ancestor<>nil{refclass.getcentity^.ancestor.isset} then
+    result:=pentity_type(get_ancestor{refclass.getcentity^.ancestor.getuentity})^.interfaces^.get_native_interface^.get_virtual_method(vindex);
+    end if;
+  end get_virtual_method;
+
+
+
+----------------------------------------------------------------------------------------------------
+static is_virtual_method_overriden =
+-- Zjist¡, zda byla zadan  virtu ln¡ metoda v t‚to t©¡dˆ ji‘ p©et¡‘ena.
+-- Je-li v t‚to t©¡dˆ p©¡mo deklarov na, se ch pe jako p©et¡‘en¡.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=vtable<>nil and then vtable^[pvirtual^.vindex]<>nil;
+  end is_virtual_method_overriden;
+
+
+
+----------------------------------------------------------------------------------------------------
+static override_virtual_method =
+-- P©et¡‘¡ v interfacu zadanou virtu ln¡ metodu.
+-- Pokud ji‘ byla jednou p©et¡‘ena, zp–sob¡ chybu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- zajistit, aby byla virtu ln¡ tabulka korektnˆ alokovan 
+  adjust_vtable(false);
+
+  -- poznamenat do virtu ln¡ tabulky pointer na aktu ln¡ p©et¡‘en¡
+  vtable^[pvirtual^.vindex]:=poverride;
+  end override_virtual_method;
+
+
+
+----------------------------------------------------------------------------------------------------
+static get_vtable_size =
+-- Vr t¡ velikost virtu ln¡ tabulky jako po‡et jej¡ch prvk–.
+-- Pokud nen¡ virtu ln¡ tabulka v tomto interfacu alokov na, zept  se p©edka.
+----------------------------------------------------------------------------------------------------
+begin
+  -- m me-li virtu ln¡ tabulku na t‚to £rovni, 
+  if vtable<>nil then 
+    result:=vtable^:length
+
+  -- nem me-li p©edka, tak je virtu ln¡ tabulka pr zdn 
+  elsif get_ancestor=nil{not refclass.getcentity^.ancestor.isset} then 
+    result:=0;
+
+  -- jinak se zept me na velikost tabulky p©edka
+  else
+    -- %%TECH(OPT) Zde se spolehneme na tail-recursion optimization schopnosti p©eklada‡e.
+    result:=pentity_type(get_ancestor{refclass.getcentity^.ancestor.getcentity})^.interfaces^.get_native_interface^.get_vtable_size;
+    end if;
+  end get_vtable_size;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure normalize_vindex =
+-- Normalizuje logick˜ index virtu ln¡ metody od nuly.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=vindex-vindex:first;
+  end normalize_vindex;
 
 end c_class_interface;

@@ -1,0 +1,70 @@
+---------------------------------------------------------------------------------------------------
+module private rtl_init =
+-- Flex Run-time Library
+-- Thread variables
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+with
+    os_api;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_processor_count (count : out ref t_rtl_unsigned32) =
+----------------------------------------------------------------------------------------------------
+var
+  ProcessCPUs      : DWORD;
+  SystemCPUs       : DWORD;
+    
+begin
+  count:=0;
+  if GetProcessAffinityMask(GetCurrentProcess(),ProcessCPUs,SystemCPUs)<>0 then
+    #syntax asm;
+    mov         ebx,1
+    mov         edx,0
+    mov         ecx,count
+    jmp         @0
+@1:    
+    --rotate bit
+    shl         ebx,1
+    test        ebx,ebx
+    -- if bit is zero exit
+    je          @9
+    -- if bit is set inc result, else cycle
+@0: mov         eax,SystemCPUs
+    and         eax,ebx
+    test        eax,eax
+    je          @1
+    --zvetsim count
+    inc         edx
+    jmp         @1
+@9:
+    mov         [ecx],edx
+    #end asm;
+  else
+    raise tasking_error;
+    end if;
+  end rtl_get_processor_count;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_runtime_phase_zero =
+----------------------------------------------------------------------------------------------------
+var
+    processor_count : t_rtl_unsigned32;
+begin
+  -- inicializovat thread pool
+  #if rtl_advanced_threads_pooled then;
+  pool.rtl_init_thread_pool;
+  #end if;
+
+  #if target_machine_processor_count_compiled then;
+    rtl_get_processor_count(processor_count);
+    if target_machine_processor_count<>processor_count then
+      raise processor_count_error;
+      end if;
+  #else;
+    rtl_get_processor_count(target_machine_processor_count);
+  #end if;
+
+  end rtl_init_runtime_phase_zero;
+
+end rtl_init;

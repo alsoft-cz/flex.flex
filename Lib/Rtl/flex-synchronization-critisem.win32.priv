@@ -1,0 +1,239 @@
+----------------------------------------------------------------------------------------------------
+-- implmentace non-kernel semaforu
+--
+-- Inspirovano z 
+-- wine-20030813\dlls\ntdll\critsection.c 
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_get_semaphore(
+    critisem_object: in out ref t_rtl_critisem;
+    semaphore      : out ref t_rtl_semaphore) =
+-- Create semaphore for critisem section
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_semaphore;
+
+begin
+  semaphore:=critisem_object.lock_semaphore;
+  if semaphore=rtl_nil_semaphore then
+    rtl_semaphore_new_owned(semaphore,critisem_object.max_in,critisem_object.max_in);
+    rtl_interlocked_compare_exchange_ptr(^t_rtl_native_unsigned(critisem_object.lock_semaphore),
+                                          t_rtl_native_unsigned(semaphore),
+                                          t_rtl_native_unsigned(rtl_nil_semaphore),
+                                          t_rtl_native_unsigned(old_value));
+    if old_value<>rtl_nil_semaphore then
+      --nekdo mne predbehnul
+      rtl_semaphore_discard(semaphore);
+      end if;
+    end if;
+  end rtl_critisem_get_semaphore;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_unwait_critisem(
+    critisem_object: in out ref t_rtl_critisem;
+    count          : in t_rtl_native_signed) =
+----------------------------------------------------------------------------------------------------
+var
+  semaphore        : t_rtl_semaphore;
+
+begin
+  rtl_critisem_get_semaphore(critisem_object,semaphore);
+  rtl_semaphore_unlock_multi(semaphore,count);
+  end rtl_critisem_unwait_critisem;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_new =
+-- Create and initialize critisem object.
+----------------------------------------------------------------------------------------------------
+begin
+  critisem_object.lock_count      := - maximum_in;
+  critisem_object.lock_semaphore  :=  rtl_nil_semaphore;
+  critisem_object.max_in:=maximum_in;
+  -- zadne spinovani na jednoprocesorovem stroji
+  if target_machine_processor_count=1 then
+    critisem_object.spin_count      :=  0;
+  else
+    critisem_object.spin_count      :=  4000;
+    end if;
+  end rtl_critisem_new;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_new_owned =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_critisem_new(critisem_object,maximum_in);
+  critisem_object.lock_count + locked_count;
+  end rtl_critisem_new_owned;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_discard =
+-- Discard critisem object.
+----------------------------------------------------------------------------------------------------
+begin
+  if critisem_object.lock_semaphore<>rtl_nil_semaphore then
+    rtl_semaphore_discard(t_rtl_semaphore(critisem_object.lock_semaphore));
+    end if;
+  critisem_object:=nil;
+  end rtl_critisem_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_try_lock_now (
+    critisem_object: in out ref t_rtl_critisem)
+    return         t_rtl_logical8 =
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_native_signed;
+  spin             : t_rtl_native_unsigned;
+
+begin
+  spin:=0;
+  loop
+    rtl_intelocked_increment_if_less_than(^critisem_object.lock_count,1,0,old_value);
+    if old_value < 0 then
+      result:=true;
+      return;
+      end if;
+    if spin>=critisem_object.spin_count then
+      result:=false;
+      return;
+      end if;
+    spin + 1;
+    end loop;
+  end rtl_critisem_try_lock_now;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_unlock =
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_native_signed;
+
+begin
+  rtl_interlocked_dec_out(^critisem_object.lock_count,old_value);
+  if old_value>0 then
+    rtl_critisem_unwait_critisem(critisem_object,1);
+    end if;
+  end rtl_critisem_unlock;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_unlock_multi =
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_native_signed;
+
+begin
+  rtl_interlocked_exchange_add(^critisem_object.lock_count,-unlock_count,old_value);
+  if old_value>0 then
+    if old_value>=unlock_count then
+      rtl_critisem_unwait_critisem(critisem_object,unlock_count);
+    else
+      rtl_critisem_unwait_critisem(critisem_object,old_value);
+      end if;
+    end if;
+  end rtl_critisem_unlock_multi;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_lock =
+-- Lock critisem.
+----------------------------------------------------------------------------------------------------
+begin
+  if not rtl_critisem_try_lock(critisem_object,t_rtl_wait_infinite) then
+    raise synchronization_error;
+    end if;
+  end rtl_critisem_lock;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_set_spin =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zadne spinovani na jednoprocesorovem stroji
+  if target_machine_processor_count>1 then
+    critisem_object.spin_count      :=  spin_count;
+    end if;
+  end rtl_critisem_set_spin;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_try_lock =
+----------------------------------------------------------------------------------------------------
+var
+  semaphore        : t_rtl_semaphore;
+  old_value        : t_rtl_native_signed;
+#if rtl_debug then;
+  longloop         : t_rtl_native_signed;
+#end if;
+
+begin
+  result:=rtl_critisem_try_lock_now(critisem_object);
+  if result or milisec=t_rtl_wait_immediate then
+    return;
+    end if;
+
+  rtl_interlocked_inc_out(^critisem_object.lock_count,old_value);
+  if old_value<0 then
+    result:=true;
+  else
+    -- cekam na semaforu
+    rtl_critisem_get_semaphore(critisem_object,semaphore);
+    result:=rtl_semaphore_try_lock(semaphore,milisec);
+    end if;
+
+#if rtl_debug then;
+  longloop:=0;
+#end if;
+  while not result loop
+    rtl_interlocked_dec_if_greater_than(^critisem_object.lock_count,1,0,old_value);
+    if old_value>0 then
+      return;
+    else
+      result:=rtl_semaphore_try_lock(semaphore,t_rtl_wait_immediate);
+      end if;
+    if not result then
+      rtl_sleep(t_rtl_wait_immediate);
+      end if;
+    #if rtl_debug then;
+      longloop + 1;
+      if longloop>100 then
+        rtl_debug_debuger_break;
+        raise synchronization_error;
+        end if;
+    #end if;
+    end loop;
+
+  end rtl_critisem_try_lock;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_force_lock =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_interlocked_inc(^critisem_object.lock_count);
+  end rtl_critisem_force_lock;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_force_unlock =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_interlocked_dec(^critisem_object.lock_count);
+  end rtl_critisem_force_unlock;

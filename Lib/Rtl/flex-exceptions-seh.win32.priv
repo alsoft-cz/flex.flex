@@ -12,14 +12,27 @@ procedure winnt_except_handler : t_winnt_except_handler;
 #pragma no_return(rtl_raise_system_exception);
 ----------------------------------------------------------------------------------------------------
 
---%%TODO(ASM) remove when lea eax,winnt_except_handler
-var 
-  handler          : p_winnt_except_handler;
+
+#if not #declared rtl_breakpoints_without_debuger; then;
+const
+  rtl_breakpoints_without_debuger = 1=0;
+#end if;
+
+#if not #declared rtl_debug_disable_seh_conversion; then;
+const
+  rtl_debug_disable_seh_conversion = 1=0;
+#end if;
+
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_init_task_exceptions_win32_inject =
 ----------------------------------------------------------------------------------------------------
+--%%TODO(ASM) remove when lea eax,winnt_except_handler
+var 
+  handler          : p_winnt_except_handler;
+
 begin
+  #if not rtl_debug_disable_SEH_conversion then;
 --%%todo remove when lea eax,winnt_except_handler
   handler:=^winnt_except_handler;
   #syntax asm;
@@ -36,6 +49,7 @@ begin
     -- simulate return from caller
     jmp    edx
     #end asm;
+  #end if;
   end rtl_init_task_exceptions_win32_inject;
 
 
@@ -44,6 +58,7 @@ begin
 procedure rtl_deinit_task_exceptions_win32_inject =
 ----------------------------------------------------------------------------------------------------
 begin
+  #if not rtl_debug_disable_SEH_conversion then;
   #syntax asm;
     -- skip caller ret
     pop    edx                                   -- pop out ret address of caller
@@ -60,6 +75,7 @@ begin
     mov    eax,0
     ret
     #end asm;
+  #end if;
   end rtl_deinit_task_exceptions_win32_inject;
 
 
@@ -67,7 +83,11 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_init_task_exceptions_win32 =
 ----------------------------------------------------------------------------------------------------
+var 
+  handler          : p_winnt_except_handler;
+
 begin
+  #if not rtl_debug_disable_SEH_conversion then;
   handler:=^winnt_except_handler;
   #syntax asm;
     -- intstall handler
@@ -79,6 +99,7 @@ begin
     mov    [edx+t_winnt_exception_registration.handler],eax -- save address of my handler
     mov    fs:[t_winnt_tib.exceptionlist],edx    -- save my handler registartion to tib
     #end asm;
+  #end if;
   end rtl_init_task_exceptions_win32;
 
 
@@ -87,14 +108,28 @@ begin
 procedure rtl_deinit_task_exceptions_win32 =
 ----------------------------------------------------------------------------------------------------
 begin
+  #if not rtl_debug_disable_SEH_conversion then;
   #syntax asm;
     -- unintstall handler
     mov    edx,handler_stack_space               -- get address on stack
     mov    eax,[edx+t_winnt_exception_registration.prevreg]-- get prev handler registration
-    mov    fs:[t_winnt_tib.exceptionlist],eax    -- save prev handler registartion to tib
+    mov    fs:[t_winnt_tib.exceptionlist],eax    -- return prev handler registartion to tib
     #end asm;
+  #end if;
   end rtl_deinit_task_exceptions_win32;
 
+----------------------------------------------------------------------------------------------------
+procedure rtl_pop_task_exceptions_win32 =
+----------------------------------------------------------------------------------------------------
+begin
+  #if not rtl_debug_disable_SEH_conversion then;
+  #syntax asm;
+    mov    edx,fs:[t_winnt_tib.exceptionlist]               -- get address of registration
+    mov    eax,[edx+t_winnt_exception_registration.prevreg] -- get prev handler registration
+    mov    fs:[t_winnt_tib.exceptionlist],eax    -- return prev handler registartion to tib
+    #end asm;
+  #end if;
+  end rtl_pop_task_exceptions_win32;
 
 
 ----------------------------------------------------------------------------------------------------
@@ -102,14 +137,15 @@ procedure rtl_raise_system_exception =
 -- raises an exception using windows SEH
 ----------------------------------------------------------------------------------------------------
 begin
-  --%%TODO predelat na pop posledniho v retezu ktery neni muj
-  -- pozor myslim ze se do tohoto retezu zaradil i handler z rodicovskych threadu
-  #syntax asm;
-    mov    eax,$ffffffff
-    mov    fs:[t_winnt_tib.exceptionlist],eax
-    #end asm;
+  rtl_debug_dump_exception(msg_raise_system,ecode,etag,edata);
+  rtl_debuger_break_exception;
   --%%TODO doddelat data, parametry, pocet
-  RaiseException(etag,0,0,nil);
+  if econtinue then
+    RaiseException(exception_access_violation,0,0,nil);
+  else
+    RaiseException(exception_noncontinuable_exception,FLAG_EXCEPTION_NONCONTINUABLE,0,nil);
+    end if;
+  -- never run
   rtl_terminate_thread;
   end rtl_raise_system_exception;
 
@@ -177,22 +213,53 @@ begin
       etag:unchecked:=numeric_error:tag;
     when exception_invalid_disposition do
       etag:unchecked:=implementation_error:tag;
-    when exception_noncontinuable_exception do
-      etag:unchecked:=implementation_error:tag;
     when exception_priv_instruction do
       etag:unchecked:=implementation_error:tag;
     when exception_single_step do
       etag:unchecked:=implementation_error:tag;
-    when exception_breakpoint do
-      etag:unchecked:=implementation_error:tag;
     when others do
       etag:unchecked:=implementation_error:tag;
 }
+    when exception_noncontinuable_exception do
+      etag:=exceptionrecord^.exceptioncode;
+      ecode:=exceptionrecord^.exceptioninfo[0];
+      edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+      rtl_debug_dump_exception(msg_noncont_system,ecode,etag,t_rtl_unsigned32(edata:unchecked));
+      #syntax asm;
+        mov eax,1{exceptioncontinuesearch}
+        ret
+        #end asm;
+    when exception_breakpoint do
+      {
+      etag:=exceptionrecord^.exceptioncode;
+      ecode:=exceptionrecord^.exceptioninfo[0];
+      edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+      rtl_debug_dump_exception(msg_breakpoint,ecode,etag,edata);
+      }
+      #if rtl_breakpoints_without_debuger then;
+        #syntax asm;
+          mov eax,1{exceptioncontinuesearch}
+          ret
+          #end asm;
+      #else;
+        contextrecord^.reip + 1;
+        #syntax asm;
+          mov eax,0{exceptioncontinueexecution}
+          ret
+          #end asm;
+      #end if;
     when exception_access_violation do
+      etag:=exceptionrecord^.exceptioncode;
+      ecode:=exceptionrecord^.exceptioninfo[0];
+      edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+      rtl_debug_dump_exception(msg_memory,etag,ecode,t_rtl_unsigned32(edata:unchecked));
       etag:=6{memory_error:code};
     when others do
-      --%%todo vyresit tag vs. code
       etag:=exceptionrecord^.exceptioncode;
+      ecode:=exceptionrecord^.exceptioninfo[0];
+      edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+      rtl_debug_dump_exception(msg_pending_system,etag,ecode,t_rtl_unsigned32(edata:unchecked));
+      etag:=9{program_error};
     end case;
 
   #syntax asm;
@@ -207,9 +274,9 @@ begin
     test   ecx,ecx                               -- test na zero
     jz     @6
     mov    [ebx+t_winnt_context.reip],ecx
-    mov    ecx,[eax+t_rtl_except_frame.framebp]
+    mov    ecx,[eax+t_rtl_except_frame.frame_ebp]
     mov    [ebx+t_winnt_context.rebp],ecx
-    mov    ecx,[eax+t_rtl_except_frame.framesp]
+    mov    ecx,[eax+t_rtl_except_frame.frame_esp]
     mov    [ebx+t_winnt_context.resp],ecx
     mov eax,0{exceptioncontinueexecution}
     ret
@@ -230,4 +297,4 @@ begin
 #end if;
 ----------------------------------------------------------------------------------------------------
 
-  end seh;
+end seh;

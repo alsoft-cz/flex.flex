@@ -5,7 +5,9 @@ module private memory =
 -- Copyright (C) 1999-2003 A && L soft
 ----------------------------------------------------------------------------------------------------
 with
-  synchronization;
+   synchronization
+  ,thread
+  ;
 
 #separate private blocks;
 #separate private chains;
@@ -16,6 +18,7 @@ with
 var
 --%%TODO threadvar 
     actual_thread_heap : p_rtl_memheap := nil;
+    actual_thread_chain: p_rtl_chain := nil;
 
 var
     systemheap     : system_heap.c_rtl_systemmemheap;
@@ -24,6 +27,10 @@ var
 const
     largeblocksize : t_rtl_native_unsigned       = 64*1024;
 
+#if not #declared rtl_memory_debug; then;
+const
+  rtl_memory_debug = false;
+#end if;
 #if rtl_advanced_segregated_heap then;
 var
     segregatedheap : segregated_heap.p_rtl_segregatedmemheap;
@@ -36,12 +43,12 @@ procedure rtl_alloc =
 ----------------------------------------------------------------------------------------------------
 begin
   if size>=largeblocksize then
-    systempages.memmgr_alloc({num}0,addr,size,nil);
+    systempages.memmgr_alloc({num}0,addr,size,actual_thread_chain);
   else
     if (actual_thread_heap=nil) then
-      systemheap.memmgr_alloc({num}0,addr,size,nil);
+      systemheap.memmgr_alloc({num}0,addr,size,actual_thread_chain);
     else
-      actual_thread_heap^.memmgr_alloc({num}0,addr,size,nil);
+      actual_thread_heap^.memmgr_alloc({num}0,addr,size,actual_thread_chain);
       end if;
     end if;
   end rtl_alloc;
@@ -75,7 +82,7 @@ begin
     return;
     end if;
   header:=adr2hdr(addr);
-  header^.dealocator^.memmgr_free({num}0,addr,nil);
+  header^.dealocator^.memmgr_free({num}0,addr,actual_thread_chain);
   addr:=nil;
 {%%TODO catch
   when others do
@@ -89,21 +96,32 @@ begin
   systemheap.memmgr_validate;
   end rtl_validate_heap;
 
-#if rtl_advanced_segregated_heap then;
+
+#if rtl_advanced_segregated_heap or rtl_memory_debug then;
 ----------------------------------------------------------------------------------------------------
 entry =
 ----------------------------------------------------------------------------------------------------
 begin
+  #if rtl_memory_debug then;
+  new actual_thread_chain;
+  #end if;
+  #if rtl_advanced_segregated_heap  then;
   new segregatedheap;
   actual_thread_heap:=p_rtl_memheap(segregatedheap:unchecked);
+  #end if;
   end entry;
 
 ----------------------------------------------------------------------------------------------------
 exit =
 ----------------------------------------------------------------------------------------------------
 begin
+  #if rtl_memory_debug then;
+  discard actual_thread_chain;
+  #end if;
+  #if rtl_advanced_segregated_heap  then;
   discard segregatedheap;
   actual_thread_heap:=nil;
+  #end if;
   end exit;
 #end if;
 

@@ -36,6 +36,218 @@ begin
   list.last:=bl;
   end a_list_append;
 
+                                                           
 
+----------------------------------------------------------------------------------------------------
+class private c_class_hidden_field_helper = 
+-- T©¡da pro pr ci s poli @TAG a @STATUS v instanci t©¡dy.
+----------------------------------------------------------------------------------------------------
+
+    with
+      cc_def.cc_unitype,
+      cb_block,
+      cb_block.cb_make,
+      cx_expr,
+      cx_expr.cx_make;
+
+    var
+      ptag         : pentity_var;                -- slo‘ka @TAG
+      pstatus      : pentity_var;                -- slo‘ka @STATUS
+
+    ------------------------------------------------------------------------------------------------
+    static set_context =
+    -- Nastav¡ kontext pro vyhled v n¡ skryt˜ch slo‘ek - context typu t©¡dy.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base,
+      cc_base.cc_sym;
+
+    var
+      srch         : tentitysearch;              -- hled tko
+
+    begin
+      -- naj¡t intern¡ slo‘ky @TAG a @STATUS
+      srch.find_local(context,id_int_tag   ,etvs_all); ptag   :=pentity_var(srch.psym);
+      srch.find_local(context,id_int_status,etvs_all); pstatus:=pentity_var(srch.psym);
+      verify(564,ptag=nil or pstatus=nil);
+      end set_context;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static a_make_set_tag =
+    -- Napln¡ pole @TAG zadanou hodnotou.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- Instance.@TAG := Tag
+      a_list_append(list,
+        b_make_cmd(curr,binfo,
+          x_make_op_assign(curr,xinfo,
+            x_make_component_selector(curr,xinfo,ptag,
+              x_instance
+              ),
+            x_tag
+            )
+          )
+        );
+      end a_make_set_tag;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static a_make_status_field (
+        curr       : in tcontext;                -- kontext          
+        xinfo      : in expinfo;                 -- informace pro generov n¡ v˜raz–
+        x_status   : in t_class_status_field)    -- mno‘ina p©¡znak–
+        return pexpimm =
+    -- Sestav¡ uzel stromu reprezentuj¡c¡ mno‘inu p©¡znak–.
+    ------------------------------------------------------------------------------------------------
+    var
+      ui           : tuniint;
+
+    begin
+      -- p©ev‚st mno‘inu stav– na ‡¡slo resp. bitov‚ pole
+      for i in x_status:base loop
+        if i in x_status then
+          ui+unsigned_to_uniint_power2(i:ord);
+          end if;
+        end loop;
+
+      -- sestavit uzel stromu
+      result:=x_make_imm_uniint(curr,xinfo,ui);
+      end a_make_status_field;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static a_make_status_flag (
+        curr       : in tcontext;                -- kontext          
+        xinfo      : in expinfo;                 -- informace pro generov n¡ v˜raz–
+        x_status   : in t_class_status_flags)    -- p©¡znak
+        return pexpimm =
+    -- Sestav¡ uzel stromu reprezentuj¡c¡ jeden p©¡znak.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- sestavit uzel stromu
+      result:=x_make_imm_uniint(curr,xinfo,unsigned_to_uniint_power2(x_status:ord));
+      end a_make_status_flag;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static a_make_set_status =
+    -- Napln¡ pole @STATUS zadanou po‡ te‡n¡ hodnotou.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zab˜vat se t¡m jen je-li mno‘ina nepr zdn 
+      if x_status<>t_class_status_field:[] then
+        -- Instance.@STATUS := <mno‘ina p©¡znak–>
+        a_list_append(list,
+          b_make_cmd(curr,binfo,
+            x_make_op_assign(curr,xinfo,
+              x_make_component_selector(curr,xinfo,pstatus,
+                x_instance
+                ),
+              a_make_status_field(curr,xinfo,
+                x_status
+                )
+              )
+            )
+          );
+        end if;
+      end a_make_set_status;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static a_make_add_status =
+    -- Dopln¡ do pole @STATUS uveden˜ p©¡znak.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- Instance.@STATUS or <p©¡znak>
+      a_list_append(list,
+        b_make_cmd(curr,binfo,
+          x_make_op_bit_or(curr,xinfo,
+            x_make_component_selector(curr,xinfo,pstatus,
+              x_instance
+              ),
+            a_make_status_flag(curr,xinfo,
+              x_status
+              ),
+            true)
+          )
+        );
+      end a_make_add_status;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static a_make_test_status =
+    -- Zjist¡, jestli je v poli @STATUS nastaven˜ uveden˜ p©¡znak.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_def.cc_var;
+
+    begin
+      -- if [ <precondition> AND THEN ] (Instance.@STATUS AND <p©¡znak> <> 0) then
+      --   <sekvence p©¡kaz–>
+      --   end if
+      if x_precond<>nil
+
+        -- slo‘itˆj¨¡ varianta s precondition
+        then
+          a_list_append(list,
+            b_make_if(curr,binfo,
+              b_make_list(
+                b_make_if_cond(curr,binfo,
+                  x_make_op_and_then(curr,xinfo,
+                    x_precond,
+                    x_make_op_ne(curr,xinfo,
+                      x_make_op_bit_and(curr,xinfo,
+                        x_make_component_selector(curr,xinfo,pstatus,
+                          x_instance
+                          ),
+                        a_make_status_flag(curr,xinfo,
+                          x_status
+                          )
+                        ),
+                      x_make_imm_nil(curr,xinfo,inttype_status)
+                      )
+                    ),
+                  b_body
+                  ),
+                nil
+                )
+              )
+            );
+
+        -- jednodu¨¨¡ varianta
+        else
+          a_list_append(list,
+            b_make_if(curr,binfo,
+              b_make_list(
+                b_make_if_cond(curr,binfo,
+                  x_make_op_ne(curr,xinfo,
+                    x_make_op_bit_and(curr,xinfo,
+                      x_make_component_selector(curr,xinfo,pstatus,
+                        x_instance
+                        ),
+                      a_make_status_flag(curr,xinfo,
+                        x_status
+                        )
+                      ),
+                    x_make_imm_nil(curr,xinfo,inttype_status)
+                    ),
+                  b_body
+                  ),
+                nil
+                )
+              )
+            );
+          end if;
+
+      end a_make_test_status;
+
+    end c_class_hidden_field_helper;
 
 end ca_util;
