@@ -185,9 +185,6 @@ procedure i_cmd (
 -- Generování kódu přiřazovacího příkazu.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_cmd,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   -- vygenerovat příkaz
   i_gen_expr(inst,info,curr,bl^.expr);
   end i_cmd;
@@ -204,9 +201,6 @@ procedure i_break (
 -- Generování kódu příkazu BREAK.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_break,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   -- není pro tuto entitu vyžadován složitější způsob návratu
   if (bl^.blevel>1) and (bl^.blevel>context.loop_level)
 
@@ -237,9 +231,6 @@ procedure i_return (
 -- Generování kódu příkazu RETURN.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_return,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   -- není pro tuto entitu vyžadován složitější způsob návratu
   if bl^.blevel>1 then
     i_set_rcframe_action(inst,info,bl^.blevel-1,context.top_block);
@@ -261,9 +252,6 @@ procedure i_raise (
 -- Generování kódu příkazu RAISE.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_raise,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   -- zaslání výjimky do jiného tasku
   if bl^.dest<>nil then
     unimplemented({UNIMP=}000103);
@@ -313,9 +301,6 @@ procedure i_send (
 -- Generování kódu příkazu SEND.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_send,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   unimplemented({UNIMP=}000182);
   end i_send;
 
@@ -331,9 +316,6 @@ procedure i_goto (
 -- Generování kódu příkazu GOTO.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_goto,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   -- doplnit číslo návěští
   assign_label_target(bl^.plabel,info);
 
@@ -405,9 +387,6 @@ begin
   -- pointer-to-object může obsahovat atributy :tag, :size a :last
   verify({VERIFY=}000444,ptyp^.pattrib-rtattribset:[rta_tag,rta_size,rta_last]<>rtattribset:[]);
 
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_new,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   -- vytvořit kontext pro generování všech výrazů
   i_createcontext(mastercontext,lm_gen,nil);
 
@@ -452,42 +431,53 @@ begin
 
 
   ---- (2) generování tagu ----
-  declare var
-    oprtavalue     : c_operand;                  -- hodnota atributu
+  if rta_tag in ptyp^.pattrib then
+    declare var
+      oprtavalue     : c_operand;                  -- hodnota atributu
 
-  begin
-    -- máme k dispozici TAG ?
-    if bl^.xtag<>nil
+    begin
+      -- máme k dispozici TAG ?
+      if bl^.xtag<>nil
 
-      -- ano => načíst dynamický tag
-      then
-        unimplementedx({UNIMP=}000141,bl^.xtag^.pos);
+        -- ano => načíst dynamický tag
+        then
+          declare var
+            subcontext : iexprcontext;             -- kontext generování jednoho výrazu
 
-        -- máme i RANGE ?
-        if bl^.xrange<>nil
+          begin
+            -- načíst hodnotu
+            i_newcontext(mastercontext,subcontext,lm_reg,nil);
+            i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xtag,oprtavalue);
+            end declare;
+  {
+  --        unimplementedx({UNIMP=}000141,bl^.xtag^.pos);
+  --
+  --        -- máme i RANGE ?
+  --        if bl^.xrange<>nil
+  --
+  --          -- ano => TAG musí specifikovat unconstrained typ
+  --          then
+  --            --addcallrtl(inst,info,rtl_tag_check_unconstrained);
+  --
+  --          -- ne => TAG musí specifikovat constrained typ
+  --          else
+  --            --addcallrtl(inst,info,rtl_tag_check_constrained);
+  --            end if;
+  }
+        -- ne => načíst statický tag
+        else
+          oprtavalue.create_imm(edt_unsigned,4,0);
+          oprtavalue.set_relo_entity(base);
+          end if;
 
-          -- ano => TAG musí specifikovat unconstrained typ
-          then
-            --addcallrtl(inst,info,rtl_tag_check_unconstrained);
+      -- uložit hodnotu atributu :tag do pointeru
+      storertattrib(opvar,rta_tag,oprtavalue);
 
-          -- ne => TAG musí specifikovat constrained typ
-          else
-            --addcallrtl(inst,info,rtl_tag_check_constrained);
-            end if;
-
-      -- ne => načíst statický tag
-      else
-        oprtavalue.create_imm(edt_unsigned,4,0);
-        oprtavalue.set_relo_entity(base{ptyp}); { Ondra 18.12.2002 : Byl chybně uveden typ pointeru místo jeho báze }
-        end if;
-
-    -- uložit hodnotu atributu :tag do pointeru
-    storertattrib(opvar,rta_tag,oprtavalue);
-
-  leave
-    -- uvolnit hodnotu atributu :tag
-    oprtavalue.free(info,mastercontext);
-    end declare;
+    leave
+      -- uvolnit hodnotu atributu :tag
+      oprtavalue.free(info,mastercontext);
+      end declare;
+    end if;
 
 
   ---- (3) generování velikosti ----
@@ -508,12 +498,10 @@ begin
           i_newcontext(mastercontext,subcontext,lm_reg_all,nil);
           i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xrange,oprtavalue);
 
-          -- uložit hodnotu atributu :last do pointeru
-          storertattrib(opvar,rta_last,oprtavalue);
-
           -- je to ^unconstrained array/string ?
-          if base<>nil then
-            verify({VERIFY=}000787,base^.stype not in dts_index);
+          if base<>nil and then base^.stype in dts_index then
+            -- uložit hodnotu atributu :last do pointeru
+            storertattrib(opvar,rta_last,oprtavalue);
 
             -- vynásobit velikostí báze
             -- Ondra 16.5.2003 : Zde byl použit [subcontext]. Domnívám se, že to bylo špatně.
@@ -528,28 +516,32 @@ begin
 
       -- ne => statická velikost
       else
-        -- byl uveden TAG ?
-        if bl^.xtag<>nil
-
-          -- ano => použít dynamickou velikost danou tagem
-          then
-            unimplemented({UNIMP=}000142);
-
-          -- ne => použít statickou velikost danou typem báze
-          else
-            verify({VERIFY=}000445,base=nil);
-            verify({VERIFY=}000550,rta_last in ptyp^.pattrib);
+      {
+--        -- byl uveden TAG ?
+--        if bl^.xtag<>nil
+--
+--          -- ano => použít dynamickou velikost danou tagem
+--          then
+--            unimplemented({UNIMP=}000142);
+--
+--          -- ne => použít statickou velikost danou typem báze
+--          else
+      }
+            verify({VERIFY=}000445,base=nil or else base^.stype in dts_unconstrained);
+            {verify({VERIFY=}000550,rta_last in ptyp^.pattrib);}
 
             -- připravit velikost
             oprtavalue.create_imm(edt_unsigned,idefregsize,unidata_size_to_imm32(base^.size));
-            end if;
+       {
+--            end if;
+       }
         end if;
-
-    -- uložit hodnotu atributu :size do pointeru
-    storertattrib(opvar,rta_size,oprtavalue);
 
     -- uložit atribut :size na stack
     addii(inst,info,ii_push,oprtavalue,op0,op0);
+
+    -- uložit hodnotu atributu :size do pointeru
+    storertattrib(opvar,rta_size,oprtavalue);
 
   leave
     -- uvolnit hodnotu atributu :size
@@ -562,15 +554,16 @@ begin
   -- %%TECH Nemusíme se vůbec zajímat o to, jestli to je či není třída, protože veškerou
   -- obsluhu případu alokace třídy již globální analýza rozvinula do sekvence pomocných
   -- příkazů umístěných v epilogu tohoto příkazu NEW.
-
+{
   -- má počáteční hodnotu ?
   if base<>nil and then base^.init.isset and then not imm_isnil(base^.init.getimm^)
 
     -- ano => alokovat a přiřadit
     then
+}
       -- zavolat ALLOC
       addcallrtl(inst,info,rtl_alloc);
-
+{
       -- přiřadit počáteční hodnotu
       unimplemented({UNIMP=}000191);
 
@@ -579,7 +572,7 @@ begin
       -- zavolat ALLOC
       addcallrtl(inst,info,rtl_alloc{_and_fillz});
       end if;
-
+}
 leave
   -- uvolnit operand s proměnnou
   opvar.free(info,mastercontext);
@@ -734,9 +727,6 @@ var
   xcontext         : iexprcontext;               -- kontext výrazu
 
 begin
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_discard,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   -- vytvořit kontext
   i_createcontext(xcontext,lm_push_addr,nil);
 
@@ -763,9 +753,6 @@ procedure i_delay (
 -- Generování kódu příkazu DELAY.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- doplnit záznam pro generování debug informací
-  -- adddebuginfo(inst.di,dbt_delay,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
-
   unimplemented({UNIMP=}000183);
   end i_delay;
 

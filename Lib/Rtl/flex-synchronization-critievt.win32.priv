@@ -1,41 +1,12 @@
-﻿
-----------------------------------------------------------------------------------------------------
-procedure rtl_critievt_get_event(
-    critievt_object: in out ref t_rtl_critievt;
-    event      : out ref t_rtl_event) =
--- Create event for critievt section
-----------------------------------------------------------------------------------------------------
-var
-  old_value        : t_rtl_event;
-
-begin
-  event:=critievt_object.lock_event;
-  if event=rtl_nil_event then
-    rtl_event_new(event,false);
-    rtl_interlocked_compare_exchange(    ^t_rtl_native_signed(critievt_object.lock_event),
-                                          t_rtl_native_signed(event),
-                                          t_rtl_native_signed(rtl_nil_event),
-                                          t_rtl_native_signed(old_value));
-    if old_value<>rtl_nil_event then
-      --nekdo mne predbehnul
-      rtl_event_discard(event);
-      event:=critievt_object.lock_event;
-      end if;
-    end if;
-  end rtl_critievt_get_event;
-
-
-
-----------------------------------------------------------------------------------------------------
+﻿----------------------------------------------------------------------------------------------------
 procedure rtl_critievt_unwait_critievt(
     critievt_object: in out ref t_rtl_critievt) =
 ----------------------------------------------------------------------------------------------------
-var
-  event        : t_rtl_event;
-
 begin
-  rtl_critievt_get_event(critievt_object,event);
-  rtl_event_set(event);
+  if not rtl_event_lazy(critievt_object.lock_event,false) then
+    -- vytvoril nekdo jiny
+    end if;
+  rtl_event_set(critievt_object.lock_event);
   end rtl_critievt_unwait_critievt;
 
 
@@ -44,13 +15,12 @@ begin
 procedure rtl_critievt_wait_critievt(
     critievt_object: in out ref t_rtl_critievt) =
 ----------------------------------------------------------------------------------------------------
-var
-  event        : t_rtl_event;
-
 begin
-  if event<>rtl_nil_event then
-    rtl_critievt_get_event(critievt_object,event);
-    rtl_event_reset(event);
+  if critievt_object.lock_event<>rtl_nil_event then
+    if not rtl_event_lazy(critievt_object.lock_event,false) then
+      -- vytvoril nekdo jiny
+      end if;
+    rtl_event_reset(critievt_object.lock_event);
     end if;
   end rtl_critievt_wait_critievt;
 
@@ -83,7 +53,7 @@ procedure rtl_critievt_discard =
 ----------------------------------------------------------------------------------------------------
 begin
   if critievt_object.lock_event<>rtl_nil_event then
-    rtl_event_discard(t_rtl_event(critievt_object.lock_event));
+    rtl_event_discard(critievt_object.lock_event);
     end if;
   critievt_object:=nil;
   end rtl_critievt_discard;
@@ -162,7 +132,6 @@ procedure rtl_critievt_try_wait =
 ----------------------------------------------------------------------------------------------------
 var
   old_value        : t_rtl_native_signed;
-  event            : t_rtl_event;
 
 begin
   -- try pass now
@@ -178,8 +147,10 @@ begin
     result:=true;
   else
     -- cekam na eventu
-    rtl_critievt_get_event(critievt_object,event);
-    result:=rtl_event_try_wait(event,milisec);
+    if not rtl_event_lazy(critievt_object.lock_event,false) then
+      -- vytvoril nekdo jiny
+      end if;
+    result:=rtl_event_try_wait(critievt_object.lock_event,milisec);
     end if;
   end rtl_critievt_try_wait;
 

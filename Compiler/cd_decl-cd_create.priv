@@ -46,6 +46,7 @@ type
       parts        : tdeclparts;                 -- maximální počet částí deklarace
       iparts       : tdeclparts;                 -- maximální počet částí interní deklarace
       can_abstract : tabstractdecl;              -- T-entita smí být abstraktní
+      context_abstract : t_logical;              -- T-abstraktní entita musí být v abstraktním kontextu
       end record;
 
 var
@@ -57,7 +58,7 @@ var
       for et_module    use [for start use tds_kw  , for parts use tdp_3, for iparts use tdp_3],
       for et_special   use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_2],
       for et_procedure use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
-      for et_virtual   use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2, for can_abstract use tad_pure],
+      for et_virtual   use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2,for can_abstract use tad_pure,for context_abstract use true],
       for et_static    use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
       for et_task      use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
       for et_override  use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
@@ -68,7 +69,7 @@ var
     --for et_define    use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
     --for et_alias     use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
       for et_type      use [for start use tds_id  , for parts use tdp_2, for iparts use tdp_1],
-      for et_class     use [for start use tds_kw  , for parts use tdp_3, for iparts use tdp_3, for can_abstract use tad_mixed],
+      for et_class     use [for start use tds_kw  , for parts use tdp_3, for iparts use tdp_3,for can_abstract use tad_mixed],
       for et_const     use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
       for et_enum      use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
       for et_param     use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
@@ -209,17 +210,24 @@ begin
       -- vytvořit a zařadit symbol
       sym_add_new_entity(context,etype,id,curr,curr_context);
 
+      -- nastavit alespoň nějakou pozici symbolu
+      entity_set_position(curr^,etp_header,pos);
+
       -- nastavit příznak ABSTRACT
       curr^.is_abstract:=abstract_present;
+
+      -- není vyžadováno, aby byl abstraktní i kontext?
+      if curr^.is_abstract and then declinfo[etype].context_abstract and then not context.entity^.is_abstract then
+        ce^.seterror({VERIFY=}001130,ce_abstract_not_permitted);
+        ce^.setparam(entityident_to_string(id^));
+        ce^.setpos(curr^.pos[etp_header]);
+        end if;
 
       -- pokud je deklarovaný prvek třída, nesmíme zapomenout,
       -- že je to současně i typ
       -- %%X Není tohle něco jako záplata ? Nebylo by lepší
       -- nastavovat příznak STYPE až ve vyhodnocení ?
       if etype=et_class then pentity_type(curr)^.stype:=dt_class; end if;
-
-      -- nastavit alespoň nějakou pozici symbolu
-      entity_set_position(curr^,etp_header,pos);
 
       -- zkontrolovat, zda entita nezastiňuje jinou, zděděnou
       if curr^.etype in tentitytypeset:[et_static,et_virtual,et_procedure,et_overload] then
@@ -544,7 +552,7 @@ begin
     container:=sym_get_container(^curr);
 
     -- úplná deklarace v public části je považována za neobvyklou konstrukci
-    if curr.etype in ets_enclosed and (container<>nil and then container^.compiling=etd_public) then
+    if (not curr.is_abstract) and (container<>nil and then container^.compiling=etd_public) then
       ce^.setwarning(curr.context,{CCERR=}000571,cw_strange_design);
       ce^.loadpos;
       end if;

@@ -7,7 +7,11 @@ class private cp_osspecific =
 ----------------------------------------------------------------------------------------------------
 
 with
-  cc_var,cc_codes;
+  cc_def.cc_var,
+  cc_def.cc_codes,
+  cc_base,
+  cc_base.cc_sym,
+  cc_base.cc_options;
 
 ----------------------------------------------------------------------------------------------------
 override importproc =
@@ -42,7 +46,6 @@ override setconvention =
 -- Nastaví volací konvenci procedury.
 ----------------------------------------------------------------------------------------------------
 with
-  cc_base,cc_base.cc_sym,
   {%%TODO(?) Tahle závistost se mi nelíbí}cp_cpu,cp_cpu.cp_ia32,cp_cpu.cp_ia32.ci_abi;
 
 var
@@ -150,67 +153,80 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-override exportproc =
--- Export procedury do externí knihovny.
+#template export_scheme (export_allowance_check);
+-- Schéma procedury pro export entity.
 ----------------------------------------------------------------------------------------------------
-with 
-  cc_base,
-  cc_base.cc_sym;
+  verify({VERIFY=}000660,entity=nil);
 
-begin
-  -- chybny parametr?
-  verify({VERIFY=}000660,proc=nil);
-
-  -- ma procedura jiz definovanou informaci pro export?
-  if proc^.export_info<>nil then
-    ce^.seterror({CCERR=}000393,ce_exported);
-    ce^.setparam(sym_get_qid(proc));
-    ce^.loadpos;
-    ce^.resumeerror;
-    return;
+  -- ma entita již definovanou informaci pro export?
+  if entity^.export_info<>nil then
+    if try_export 
+      then return 
+      else 
+        ce^.seterror({CCERR=}000393,ce_exported);
+        ce^.setparam(sym_get_qid(entity));
+        ce^.loadpos;
+        ce^.resumeerror;
+        end if;
     end if;
 
-  new pexportinfo(proc^.export_info);
+  -- kontrola povolení exportu
+  export_allowance_check;
+
+  -- založit informace o exportu
+  new pexportinfo(entity^.export_info);
   
-  pexportinfo(proc^.export_info)^.export_name:=expname;
-  end exportproc;
+  -- doplnit exportní jméno
+  pexportinfo(entity^.export_info)^.export_name:=expname;
+  #end export_scheme;
 
 
 
 ----------------------------------------------------------------------------------------------------
-override exportvar =
--- Export procedury do externí knihovny.
+override export_program =
+-- Export programu do externí knihovny pod jménem [expname].
 ----------------------------------------------------------------------------------------------------
-with 
-  cc_base,
-  cc_base.cc_sym;
-
 begin
-  -- chybny parametr?
-  verify({VERIFY=}000903,variable=nil);
+  #expand export_scheme;
+    #for export_allowance_check use; -- není co kontrolovat
+    #end export_scheme;
+  end export_program;
 
-  -- ma procedura jiz definovanou informaci pro export?
-  if variable^.export_info<>nil then
-    ce^.seterror({CCERR=}000553,ce_exported);
-    ce^.setparam(sym_get_qid(variable));
-    ce^.loadpos;
-    ce^.resumeerror;
-    return;
-    end if;
 
-  -- %%TODO(HYNEK) - dodeat export taskovych promennych
-  -- pouze taskove a staticke promenne
-  if variable^.mclass<>mc_static {and variable^.mclass<>mc_task}then
-    ce^.seterror({CCERR=}000555,ce_export_var_restrict);
-    ce^.setparam(sym_get_qid(variable));
-    ce^.loadpos;
-    ce^.resumeerror;
-    end if;
 
-  new pexportinfo(variable^.export_info);
-  
-  pexportinfo(variable^.export_info)^.export_name:=expname;
-  end exportvar;
+----------------------------------------------------------------------------------------------------
+override export_static_subprogram =
+-- Export statického podprogramu do externí knihovny pod jménem [expname].
+----------------------------------------------------------------------------------------------------
+begin
+  #expand export_scheme;
+    #for export_allowance_check use; -- není co kontrolovat
+    #end export_scheme;
+  end export_static_subprogram;
+
+
+
+----------------------------------------------------------------------------------------------------
+override export_variable =
+-- Export proměnné do externí knihovny pod jménem [expname].
+----------------------------------------------------------------------------------------------------
+begin
+  #expand export_scheme;
+    #for export_allowance_check use;
+        -- %%TODO(HYNEK) - dodelat export taskovych promennych
+        -- pouze taskové a statické promenne
+        if entity^.mclass<>mc_static {and variable^.mclass<>mc_task}then
+          if try_export
+            then return
+            else
+              ce^.seterror({CCERR=}000555,ce_export_var_restrict);
+              ce^.setparam(sym_get_qid(entity));
+              ce^.loadpos;
+              ce^.resumeerror;
+              end if;
+          end if;
+    #end export_scheme;
+  end export_variable;
 
 
 
@@ -240,14 +256,11 @@ begin
     end if;
 
   -- ... jinak vrat defaultni hodnoty
-  if compi.compitype=ct_program then
-    result:=$400000;
-  elsif compi.compitype=ct_library then
-    result:=$10000000;
-  else
-    -- neznamy typ kompilacni jednotky
-    verify({VERIFY=}000669,true);
-    end if;
+  case compi.part_result
+    when tpr_program do result:=$400000;
+    when tpr_library do result:=$10000000;
+    when others do verify({VERIFY=}000669,true);
+    end case;
   end getimagebase;
 
 
@@ -256,9 +269,6 @@ begin
 override getstackreserve =
 -- Vrati velikost alokovaneho mista na stacku kompilacni jednotky
 ----------------------------------------------------------------------------------------------------
-with
-  cc_base,
-  cc_base.cc_options;
 
 var
   size    : t_unsigned;

@@ -9,10 +9,11 @@ type
                                                  -- Initialized to 0 and is incremented every time a task calls WaitToRead while m_nActive is -1.
     waiting_writers : t_rtl_native_signed;       -- Indicates the number of writer tasks that want to access the resource. 
                                                  -- Initialized to 0 and is incremented every time a task calls WaitToWrite while m_nActive is greater than 0.
-    active          : t_rtl_native_signed;       -- Reflects the current state of the shared resource. If the value is 0, no task is accessing 
+    active_readers  : t_rtl_native_signed;       -- Reflects the current state of the shared resource. If the value is 0, no task is accessing 
                                                  -- the resource. If the value is greater than 0, the value indicates the number of tasks that are currently 
                                                  -- reading from the resource. If the number is negative, a writer is writing to the resource. The only valid negative number is -1.
-
+    active_writer   : t_rtl_task_id;             -- id of owning writer thread
+    writer_recurs   : t_rtl_native_signed;       -- writer recursion count
     sem_writers     : t_rtl_semaphore;           -- When tasks call WaitToWrite but are denied access because m_nActive is greater than 0,
                                                  -- the writer tasks all wait on this semaphore. While a writer task is waiting, 
                                                  -- new reader tasks are denied access to the resource. This prevents reader tasks from monopolizing 
@@ -30,10 +31,12 @@ procedure rtl_readers_new =
 begin
   readers_object.waiting_readers:=0;
   readers_object.waiting_writers:=0;
-  readers_object.active:=0;
+  readers_object.active_readers:=0;
+  readers_object.active_writer:=0;
+  readers_object.writer_recurs:=0;
   rtl_critical_new(readers_object.record_lock);
-  rtl_semaphore_new_owned(readers_object.sem_writers,1,1);
-  rtl_semaphore_new_owned(readers_object.sem_readers,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
+  readers_object.sem_writers:=rtl_nil_semaphore;
+  readers_object.sem_readers:=rtl_nil_semaphore;
   end rtl_readers_new;
 
 
@@ -42,8 +45,12 @@ procedure rtl_readers_discard =
 ----------------------------------------------------------------------------------------------------
 begin
   rtl_critical_discard(readers_object.record_lock);
-  rtl_semaphore_discard(readers_object.sem_writers);
-  rtl_semaphore_discard(readers_object.sem_readers);
+  if readers_object.sem_writers<>rtl_nil_semaphore then
+    rtl_semaphore_discard(readers_object.sem_writers);
+    end if;
+  if readers_object.sem_readers<>rtl_nil_semaphore then
+    rtl_semaphore_discard(readers_object.sem_readers);
+    end if;
   end rtl_readers_discard;
 
 
@@ -52,33 +59,51 @@ begin
 procedure rtl_readers_try_read =
 ----------------------------------------------------------------------------------------------------
 var
-    write_pending  : t_rtl_logical;
+    need_wait      : t_rtl_logical;
 #if rtl_debug_break_try_spin then;
   longloop         : t_rtl_native_signed;
 #end if;
 
 begin
-  result:=false;
+  --result:=false;
+  --need_wait:=false;
 
   -- Ensure exclusive access to the member variables
   rtl_critical_lock(readers_object.record_lock);
   
-  -- Are there writers waiting or is a writer writing?
-  write_pending:=((readers_object.waiting_writers<>0) or (readers_object.active < 0));
-  if write_pending then
+  -- is a writer writing?
+  if readers_object.active_readers < 0 then
+    -- test for subsequent writer->reader
+    if readers_object.active_writer=rtl_get_current_task_id() then
+      result:=true;
+      succ readers_object.writer_recurs;
+    else
+      need_wait:=true;
+      end if;
+  -- Are there writers waiting
+  elsif readers_object.waiting_writers<>0 then
+    need_wait:=true;
+    end if;
+
+  if need_wait then
     -- This reader must wait, increment the count of waiting readers
     readers_object.waiting_readers + 1;
   else
-    --This reader can read, increment the count of active readers
-    readers_object.active + 1;
-    result:=true;
+    if not result then
+      --This reader can read, increment the count of active readers
+      readers_object.active_readers + 1;
+      result:=true;
+      end if;
     end if;
 
   -- Allow other tasks to attempt reading/writing
   rtl_critical_unlock(readers_object.record_lock);
 
-  if (write_pending) then
+  if (need_wait) then
     -- This task must wait
+    if not rtl_semaphore_lazy(readers_object.sem_readers,rtl_max_semaphore,rtl_max_semaphore) then
+      -- vytvoril nekdo jiny
+      end if;
     result:=rtl_semaphore_try_lock(readers_object.sem_readers,milisec);
     -- if timeouted
     #if rtl_debug_break_try_spin then;
@@ -115,7 +140,7 @@ begin
 procedure rtl_readers_try_write =
 ----------------------------------------------------------------------------------------------------
 var
-    resource_owned : t_rtl_logical;
+    need_wait      : t_rtl_logical;
 #if rtl_debug_break_try_spin then;
   longloop         : t_rtl_native_signed;
 #end if;
@@ -125,23 +150,37 @@ begin
   -- Ensure exclusive access to the member variables
   rtl_critical_lock(readers_object.record_lock);
 
-  -- Are there any tasks accessing the resource?
-  resource_owned:=(readers_object.active <> 0);
-
-  if resource_owned then
+  if readers_object.active_readers<0 then
+    -- writer is writing
+    if readers_object.active_writer=rtl_get_current_task_id() then
+      result:=true;
+    else
+      need_wait:=true;
+      end if;
+  elsif readers_object.active_readers>0 then
+    -- reader are reading
+    need_wait:=true;
+    end if;
+  
+  if need_wait then
     -- This writer must wait, increment the count of waiting writers
     readers_object.waiting_writers + 1;
   else
-    -- This writer can write, decrement the count of active writers
-    readers_object.active:= -1;
-    result:=true;
+    if not result then
+      -- This writer can write, decrement the count of active writers
+      readers_object.active_readers:= -1;
+      result:=true;
+      end if;
     end if;
 
   -- Allow other tasks to attempt reading/writing
   rtl_critical_unlock(readers_object.record_lock);
 
-  if resource_owned then
+  if need_wait then
     -- This task must wait
+    if not rtl_semaphore_lazy(readers_object.sem_writers,1,1) then
+      -- vytvoril nekdo jiny
+      end if;
     result:=rtl_semaphore_try_lock(readers_object.sem_writers,milisec);
     -- if timeouted
     #if rtl_debug_break_try_spin then;
@@ -169,6 +208,13 @@ begin
         pause_nop;
         end if;
       end loop;
+    end if;
+  -- set active writer id
+  if result and readers_object.writer_recurs=0 then
+    rtl_critical_lock(readers_object.record_lock);
+    succ readers_object.writer_recurs;
+    readers_object.active_writer:=rtl_get_current_task_id();
+    rtl_critical_unlock(readers_object.record_lock);
     end if;
   end rtl_readers_try_write;
 
@@ -208,20 +254,25 @@ begin
   -- Ensure exclusive access to the member variables
   rtl_critical_lock(readers_object.record_lock);
 
-  if (readers_object.active > 0) then
+  if (readers_object.active_readers > 0) then
     -- Readers have control so a reader must be done
-    readers_object.active - 1;
+    readers_object.active_readers - 1;
   else 
-    -- Writers have control so a writer must be done
-    readers_object.active + 1;
+    -- Writer have control 
+    pred readers_object.writer_recurs;
+    if readers_object.writer_recurs=0 then
+      --so a writer must be done
+      readers_object.active_readers + 1;
+      readers_object.active_writer:=nil;
+      end if;
     end if;
 
   -- Assume no tasks are waiting
-  sem:=rtl_invalid_semaphore;  
+  sem:=rtl_nil_semaphore;  
   -- Assume only 1 waiter wakes; always true for writers
   count:=1;     
 
-  if readers_object.active = 0 then
+  if readers_object.active_readers = 0 then
     -- No task has access, who should wake up?
     -- NOTE: It is possible that readers could never get access
     --       if there are always writers wanting to write
@@ -229,29 +280,35 @@ begin
     if (readers_object.waiting_writers > 0) then
        -- Writers are waiting and they take priority over readers
        -- A writer will get access
-       readers_object.active:=-1;          
+       readers_object.active_readers:=-1;          
        -- One less writer will be waiting
        readers_object.waiting_writers - 1;
        -- Writers wait on this semaphore
+       if not rtl_semaphore_lazy(readers_object.sem_writers,1,1) then
+         -- vytvoril nekdo jiny
+         end if;
        sem:=readers_object.sem_writers;    
        -- NOTE: The semaphore will release only 1 writer task
 
     elsif (readers_object.waiting_readers > 0) then
        -- Readers are waiting and no writers are waiting
        -- All readers will get access
-       readers_object.active:=readers_object.waiting_readers;
+       readers_object.active_readers:=readers_object.waiting_readers;
        -- No readers will be waiting
        readers_object.waiting_readers:=0;
        -- Readers wait on this semaphore
+       if not rtl_semaphore_lazy(readers_object.sem_readers,rtl_max_semaphore,rtl_max_semaphore) then
+          -- vytvoril nekdo jiny
+         end if;
        sem:=readers_object.sem_readers;            
        -- Semaphore releases all readers
-       count:=readers_object.active;              
-    --else then
+       count:=readers_object.active_readers;              
+    --else
       -- There are no tasks waiting at all; no semaphore gets released
       end if;
     end if;
 
-  if sem <> rtl_invalid_semaphore then
+  if sem <> rtl_nil_semaphore then
     -- Some tasks are to be released
     rtl_semaphore_unlock_multi(sem,count);
     end if;

@@ -21,9 +21,6 @@ with
   cx_expr.cx_def,
   cx_expr.cx_compile;
 
-use
-  cc_base.cc_sym.cc_advanced;
-
 ----------------------------------------------------------------------------------------------------
 procedure p_body (
     curr           : in tcontext;                -- překládaný prvek
@@ -569,6 +566,9 @@ procedure p_with_module (
     mode           : in t_with_mode) =           -- WITH/USE
 -- Překlad WITH/USE.
 ----------------------------------------------------------------------------------------------------
+use
+  cc_base.cc_sym.cc_advanced;
+
 label 
   R1;
  
@@ -605,6 +605,7 @@ begin
       -- výraz
       x_vyraz(curr,expr,es_name);
       x_evaluate(curr,expr,ek_context[mode],nil,eu_formal,true,eval);
+      if expr^.erroneous then goto R1 end if;
       verify({VERIFY=}000141,eval<>ete_evaluated);
 
       -- symbol
@@ -693,6 +694,7 @@ begin
     -- výraz
     x_vyraz(curr,expr,es_name);
     x_evaluate(curr,expr,ek_context_extend,nil,eu_formal,true,eval);
+    if expr^.erroneous then return end if;
     verify({VERIFY=}000784,eval<>ete_evaluated);
 
     -- symbol
@@ -769,44 +771,46 @@ begin
       -- výraz
       x_vyraz(curr,expr,es_name);
       x_evaluate(curr,expr,ek_context_expose,nil,eu_formal,true,eval);
-      verify({VERIFY=}000785,eval<>ete_evaluated);
+      if not expr^.erroneous then
+        verify({VERIFY=}000785,eval<>ete_evaluated);
 
-      -- symbol
-      x_get_symbol(expr,psym);
+        -- symbol
+        x_get_symbol(expr,psym);
 
-      -- nelze dělat EXPOSE na svého potomka
-      if sym_is_descendant(psym,curr.entity) then
-        ce^.seterror({CCERR=}000289,ce_i_expose);
-        ce^.setinfo(hint_expose_descendant);
-        expr^.errpos;
-        ce^.resumeerror;
+        -- nelze dělat EXPOSE na svého potomka
+        if sym_is_descendant(psym,curr.entity) then
+          ce^.seterror({CCERR=}000289,ce_i_expose);
+          ce^.setinfo(hint_expose_descendant);
+          expr^.errpos;
+          ce^.resumeerror;
+          end if;
+
+        -- nelze dělat EXPOSE na svého předka
+        if sym_is_ancestor(psym,curr.entity) then
+          ce^.seterror({CCERR=}000290,ce_i_expose);
+          ce^.setinfo(hint_expose_ancestor);
+          expr^.errpos;
+          ce^.resumeerror;
+          end if;
+
+        -- nelze dělat EXPOSE na nadřazenou třídu
+        if sym_is_included(curr.entity,psym) then
+          ce^.seterror({CCERR=}000291,ce_i_expose);
+          ce^.setinfo(hint_expose_enclosing);
+          expr^.errpos;
+          ce^.resumeerror;
+          end if;
+
+        -- nelze dělat EXPOSE na WITH/USEnutou třídu
+        if sym_is_used(psym,curr,t_with_mode_set:full)<>twl_none then
+          ce^.seterror({CCERR=}000292,ce_i_expose);
+          expr^.errpos;
+          ce^.resumeerror;
+          end if;
+
+        -- zařadit jako exposovaný interface
+        pentity_type(curr.entity)^.interfaces^.add_interface(expr,psym);
         end if;
-
-      -- nelze dělat EXPOSE na svého předka
-      if sym_is_ancestor(psym,curr.entity) then
-        ce^.seterror({CCERR=}000290,ce_i_expose);
-        ce^.setinfo(hint_expose_ancestor);
-        expr^.errpos;
-        ce^.resumeerror;
-        end if;
-
-      -- nelze dělat EXPOSE na nadřazenou třídu
-      if sym_is_included(curr.entity,psym) then
-        ce^.seterror({CCERR=}000291,ce_i_expose);
-        ce^.setinfo(hint_expose_enclosing);
-        expr^.errpos;
-        ce^.resumeerror;
-        end if;
-
-      -- nelze dělat EXPOSE na WITH/USEnutou třídu
-      if sym_is_used(psym,curr,t_with_mode_set:full)<>twl_none then
-        ce^.seterror({CCERR=}000292,ce_i_expose);
-        expr^.errpos;
-        ce^.resumeerror;
-        end if;
-
-      -- zařadit jako exposovaný interface
-      pentity_type(curr.entity)^.interfaces^.add_interface(expr,psym);
       until not checklex(curr,lex_comma);
 
     -- středník
@@ -1334,6 +1338,9 @@ const
   overloadinit     = 4;
   overloaddelta    = 4;
 
+label 
+  R1;
+
 var
   lex              : lexsym;                     -- lexikální symbol
   poverload        : pentity_overload0;          -- přetížení
@@ -1399,6 +1406,9 @@ begin
       -- jméno procedury
       x_vyraz(curr,expr,es_name);
       x_evaluate(curr,expr,ek_sym_proc,nil,eu_formal,true,eval);
+
+      -- pokud se proceduru nepodaří vyhodnotit, skočit na další iteraci
+      if expr^.erroneous then goto R1;end if;
       verify({VERIFY=}000273,eval<>ete_evaluated);
 
       -- symbol
@@ -1422,6 +1432,7 @@ begin
       poverload^.table^ & _overload^;
       discard p_machine_pointer(_overload);
 
+    R1:
       until not checklex(poverload_context,lex_comma);
 
     -- středník
@@ -1575,6 +1586,9 @@ var
   mtyp_context     : tcontext;                   -- kontext typu zprávy
   eval             : tentityeval;
 
+label
+  R1;
+
 begin
   loop
     begin
@@ -1593,6 +1607,7 @@ begin
             -- výraz
             x_vyraz(pmsg_context,expr,es_name);
             x_evaluate(pmsg_context,expr,ek_context_message,nil,eu_formal,true,eval);
+            if expr^.erroneous then goto R1;end if;
             verify({VERIFY=}000786,eval<>ete_evaluated);
 
             -- symbol
@@ -1639,6 +1654,7 @@ begin
       when resume_error do resumelex(curr,lex,lex_scol,rl_skip,lex_scol,rt_skip);
       end;
 
+  R1:
     -- podívat se na další symbol
     looklex(curr,lex);
     until lex<>lex_id;
@@ -1738,7 +1754,7 @@ begin
     end if;
 
   -- supervised musí následovat po PUBLIC/PROTECTED
-  if not (curr.region^.vsect<etv_supervised)then
+  if not (curr.region^.vsect<etv_supervised) then
     ce^.seterror({CCERR=}000327,ce_bad_supervised);
     ce^.setinfo(hint_part_bad_supervised);
     ce^.loadpos;
@@ -1962,6 +1978,7 @@ procedure p_compinit (
       d_create_internal(compi,pentity(ptyp),ptyp_context,et_type,nil);
       ptyp^.stype:=dtype;
       ptyp^.size:=size;
+      ptyp^.compile+tentitycompileset:[etc_no_cmt_export];
       d_end_internal(ptyp^,false);
       end newunitype;
 
@@ -1980,6 +1997,7 @@ procedure p_compinit (
       d_create_internal(compi,pentity(ptyp),ptyp_context,et_type,nil);
       ptyp^.stype:=dtype;
       cpu^.getdefaultord(dtype,ptyp^.bits,ptyp^.size,ptyp^.lval,ptyp^.hval);
+      ptyp^.compile+tentitycompileset:[etc_no_cmt_export];
       d_end_internal(ptyp^,false);
       end newdefaultord;
 
@@ -1997,6 +2015,7 @@ procedure p_compinit (
       d_create_internal(compi,pentity(ptyp),ptyp_context,et_type,nil);
       ptyp^.stype:=dt_tag;
       cpu^.getrtattribsize(rta_tag,ptyp^.size);
+      ptyp^.compile+tentitycompileset:[etc_no_cmt_export];
       d_end_internal(ptyp^,false);
       end newdefaulttag;
 
@@ -2024,6 +2043,7 @@ procedure p_compinit (
       ptyp^.pbase:=pbase;
       ptyp^.pattrib:=pattrib;
       cpu^.getptrsize(ptyp^.pattrib,ptyp^.size);
+      ptyp^.compile+tentitycompileset:[etc_no_cmt_export];
       d_end_internal(ptyp^,false);
       end newdefaultptr;
 
@@ -2053,15 +2073,22 @@ begin
   ---- typ interní složky třídy @STATUS ----
   newdefaultord(dt_unsigned,inttype_status);
 
+  ---- interní typ pro atributy :size a :last ----
+  newdefaultord(dt_unsigned,inttype_size);
+
   ---- strojový pointer ----
   newdefaultptr(nil,ptrflagsset:[pf_machine],pc_data,pb_unchecked,[],inttype_machine_pointer);
   end p_compinit;
+
 
 
 ----------------------------------------------------------------------------------------------------
 procedure p_create_compilation_unit =
 -- Vytvoří kompilační jednotku a zajistí překlad run-time knihovny.
 ----------------------------------------------------------------------------------------------------
+use
+  cc_base.cc_sym.cc_advanced;
+
 var
   compi_context    : tcontext;                   -- kontext kompilační jednotky
 
@@ -2070,6 +2097,10 @@ begin
   cc_base.cc_sym.cc_advanced.sym_new_entity(et_compile,pentity(compi));
   cc_base.cc_sym.cc_advanced.sym_new_region(rt_primary,compi^.regions[rc_primary]);
   compi_context:=sym_primary_context(compi^);
+
+  -- zapamatovat si typ výsledný tvar partition
+  compi^.part_type  :=part_type;
+  compi^.part_result:=part_result;
 
   -- přiřadit identifikátor
   -- (je to výjimka jen pro kompilační jednotku, taxem to
@@ -2080,30 +2111,45 @@ begin
   -- %%TECH V předchozí verzi překladače bylo COMPI^.OWNER=COMPI.
   -- Zde jsem to zrušil, protože je to k ničemu.
 
-  -- doplnit implicitní deklarace
-  p_compinit(compi_context);
-
-  -- přeložit modul FLEX
-  if not cfg_no_runtime then 
-    p_loadmodule(compi_context,id_flex); 
+  -- WITHnout všechny dosud přeložené globální partition
+  if global_partitions.list<>nil then
+    for i in global_partitions.list^:range loop
+      cc_base.cc_sym.cc_advanced.sym_add_with(compi_context,nil,global_partitions.list^[i],twm_with,twl_normal,true);
+      end loop;
     end if;
 
+  -- inicializovat built-in prostředí a přeložit run-time podporu
+  if compi^.part_type in parts_runtime then
+    -- doplnit implicitní deklarace
+    p_compinit(compi_context);
+
+    -- přeložit modul FLEX
+    if not cfg_no_runtime then 
+      p_loadmodule(compi_context,id_flex); 
+      end if;
+    end if;
+
+{
   -- zapnout varování a hinty
   -- (až po překladu FLEX, ať to neopruzuje)
   compi^.compv.warns:=compi^.compv.warns:full;
   compi^.compv.hints:=compi^.compv.hints:full;
+}
   end p_create_compilation_unit;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure p_compile_partition =
+procedure p_compile_compilation_unit =
 -- Přeloží jednu část kompilační jednotky.
 ----------------------------------------------------------------------------------------------------
 var
   compi_context    : tcontext;                   -- kontext kompilační jednotky
 
 begin
+  -- run-time partition nemá žádnou uživatelskou část
+  if compi^.part_type=part_runtime then return end if;
+  
   -- sestavit kontext deklarace
   compi_context:=sym_primary_context(compi^);
 
@@ -2115,12 +2161,20 @@ begin
     
     -- přeložit program
     then 
-      compi^.compitype:=ct_program;
+      -- přeložit program
       p_program(compi_context);
+
+      -- nebyl-li dosud zvolen tvar přeložené partition, vybrat variantu "program"
+      if compi^.part_result=tpr_auto_select then
+        compi^.part_result:=tpr_program;
+        end if;
 
     -- knihovna uz zkompilovana (viz p_declare)
     else 
-      compi^.compitype:=ct_library;
+      -- nebyl-li dosud zvolen tvar přeložené partition, vybrat variantu "knihovna"
+      if compi^.part_result=tpr_auto_select then
+        compi^.part_result:=tpr_library;
+        end if;
       end if;
 
   -- konec textu
@@ -2129,7 +2183,7 @@ begin
     ce^.loadpos;
     {%%RESUME ce^.raiseerror;}
     end if;
-  end p_compile_partition;
+  end p_compile_compilation_unit;
 
 
 
@@ -2137,12 +2191,25 @@ begin
 procedure p_finalize_compilation_unit =
 -- Finalizuje kompilační jednotku.
 ----------------------------------------------------------------------------------------------------
+with
+  cc_binding;
+
 begin
   -- označit deklaraci jako ukončenou
   compi^.declared:=etd_full;
 
   -- vyhodnotit deklaraci
   e_symbol(compi,nil,etd_full,true);
+
+  -- pro non-standalone partition ještě vyexportovat všechny viditelné symboly
+  if compi^.part_type<>part_standalone then
+    export_entity(compi);
+    end if;
+
+  -- partition (s výjimkou dočasné partition) zařadit na seznam dostupných partition
+  if compi^.part_type<>part_temporary then
+    global_partitions.add(compi);
+    end if;
   end p_finalize_compilation_unit;
 
 

@@ -8,42 +8,14 @@
 ----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_critical_get_semaphore(
-    critical_object: in out ref t_rtl_critical;
-    semaphore      : out ref t_rtl_semaphore) =
--- Create semaphore for critical section
-----------------------------------------------------------------------------------------------------
-var
-  old_value        : t_rtl_semaphore;
-
-begin
-  semaphore:=critical_object.lock_semaphore;
-  if semaphore=rtl_nil_semaphore then
-    rtl_semaphore_new_owned(semaphore,1,1);
-    rtl_interlocked_compare_exchange(    ^t_rtl_native_signed(critical_object.lock_semaphore),
-                                          t_rtl_native_signed(semaphore),
-                                          t_rtl_native_signed(rtl_nil_semaphore),
-                                          t_rtl_native_signed(old_value));
-    if old_value<>rtl_nil_semaphore then
-      --nekdo mne predbehnul
-      rtl_semaphore_discard(semaphore);
-      semaphore:=critical_object.lock_semaphore;
-      end if;
-    end if;
-  end rtl_critical_get_semaphore;
-
-
-
-----------------------------------------------------------------------------------------------------
 procedure rtl_critical_unwait_critical(
     critical_object: in out ref t_rtl_critical) =
 ----------------------------------------------------------------------------------------------------
-var
-  semaphore        : t_rtl_semaphore;
-
 begin
-  rtl_critical_get_semaphore(critical_object,semaphore);
-  rtl_semaphore_unlock(semaphore);
+  if not rtl_semaphore_lazy(critical_object.lock_semaphore,1,1) then
+    -- vytvoril nekdo jiny
+    end if;
+  rtl_semaphore_unlock(critical_object.lock_semaphore);
   end rtl_critical_unwait_critical;
 
 
@@ -53,10 +25,17 @@ procedure rtl_critical_new =
 -- Create and initialize critical object.
 ----------------------------------------------------------------------------------------------------
 begin
-  critical_object.lock_count      := -1;
-  critical_object.lock_semaphore  :=  rtl_nil_semaphore;
-  critical_object.recursion_count :=  0;
-  critical_object.owning_task   :=  0;
+  if owned then
+    critical_object.owning_task     := rtl_get_current_task_id();
+    critical_object.recursion_count := 1;
+    critical_object.lock_count      := 0;
+  else
+    critical_object.owning_task     :=  0;
+    critical_object.recursion_count :=  0;
+    critical_object.lock_count      := -1;
+    end if;
+
+  critical_object.lock_semaphore    :=  rtl_nil_semaphore;
   -- zadne spinovani na jednoprocesorovem stroji
   if target_machine_processor_count=1 then
     critical_object.spin_count      :=  0;
@@ -73,7 +52,7 @@ procedure rtl_critical_discard =
 ----------------------------------------------------------------------------------------------------
 begin
   if critical_object.lock_semaphore<>rtl_nil_semaphore then
-    rtl_semaphore_discard(t_rtl_semaphore(critical_object.lock_semaphore));
+    rtl_semaphore_discard(critical_object.lock_semaphore);
     end if;
   critical_object:=nil;
   end rtl_critical_discard;
@@ -167,7 +146,6 @@ begin
 procedure rtl_critical_try_lock =
 ----------------------------------------------------------------------------------------------------
 var
-  semaphore        : t_rtl_semaphore;
   old_value        : t_rtl_native_signed;
 #if rtl_debug_break_try_spin then;
   longloop         : t_rtl_native_signed;
@@ -184,8 +162,10 @@ begin
     result:=true;
   else
     -- cekam na semaforu
-    rtl_critical_get_semaphore(critical_object,semaphore);
-    result:=rtl_semaphore_try_lock(semaphore,milisec);
+    if not rtl_semaphore_lazy(critical_object.lock_semaphore,1,1) then
+      -- vytvoril nekdo jiny
+      end if;
+    result:=rtl_semaphore_try_lock(critical_object.lock_semaphore,milisec);
     end if;
 
   -- tato smycka resi problem vraceni slibeneho zamku
@@ -197,7 +177,7 @@ begin
     if old_value>0 then
       return;
     else
-      result:=rtl_semaphore_try_lock(semaphore,t_rtl_wait_immediate);
+      result:=rtl_semaphore_try_lock(critical_object.lock_semaphore,t_rtl_wait_immediate);
       end if;
     if not result then
       rtl_sleep(t_rtl_wait_immediate);

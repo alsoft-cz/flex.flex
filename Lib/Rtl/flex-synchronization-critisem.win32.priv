@@ -37,43 +37,15 @@ procedure rtl_critisem_unlock_max (
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_critisem_get_semaphore(
-    critisem_object: in out ref t_rtl_critisem;
-    semaphore      : out ref t_rtl_semaphore) =
--- Create semaphore for critisem section
-----------------------------------------------------------------------------------------------------
-var
-  old_value        : t_rtl_semaphore;
-
-begin
-  semaphore:=critisem_object.lock_semaphore;
-  if semaphore=rtl_nil_semaphore then
-    rtl_semaphore_new_owned(semaphore,critisem_object.max_in,critisem_object.max_in);
-    rtl_interlocked_compare_exchange(    ^t_rtl_native_signed(critisem_object.lock_semaphore),
-                                          t_rtl_native_signed(semaphore),
-                                          t_rtl_native_signed(rtl_nil_semaphore),
-                                          t_rtl_native_signed(old_value));
-    if old_value<>rtl_nil_semaphore then
-      --nekdo mne predbehnul
-      rtl_semaphore_discard(semaphore);
-      semaphore:=critisem_object.lock_semaphore;
-      end if;
-    end if;
-  end rtl_critisem_get_semaphore;
-
-
-
-----------------------------------------------------------------------------------------------------
 procedure rtl_critisem_unwait_critisem(
     critisem_object: in out ref t_rtl_critisem;
     count          : in t_rtl_native_signed) =
 ----------------------------------------------------------------------------------------------------
-var
-  semaphore        : t_rtl_semaphore;
-
 begin
-  rtl_critisem_get_semaphore(critisem_object,semaphore);
-  rtl_semaphore_unlock_multi(semaphore,count);
+  if not rtl_semaphore_lazy(critisem_object.lock_semaphore,critisem_object.max_in,critisem_object.max_in) then
+    -- vytvoril nekdo jiny
+    end if;
+  rtl_semaphore_unlock_multi(critisem_object.lock_semaphore,count);
   end rtl_critisem_unwait_critisem;
 
 
@@ -102,7 +74,7 @@ procedure rtl_critisem_discard =
 ----------------------------------------------------------------------------------------------------
 begin
   if critisem_object.lock_semaphore<>rtl_nil_semaphore then
-    rtl_semaphore_discard(t_rtl_semaphore(critisem_object.lock_semaphore));
+    rtl_semaphore_discard(critisem_object.lock_semaphore);
     end if;
   critisem_object:=nil;
   end rtl_critisem_discard;
@@ -270,7 +242,6 @@ begin
 procedure rtl_critisem_try_lock_out =
 ----------------------------------------------------------------------------------------------------
 var
-  semaphore        : t_rtl_semaphore;
 #if rtl_debug_break_try_spin then;
   longloop         : t_rtl_native_signed;
 #end if;
@@ -287,8 +258,10 @@ begin
     result:=true;
   else
     -- cekam na semaforu
-    rtl_critisem_get_semaphore(critisem_object,semaphore);
-    result:=rtl_semaphore_try_lock(semaphore,milisec);
+    if not rtl_semaphore_lazy(critisem_object.lock_semaphore,critisem_object.max_in,critisem_object.max_in) then
+      -- vytvoril nekdo jiny
+      end if;
+    result:=rtl_semaphore_try_lock(critisem_object.lock_semaphore,milisec);
     end if;
 
 #if rtl_debug_break_try_spin then;
@@ -300,7 +273,7 @@ begin
       old_value:=1;
       return;
     else
-      result:=rtl_semaphore_try_lock(semaphore,t_rtl_wait_immediate);
+      result:=rtl_semaphore_try_lock(critisem_object.lock_semaphore,t_rtl_wait_immediate);
       end if;
     if not result then
       rtl_sleep(t_rtl_wait_immediate);

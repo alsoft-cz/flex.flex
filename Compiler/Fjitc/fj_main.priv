@@ -2,18 +2,76 @@
 module private fj_main =
 -- Flex Command-line Compiler
 ----------------------------------------------------------------------------------------------------
+{
+TO DO:
+
++ -- udělat více kompilačních jednotek, podle příznaku [global] WITHnout již existující
+     kompilační jednotky,
+
+  -- dodělat generování exportu všech public entit dané kompilační jednotky,
+
+  -- dodělat rozpoznání volání procedur/proměnných z jiných kompilačních jednotek a generovat
+     exportní/importní stuby,
+
+  -- celé se to naučit spouštět,
+  
+  -- uvolňovat paměť po non-[global] kompilačních jednotkách,
+  
+  -- dovolit překlad programu jako DLL s implicitním exportem,
+  
+* -- dodělat vypucování seznamu chyb a podobných globálních proměnných.
+
+fjitc q:\devel\samples\hello_world\hello_world.src -odx:d:\ol40\output\jit
+
+}
 
 with
+  standard,
   standard.console,
+  cc_def.cc_entity,
   fj_engine;
+
+var
+  jit_engine       : c_flex_jit_engine;          -- vlastní JIT engine
+
+----------------------------------------------------------------------------------------------------
+procedure process_cmd (
+    cmd            : in t_char32ustr;            -- příkaz
+    part_type      : in t_partition_type := part_temporary; -- typ partition
+    ignore_first   : in t_logical := false) =    -- T-ignore the first "parameter"
+-- Zpracuje dodaný příkaz.
+----------------------------------------------------------------------------------------------------
+with
+  ff_lib,
+  ff_lib.ff_cmd_line;
+
+var
+  config           : c_compilation_config;       -- konfigurace překladu
+
+begin
+  -- zpracovat dodaný příkaz
+  parse_command_line(^cmd,console_writer^,config,ignore_first);
+
+  -- není-li k dispozici jméno souboru, není ani co překládat
+  if part_type<>part_runtime and then config.src_name=nil then return end if;
+
+  -- připravit všechna jména souborů
+  config.prepare_names;
+
+  -- spustit překlad
+  jit_engine.jit_execute(console_writer^,config,part_type);
+
+catch
+  -- nepustit dál chyby v parametrech
+  when fcc_error do -- nic nedělat
+  end process_cmd;
+
+
 
 ----------------------------------------------------------------------------------------------------
 procedure fjitc_main =
 -- Hlavní program.
 ----------------------------------------------------------------------------------------------------
-var
-  jit_engine       : c_flex_jit_engine;          -- vlastní JIT engine
-
 begin
   -- initial copyright notice
   write_line(flex_product_name); 
@@ -24,14 +82,42 @@ begin
   write_line('');
 
   -- inicializovat JIT engine
-  jit_engine.jit_initialize(console_output^);
+  jit_engine.jit_initialize(console_writer^);
+
+  -- přeložit run-time partition
+  process_cmd('-nd -vl:0 -sdr:q:\devel\lib',part_runtime);
+
+  -- přeložit sdílené knihovny
+--process_cmd('q:\devel\lib\sys\sys.src   -odx:d:\ol40\output\jit',part_global);
+  process_cmd('q:\devel\lib\smpl\smpl.src -odx:d:\ol40\output\jit',part_global);
+  process_cmd('q:\devel\lib\ampl\ampl.src -odx:d:\ol40\output\jit',part_global);
 
   -- zpracovávat příkazy od uživatele
   loop
+    declare var
+      cmd          : t_char32str;
+      _b           : t_logical;
+
+    begin
+      -- zobrazit prompt
+      console_writer^.write('$FJITC>');
+
+      -- načíst příkaz
+      _b:=console_reader^.read_line(cmd);
+
+      -- není to konec ?
+      if cmd='exit' then break end if;
+      
+      -- přeložit
+      process_cmd(cmd);
+
+      -- prázdný řádek tomu na tomto místě bude slušet
+      console_writer^.write_line('');
+      end declare;
     end loop;
 
   -- finalizovat JIT engine
-  jit_engine.jit_finalize(console_output^);
+  jit_engine.jit_finalize(console_writer^);
   end fjitc_main;
 
 end fj_main;

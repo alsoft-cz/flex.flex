@@ -8,6 +8,7 @@ module private ff_cmd_line =
 ----------------------------------------------------------------------------------------------------
 
 with
+  standard.names,
   standard.strings,
   standard.program_control,
   ff_lib.ff_folders,
@@ -75,7 +76,7 @@ var
 
 begin
   string_to_unsigned_primitive(str_copy(param,prefix:length+2,param:length),10,value,error);
-  if error<>tcres_ok then
+  if error<>tcres_ok or value>last or value<first then
     os.write('Value of parameter "-');os.write(prefix);os.write('" out of range');
     raise fcc_error;
     end if;
@@ -130,6 +131,7 @@ begin
   os.write_line('    -NS          No Shared file access');
   os.write_line('    -VER         displays full version information');
   os.write_line('    -VL:<level>  Verbosity Level (0 = low, 1 = default)');
+  os.write_line('    -CTML:<level> Metadata Generation Sensitivity Level (0 = none, 1 = default)');
   os.write_line('');
   os.write_line('All parameters are case-insensitive');
   os.write_line('See documentation for the list of supported values of specific parameters');
@@ -167,7 +169,6 @@ use
   
 var
   cmd_line         : p_command_line_parameters;  -- blok řádkových parametrů
-  search_dir       : p_text_name;                -- adresář pro vyhledávání                               
   folder_list      : c_folder_list;              -- seznam adresaru pro prohledavani     
   os_family_name   : p_char32ustr;               -- vyplnena OS family
   os_type_name     : p_char32ustr;               -- vyplneny OS type
@@ -178,16 +179,16 @@ var
 begin
   --- %%TECH Konfigurace adresářů ------------------------------------------------------------------
   -- Prochazeni adresaru a sestaveni seznamu pouzitelnych filu je treba odlozit az po nacteni vsech
-  -- paramteru, protoze maji vliv na to ktere fily se pouziji. Tyka se to techto parametru
+  -- paramteru, protoze maji vliv na to ktere fily se pouziji. Tyka se to techto parametru:
   --    -AHD                   skryte adresare
   --    -TO, TT, TS, TC, TU    prepinace platformy
   --------------------------------------------------------------------------------------------------
 
   -- nastavit stream pro zápis průběhu zpracování příkazové řádky
-  cc_var.output:=^os;
+  cc_def.cc_var.output:=^os;
 
-  -- získat blok parametrů
-  get_command_line_parameters(cmd_line);
+  -- dodaný příkazový řádek rozdělit na jednotlivé parametry
+  parse_command_line_parameters(full_cmd_line,cmd_line,ignore_first);
 
   -- jsou vůbec nějaké ?
   if cmd_line^:length=0 then
@@ -200,42 +201,54 @@ begin
 
     -- SD = Search Directory
     if check_parameter(cmd_line^[i]^,'SD:',true) then
-      -- získat jméno souboru
-      retrieve_file_name(cmd_line^[i]^,'SD:',search_dir);
+      declare var
+        search_dir : p_text_name;                -- adresář pro vyhledávání                               
 
-      -- doplnit do seznamu adresářů pro odlozene vyhledávání
-      folder_list.add_directory(search_dir^, false);
+      begin
+        -- získat jméno souboru
+        retrieve_file_name(cmd_line^[i]^,'SD:',search_dir);
 
-      -- uklid
-      discard search_dir;
+        -- doplnit do seznamu adresářů pro odlozene vyhledávání
+        folder_list.add_directory(search_dir^, false);
+
+      leave
+        -- uklid
+        discard search_dir;
+        end declare;
                                           
     -- SD = Search Directory - Recursive
     elsif check_parameter(cmd_line^[i]^,'SDR:',true) then
-      -- získat jméno souboru
-      retrieve_file_name(cmd_line^[i]^,'SDR:',search_dir);
+      declare var
+        search_dir : p_text_name;                -- adresář pro vyhledávání                               
 
-      -- doplnit do seznamu adresářů pro odlozene vyhledávání
-      folder_list.add_directory(search_dir^, true);
+      begin
+        -- získat jméno souboru
+        retrieve_file_name(cmd_line^[i]^,'SDR:',search_dir);
 
-      -- uklid
-      discard search_dir
+        -- doplnit do seznamu adresářů pro odlozene vyhledávání
+        folder_list.add_directory(search_dir^, true);
+
+      leave
+        -- uklid
+        discard search_dir;
+        end declare;
 
     -- ODX = Output Directory for eXecutables
     elsif check_parameter(cmd_line^[i]^,'ODX:',true) then
       -- získat jméno adresáře
-      retrieve_file_name(cmd_line^[i]^,'ODX:',exe_directory);
+      retrieve_file_name(cmd_line^[i]^,'ODX:',config.exe_directory);
       -- %%TODO(LIB) zkontrolovat existenci adresáře
 
     -- ODX = Output Directory for Modules
     elsif check_parameter(cmd_line^[i]^,'ODM:',true) then
       -- získat jméno adresáře
-      retrieve_file_name(cmd_line^[i]^,'ODM:',mod_directory);
+      retrieve_file_name(cmd_line^[i]^,'ODM:',config.mod_directory);
       -- %%TODO(LIB) zkontrolovat existenci adresáře
 
     -- XE = eXecutable Extension
     elsif check_parameter(cmd_line^[i]^,'XE:',true) then
       -- získat příponu
-      retrieve_file_name(cmd_line^[i]^,'XE:',exe_extension);
+      retrieve_file_name(cmd_line^[i]^,'XE:',config.exe_extension);
 
     -- TO = Target Operating system
     elsif check_parameter(cmd_line^[i]^,'TO:',true) then
@@ -306,17 +319,19 @@ begin
       print_version(os);
       raise fcc_error;
 
+    elsif check_parameter(cmd_line^[i]^,'CTML:',true) then
+      cc_def.cc_var.cfg_ctm_level:=retrieve_number(os,cmd_line^[i]^,'CTML:',cc_def.cc_var.ctml_none,cc_def.cc_var.ctml_public);      
+
     -- parametr bez prefixu je jméno překládaného souboru
     elsif check_unprefixed(cmd_line^[i]^) then     
       -- nebylo již jméno překládaného soubnoru určeno?
-      if src_name<>nil then
+      if config.src_name<>nil then
         os.write_line('Duplicate source file name');
         raise fcc_error;
         end if;
 
       -- nastavit jako jméno souboru
-      new src_name range cmd_line^[i]^:length;
-      src_name^:=cmd_line^[i]^;
+      config.set_src_name(cmd_line^[i]^);
 
     -- ostatní parametry neznáme
     else
@@ -342,7 +357,6 @@ begin
 leave
   -- parametry už nebudou potřeba
   discard_command_line_parameters(cmd_line);
-  discard search_dir;
   discard os_family_name;
   discard os_type_name;
   discard os_subsystem_name;

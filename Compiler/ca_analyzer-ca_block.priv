@@ -136,17 +136,177 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure prefix_deref : tprefixproc =
+-- Generátor prefixu dereference výrazu.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=x_make_deref(curr,xinfo,pexpnode(_data));
+  end prefix_deref;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure a_block_new (
     curr           : in tcontext;                -- aktuální kontext
     blcontext      : in tblcontext;              -- kontext analyzovaného uzlu
     bl             : in pblnew) =                -- analyzovavý příkaz
 -- příkaz NEW
 ----------------------------------------------------------------------------------------------------
+with
+  cx_expr.cx_util;
+
 use
-  ca_analyzer.ca_analyze;
+  ca_analyzer.ca_analyze,
+  supervised ca_analyzer.ca_type;
 
 var
   base             : typeview;                   -- bázový typ pointeru
+
+    ------------------------------------------------------------------------------------------------
+    procedure make_temp_copy (
+        xinfo      : in expinfo;                 -- kontext sestavování výrazu
+        x_bl       : in out pexpnode;            -- výraz uložený v příkazu
+        x_org      : out pexpnode;               -- původní výraz uložený v příkazu
+        x_temp     : out pexpnode) =             -- výraz reprezentující pracovní proměnnou
+    -- Alokuje pracovní proměnnou stejného typu jako původní výraz [x_bl], sestaví z ní výraz 
+    -- [x_temp] a nahradí jím výraz uložený v příkazu [x_bl]. Původní výraz [x_bl] zachová v [x_org].
+    ------------------------------------------------------------------------------------------------
+    var
+      temp_var     : pentity_var;                -- pracovní proměnná
+
+    begin
+      -- schovat si původní výraz uložený v příkazu
+      x_org:=x_bl;
+      
+      -- založit pracovní proměnnou
+      a_create_temp_var(curr,temp_var,x_bl^.t.getctype);
+
+      -- sestavit výraz reprezentující pracovní proměnnou
+      x_temp:=x_make_component_var(curr,xinfo,temp_var);
+
+      -- změnit výraz uložený v příkazu na výraz reprezentující pracovní proměnnou
+      x_bl:=x_temp;
+      end make_temp_copy;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure add_assign (
+        binfo      : in blinfo;                  -- kontext
+        xinfo      : in expinfo;                 -- kontext sestavování výrazu
+        bl         : in out bllist;              -- seznam příkazů
+        x_to       : in pexpnode;                -- cílová proměnná
+        x_from     : in pexpnode) =              -- přiřazovaný výraz
+    -- Vygeneruje přiřazení [x_from] do [x_to]. Pokud [x_to] je NIL, nic se nestane.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if x_to<>nil then
+        a_list_append(bl,
+          b_make_cmd(curr,binfo,
+            x_make_op_assign(curr,xinfo,
+              x_to,
+              x_from    
+              )
+            )
+          );
+        end if;
+      end add_assign;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure choose_temp_or_org (
+        xinfo      : in expinfo;                 -- kontext sestavování výrazu
+        x_org_var  : out pexpnode;               -- výraz reprezentující původní proměnnou
+        x_temp_var : out pexpnode) =             -- výraz reprezentující pracovní proměnnou
+    -- Rozhodne, jestli je možné pracovat s původní proměnnou přímo nebo jestli je nutné (resp.
+    -- výhodné) použít pracovní proměnnou. Přímo dovolí pracovat pouze s jednoduchou proměnnou.
+    -- Současně do výrazu [bl^.xvar] dosadí výraz reprezentující pracovní proměnnou.
+    ------------------------------------------------------------------------------------------------
+    begin 
+      if x_is_simple_variable(bl^.xvar) 
+
+        -- ano => alokovat přímo
+        then
+          -- zamapatovat si alias na cílovou proměnnou
+          x_temp_var:=bl^.xvar;
+
+        -- ne => alokovat do pracovní a na závěr přiřadit do cílové
+        else
+         -- alokovat pracovní proměnnou a vyměnit výraz v příkazu
+          make_temp_copy(xinfo,bl^.xvar,x_org_var,x_temp_var);
+          end if;
+      end choose_temp_or_org;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure prepare_tag_and_range (
+        binfo      : in blinfo;                  -- kontext
+        xinfo      : in expinfo;                 -- kontext sestavování výrazu
+        x_tag      : out pexpnode) =             -- výraz reprezentující tag
+    -- Normalizuje informaci o tagu a velikosti alokované paměti.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if bl^.xtag<>nil
+
+        -- explicitně specifikovaný
+        then 
+          -- je uvedený tag jednoduše zjistitelný ?
+          if x_is_simple_tag(bl^.xtag)
+
+            -- ano => použít přímo
+            then x_tag:=bl^.xtag;
+
+            -- ne => prohnat přes pracovní proměnnou
+            else
+              declare var
+                x_org_tag : pexpnode; 
+              
+              begin
+                -- alokovat pracovní proměnnou a vyměnit výraz v příkazu
+                make_temp_copy(xinfo,bl^.xtag,x_org_tag,x_tag);
+
+                -- vypočítat tag a uložit ho do pracovní proměnné
+                add_assign(binfo,xinfo,bl^.bprolog,x_tag,x_org_tag);
+                end declare;
+              end if;
+          
+        -- použít bázový typ pointeru
+        else
+          -- sestavit výraz reprezentující tag bázového typu pointeru
+          x_tag:=x_make_attribute(curr,xinfo,atc_static,atf_tag,ata_type_tag,inttype_tag,
+                   x_make_component_type(curr,xinfo,base.getctype)
+                   );
+          end if;
+      
+      -- podle tagu nastavit velikost alokované paměti
+      if bl^.xrange=nil and x_tag<>nil then
+        declare var
+          real_base : pentity_type;              -- skutečný bázový typ pointeru
+
+        begin
+          -- z výrazu reprezentujícího tag zjistit typ, ke kterému se vztahuje (jestliže je to možné)
+          x_get_static_tag(x_tag,real_base);
+
+          -- podařilo se ? a je známa úplná deklarace typu ?
+          if real_base<>nil and then real_base^.declared=etd_full
+
+            -- ano => velikost lze určit konstantně
+            then
+              bl^.xrange:=x_make_imm_uniint(curr,xinfo,unidata_size_to_uniint(real_base^.size));
+
+            -- ne => velikost zjistit dynamicky z tagu
+            else
+              bl^.xrange:=x_make_attribute(curr,xinfo,atc_dynamic,atf_size,ata_designated_size,inttype_size,
+                            x_make_attribute(curr,xinfo,atc_dynamic,atf_designated,ata_tag_designated,nil,
+                              x_tag
+                              )
+                            );
+              end if;
+          end declare;
+        end if;
+      end prepare_tag_and_range;
 
 begin
   -- zjistit bázový typ pointeru
@@ -160,8 +320,38 @@ begin
       end if;
     end if;
 
+  -- ... Normalizovat interface na generátor kódu tak, že vždy jsou uvedeny range i tag, zjednoduší
+  -- se tak generování kódu ...
+
   -- bázový typ je třída ?
   if base.isclass then
+    declare var
+      binfo        : blinfo;                     -- kontext
+      xinfo        : expinfo;                    -- kontext
+      x_org_var    : pexpnode;                   -- výraz reprezentující původní proměnnou
+      x_temp_var   : pexpnode;                   -- výraz reprezentující pracovní proměnná
+      x_tag        : pexpnode;                   -- výraz reprezentující tag
+
+    begin
+      -- připravit kontexty
+      a_prepare_info(binfo,xinfo);
+
+      ----- (1) Rozhodnout, jestli není potřeba pracovní proměnná -----
+      choose_temp_or_org(xinfo,for x_org_var use x_org_var,for x_temp_var use x_temp_var);
+      
+      ----- (2) Vypočítat a zkontrolovat tag, upravit RANGE -----
+      prepare_tag_and_range(binfo,xinfo,x_tag);
+
+      ----- (3) Inicializovat instanci třídy -----
+      ca_analyzer.ca_type.a_type_class_entry_internal(curr,^prefix_deref,x_temp_var,base.getctype,bl^.bepilog,binfo,xinfo,x_tag);
+
+      ----- (4) Pracovní proměnnou přiřadit do cílové -----
+      add_assign(binfo,xinfo,bl^.bepilog,for x_to use x_org_var,for x_from use x_temp_var);
+      end declare;
+
+
+
+{
     declare var
       binfo        : blinfo;                     -- kontext
       xinfo        : expinfo;                    -- kontext
@@ -251,14 +441,11 @@ begin
           )
         );
       end declare;
+}
 
   -- v NEW je explicitně specifikován TAG => může mít metody INIT nebo ENTRY
   elsif bl^.xtag<>nil then
     unimplementedx({UNIMP=}000195,bl^.pos[bp_begin]);
-
-  -- %%X Není náhodou nutné zajistit, aby BASE bylo již analyzováno? Bez toho si přeci
-  -- nemohu být jist, že už jsou pro něj vygenerovány metody INIT a ENTRY, které zde
-  -- tak vehementně testuju na existenci.
 
   -- obsahuje třídu nebo má speciální metodu INIT ?
   -- Ondra 1.7.2003 : Příznak komplexní inicializace se nově nenastavuje v případě, kdy není
@@ -296,7 +483,7 @@ begin
       typ:=base.getutype;
 
       -- pro pole a string musíme zajistit rozsah inicializace
-      if (typ^.stype in dts_index) then
+      if typ^.stype in dts_index then
         -- unconstrained type - inicializace dána rozsahem
         if bl^.xrange<>nil and typ^.stype in dts_unconstrained then
           -- založit pracovní proměnnou
@@ -493,7 +680,8 @@ var
     procedure compute_variable_size (
         _variable  : in pentity_var;             -- proměnná
         _atf       : in tattrformal;             -- formální atribut
-        _ata       : in tattractual) =           -- skutečný atribut
+        _ata       : in tattractual;             -- skutečný atribut
+        _ata_type  : in pentity_type) =          -- typ skutečného atributu
     -- Z attributů proměnné ptempvar zjistí velikost.
     ------------------------------------------------------------------------------------------------
     begin
@@ -502,7 +690,7 @@ var
         b_make_cmd(curr,binfo,
           x_make_op_assign(curr,xinfo,
             x_make_component_var(curr,xinfo,_variable),
-            x_make_attribute(curr,xinfo,atc_dynamic,_atf,_ata,inttype_tag,
+            x_make_attribute(curr,xinfo,atc_dynamic,_atf,_ata,_ata_type,
               x_make_deref(curr,xinfo,
                 x_make_component_var(curr,xinfo,ptempvar)
                 )
@@ -536,7 +724,8 @@ var
     ------------------------------------------------------------------------------------------------
     procedure create_exit_range (
         _atf       : in tattrformal;             -- formální atribut
-        _ata       : in tattractual) =           -- skutečný atribut
+        _ata       : in tattractual;             -- skutečný atribut
+        _ata_type  : in pentity_type) =          -- typ skutečného atributu
     -- Z attributů proměnné ptempvar zjistí velikost a vygeneruje rozsah deinicializace.
     ------------------------------------------------------------------------------------------------
     var
@@ -559,7 +748,7 @@ var
       a_create_temp_var(curr,pexithighvar,bl^.xrange^.t.getctype);
 
       -- vypočítat velikost
-      compute_variable_size(pexithighvar,_atf,_ata);
+      compute_variable_size(pexithighvar,_atf,_ata,_ata_type);
 
       -- spodní deinicializační mez zpracovávaného rozsahu
       crange_exit.high:=x_make_component_var(curr,xinfo,pexithighvar);
@@ -570,7 +759,8 @@ var
     ------------------------------------------------------------------------------------------------
     procedure create_entry_range (
         _atf       : in tattrformal;             -- formální atribut
-        _ata       : in tattractual) =           -- skutečný atribut
+        _ata       : in tattractual;             -- skutečný atribut
+        _ata_type  : in pentity_type) =          -- typ skutečného atributu
     -- Z attributů proměnné ptempvar zjistí velikost a vygeneruje rozsah deinicializace.
     ------------------------------------------------------------------------------------------------
     var
@@ -591,7 +781,7 @@ var
       a_create_temp_var(curr,pentrylowvar,bl^.xrange^.t.getctype);
 
       -- vypočítat velikost
-      compute_variable_size(pentrylowvar,_atf,_ata);
+      compute_variable_size(pentrylowvar,_atf,_ata,_ata_type);
 
       -- spodní inicializační mez zpracovávaného rozsahu
       crange_entry.low:=x_make_op_unary(curr,xinfo,un_succ,
@@ -634,17 +824,17 @@ begin
     -- if range<length then @exit range+1..length
     if typ^.stype=dt_ustring then
       -- deinicializace
-      create_exit_range(atf_length,ata_string_length);
+      create_exit_range(atf_length,ata_string_length,inttype_size);
 
     -- unconstrainted array
     -- if range<size then @exit range+1..size
     -- if range>size then @entry size+1..range
     elsif typ^.stype=dt_uarray then 
       -- deinicializace
-      create_exit_range(atf_size,ata_array_length);
+      create_exit_range(atf_size,ata_array_length,inttype_size);
 
       -- inicializace
-      create_entry_range(atf_size,ata_array_length);
+      create_entry_range(atf_size,ata_array_length,inttype_size);
       end if;
 
     -- pro pole i string zavolat metodu EXIT

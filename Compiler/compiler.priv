@@ -13,21 +13,21 @@ class private c_flex_compiler =
     with
       standard.conversions,
       standard.names,
+      standard.files,
       cc_def,
       cc_def.cc_entity,
       cc_def.cc_desc,
       cc_def.cc_var,
       cc_base,
       cd_decl,
-      cd_decl.cd_unit,
-      ca_analyzer,
       ca_analyzer.ca_analyze,
       cp_cpu,
       cp_os,
       cg_gen,
       cl_link,
       cl_link.cl_resolver,
-      cl_link.cl_image;
+      cl_link.cl_image,
+      cc_io.cc_ctm;
 
     use
       cc_def.cc_env,
@@ -47,76 +47,82 @@ class private c_flex_compiler =
       plinkresolver_ia32_win32 = ^class cl_link.cl_resolver.cl_ia32.linkresolver_ia32_win32;
       plinkimage_pe            = ^class cl_link.cl_image.cl_pe.linkimage_pe;
 
+    var
+      listing      : ^cc_base.cc_listing;        -- listing
+
     ------------------------------------------------------------------------------------------------
     static compile =
     -- Překlad programu.
     ------------------------------------------------------------------------------------------------
     var
-      compi        : pentity_compile;            -- kompilační jednotka
       resolver     : ^class cl_link.cl_resolver.linkresolver;
-      image        : ^class cl_link.cl_image.linkimage;
-      image_name   : p_text_name;                -- jmeno vysledneho image
+      compi        : pentity_compile;            -- kompilační jednotka
 
     begin
       -- nastavit stream pro zápis průběhu překladu
       cc_var.output:=^os;
       
       -- inicializovat listing
-      listing.create(lst_name,listing.t_listing_section_set:full);
-      cc_var.listing:=^listing;
+      new listing;
+      listing^.create(lst_name,listing^.t_listing_section_set:full);
+      cc_var.listing:=listing;
 
 
-      ---- (0) opsat do listingu konfiguraci překladu ----
-      listing.start_section(listing.tls_setup);
+      ---- (0) opsat do listing^. konfiguraci překladu ----
+      listing^.start_section(listing^.tls_setup);
 
       begin
         ---- (1) překlad  ----
 
-        -- poznamenat do listingu začátek překladu
-        listing.start_section(listing.tls_compilation);
-        listing.write_header_item('Source code:',src_name);
-        listing.write_header_item('Listing:',lst_name);
-        listing.write_header_item('Date and time of compilation:','%%TODO(LIB)');
-        listing.end_header;
+        -- poznamenat do listing^. začátek překladu
+        listing^.start_section(listing^.tls_compilation);
+        listing^.write_header_item('Partition type:',t_partition_type_txt[part_type]);
+        if part_type<>part_runtime then
+          listing^.write_header_item('Source code:',src_name);
+          end if;
+        listing^.write_header_item('Listing:',lst_name);
+        listing^.write_header_item('Date and time of compilation:','%%TODO');
+        listing^.end_header;
 
         begin
           -- otevřít soubor
-          cc_text.text_open(src_name,false);
+          if part_type<>part_runtime then
+            cc_text.text_open(src_name,false);
+            end if;
 
-          -- přeložit
+          -- oznámit začátek překladu
           if cfg_verbosity=vl_low then os.write_line('Compiling...'); end if;
-          p_create_compilation_unit(compi);
-          p_compile_partition(compi);
-          p_finalize_compilation_unit(compi);
 
+          -- přeložit partition
+          p_compile_partition(compi,part_type,part_result);
+        { 
+          -- připravit kompilační jednotku, pokud se tak již nestalo dříve
+          if compi=nil then
+            p_create_compilation_unit(compi);
+            end if;
+
+          -- přeložit partition
+          p_compile_partition(compi,global);
+
+          -- finalizovat kompilační jednotku (resp. to, co přibylo)
+          p_finalize_compilation_unit(compi);
+        }
         leave
           -- zavřít poslední soubor
-          cc_text.text_close;
+          if part_type<>part_runtime then
+            cc_text.text_close;
+            end if;
           end;               
 
-        -- jmeno image ruzne pro ruzne kompilacni jednotky
-        case compi^.compitype
-          -- knihovna
-          when ct_library do
-              new image_name range lib_name:length;
-              image_name^:=lib_name;
-     
-          -- program
-          when ct_program do
-              new image_name range exe_name:length;
-              image_name^:=exe_name;
-
-          -- neznamy typ kompilacni jednotky
-          when others do verify({VERIFY=}000668,true);
-          end case;
-
         -- informuj o uspechu kompilace
-        listing.skip_line;
-        case compi^.compitype
-          when ct_library do listing.write_header_item('Compiled library:',src_name);
-          when ct_program do listing.write_header_item('Compiled program:',src_name);
-          when others do verify({VERIFY=}000671,true);
-          end case;       
+        listing^.skip_line;
+        if part_type<>part_runtime then
+          case compi^.part_result
+            when tpr_library do listing^.write_header_item('Compiled library:',src_name);
+            when tpr_program do listing^.write_header_item('Compiled program:',src_name);
+            when others do verify({VERIFY=}000671,true);
+            end case;       
+          end if;
 
         -- konec, pokud je požadována pouze syntaktická kontrola nebo nastala nějaká chyba
         if ce^.testerror or cfg_syntax_check_only then
@@ -129,9 +135,9 @@ class private c_flex_compiler =
 
         ---- (2) globální analýza  ----
 
-        -- poznamenat na obrazovku a do listingu
+        -- poznamenat na obrazovku a do listing^.
         os.write_line('Analyzing...');
-        listing.start_section(listing.tls_global_analysis);
+        listing^.start_section(listing^.tls_global_analysis);
 
         -- globální analýza
         a_analyze(compi);
@@ -144,9 +150,9 @@ class private c_flex_compiler =
 
         ---- (3) generování kódu  ----
 
-        -- poznamenat na obrazovku a do listingu
+        -- poznamenat na obrazovku a do listing^.
         os.write_line('Generating code...');
-        listing.start_section(listing.tls_code_generation);
+        listing^.start_section(listing^.tls_code_generation);
 
         -- generování kódu
         cg_gen.cg_ia32.ci_gen.i_codegen(compi);
@@ -159,9 +165,9 @@ class private c_flex_compiler =
 
         ---- (4) linkování  ----
 
-        -- poznamenat na obrazovku a do listingu
+        -- poznamenat na obrazovku a do listing^.
         os.write_line('Linking...');
-        listing.start_section(listing.tls_linking);
+        listing^.start_section(listing^.tls_linking);
 
         -- linkování
         new plinkresolver_ia32_win32(resolver);
@@ -175,30 +181,70 @@ class private c_flex_compiler =
 
 
         ---- (5) sestavení výstupního souboru  ----
+        declare var
+          image_name : p_text_name;              -- jmeno vysledneho image (alias k dodanému jménu)
+          image      : ^class cl_link.cl_image.linkimage;
 
-        -- poznamenat na obrazovku a do listingu
-        os.write_line('Creating image...');
-        listing.start_section(listing.tls_image);
+        begin
+          -- poznamenat na obrazovku a do listing^.
+          os.write_line('Creating image...');
+          listing^.start_section(listing^.tls_image);
 
-        -- sestavit výstupní soubor
-        new plinkimage_pe(image);
-        plinkimage_pe(image)^.init(image_name^);
-        l_build_image(compi,resolver^,image^);
+          -- zvolit jméno image podle výsledného tvaru partition
+          case compi^.part_result
+            when tpr_library do image_name:=^lib_name;
+            when tpr_program do image_name:=^exe_name;
+            when others do verify({VERIFY=}000668,true);
+            end case;
 
-        -- konec, pokud nastala nějaká chyba
-        if ce^.testerror then
-          return;
-          end if;
+          -- sestavit výstupní soubor
+          new plinkimage_pe(image);
+          plinkimage_pe(image)^.init(image_name^);
+          l_build_image(compi,resolver^,image^);
 
-        -- %%FLEX
-        -- #option Image_Base_Address(<num>);
-        -- #option Code_Alignment(<num>);
-        -- #option Global_Data_Alignment(<num>);
-        -- #option Executable_Extension(<string>);
-        -- #pragma No_Return(<subprogram>);
+          -- konec, pokud nastala nějaká chyba
+          if ce^.testerror then
+            return;
+            end if;
 
-        listing.skip_line;
-        listing.write_header_item('Created image:',image_name^);
+          -- %%FLEX
+          -- #option Image_Base_Address(<num>);
+          -- #option Code_Alignment(<num>);
+          -- #option Global_Data_Alignment(<num>);
+          -- #option Executable_Extension(<string>);
+          -- #pragma No_Return(<subprogram>);
+
+          -- poznamenat do listingu jméno sestaveného image
+          listing^.skip_line;
+          listing^.write_header_item('Created image:',image_name^);
+          end declare;
+
+
+        ---- (6) sestavení compile-time metadat  ----
+        declare var
+          output   : aliased c_buffered_file_output_stream; -- výstupní soubor
+          writer   : c_ctm_writer;               -- zapisovač metada
+
+        begin
+          if cfg_ctm_level=ctml_public then
+            -- poznamenat na obrazovku a do listing^.
+            os.write_line('Creating compile-time metadata...');
+            listing^.start_section(listing^.tls_ctm);
+
+            -- vytvořit výstupní soubor
+            output.create(ctm_name);
+
+            -- zapsat do něj metadata
+            writer.ctm_save(compi,^c_output_stream:(output),ctdl_public);
+
+            -- zavřít soubor
+            output.close;
+
+            -- poznamenat do listingu jméno souboru s metadaty
+            listing^.skip_line;
+            listing^.write_header_item('Created CTM:',ctm_name);
+            end if;
+          end declare;
 
       catch
         -- chyby při překladu
@@ -206,8 +252,11 @@ class private c_flex_compiler =
             -- v tuto chvíli již nic nedělat
 
       leave
-        ---- (5) výsledek překladu ----
-        listing.start_section(listing.tls_summary);
+        -- připravit se na další parition
+        succ curr_partition;
+
+        ---- (7) výsledek překladu ----
+        listing^.start_section(listing^.tls_summary);
 
         -- vynechat prázdný řádek, vypadá to lépe
         os.write_line('');
@@ -217,17 +266,44 @@ class private c_flex_compiler =
         os.write(unsigned_to_string(cc_var.total_lines));
         os.write(' (');
         os.write(unsigned_to_string(cc_var.effective_lines));
-        os.write_line(' effective) lines compiled in %%TODO(LIB) ms (user: %%TODO(LIB) ms, kernel: %%TODO(LIB) ms)');
+      #if flex_product=flex_jitflex then;
+        os.write_line(' effective) lines JITed in %%TODO ms (user: %%TODO ms, kernel: %%TODO ms)');
+      #else;
+        os.write_line(' effective) lines compiled in %%TODO ms (user: %%TODO ms, kernel: %%TODO ms)');
+      #end if;
 
         -- vynechat prázdný řádek, vypadá to lépe
         os.write_line('');
 
         -- uvolnit paměť
         discard resolver;
-        discard image;
-        discard image_name;
         end;
       end compile;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_listing_writer =
+    -- Vrátí text writer pro zápis do listing^..
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=listing^.get_output_text_stream;
+      end get_listing_writer;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static finalize =
+    -- Uklidí po překladu. Zejména zavře listing^.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zavřít listing
+      listing^.close;
+      discard listing;
+
+      -- zresetovat seznam chyb
+      cc_var.ce^.reset;
+      end finalize;
 
 
     

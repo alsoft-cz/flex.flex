@@ -540,7 +540,7 @@ class private linkimage_pe =
 
     ------------------------------------------------------------------------------------------------
     static buildexport (
-        base          : in tpe32base;               --
+        base          : in tpe32base;            --
         export        : in tentitystring;        -- seznam exportovaných symbolu
         edata         : in t_unsigned32;         -- bázová adresa Export Directory Table
         dir           : out tpeedirentry;        -- Export Directory Table (obsahuje jen jeden zaznam)
@@ -554,7 +554,9 @@ class private linkimage_pe =
         namessize     : out t_unsigned32)=
     -- Sestaví exportní tabulky.
     ------------------------------------------------------------------------------------------------
-      
+    with
+      cc_binding;
+
         --------------------------------------------------------------------------------------------
         procedure add_name (
             name       : in t_char32str;
@@ -575,17 +577,16 @@ class private linkimage_pe =
           names_index+name:length+{\0}1;
           names^[names_index]:=t_char8(0);
           end add_name;
-
       
     var
       expnameslength  : t_unsigned32;
       expnum          : t_unsigned32; -- pocet exportu
       curraddr        : t_unsigned32;
       n               : t_unsigned32;
-      
-      -- %%TODO - dllname nahradit jmenem souboru linkimage
+
+      -- %%TODO(DLL) - dllname nahradit jmenem souboru linkimage
       dllname         : t_char32str := 'main.dll';
-    
+
     begin
       -- osetrit vstup. parametry
       if export.count<=0 or export.list=nil then return; end if;
@@ -596,22 +597,15 @@ class private linkimage_pe =
       -- suma velikosti exportnich jmen
       expnameslength:=0;
       for i in export.list^:range loop
+        -- započítat délku vlastního jméno
+        expnameslength+pexportinfo(get_export_info(export.list^[i]))^.export_name:length;
 
-        case export_list.list^[i]^.etype
-          when et_procedure do
-            expnameslength+pexportinfo(pentity_procedure(export.list^[i])^.export_info)^.export_name:length;
-              
-          when et_var do
-            expnameslength+pexportinfo(pentity_var(export.list^[i])^.export_info)^.export_name:length;
-              
-          when others do verify({VERIFY=}000909, true);
-            end case;
-            
-        expnameslength+1; -- plus '\0'
+        -- a koncovou nulu
+        expnameslength+1;
         end loop;
 
       expnameslength+dllname:length+1;
-      
+
       dir.exportflags:=0;
       dir.datetime:=0;
       dir.majver:=0;
@@ -640,36 +634,19 @@ class private linkimage_pe =
 
       -- jmeno dllka
       dir.namerva:=dir.ordtblrva+ordinalssize;
-      add_name(dllname, names, n);
-     
-      for i in 1..export.list^:length loop
+      add_name(dllname,names,n);
 
+      for i in export.list^:range loop
         -- export address table
-        case export_list.list^[i]^.etype
-          when et_procedure do
-            addr^[i-1]:=picodegen_subprog(export.list^[i]^.codegen)^.ifirst^.cstart - base;
-              
-          when et_var do
-            addr^[i-1]:=picodegen_addr(export.list^[i]^.codegen)^.addr - base;
-              
-          when others do verify({VERIFY=}000912, true);
-            end case;
+        addr^[i-1]:=i_get_entity_instance_address(export_list.list^[i]);
 
         -- name ptr table and names
         nameptrs^[i-1]:=dir.ordtblrva+ordinalssize+n;
+        add_name(pexportinfo(get_export_info(export.list^[i]))^.export_name,names,n);
 
-        case export_list.list^[i]^.etype
-          when et_procedure do
-            add_name(pexportinfo(pentity_procedure(export.list^[i])^.export_info)^.export_name, names, n);
-              
-          when et_var do
-            add_name(pexportinfo(pentity_var(export.list^[i])^.export_info)^.export_name, names, n);
-              
-          when others do verify({VERIFY=}000911, true);
-            end case;
-       
         -- ord table
-        ordinals^[i-1]:=i-1;
+        ordinals^[i-1]:=i;
+        ordinals^[i-1]-1; {%%TODO(DYNAMIC_CHECK) záplata kvůli rozsahu i od 1 do N }
         end loop;
       end buildexport; 
 

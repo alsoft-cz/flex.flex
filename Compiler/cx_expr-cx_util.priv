@@ -621,7 +621,7 @@ procedure x_is_nil =
 -- True, je-li zadaný výraz přímá hodnota NIL.
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=(expr^.ntype=nt_imm) and imm_isnil(pexpimm(expr)^.imm);
+  result:=expr^.ntype=nt_imm and imm_isnil(pexpimm(expr)^.imm);
   end x_is_nil;
 
 
@@ -634,6 +634,174 @@ begin
   result:=expr^.ntype=nt_imm;
   end x_is_constant;
 
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_is_simple_variable =
+-- True, je-li zadaný výraz jednoduchá proměnná. 
+--
+-- Zjednodušeně vyjádřeno je jednoduchá proměnná definována takto:
+--   Jednoduchá proměnná ::= Identifikátor automatické nebo statické proměnné
+--                           Jednoduchá proměnná . Selektor komponenty
+--                           Jednoduchá proměnná [ Konstantní výraz ]
+--                           Typ ( Jednoduchá proměnná )
+----------------------------------------------------------------------------------------------------
+begin
+  case expr^.ntype
+    -- komponenta
+    when nt_component do 
+        -- paměťová třída musí být proměnná
+        result:=expr^.nclass=nc_var and then ((
+          -- je to selektor
+          expr^.sub<>nil
+          -- a podvýraz je jednoduchá proměnná
+          and then x_is_simple_variable(expr^.sub)
+        ) or else (
+          -- není to selektor
+          expr^.sub=nil
+          -- a s výrazem souvisí proměnná
+          and then expr^.getsymbol<>nil and then expr^.getsymbol^.etype=et_var
+          -- která je automatická nebo statická
+          and then pentity_var(expr^.getsymbol)^.mclass in mcs_simple
+        ));
+
+    -- index
+    when nt_index do 
+        -- paměťová třída musí být proměnná
+        result:=expr^.nclass=nc_var 
+        -- musí se indexovat jedna komponenta, ne řez
+        and then pexpindex(expr)^.itype=eix_component
+        -- index musí být konstantní
+        and then x_is_constant(expr^.sub^.next)
+        -- podvýraz musí být jednoduchá proměnná
+        and then x_is_simple_variable(expr^.sub);
+    
+    -- přetypování
+    when nt_typecast do
+        -- paměťová třída musí být proměnná
+        result:=expr^.nclass=nc_var 
+        -- podvýraz musí být jednoduchá proměnná
+        and then x_is_simple_variable(expr^.sub);
+    
+    -- nic jiného není jednoduchá proměnná
+    when others do result:=false;
+    end case;
+  end x_is_simple_variable;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_is_final_object =
+-- True, jestliže zadaný výraz reprezentuje finální objekt z hlediska dynamického typu.
+-- Finální objekt je například proměnná, selektor složky nebo složka pole. Finální objekt není
+-- parametr nesoucí dynamickou typovou informaci, dereference pointeru s typovou informací, THIS,
+-- interface cast (dynamický i statický!).
+----------------------------------------------------------------------------------------------------
+begin
+  case expr^.ntype
+    -- komponent
+    when nt_component do
+        -- s výrazem souvisí proměnná
+        result:=expr^.getsymbol<>nil and then expr^.getsymbol^.etype=et_var
+        -- která neimplementuje žádnou "higher-order" dynamickou konstrukci
+        and then (pentity_var(expr^.getsymbol)^.vimplements=vi_none
+        -- nebo implementuje parametr 
+        or else (pentity_var(expr^.getsymbol)^.vimplements=vi_parameter 
+        -- ale bez dynamické typové informace
+        and then pentity_var(expr^.getsymbol)^.imp_param^.pass not in pps_tagged
+        -- jehož typ ovšem není abstraktní (třída)
+        and then not pentity_var(expr^.getsymbol)^.imp_param^.typ.getctype^.is_abstract));
+
+    -- index
+    when nt_index do
+        -- složka pole nikdy neobsahuje dynamickou typovou informaci
+        result:=true;
+
+    -- dereference
+    when nt_deref do
+        -- dereference pointeru bez typové informace
+        result:=expr^.sub^.t.getpbase not in pbs_tagged and pf_machine not in expr^.sub^.t.getpflags;
+
+    -- nic jiného není finální objekt
+    when others do result:=false;
+    end case;
+  end x_is_final_object;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_is_simple_tag =
+-- True, je-li zadaný výraz jednoduchý tag.
+-- Jednoduchý tag je statický tag nebo tag jednoduše zjistitelný z jednoduchého podvýrazu.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_attr;
+
+begin
+  -- výraz reprezentující typ vede na statický tag => je jednoduše zjistitelný
+  if expr^.nclass=nc_type then 
+    result:=true;
+
+  -- atribut :tag
+  elsif expr^.ntype=nt_attrib and then pexpattrib(expr)^.atf=atf_tag then
+    case pexpattrib(expr)^.aclass
+      -- statický :tag => jednoduše zjistitelný
+      when atc_static do result:=true;
+
+      -- dynamický :tag => jednoduše zjistitelný, pokud 
+      when atc_dynamic do 
+          -- se zjišťuje z jednoduché proměnné
+          result:=x_is_simple_variable(expr^.sub)
+          -- nebo z dereference jednoduché proměnné
+          or else (expr^.sub^.ntype=nt_deref and then x_is_simple_variable(expr^.sub^.sub));
+      end case;
+    
+  -- něco jiného,
+  else
+    verify({VERIFY=}001125,not t_is_sts(expr^.t,dts_tag));
+
+    -- je jednoduše vypočitatelný, pokud je uložen v jednoduché proměnné
+    result:=x_is_simple_variable(expr);
+    end if;
+  end x_is_simple_tag;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_get_static_tag =
+-- Jestliže výraz reprezentuje statický tag, získá typ, jehož tag se výrazem určuje. Pokud je tag
+-- dynamický, vrátí NIL. Pokud [expr] nereprezentuje tag, způsobí interní chybu.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_attr;
+
+begin
+  -- výraz je atribut :tag => zjistit, zda má podvýraz statickou velikost
+  if expr^.ntype=nt_attrib and then pexpattrib(expr)^.atf=atf_tag {and then pexpattrib(expr)^.aclass=atc_static} then
+    -- má statickou velikost ?
+    if x_has_static_size(expr^.sub) then
+      ptyp:=expr^.sub^.t.getctype;
+      end if;
+
+  -- výraz reprezentuje typ => předat přímo
+  elsif expr^.nclass=nc_type then 
+    ptyp:=expr^.t.getctype;
+
+  -- něco jiného => jen zkontrolovat, že výraz skutečně reprezentuje tag
+  else
+    verify({VERIFY=}001126,not t_is_sts(expr^.t,dts_tag));
+    end if;
+  end x_get_static_tag;
+
+
+{
+----------------------------------------------------------------------------------------------------
+procedure x_is_static =
+-- True, je-li zadaný výraz statický.
+----------------------------------------------------------------------------------------------------
+begin
+  end x_is_static;
+}
 
 
 ----------------------------------------------------------------------------------------------------
@@ -827,7 +995,7 @@ begin
   -- POZN: takhle to není zrovna nejčistší... :-(
   -- negovat výraz
   if expr^.ntype=nt_unary and pexpunary(expr)^.oper=un_not
-    then
+    then 
       newexpr:=expr^.sub;
     else
       -- sestavit info (potřebuju pouze fázi analýzy)

@@ -386,7 +386,7 @@ begin
               if expr^.nclass not in ncs_value then return; end if;
 
               -- předání obyčeného IN parametru
-              oclass:=toc_param_in;
+              oclass:=toc_param_class{in};
 
           -- [ IN ] OUT => proměnná
           when pm_out, pm_inout do 
@@ -401,12 +401,14 @@ begin
 
     -- referencí, bez typové kontroly
     when pp_unchecked do 
+        verify({VERIFY=}000293,param^.pass=pp_unchecked);
+      {
         -- podvýraz musí být proměnná
         if expr^.nclass not in ncs_var then return; end if;
 
         -- předání UNCHECKED parametru
         oclass:=toc_param_unchecked;
-
+      }
     -- referencí, včetně odvozených typů
     when pp_class     do
         -- podvýraz musí být proměnná
@@ -426,13 +428,11 @@ begin
     when others do verify({VERIFY=}000835,true);
     end case;
 
-  -- ověřit kompatibilitu typů
-  verify({VERIFY=}000293,param^.pass=pp_unchecked);
+  -- připravit pohled na typ formálního parametru
   argt.init(curr,param^.typ.getctype);
-  if t_get_compatibility_level(curr,toc_param_class{oclass},false,argt,typ)<tcl_static_identical then return; end if;
 
-  -- OK, kompatibilní
-  ok:=true;
+  -- ověřit kompatibilitu typů
+  ok:=t_get_compatibility_level(curr,{toc_param_class}oclass,false,argt,typ)>=tcl_static_identical;
 
 catch
   when others do
@@ -1663,7 +1663,7 @@ begin
 
               -- pokud nemáme explicitně uvedenu instanci
               -- a je-li to v třídě, tak doplnit THIS
-              if (expr^.sub=nil) and sym_check_container(curr.entity,et_class) then
+              if expr^.sub=nil and sym_check_container(curr.entity,et_class) then
                 create_this;
                 end if;
 
@@ -1747,8 +1747,6 @@ begin
     -- přetížení
 
     -- speciální metoda
-
-    -- generický parametr
 
     -- modul
     when et_module do
@@ -2652,6 +2650,7 @@ var
 type
   -- výsledný typ atributu
   ttype            = enum
+      tt_none;                                   -- výraz nemá typ
       tt_sub;                                    -- typ podvýrazu
       tt_range;                                  -- rozsah typu podvýrazu
       tt_size;                                   -- typ dynamického atributu :size
@@ -2686,7 +2685,7 @@ var
     -- Kontrola: <výraz typu TYP>:atribut --> :out_attr, atc_static.
     ------------------------------------------------------------------------------------------------
     begin
-      result:=t_is_sts(expr^.sub^.t,typ) and (expr^.sub^.t.evaluated>=level);
+      result:=t_is_sts(expr^.sub^.t,typ) and expr^.sub^.t.evaluated>=level;
       if result then
         expr^.ata:=out_attr;
         expr^.aclass:=atc_static;
@@ -2766,7 +2765,7 @@ var
     -- Kontrola: jako CT, navíc výraz typu NTYPE.
     ------------------------------------------------------------------------------------------------
     begin
-      result:=(expr^.sub^.ntype=ntype) and ct(typ,level,out_attr,_out_typ,out_class);
+      result:=expr^.sub^.ntype=ntype and then ct(typ,level,out_attr,_out_typ,out_class);
       end cn;
 
 
@@ -2784,7 +2783,7 @@ var
     -- Kontrola: jako CT, navíc výraz třídy NCLASS.
     ------------------------------------------------------------------------------------------------
     begin
-      result:=(expr^.sub^.nclass=nclass) and ct(typ,level,out_attr,_out_typ,out_class);
+      result:=expr^.sub^.nclass=nclass and ct(typ,level,out_attr,_out_typ,out_class);
       if result then
         expr^.aclass:=out_aclass;
         end if;
@@ -2805,7 +2804,7 @@ var
     -- Kontrola: jako CT, navíc výraz třídy NCLASS.
     ------------------------------------------------------------------------------------------------
     begin
-      result:=(expr^.sub^.nclass=nclass) and (expr^.sub^.t.tview in tview) and (expr^.sub^.t.evaluated>=level);
+      result:=expr^.sub^.nclass=nclass and expr^.sub^.t.tview in tview and expr^.sub^.t.evaluated>=level;
       if result then
         expr^.ata:=out_attr;
         expr^.aclass:=out_aclass;
@@ -2828,7 +2827,7 @@ var
     -- Kontrola: jako CTV, ale bez kontroly třídy uzlu.
     ------------------------------------------------------------------------------------------------
     begin
-      result:=(expr^.sub^.t.tview in tview) and (expr^.sub^.t.evaluated>=level);
+      result:=expr^.sub^.t.tview in tview and expr^.sub^.t.evaluated>=level;
       if result then
         expr^.ata:=out_attr;
         expr^.aclass:=out_aclass;
@@ -2850,9 +2849,9 @@ var
     -- Kontrola: výraz je proměnná uvedené paměťové třídy.
     ------------------------------------------------------------------------------------------------
     begin
-      result:=(expr^.sub^.ntype=nt_component)
-          and (pexpcomponent(expr^.sub)^.s.psym^.etype=et_var)
-          and (pentity_var(pexpcomponent(expr^.sub)^.s.psym)^.mclass in mclass);
+      result:=expr^.sub^.ntype=nt_component
+          and then expr^.sub^.getsymbol^.etype=et_var
+          and then pentity_var(expr^.sub^.getsymbol)^.mclass in mclass;
       if result then
         expr^.ata:=out_attr;
         expr^.aclass:=atc_static;
@@ -2865,10 +2864,10 @@ var
 
     ------------------------------------------------------------------------------------------------
     procedure cent (
-        etype     : in tentitytype;              -- požadovený typ entity
-        out_attr  : in tattractual;              -- výsledný skutečný atribut
-       _out_typ   : in ttype;                    -- typ atributu
-        out_class : in nodeclass)                -- třída uzlu
+        etype      : in tentitytype;             -- požadovený typ entity
+        out_attr   : in tattractual;             -- výsledný skutečný atribut
+       _out_typ    : in ttype;                   -- typ atributu
+        out_class  : in nodeclass)               -- třída uzlu
         return t_logical =                       -- T-vyhovuje kontrole
     -- Kontrola: výraz je entita zadaného typu PTYPE.
     ------------------------------------------------------------------------------------------------
@@ -2881,6 +2880,102 @@ var
         out_typ:=_out_typ;
         end if;
       end cent;
+
+
+{
+    ------------------------------------------------------------------------------------------------
+    procedure ca (
+        sub_attr   : in tattrformal;             -- formální atribut v podvýrazu
+        sub_aclass : in tattrclass;              -- třída atributu v podvýrazu
+        out_attr   : in tattractual;             -- výsledný skutečný atribut
+        out_aclass : in tattrclass;              -- třída atributu
+       _out_typ    : in ttype;                   -- typ atributu
+        out_class  : in nodeclass)               -- třída uzlu
+        return t_logical =                       -- T-vyhovuje kontrole
+    -- Kontrola: výraz je zadaný atribut.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=expr^.sub^.ntype=nt_attrib and then pexpattrib(expr^.sub)^.atf=sub_attr {and then pexpattrib(expr^.sub)^.aclass=sub_aclass};
+      if result then
+        expr^.ata:=out_attr;
+        expr^.aclass:=atc_static;
+        expr^.nclass:=out_class;
+        out_typ:=_out_typ;
+        end if;
+      end ca;
+}
+
+type
+  t_always_true    = t_logical := true;
+
+    ------------------------------------------------------------------------------------------------
+    procedure set_attribute (
+        out_attr   : in tattractual;             -- výsledný skutečný atribut
+        out_aclass : in tattrclass;              -- třída atributu
+       _out_typ    : in ttype;                   -- typ atributu
+        out_class  : in nodeclass)               -- třída uzlu
+        return t_always_true =
+    -- Nastaví výsledný atribut podle dodaných parametrů.
+    ------------------------------------------------------------------------------------------------
+    begin
+      expr^.ata:=out_attr;
+      expr^.aclass:=atc_static;
+      expr^.nclass:=out_class;
+      out_typ:=_out_typ;
+      end set_attribute;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure is_attribute (
+        sub_attr   : in tattrformal;             -- formální atribut v podvýrazu
+        sub_aclass : in tattrclass)              -- třída atributu v podvýrazu
+        return t_logical =
+    -- Kontrola: Výraz je atribut.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=expr^.sub^.ntype=nt_attrib and then pexpattrib(expr^.sub)^.atf=sub_attr;
+      end is_attribute;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure is_of_type (
+        typ        : in tdatatypeset;            -- povolené typy
+        level      : in tentitydeclared := etd_full) -- požadovené vyhodnocení typu
+        return t_logical =                       -- T-vyhovuje kontrole
+    -- Kontrola: Datový typ výrazu je z [typ] a typ je vyhodnocen aspoň na úroveň [level].
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=t_is_sts(expr^.sub^.t,typ) and then expr^.sub^.t.evaluated>=level;
+      end is_of_type;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure is_of_type_view (
+        tview      : in ttypeviewset;            -- povolené pohledy na typ
+        level      : in tentitydeclared := etd_full) -- požadovené vyhodnocení typu
+        return t_logical =                       -- T-vyhovuje kontrole
+    -- Kontrola: Pohled na typ výrazu je z [tview] a typ je vyhodnocen aspoň na úroveň [level].
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=expr^.sub^.t.tview in tview and then expr^.sub^.t.evaluated>=level;
+      end is_of_type_view;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure has_rtattrib (
+        rta        : in rtattrib)                -- požadovaný dynamický atribut
+        return t_logical =                       -- T-vyhovuje kontrole
+    -- Kontrola: Výraz má požadovaný dynamický atribut.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=rta in expr^.sub^.rta_avail and then expr^.sub^.rta_modes[rta]<>rtm_static;
+      end has_rtattrib;
+
+
 
 var
   el               : pexpnode;                   -- podvýraz                                    
@@ -2919,6 +3014,9 @@ begin
     else
       -- zkontrolovat, zda má atribut smysl 
       case expr^.atf
+
+        ---- vvvv Tady začínají postaru řešené atributy vvvv ----
+
         -- :type
         when atf_type             do check:=ct(dts_all-dts_internal,etd_incomplete,ata_type_type,tt_sub,nc_type);
 
@@ -3006,8 +3104,30 @@ begin
         -- :full
         when atf_full             do check:=ct(dts_set,etd_full,ata_set_full,tt_sub,nc_value);
 
+        ---- ^^^^ Tady končí postaru řešené atributy ^^^^ ----
+
+
+
+        -- :designated
+        when atf_designated do 
+            check:= (is_attribute(atf_tag,atc_static)  and then set_attribute(ata_tag_designated,atc_dynamic,tt_none,nc_none))
+            or else (is_attribute(atf_tag,atc_dynamic) and then set_attribute(ata_tag_designated,atc_dynamic,tt_none,nc_none));
+
+        -- :size
+        when atf_size do
+            check:= (has_rtattrib   (rta_size)                     and then set_attribute(ata_expr_size      ,atc_dynamic,tt_size,nc_value))
+            or else (is_of_type     (dts_all-dts_internal)         and then set_attribute(ata_expr_size      ,atc_static ,tt_size,nc_value))
+            or else (is_of_type_view(ttypeviewset:[tview_partial]) and then set_attribute(ata_expr_size      ,atc_static ,tt_size,nc_value))
+            or else (is_attribute   (atf_designated,atc_dynamic)   and then set_attribute(ata_designated_size,atc_dynamic,tt_size,nc_value));
+{
+        when atf_size             do check:=cd(rta_size,ata_expr_size,tt_size,nc_value)
+                                         or ct(dts_all-dts_internal,etd_full,ata_type_size,tt_uniint,nc_value)
+                                         or ctvx(ttypeviewset:[tview_partial],etd_full,ata_type_size,atc_static,tt_uniint,nc_value);
+}
         when others               do verify({VERIFY=}000114,true);
         end case;
+
+      -- jako dopadla kontrola?
       if not check then
         ce^.seterror({CCERR=}000464,ce_i_attr);
         ce^.setparam(entityident_to_string(expr^.id^));
@@ -3019,6 +3139,9 @@ begin
 
       -- typ výrazu
       case out_typ
+        -- výraz nemá typ
+        when tt_none       do -- nic nedělat
+        
         -- převzít typ podvýrazu
         when tt_sub        do expr^.t:=expr^.sub^.t;
 

@@ -18,6 +18,14 @@ type
       value        : aliased t_rtl_native_unsigned;
       prev         : p_task_sysTIBuservalue;
       end record;
+  t_rtl_task_type = enum
+    t_rtl_unknown_task;
+    t_rtl_main_task;
+    t_rtl_dll_main_task;
+    t_rtl_late_flex_task;
+    t_rtl_flex_task;
+    t_rtl_foreign_task;
+    end enum;
 
   t_task_physical  = record
       taskid       : t_rtl_unsigned32;
@@ -29,6 +37,7 @@ type
       exceptions   : aliased t_rtl_exceptions;
       stackheader  : t_rtl_stack_header;
       ostask       : t_task_physical;
+      task_type    : t_rtl_task_type;
       self_ref     : t_rtl_task_ref_local;
       parent_ref   : t_rtl_task_ref_local;
       variables    : vars.t_task_vars;
@@ -37,11 +46,10 @@ type
       listnext     : p_task_header;
       listprev     : p_task_header;
       TIBusrval    : t_task_sysTIBuservalue;
-      knownstart   : t_rtl_logical;
       taskpooled   : t_rtl_logical;
       logicalswitch: t_rtl_logical;
       isrunning    : t_rtl_logical;
-      dllmain      : t_rtl_logical;
+      exitcode     : t_rtl_native_unsigned;
       flexreserve  : array 0..15 of t_rtl_native_unsigned;
       userreserve  : array 0..15 of t_rtl_native_unsigned;
       end record;
@@ -51,6 +59,7 @@ var
   task_list_first  : p_task_header;
   task_list_lock   : t_rtl_critical;
   task_list_count  : t_rtl_native_unsigned;
+  process_exitcode : t_rtl_native_unsigned;
 
 type
   t_taskvar_id     = t_rtl_native_unsigned;
@@ -123,6 +132,9 @@ begin
     taskheader^.listnext:=nil;
     end if;
   task_list_count - 1;
+  if task_list_count=0 then
+    process_exitcode:=taskheader^.exitcode;
+    end if;
   rtl_critical_unlock(task_list_lock);
   end rtl_task_list_del;
 
@@ -290,33 +302,33 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_init_task_header(
-    knownstart     : in t_rtl_logical;
-    initvars       : in t_rtl_logical;
-    taskheader   : in p_task_header) =
+    task_type      : in t_rtl_task_type;
+    taskheader     : in p_task_header) =
 ----------------------------------------------------------------------------------------------------
 var
   parentheader       : p_task_header;
 
 begin
-    taskheader^.variables:=nil;
-    taskheader^.flexreserve:=nil;
-    taskheader^.userreserve:=nil;
-    taskheader^.usagecount:=1;
-    taskheader^.listnext:=nil;
-    taskheader^.listprev:=nil;
-    taskheader^.isrunning:=true;
-    taskheader^.knownstart:=knownstart;
-    rtl_critical_new(taskheader^.locker);
-    if knownstart then
-      if initvars then
-        parentheader:=p_task_header(rtl_ref_derefrence(taskheader^.parent_ref));
-        if parentheader=nil then
-          raise tasking_error;
-          end if;
-        vars.rtl_initialize_all_task_vars(taskheader,parentheader);
-        end if;
-      rtl_task_list_add(taskheader);
+  taskheader^.variables:=nil;
+  taskheader^.flexreserve:=nil;
+  taskheader^.userreserve:=nil;
+  taskheader^.usagecount:=1;
+  taskheader^.listnext:=nil;
+  taskheader^.listprev:=nil;
+  taskheader^.isrunning:=true;
+  taskheader^.task_type:=task_type;
+  rtl_critical_new(taskheader^.locker);
+  
+  -- inicialize variables
+  if task_type=t_rtl_flex_task then
+    parentheader:=p_task_header(rtl_ref_derefrence_or_nil(taskheader^.parent_ref));
+    if parentheader=nil then
+      raise tasking_error;
       end if;
+    vars.rtl_initialize_all_task_vars(taskheader,parentheader);
+    end if;
+
+  rtl_task_list_add(taskheader);
   end rtl_init_task_header;
 
 
@@ -329,9 +341,7 @@ begin
   rtl_ref_discard_local(taskheader^.parent_ref);
   rtl_ref_discard_local(taskheader^.self_ref);
   vars.rtl_discard_all_task_vars(taskheader);
-  if taskheader^.knownstart then
-    rtl_task_list_del(taskheader);
-    end if;
+  rtl_task_list_del(taskheader);
   end rtl_deinit_task_header;
 
 
@@ -404,15 +414,16 @@ var
     unhandledx     : t_rtl_except_row;
 
 begin
-  -- stack magic
-  tasks.rtl_stack_magic;
-
   _starter:=p_task_starter(starter);
   stacpy:=_starter^;
   discard _starter;
   taskheader:=stacpy.taskheader;
   rtl_task_exception_initialize(taskheader,^sys_except_handler);
-  rtl_init_task_header(true,stacpy.wait,taskheader);
+  if stacpy.wait then
+    rtl_init_task_header(t_rtl_flex_task,taskheader);
+  else
+    rtl_init_task_header(t_rtl_late_flex_task,taskheader);
+    end if;
 
   --vytvorit prvni exception frame
   begin
@@ -437,6 +448,9 @@ begin
       end if;
 
     begin
+      -- stack magic
+      tasks.rtl_stack_magic;
+
       -- volat uzivatelsky kod
       stacpy.task_entry^(stacpy.selfptr,stacpy.userdata);
     catch
@@ -514,7 +528,7 @@ begin
     end if;
   taskheader^.ostask.priority:=priority;
   
-  if not thistaskheader^.dllmain then
+  if thistaskheader^.task_type<>t_rtl_dll_main_task then
     rtl_event_new(wait_child);
     starter^.wait_event:=wait_child;
     starter^.wait:=true;
@@ -525,13 +539,13 @@ begin
   starter^.taskheader^.ostask.taskhandle:=CreateThread(nil,1024*1024{%%TODO remove when dynamic stack},^task_entry_internal,starter,STACK_SIZE_PARAM_IS_A_RESERVATION,taskheader^.ostask.taskid);
   if taskheader^.ostask.taskhandle=0 then
     discard taskheader;
-    if not thistaskheader^.dllmain then
+    if thistaskheader^.task_type<>t_rtl_dll_main_task then
       rtl_event_discard(starter^.wait_event);
       end if;
     raise tasking_error;
     end if;
 
-  if not thistaskheader^.dllmain then
+  if thistaskheader^.task_type<>t_rtl_dll_main_task then
     rtl_event_wait(wait_child);
     rtl_event_discard(wait_child);
     end if;
@@ -542,7 +556,7 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_register_task_internal(
     topstackspace  : t_rtl_pointer;
-    dllmain        : t_rtl_logical)=
+    task_type      : t_rtl_task_type)=
 ----------------------------------------------------------------------------------------------------
 var
   taskheader       : p_task_header;
@@ -551,9 +565,6 @@ var
   unknown          : t_rtl_logical:=true;
 
 begin
-  -- stack magic
-  tasks.rtl_stack_magic;
-
   taskheader:=rtl_get_current_task_safe;
   if taskheader<>nil then
     unknown:=false;
@@ -572,13 +583,12 @@ begin
       end if;
     end if;
 
-  taskheader^.dllmain:=dllmain;
   if unknown then
     -- inicializovat
     rtl_task_exception_initialize(taskheader,p_rtl_exceptions_handler(topstackspace));
 
     rtl_init_task_helper(taskheader);
-    rtl_init_task_header(false,false,taskheader);
+    rtl_init_task_header(task_type,taskheader);
 
     rtl_get_task_priority(taskheader,taskheader^.ostask.priority);
   else
@@ -594,29 +604,43 @@ begin
       mov    fs:[t_winnt_tib.aruserpointer],eax
       #end asm;
     end if;
+    
+  -- stack magic
+  tasks.rtl_stack_magic;
+
   end rtl_register_task_internal;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_register_task =
+procedure rtl_register_task_foreign =
+#pragma assign(register_task_foreign,rtl_register_task_foreign);
 ----------------------------------------------------------------------------------------------------
 begin
-  rtl_register_task_internal(topstackspace,false);
-  end rtl_register_task;
+  rtl_register_task_internal(topstackspace,t_rtl_foreign_task);
+  end rtl_register_task_foreign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_register_task_main =
+#pragma assign(register_task,rtl_register_task_main);
+#pragma assign(register_task_main,rtl_register_task_main);
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_register_task_internal(topstackspace,t_rtl_main_task);
+  end rtl_register_task_main;
 
 
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_register_task_dll =
+#pragma assign(register_task_dll,rtl_register_task_dll);
 ----------------------------------------------------------------------------------------------------
 begin
-  rtl_register_task_internal(topstackspace,true);
+  rtl_register_task_internal(topstackspace,t_rtl_dll_main_task);
   end rtl_register_task_dll;
 
--- compiler magic
-#pragma assign(register_task,rtl_register_task);
-#pragma assign(register_task_dll,rtl_register_task_dll);
 
 
 
@@ -673,7 +697,7 @@ var
   taskheader       : p_task_header;
 
 begin 
-  taskheader:=p_task_header(rtl_ref_derefrence(task_ref));
+  taskheader:=p_task_header(rtl_ref_derefrence_or_nil(task_ref));
   if taskheader=nil then
     raise tasking_error;
     end if;
@@ -703,7 +727,7 @@ var
   taskheader       : p_task_header;
 
 begin
-  taskheader:=p_task_header(rtl_ref_derefrence(task_ref));
+  taskheader:=p_task_header(rtl_ref_derefrence_or_nil(task_ref));
   if taskheader<>nil then
     begin
       exceptions.rtl_raise_external_exception(taskheader,task_abort:tag,0);
@@ -716,9 +740,8 @@ begin
       raise tasking_error;
       end if;
     }
+    rtl_wait_and_finish_task(task_ref);
     end if;
-
-  rtl_wait_and_finish_task(task_ref);
   end rtl_kill_when_need_and_finish_task;
 
 
@@ -730,7 +753,7 @@ var
   taskheader       : p_task_header;
 
 begin 
-  taskheader:=p_task_header(rtl_ref_derefrence(task_ref));
+  taskheader:=p_task_header(rtl_ref_derefrence_or_nil(task_ref));
   if taskheader<>nil then
     result:=rtl_kernel_try(t_rtl_kernel_object(taskheader^.ostask.taskhandle:unchecked),milisec);
     if result then
@@ -762,8 +785,27 @@ begin
 procedure rtl_terminate_task =
 ----------------------------------------------------------------------------------------------------
 begin
-  ExitThread(0);
+  ExitThread(rtl_get_current_task()^.exitcode);
   end rtl_terminate_task;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_set_task_exitcode = 
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_get_current_task()^.exitcode:=exitcode;
+  end rtl_set_task_exitcode;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_terminate = 
+#pragma assign(terminate,rtl_terminate);
+----------------------------------------------------------------------------------------------------
+begin
+  ExitProcess(process_exitcode);
+  end rtl_terminate;
 
 
 
@@ -804,6 +846,9 @@ begin
     test   <t_rtl_unsigned8>[eax],0
     loop   @1
     #end asm;
+catch
+  when others do;
+    --ignore errors    
   end rtl_stack_magic;
 
 end tasks;

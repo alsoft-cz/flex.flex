@@ -597,7 +597,7 @@ begin
   verify({VERIFY=}000134,expr^.arity<>eoa_2);
 
   if expr^.assign
-    -- přiřazení    : opačné pořadí operandů
+    -- přiřazení : opačné pořadí operandů
     -- %%X Chybně, musí se vyhodnocovat zleva --> doprava; nebo ne ?
     -- Asi ne: v AARM je to zdůvodněný: X^:=F(...) a pokud F uvolní
     -- X, tak to musí způsobit chybu (NIL^)
@@ -628,6 +628,29 @@ begin
   op1.refresh(inst,info,context);
   op2.refresh(inst,info,context);
   end i_load_binary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_push_binary : i_load_binary:type =
+-- Vygeneruje a uloží na stack hodnotu dvojice podvýrazů.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : iexprcontext;               -- kontext podvýrazů
+
+begin
+  verify({VERIFY=}001143,expr^.arity<>eoa_2 or expr^.assign);
+
+  -- vygenerovat a uložit na stack levý podvýraz
+  i_newcontext(context,newcontext,lm_push_value,typ);
+  i_setoutpref(context,iop_stack);
+  i_load(inst,info,newcontext,context,el,op1);
+
+  -- vygenerovat a uložit na stack pravý podvýraz
+  i_newcontext(context,newcontext,lm_push_value,typ);
+  i_setoutpref(context,iop_stack);
+  i_load(inst,info,newcontext,context,er,op2);
+  end i_push_binary;
 
 
 
@@ -938,6 +961,10 @@ begin
 #separate public ci_set;
 #separate private ci_set;
 -- Množinové operace.
+----------------------------------------------------------------------------------------------------
+#separate public ci_tag;
+#separate private ci_tag;
+-- Operace s tagy.
 ----------------------------------------------------------------------------------------------------
 
 
@@ -2212,7 +2239,6 @@ begin
                 begin
                   -- najít instanci
                   x_classinstance(el^.sub,instance);
-
                   if instance<>nil and then instance^.nclass in ncs_value
 
                     -- je k dispozici => vygenerovat podvýraz
@@ -2262,6 +2288,7 @@ begin
 
                 declare var
                   instance : pexpnode;           -- výraz určující instanci třídy
+                  opinst   : c_operand;          -- operand reprezentující adresu instance
 
                 begin
                   -- najít instanci
@@ -2270,39 +2297,76 @@ begin
 
                   -- vygenerovat podvýraz
                   i_newcontext(context,newcontext,lm_addr,nil);
-                  i_load(inst,info,newcontext,context,instance,opcall);
-                  end declare;
+                  i_load(inst,info,newcontext,context,instance,opinst);
 
-                -- obnovit registry
-                opcall.refresh(inst,info,context);
+                  -- obnovit registry
+                  opinst.refresh(inst,info,context);
 
-                -- uložit pointer na instanci na stack
-                addii(inst,info,ii_push,opcall,op0,op0);
+                  -- uložit pointer na instanci na stack
+                  addii(inst,info,ii_push,opinst,op0,op0);
 
-                -- načíst pointer na instanci do registru
-                i_gen_load_address_to_register_with_dereference(inst,info,context,opcall);
+                  -- vypočítat adresu virtuální metody
+                  i_gen_virtual_address(inst,info,context,instance,opinst,pproc,true,opcall);
 
-                -- sestavit adresní operand ukazující na tag
-                opcall.transform_imm_or_reg_to_mem(edt_address,4);
-                opcall.shift_displacement(imm32_to_signed{%%X}(cpu32_class_tag));
+{
+                  -- je instance finální objekt ?
+                  if x_is_final_object(instance)
 
-                -- načíst tag (=adresu deskriptoru typu) do registru
-                i_gen_load_address_to_register_with_dereference(inst,info,context,opcall);
+                    -- ano => přímé volání
+                    then
+                      declare var
+                        virt_imp : pentity_code; -- skutečná implementace virtuální metody
 
-                -- sestavit adresní operand ukazující na adresu virtuální metody
-                declare var
-                  _c_class_interface : c_class_interface;
-                begin
-                  opcall.transform_reg_to_mem(edt_address,4);
-                  opcall.shift_displacement(t_signed(t_desc_class:size+_c_class_interface.normalize_vindex(pentity_virtual(pproc)^.vindex)*4));
-                                                      -- %%TODO(COMPATIBILITY) %%TODO(620) ^^^^^ nahradit přímo typem místo instance
+                      begin
+                        -- Poznámka: Interface cast jistě nebude označen za finální objekt, takže
+                        -- se můžeme spolehnout na to, že volaná virtuální metoda patří do nativního
+                        -- interface instance.
+
+                        -- nalézt implementaci virtuální metody, která je nejvýše v hierarchii
+                        virt_imp:=instance^.t.getctype^.interfaces^.get_native_interface^.get_virtual_method(pentity_virtual(pproc)^.vindex);
+                        verify({VERIFY=}001128,(virt_imp^.etype=et_virtual and then virt_imp<>pproc)
+                                       or else (virt_imp^.etype=et_override and then pentity_override(virt_imp)^.virt.getcentity<>pproc)
+                                       or else virt_imp^.is_abstract);
+
+                        -- sestavit adresu implementace virtuální metody
+                        i_gen_subprogram_address(inst,info,context,virt_imp,true,opcall);
+                        end declare;
+
+                    -- ne => volání přes virtuální tabulku
+                    else
+                      -- adresa virtuální metody se postupně odvodí z adresy instance
+                      opcall.clone(inst,info,context,opinst);
+
+                      -- načíst pointer na instanci do registru
+                      i_gen_load_address_to_register_with_dereference(inst,info,context,opcall);
+
+                      -- sestavit adresní operand ukazující na tag
+                      opcall.transform_imm_or_reg_to_mem(edt_address,4);
+                      opcall.shift_displacement(imm32_to_signed{%%X}(cpu32_class_tag));
+
+                      -- načíst tag (=adresu deskriptoru typu) do registru
+                      i_gen_load_address_to_register_with_dereference(inst,info,context,opcall);
+
+                      -- sestavit adresní operand ukazující na adresu virtuální metody
+                      declare var
+                        _c_class_interface : c_class_interface;
+                      begin
+                        opcall.transform_reg_to_mem(edt_address,4);
+                        opcall.shift_displacement(t_signed(t_desc_class:size+_c_class_interface.normalize_vindex(pentity_virtual(pproc)^.vindex)*4));
+                                                            -- %%TODO(COMPATIBILITY) %%TODO(620) ^^^^^ nahradit přímo typem místo instance
+                        end declare;
+                      end if;
+}
+                leave
+                  -- uvolnit pracovní operandy
+                  opinst.free(info,context);
                   end declare;
 
             when others do verify({VERIFY=}000509,true);
             end case;
 
           ---- adresa procedury ----
-          if pproc^{pentity_subprogram(pexpcomponent(el)^.s.psym)^}.instance<>tip_dispatch then
+          if pproc^.instance<>tip_dispatch then
             -- máme podvýraz specifikující podprogram ?
             if el<>nil
 
@@ -2566,8 +2630,8 @@ begin
   op1.refresh(inst,info,context);
   op2.refresh(inst,info,context);
 
-  -- %%TODO(rch_stringindex_range) - az bude doimplementovana i_gen_stringindex_range_check
-  --i_gen_stringindex_range_check(inst,info,context,expr^,op2);
+  -- %%TODO(rch_index_string) - az bude doimplementovana i_gen_stringindex_range_check
+  --i_gen_index_string_check(inst,info,context,expr^,op2);
 
   -- dolní mez pole
   lval:=uniint_to_imm32(el^.t.getctype^.srange.getctype^.lval);
@@ -2762,12 +2826,13 @@ begin
         declare var
           instance : pexpnode;                   -- výraz určující instanci třídy
           pproc    : pentity_subprogram;         -- referencovaný podprogram
+          opinst   : c_operand;                  -- adresa instance ukládaná do pointeru
 
         begin
           -- referencovaný podprogram
           pproc:=pentity_subprogram(el^.getsymbol);
-          verify({VERIFY=}000514,not (pproc^.etype in ets_callable));
-          if pproc^.etype=et_virtual then unimplemented({UNIMP=}000174); end if;
+          verify({VERIFY=}000514,pproc^.etype not in ets_callable);
+          -- if pproc^.etype=et_virtual then unimplemented({UNIMP=}000174); end if;
 
           -- najít instanci třídy
           x_classinstance(el^.sub,instance);
@@ -2775,36 +2840,12 @@ begin
           -- alokovat pracovní proměnnou
           vysl.create_temporary(inst,info,edt_pointer,value_size_from_expr(expr));
 
-          ----- (1) vlastní adresa podprogramu -----
-          declare var
-            oppart : c_operand;                  -- část pointeru
-            optemp : c_operand;                  -- adresa podprogramu
-
-          begin
-            -- operand odpovídající části pointeru, která obsahuje adresu podprogramu
-            oppart.clone(inst,info,context,vysl);
-            oppart.adjust_size(4);
-
-            -- sestavit adresu podprogramu
-            optemp.create_imm(edt_address,4,0);
-            optemp.set_relo_entity(pproc);
-
-            -- uložit adresu na podprogram do pointeru
-            addii(inst,info,ii_mov,oppart,optemp,op0);
-
-          leave
-            -- uvolnit pracovní operandy
-            oppart.free(info,context);
-            optemp.free(info,context);
-            end declare;
-
-
-          ----- (2) pointer na instanci, je-li součástí pointeru -----
+          ----- (1) pointer na instanci, je-li součástí pointeru -----
+          verify({VERIFY=}001171,pproc^.instance<>tip_none and rta_instance not in expr^.t.getpattrib);
           if rta_instance in expr^.t.getpattrib then
             declare var
               opptr  : c_operand;                -- kopie výsledku čistě pro účely úpravu módu získání atributů
               oppart : c_operand;                -- část pointeru
-              optemp : c_operand;                -- pracovní proměnná pro zkonstruovaný pointer
 
             begin
               -- připravit si kopii výsledku
@@ -2818,20 +2859,20 @@ begin
 
               -- podprogram se neváže na instanci => uložit FFFFFFFF
               if pproc^.instance=tip_none then
-                optemp.create_imm(edt_address,4,unsigned_to_imm32($FFFF_FFFF));
+                opinst.create_imm(edt_address,4,unsigned_to_imm32($FFFF_FFFF));
 
               -- podprogram se váže na instanci, ale nemáme ji => uložit NIL
               elsif pproc^.instance=tip_optional and instance=nil then
-                optemp.create_imm(edt_address,4,0);
+                opinst.create_imm(edt_address,4,0);
 
               -- máme instanci
               elsif instance<>nil and pproc^.instance<>tip_none then
                 -- vygenerovat podvýraz a načíst jeho adresu do registru
                 i_newcontext(context,newcontext,lm_addr,nil);
-                i_load(inst,info,newcontext,context,instance,optemp);
+                i_load(inst,info,newcontext,context,instance,opinst);
                 
                 -- obnovit registry
-                optemp.refresh(inst,info,context);
+                opinst.refresh(inst,info,context);
 
               -- jiné případy nemohou nastat
               else
@@ -2839,15 +2880,48 @@ begin
                 end if;
 
               -- nacpat do pointeru
-              addii(inst,info,ii_mov,oppart,optemp,op0);
+              i_gen_simple_assign(inst,info,context,oppart,opinst);
 
             leave
               -- uvolnit pracovní operand
               opptr.free(info,context);
               oppart.free(info,context);
-              optemp.free(info,context);
               end declare;
             end if;
+          
+          
+          ----- (2) vlastní adresa podprogramu -----
+          declare var
+            oppart : c_operand;                  -- část pointeru
+            optemp : c_operand;                  -- adresa podprogramu
+
+          begin
+            -- operand odpovídající části pointeru, která obsahuje adresu podprogramu
+            oppart.clone(inst,info,context,vysl);
+            oppart.adjust_size(4);
+
+            -- sestavit adresu podprogramu
+            if pproc^.instance=tip_dispatch
+
+              -- vypočítat virtuální adresu
+              then i_gen_virtual_address(inst,info,context,instance,opinst,pproc,false,optemp);
+
+              -- vypočítat statickou adresu
+              else i_gen_subprogram_address(inst,info,context,pproc,false,optemp);
+              end if;
+
+            -- uložit adresu na podprogram do pointeru
+            i_gen_simple_assign(inst,info,context,oppart,optemp);
+
+          leave
+            -- uvolnit pracovní operandy
+            oppart.free(info,context);
+            optemp.free(info,context);
+            end declare;
+
+        leave
+          -- uvolnit pracovní operandy
+          opinst.free(info,context);
           end declare;
 
     -- pointer na task
@@ -2922,10 +2996,10 @@ procedure i_gen_attrib (
 ----------------------------------------------------------------------------------------------------
 
     ------------------------------------------------------------------------------------------------
-    procedure loadrtattrib (
+    procedure load_rtattrib (
         rta        : in rtattrib;
         vysl       : out c_operand) =
-    -- Načtení konkrétního run-time atributu.
+    -- Načte konkrétní run-time atribut.
     ------------------------------------------------------------------------------------------------
     var
       newcontext   : iexprcontext;               -- kontext podvýrazů
@@ -2945,7 +3019,33 @@ procedure i_gen_attrib (
     leave
       -- uvolnit podvýraz
       opaddr.free(info,context);
-      end loadrtattrib;
+      end load_rtattrib;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure load_rtattrib_direct_from_tag (
+        rta        : in rtattrib;
+        vysl       : out c_operand) =
+    -- Načte konkrétní run-time atribut přímo z dodaného tagu.
+    -- Tato procedura je určena pouze pro načítání hodnot atributů [ata_designated_*].
+    ------------------------------------------------------------------------------------------------
+    var
+      newcontext   : iexprcontext;               -- kontext podvýrazů
+      optag        : c_operand;                  -- operand reprezentující adresu podvýrazu
+
+    begin
+      -- načíst adresu proměnné
+      i_newcontext(context,newcontext,lm_gen,nil);
+      i_load(inst,info,newcontext,context,expr^.sub,optag);
+
+      -- načíst požadovaný atribut
+      i_rta_load_direct_from_tag(inst,info,context,optag,rta,vysl,for reuse_reg use true);
+
+    leave
+      -- uvolnit podvýraz
+      optag.free(info,context);
+      end load_rtattrib_direct_from_tag;
 
 var
   op1              : c_operand;                  -- operand 1
@@ -2975,38 +3075,38 @@ begin
     when atc_dynamic do
         case expr^.ata
           -- :unchecked
-          when ata_var_unchecked do
+          when ata_var_unchecked   do
               i_newcontext(context,newcontext,lm_gen,nil);
               i_load(inst,info,newcontext,context,expr^.sub,vysl);
 
           -- :length
-          when ata_string_length do loadrtattrib(rta_length,vysl);
+          when ata_string_length   do load_rtattrib(rta_length,vysl);
 
           -- :ord
-          when ata_ord_ord do
+          when ata_ord_ord         do
               i_newcontext(context,newcontext,lm_gen,nil);
               i_load(inst,info,newcontext,context,expr^.sub,vysl);
 
           -- :last
-          when ata_expr_last do loadrtattrib(rta_last,vysl);
+          when ata_expr_last       do load_rtattrib(rta_last,vysl);
 
           -- :size
-          when ata_expr_size do loadrtattrib(rta_size,vysl);
+          when ata_expr_size       do load_rtattrib(rta_size,vysl);
 
           -- :length neomezeného pole
-          when ata_array_length do loadrtattrib(rta_length,vysl);
+          when ata_array_length    do load_rtattrib(rta_length,vysl);
 
           -- :tag
-          when ata_expr_tag do loadrtattrib(rta_tag,vysl);
+          when ata_expr_tag        do load_rtattrib(rta_tag,vysl);
 
           -- :tagged
-          when ata_expr_tagged do
+          when ata_expr_tagged     do
               declare var
                 optemp : c_operand;
 
               begin
                 -- načíst atribut :tag
-                loadrtattrib(rta_tag,optemp);
+                load_rtattrib(rta_tag,optemp);
 
                 -- porovnat
                 addii(inst,info,ii_cmp,optemp,op_0,op0);
@@ -3018,6 +3118,14 @@ begin
 
               -- výsledek je podmínka
               vysl.create_condition(ic_ne);
+
+          -- :designated
+          when ata_tag_designated  do
+              i_newcontext(context,newcontext,lm_gen,nil);
+              i_load(inst,info,newcontext,context,expr^.sub,vysl);
+
+          -- :designated:size 
+          when ata_designated_size do load_rtattrib_direct_from_tag(rta_size,vysl);
 
           when others do verify({VERIFY=}000282,true);--u_nimplemented(59);
           end case;
@@ -3761,7 +3869,8 @@ with
   ci_logical,
   ci_pointer,
   ci_string,
-  ci_set;
+  ci_set,
+  ci_tag;
 
 begin
   ---- celočíselné ----
@@ -3860,8 +3969,8 @@ begin
   -- :=
   oset1s(opertab,op_assign,dts_tag,^i_gen_op_assign);
 
-  -- <> =
-  osetss(opertab,[op_ne,op_eq],dts_tag,^i_gen_op_compare_ordinal);
+  -- <> = < > <= >=
+  osetss(opertab,[op_ne,op_eq,op_lt,op_le,op_gt,op_ge],dts_tag,^i_gen_op_compare_order_tag);
 
 
   ---- třídy ----

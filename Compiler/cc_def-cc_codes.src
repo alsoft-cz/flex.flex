@@ -133,6 +133,7 @@ type
       ce_x_ex_sym_mod_class;
       ce_x_ex_sym_message;
       ce_x_ex_sym_virtual;
+      ce_x_ex_sym_export;
       ce_x_ex_var_pointer;
       ce_x_ex_var_ordinal;
       ce_x_ex_expr_ordinal;
@@ -176,7 +177,8 @@ type
       ce_dupcommit;
       ce_duprollback;
       ce_langattr;
-      ce_nortattr;
+      ce_nortattr;  
+      ce_operator_no_instance;
       ce_operator_params;
       ce_operator_mode1;
       ce_operator_mode2;
@@ -189,6 +191,8 @@ type
       ce_sizenotknown;
       ce_multioverride;
       ce_abstract_must_match;
+      ce_abstract_not_overriden;
+      ce_abstract_not_permitted;
       ce_no_abstract_definition;
       ce_no_in_out_default;
       ce_param_duplicate;
@@ -397,6 +401,7 @@ var
       for ce_x_ex_sym_mod_class  use 'Class or module name expected',--'Očekáváno jméno modulu nebo třídy',
       for ce_x_ex_sym_message    use 'Message name expected',--'Očekáváno jméno modulu',
       for ce_x_ex_sym_virtual    use 'Virtual method name expected',--'Očekáváno jméno virtuální metody',
+      for ce_x_ex_sym_export     use 'Exportable or for-export-traceable entity expected',
       for ce_x_ex_var_pointer    use 'Variable name of a pointer-to-object type expected',--'Očekáváno jméno proměnné typu pointer na objekt',
       for ce_x_ex_var_ordinal    use 'Variable name of a discrete type expected',--'Očekáváno jméno proměnné diskrétního typu',
       for ce_x_ex_expr_ordinal   use 'Expression of a discrete type expected',--'Očekáván výraz diskrétního typu',
@@ -441,10 +446,11 @@ var
       for ce_duprollback         use 'Duplicate declaration of the ROLLBACK special method',
       for ce_langattr            use 'The attribute ":%1" is language defined',--'Atribut ":%1" je jazykem definovaný',
       for ce_nortattr            use 'Required dynamic attribute ":%1" is not available',--'Požadovaný dynamický atribut ":%1" není k dispozici',
+      for ce_operator_no_instance use 'Subprogram may not require an instance to be called', 
       for ce_operator_params     use 'Illegal number of parameters of an overloaded procedure',--'Nepřípustný počet parametrů přetížené procedury',
       for ce_operator_mode1      use 'Illegal mode of the first parameter of an overloaded procedure',--'Nepřípustný mód prvního parametru přetížené procedury',
       for ce_operator_mode2      use 'Illegal mode of the second parameter of an overloaded procedure',--'Nepřípustný mód druhého parametru přetížené procedury',
-      for ce_operator_noret      use 'Overloaded procedure cannot have a return parameter',--'Přetížená procedura nesmí mít návratovou hodnotu',
+      for ce_operator_noret      use 'Subprogram may not have a return parameter',--'Přetížená procedura nesmí mít návratovou hodnotu',
       for ce_operator_pass1      use 'Illegal control of the first parameter of an overloaded procedure',--'Nepřípustná volací konvence prvního parametru přetížené procedury',
       for ce_operator_pass2      use 'Illegal control of the second parameter of an overloaded procedure',--'Nepřípustná volací konvence druhého parametru přetížené procedury',
       for ce_ambiguous           use 'Ambiguous type of an expression',--'Typ výrazu není určen jednoznačně',
@@ -453,6 +459,8 @@ var
       for ce_sizenotknown        use 'The size of the base of a pointer is not known',--'Velikost báze pointeru není určena',
       for ce_multioverride       use 'The virtual method "%1" was already overriden in this class',--'Virtuální metoda "%1" byla v této třídě již jednou předefinována',
       for ce_abstract_must_match use 'All parts of a declaration must have "ABSTRACT" either all present or all missing',
+      for ce_abstract_not_overriden use 'Abstract method "%1" has not been overriden',
+      for ce_abstract_not_permitted use 'Abstract declaration not permitted within non-abstract context',
       for ce_no_abstract_definition use 'No definition permitted within an abstract subprogram declaration',
       for ce_no_in_out_default   use 'No default value permitted for an "IN OUT" or untyped parameter',
       for ce_param_duplicate     use 'Duplicate specification of the actual parameter "%1"',
@@ -604,6 +612,11 @@ var
       [for id use 'UNKNOWN_SYNTAX_IDENTIFIER'       , for warn use cw_unknown_syntax        ],
       [for id use 'USER_WARNING'                    , for warn use cw_meta_warning          ]];
 
+  -- kontrola vyplnění tabulky identifikátorů varování
+  #if cc_warning_desc:last<>twarningcode:last:ord then;
+    #error 'Tabulka ID varování: Nejsou uvedena ID pro všechna varování';
+    #end if;
+
   -- všechny warningy
   cc_warning_id_all : const tshortident := 'ALL';
 
@@ -661,11 +674,13 @@ type
 
 var
   -- tabulka popisů hintů
-  cc_hint_desc    : const array 0..9 of thintdesc := [
+  cc_hint_desc    : const array 0..11 of thintdesc := [
       [for id use 'CONSTANT_CONDITION'                  , for hint use ch_constant_condition            ],
+      [for id use 'DECLARATION_HIDES_ANCESTOR'          , for hint use ch_declaration_hides_ancestor    ],
       [for id use 'MULTIPLE_USE_IN_CLAUSE'              , for hint use ch_multiple_clause_with          ],
       [for id use 'MULTIPLE_USE_IN_MODULE'              , for hint use ch_multiple_module_with          ],
       [for id use 'PARAMETER_EQUALS_DEFAULT'            , for hint use ch_par_is_default                ],
+      [for id use 'UNSAFE_RANGE'                        , for hint use ch_unsafe_range                  ],
       [for id use 'UNUSED_ENTITY'                       , for hint use ch_unused_entity                 ],
       [for id use 'UNUSED_MODULE'                       , for hint use ch_unused_module                 ],
       [for id use 'UNREACHABLE_CODE'                    , for hint use ch_unreachable_code              ],
@@ -673,25 +688,28 @@ var
       [for id use 'INFINITE_LOOP'                       , for hint use ch_infinite_loop                 ],
       [for id use 'IF_REDUCED'                          , for hint use ch_if_reduced                    ]];
 
+  -- kontrola vyplnění tabulky identifikátorů hintů
+  #if cc_hint_desc:last<>thintcode:last:ord then;
+    #error 'Tabulka ID hintů: Nejsou uvedena ID pro všechny hinty';
+    #end if;
    
   -- všechny hinty
   cc_hint_id_all : const tshortident := 'ALL';
 
   -- texty hintů
   thintcodetxt  : const array thintcode of t_char32str := [
-  for ch_constant_condition        use 'Constant condition',               --'Konstantní podmínka'
-      for ch_multiple_clause_with  use 'Multiple WITH or USE of "%1" in clause',  --'Vicenasobny WITH/USE "%1" v klausuli'
-      for ch_multiple_module_with  use '"%1" already WITHed or USEd in parent entity',  --'Vicenasobny WITH/USE "%1" v modulu'
-      for ch_par_is_default        use 'Skutečný parametr odpovídá implicitní hodnotě' ,
-      for ch_unused_entity         use 'Unused entity "%1"',               --'Nepoužitá entita "%1"'
-      for ch_unused_module         use 'Unused module "%1"',               --'Nepoužity modul "%1"'
-      for ch_unreachable_code      use 'Nedosažitelný kód',
-      for ch_one_pass_loop         use 'Cyklus je jednoprůchodový',
-      for ch_infinite_loop         use 'Cyklus je nekonečný, užijte konstrukci loop ... end loop;',
-      for ch_if_reduced            use 'Příkaz if byl optimalizací redukován na blok jedné ze svých větví',
+      for ch_constant_condition         use 'Constant condition',               --'Konstantní podmínka'
+      for ch_multiple_clause_with       use 'Multiple WITH or USE of "%1" in clause',  --'Vicenasobny WITH/USE "%1" v klausuli'
+      for ch_multiple_module_with       use '"%1" already WITHed or USEd in parent entity',  --'Vicenasobny WITH/USE "%1" v modulu'
+      for ch_par_is_default             use 'Skutečný parametr odpovídá implicitní hodnotě' ,
+      for ch_unused_entity              use 'Unused entity "%1"',               --'Nepoužitá entita "%1"'
+      for ch_unused_module              use 'Unused module "%1"',               --'Nepoužity modul "%1"'
+      for ch_unreachable_code           use 'Nedosažitelný kód',
+      for ch_one_pass_loop              use 'Cyklus je jednoprůchodový',
+      for ch_infinite_loop              use 'Cyklus je nekonečný, užijte konstrukci loop ... end loop;',
+      for ch_if_reduced                 use 'Příkaz if byl optimalizací redukován na blok jedné ze svých větví',
       for ch_declaration_hides_ancestor use 'Declaration hides the declaration of "%1" in ancestor class',
-      for ch_unsafe_range          use 'Unsafe range'];
-
+      for ch_unsafe_range               use 'Unsafe range'];
 
 type
   -- kódy diagnostických hlášení
@@ -714,6 +732,11 @@ var
       [for id use 'DYNAMIC_INTERFACE_CAST', for diag use cd_dynamic_interface_cast],
       [for id use 'DYNAMIC_TYPE_CAST'     , for diag use cd_dynamic_type_cast     ],
       [for id use 'NATIVE_INTERFACE_CAST' , for diag use cd_native_interface_cast ]];
+
+  -- kontrola vyplnění tabulky identifikátorů hintů
+  #if cc_diag_desc:last<>tdiagcode:last:ord then;
+    #error 'Tabulka ID hintů: Nejsou uvedena ID pro všechny hinty';
+    #end if;
      
   -- všechna diagnostická hlášení
   cc_diag_id_all : const tshortident := 'ALL';

@@ -921,22 +921,14 @@ procedure i_gen_load_value_to_register =
 
 
     ------------------------------------------------------------------------------------------------
-    procedure load_with_adjust =
-    -- Načte operand do registru a případně vygeneruje run-time check.
+    procedure do_adjust (
+        vysl       : in out c_operand;           -- výsledný operand
+        op         : in c_operand) =             -- původní operand
+    -- Rozšíří/zúží dodaný operand [op] do operandu [vysl].
     ------------------------------------------------------------------------------------------------
-    var
-      vysl         : c_operand;                  -- výsledek
-
     begin
-      -- alokovat registr
-      new_register(vysl,context.rsize);
-
-      -- velikosti souhlasí nebo na ní nezáleží => stačí prosté přiřazení
-      if context.rsize=op.size or op.size=0 then
-        addii(inst,info,ii_mov,vysl,op,op0)
-
       -- rozšíření operandu
-      elsif context.rsize>op.size then
+      if context.rsize>op.size then
         verify({VERIFY=}001049,op.edtype not in edts_ordinal);
         verify({VERIFY=}001051,context.rsign and orgtyp=nil);
         
@@ -954,7 +946,7 @@ procedure i_gen_load_value_to_register =
 
         if context.rsize=1 and then op.optype=io_reg and then op.reg.reg in ir_no8bit 
 
-          -- při 8bitovém výsledku se registry bez 8bitové části se musí řešit zvlášť
+          -- při 8bitovém výsledku se registry bez 8bitové části musí řešit zvlášť
           then
             mov_no8bit(vysl);
 
@@ -967,6 +959,33 @@ procedure i_gen_load_value_to_register =
             addii(inst,info,ii_mov{zx},vysl,op,op0);
             end if;
         end if;
+      end do_adjust;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure load_with_adjust =
+    -- Načte operand do registru a případně vygeneruje run-time check.
+    ------------------------------------------------------------------------------------------------
+    var
+      vysl         : c_operand;                  -- výsledek
+
+    begin
+      -- alokovat registr
+      new_register(vysl,context.rsize);
+
+      -- podle vztahu mezi velikostí původního operandu a požadovanou velikostí výsledku zvolit
+      -- způsob načtení hodnoty
+      if context.rsize=op.size or op.size=0 
+
+        -- velikosti souhlasí nebo na ní nezáleží => stačí prosté přiřazení
+        then 
+          addii(inst,info,ii_mov,vysl,op,op0);
+
+        -- velikosti se liší => je potřeba provést adjust hodnoty
+        else
+          do_adjust(vysl,op);
+          end if;
 
       -- předat výsledek
       op.replace(info,context,vysl);
@@ -1098,6 +1117,61 @@ begin
             vysl.free(info,context);
             end declare;
           end if;
+
+    -- hodnota na stacku
+    when io_stack do
+        verify({VERIFY=}001164,op.size<>4);
+
+        declare var
+          vysl   : c_operand;                  -- výsledek
+
+        begin
+          -- alokovat registr
+          new_register(vysl,op.size);
+
+          -- vyzvednout ze stacku
+          addii(inst,info,ii_pop,vysl,op0,op0);
+
+          -- upravit velikost na požadovanou
+          vysl.adjust_size(context.rsize);
+
+          -- předat výsledek
+          op.replace(info,context,vysl);
+{
+          -- podle vztahu mezi velikostí původního operandu a požadovanou velikostí výsledku zvolit
+          -- způsob předání výsledku
+          if context.rsize=op.size
+
+            -- velikosti souhlasí => výsledek už je připraven k předání ven
+            then 
+              -- předat výsledek
+              op.replace(info,context,vysl);
+
+            -- velikosti se liší => je potřeba provést adjust hodnoty a až poté předat ven
+            else
+              declare var
+                optemp : c_operand;              -- varianta operandu s upravenou velikostí
+
+              begin
+                -- alokovat registr s upravenou velikostí
+                vysl.create_new_register_from_operand(inst,info,context,op.edtype,context.rsize,optemp);
+
+                -- adjustnout hodnotu
+                do_adjust(optemp,vysl);
+  
+                -- předat výsledek
+                op.replace(info,context,optemp);
+
+              leave
+                -- uvolnit mezivýsledek
+                optemp.free(info,context);
+                end declare;
+              end if;
+}
+        leave
+          -- uvolnit mezivýsledek
+          vysl.free(info,context);
+          end declare;
 
     -- nic jiného neumíme
     when others do verify({VERIFY=}001048);
@@ -2679,16 +2753,77 @@ procedure i_gen_subprogram_address =
 -- Vygeneruje adresu podprogramu.
 ----------------------------------------------------------------------------------------------------
 begin
-  if psubprog^.etype=et_procedure and pentity_procedure(psubprog)^.import_info<>nil
+  if psubprog^.etype in ets_static_subprogram and pentity_static_subprogram(psubprog)^.import_info<>nil
+
+    -- importované podprogramy se volají nepřímo přes pointer uložený v importní tabulce
     then vysl.create_memory_address(inst,info,context,edt_address,4,ir_none,0);
+
+    -- všechny ostatní podprogramy lze volat přímo
     else
       if relative
         then vysl.create_relative_address(4);
         else vysl.create_imm(edt_address,4,0);
         end if;
       end if;
+
+  -- doplnit relokační informaci
   vysl.set_relo_entity(psubprog);
   end i_gen_subprogram_address;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_virtual_address =
+-- Vygeneruje dynamickou adresu virtuální metody.
+----------------------------------------------------------------------------------------------------
+with
+  cx_expr.cx_util,
+  cp_cpu.cp_32.cp_metadata;
+
+begin
+  -- je instance finální objekt ?
+  if x_is_final_object(instance)
+
+    -- ano => přímé volání
+    then
+      declare var
+        virt_imp : pentity_code; -- skutečná implementace virtuální metody
+
+      begin
+        -- Poznámka: Interface cast jistě nebude označen za finální objekt, takže
+        -- se můžeme spolehnout na to, že volaná virtuální metoda patří do nativního
+        -- interface instance.
+
+        -- nalézt implementaci virtuální metody, která je nejvýše v hierarchii
+        virt_imp:=instance^.t.getctype^.interfaces^.get_native_interface^.get_virtual_method(pentity_virtual(pvirtual)^.vindex);
+        verify({VERIFY=}001170,(virt_imp^.etype=et_virtual and then virt_imp<>pvirtual)
+                       or else (virt_imp^.etype=et_override and then pentity_override(virt_imp)^.virt.getcentity<>pvirtual)
+                       or else virt_imp^.is_abstract);
+
+        -- sestavit adresu implementace virtuální metody
+        i_gen_subprogram_address(inst,info,context,virt_imp,relative,vysl);
+        end declare;
+
+    -- ne => volání přes virtuální tabulku
+    else
+      -- adresa virtuální metody se postupně odvodí z adresy instance
+      vysl.clone(inst,info,context,opinst);
+
+      -- načíst pointer na instanci do registru
+      i_gen_load_address_to_register_with_dereference(inst,info,context,vysl);
+
+      -- sestavit adresní operand ukazující na tag
+      vysl.transform_imm_or_reg_to_mem(edt_address,4);
+      vysl.shift_displacement(imm32_to_signed{%%X}(cpu32_class_tag));
+
+      -- načíst tag (=adresu deskriptoru typu) do registru
+      i_gen_load_address_to_register_with_dereference(inst,info,context,vysl);
+
+      -- sestavit adresní operand ukazující na adresu virtuální metody
+      vysl.transform_reg_to_mem(edt_address,4);
+      vysl.shift_displacement(t_signed(get_vptr_slot_offset(pentity_virtual(pvirtual)^.vindex)));
+      end if;
+  end i_gen_virtual_address;
 
 
 

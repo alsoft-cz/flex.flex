@@ -7,6 +7,29 @@ module private ci_rta =
 ----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
+procedure prepare_register (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    oporg          : in c_operand;               -- původní operand, ze kterého lze recyklovat registry
+    pref_reg       : in iunireg;                 -- preferovaný registr
+    reuse_reg      : in t_logical;               -- T-znovupoužít registr ze zdrojového operandu
+    opreg          : out c_operand) =            -- výsledný připravený registr
+-- S ohledem na preferovaný registr [pref_reg] připraví vhodný registr pro uložení atributu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- použít preferovaný regisyr
+  if pref_reg<>in_none then opreg.create_use_register(inst,info,context,edt_unsigned,iunitoreg[pref_reg,4]);
+  -- přednostně zkust znovupoužít registr ze zdrojového operandu
+  elsif reuse_reg then opreg.create_new_register_from_operand(inst,info,context,edt_unsigned,4,oporg);
+  -- alokovat libovolný
+  else opreg.create_new_register(inst,info,context,edt_unsigned,4);
+  end if;
+  end prepare_register;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_rta_load =
 -- Načte zadaný run-time atribut do registru. Jestliže ho je možné určit staticky, tak samozřejmě
 -- předá ven přímou hodnotu a registr se nepoužije.
@@ -56,21 +79,6 @@ with
       end skip_preceding_rtattribs;
 
 
-
-    ------------------------------------------------------------------------------------------------
-    procedure prepare_register (
-        opreg      : out c_operand) =            -- výsledný připravený registr
-    -- S ohledem na preferovaný registr [pref_reg] připraví vhodný registr pro uložení atributu.
-    ------------------------------------------------------------------------------------------------
-    begin
-      -- použít preferovaný regisyr
-      if pref_reg<>in_none then opreg.create_use_register(inst,info,context,edt_unsigned,iunitoreg[pref_reg,4]);
-      -- přednostně zkust znovupoužít registr ze zdrojového operandu
-      elsif reuse_reg then opreg.create_new_register_from_operand(inst,info,context,edt_unsigned,4,op);
-      -- alokovat libovolný
-      else opreg.create_new_register(inst,info,context,edt_unsigned,4);
-      end if;
-      end prepare_register;
 
 begin
   -- způsob zjištění run-time atributu nám již předvypočítala sémantická analýza
@@ -185,7 +193,7 @@ begin
           end case;
 
         -- registr pro výsledek
-        prepare_register(vysl);
+        prepare_register(inst,info,context,op,pref_reg,reuse_reg,vysl);
 
         -- odebrat výsledek ze stacku
         addii(inst,info,ii_pop,vysl,op0,op0);
@@ -222,7 +230,7 @@ begin
 
     begin
       -- připravit vhodný registr
-      prepare_register(opreg);
+      prepare_register(inst,info,context,op,pref_reg,reuse_reg,opreg);
 
       -- načíst do registru
       addii(inst,info,ii_mov,opreg,vysl,op0);
@@ -236,6 +244,37 @@ begin
       end declare;
     end if;
   end i_rta_load;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_rta_load_direct_from_tag =
+-- Sestaví operand reprezentující zadaný run-time atribut. Run-time atribut vypočte z tagu, který
+-- je dodaný jako parametr [op].
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_rtl;
+
+begin
+  -- rezervovat místo na stacku pro návratovou hodnotu
+  i_gen_stack_top_reserve(inst,info,context,4);
+
+  -- uložit :tag na stack
+  addii(inst,info,ii_push,op,op0,op0);
+
+  -- zjistit hodnotu atributu z tagu
+  case rta
+    when rta_size do addcallrtl(inst,info,context,rtl_get_size_from_tag_direct,for save_regs use true);
+    when rta_last do addcallrtl(inst,info,context,rtl_get_last_from_tag_direct,for save_regs use true);
+    when others   do verify({VERIFY=}001166,true);
+    end case;
+
+  -- registr pro výsledek
+  prepare_register(inst,info,context,op,pref_reg,reuse_reg,vysl);
+
+  -- odebrat výsledek ze stacku
+  addii(inst,info,ii_pop,vysl,op0,op0);
+  end i_rta_load_direct_from_tag;
 
 
 

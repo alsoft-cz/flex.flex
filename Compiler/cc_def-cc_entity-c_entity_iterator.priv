@@ -35,6 +35,30 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+virtual filter_process_entity =
+-- Filtr zpracování konkrétní entity.
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%TODO(VIRTUAL) Až začne fungovat volání předka, tak do této metody integrovat filtrování
+  -- podle viditelnosti a typu entity coby default.
+  result:=true;
+  end filter_process_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual filter_traverse_entity =
+-- Filtr traversovani konkrétní entity.
+-- %%TODO(VIRTUAL) Až začne fungovat volání předka, tak do této metody integrovat filtrování
+-- podle viditelnosti a typu entity coby default.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=true;
+  end filter_traverse_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure traverse_region =
 -- projde region
 ----------------------------------------------------------------------------------------------------
@@ -43,6 +67,9 @@ var
   child            : pregion;                    -- podregion
 
 begin
+  -- oznámit vstup do regionu
+  enter_region(region);
+
   -- zpracovat region
   process_region(region);
 
@@ -62,62 +89,54 @@ begin
   -- projít regiony
   child:=region^.regions.first;
   while child<>nil loop
-    -- oznámit vstup do regionu
-    enter_sub_region(child);
-
-    -- další region
-    child:=child^.next;
-
     -- rekurzivní zpracování
     traverse_region(child);
 
-    -- oznámit výstup z regionu
-    leave_sub_region(child);
+    -- další region
+    child:=child^.next;
     end loop;
 
   -- oznámit konec zpracování podregionů
   after_sub_regions(region);
+
+  -- oznámit opuštění regionu
+  leave_region(region);
   end traverse_region;
 
 
 ----------------------------------------------------------------------------------------------------
 procedure traverse_entity =
 ----------------------------------------------------------------------------------------------------
-var 
-  region           : pregion;                    -- podregion
+var
+  process    : t_logical;
 
 begin
   verify({VERIFY=}000989,node=nil);
 
-  -- vstup do uzlu
-  enter_node(node);
-
   -- zpracovat tuto entitu, vyhovuje-li filtru pro zpracování
-  if node^.etype in process_etypes and node^.visible in process_visibility then
+  process:=node^.etype in process_etypes and node^.visible in process_visibility and filter_process_entity(node);
+
+  -- vstup do uzlu
+  enter_node(node,process);
+
+  -- zpracovat?
+  if process then
     process_entity(node);
     end if;
                             
   -- projít regiony, vyhovuje-li filtru pro trasování
-  if node^.etype in traverse_etypes and node^.visible in traverse_visibility then
+  if node^.etype in traverse_etypes and node^.visible in traverse_visibility and filter_traverse_entity(node) then
     for t in tregioncategory loop
-      region:=node^.regions[t];
-
       -- zpracovat region
-      if region<>nil then
-        -- oznámit vstup do regionu
-        enter_region(t);
-
+      if node^.regions[t]<>nil then
         -- projít region
-        traverse_region(region);
-
-        -- oznámit opuštění regionu
-        leave_region(t);
+        traverse_region(node^.regions[t]);
         end if;
       end loop;
     end if;
 
   -- výstup z uzlu
-  leave_node(node);
+  leave_node(node,process);
   end traverse_entity;
 
 
@@ -137,6 +156,7 @@ begin
     when et_const     do process_entity_const(node);
     when et_enum      do process_entity_enum(node);
     when et_type      do process_entity_type(node);
+    when et_class     do process_entity_type(node);
     when et_procedure do process_entity_procedure(node);
     when et_static    do process_entity_static(node);
     when et_virtual   do process_entity_virtual(node);
@@ -370,7 +390,7 @@ virtual process_entity_overload0 =
 ----------------------------------------------------------------------------------------------------
 begin
   -- zpracovat předka
-  process_entity(node);
+  process_entity_base(node);
   end process_entity_overload0;
 
 

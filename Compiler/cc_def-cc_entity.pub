@@ -446,6 +446,7 @@ type
       -- permanentní modifikátory
    -- etc_generic;                               -- generická deklarace (tato nebo nadřazená)
       etc_macro;                                 -- makro deklarace (tato nebo nadřazená)
+      etc_no_cmt_export;                         -- kompilatorem definovany symbol ktery se neexportuje do metadat
       end enum;
   tentitycompileset= set of tentitycompile;
 
@@ -503,6 +504,8 @@ const
   mcs_global       = mcs_static+mcs_class;
   -- složky strukturovaných objektů
   mcs_offset       = memclassset:[mc_class,mc_record];
+  -- jednoduše adresovatelné proměnné
+  mcs_simple       = memclassset:[mc_auto,mc_static];
 
 type
   -- příznak, zda je možné získat adresu proměnné (ALIASED)
@@ -581,6 +584,64 @@ procedure __get_type_expr (ptyp : in pentity_type) return p_flex_construct;
 #separate private cc_list;
 -- Seznamy entit a přímých hodnot.
 ----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+-- Partitiony
+----------------------------------------------------------------------------------------------------
+type
+  -- kód partition
+  t_partition_id   = private t_unsigned;
+
+type
+  -- typ partition
+  t_partition_type = enum
+      part_standalone;                           -- standalone kompilační jednotka
+      part_runtime;                              -- runtime partition kompilační jednotky
+      part_global;                               -- globální partition kompilační jednotky
+      part_temporary;                            -- dočasná partition kompilační jednotky
+      end enum;
+  t_partition_type_set = set of t_partition_type;
+
+const
+  -- typy partition, které obsahují run-time podporu
+  parts_runtime    = t_partition_type_set:[part_standalone,part_runtime];
+
+var
+  -- typ partition
+  t_partition_type_txt : const array t_partition_type of t_char32str := [
+      for part_standalone use 'Standalone',
+      for part_runtime    use 'Run-time',
+      for part_global     use 'Global',
+      for part_temporary  use 'Temporary'];
+  
+  -- popis [t_partition_type] pro účely exportu
+{%OFF}
+  t_partition_type_export_id : const aliased array t_partition_type of t_char32str := [
+      for part_standalone use 'standalone',
+      for part_runtime    use 'runtime',
+      for part_global     use 'global',
+      for part_temporary  use 'temporary'];
+{%ON}
+
+type
+  -- výsledný tvar přeložené partition
+  t_partition_result = enum
+      tpr_auto_select;                           -- automaticky zvolit vhodný tvar
+      tpr_program;                               -- spustitelný program
+      tpr_library;                               -- dynamicky linkovaná knihovna
+      end enum;
+
+var
+  -- popis [tcompilationtype] pro účely exportu
+{%OFF}
+  t_partition_result_export_id : const aliased array t_partition_result of t_char32str := [
+      for tpr_auto_select use 'auto_select',
+      for tpr_program     use 'program',
+      for tpr_library     use 'library'];
+{%ON}       
+
+
+
 
 ----------------------------------------------------------------------------------------------------
 -- Deklarativní regiony
@@ -802,6 +863,10 @@ const
   ets_enclosing    = ets_container + ets_subprogram;
   -- prvky s run-time atributy (jen odvozené od TENTITY_VALUE)
   ets_rtattrib     = tentitytypeset:[et_var];
+  -- exportovatelné entity
+  ets_exportable   = tentitytypeset:[et_var,et_procedure,et_static,et_program,et_type,et_class];
+  -- entity trasovatelné na vnořené exportovatelné entity
+  ets_export_traceable = tentitytypeset:[et_module,et_class,et_compile];
 
 type
   -- popis typu entity
@@ -1044,6 +1109,7 @@ type
       regions      : ttoplevelregions;           -- seznam regionů
       context      : tcontext;                   -- kontext: entita a region, do kterých patří tato entita
       ancestor     : cc_ref.refentity;           -- předek
+      partition_id : t_partition_id;             -- partition, do které entita patří
       ---- příznaky entity a stavové proměnné ----
       visible      : tentityvisible;             -- viditelnost prvku
       full         : tentityvisible;             -- viditelnost úplné deklarace
@@ -1100,26 +1166,11 @@ type
 ----------------------------------------------------------------------------------------------------
 -- Kompilační jednotka
 ----------------------------------------------------------------------------------------------------
-
 type
-  tcompilationtype = enum
-    ct_unknown;
-    ct_program;
-    ct_library;
-    end enum;
-
-var
-  -- popis [tcompilationtype] pro účely exportu
-{%OFF}
-  tcompilationtype_export_id : const aliased array tcompilationtype of t_char32str := [
-      for ct_unknown use 'unknown',
-      for ct_program use 'program',
-      for ct_library use 'library'];
-{%ON}
-
-type
+  -- kompilační jednotka
   tentity_compile  = tentity_code with record
-      compitype    : tcompilationtype;           -- program, knihovna, ...?
+      part_type    : t_partition_type;           -- typ partition
+      part_result  : t_partition_result;         -- výsledný tvar přeložené partition
       end record;
 
 
@@ -1129,6 +1180,7 @@ type
 ----------------------------------------------------------------------------------------------------
 type
   tentity_program  = tentity_code with record
+      export_info  : p_flex_record;              -- informace pro export
       end record;
 
 
@@ -1283,7 +1335,9 @@ type
       pass         : parampass;                  -- způsob předání parametru
       paliased     : t_mem_aliased;              -- povolení aliased přístupu
       size         : tunidata_size;              -- velikost (s přihlédnutím k způsobu předání)
+    { Ondra 21.1.2004 : Zrušeno, nikdo to nepoužíval.
       num          : t_unsigned;                 -- pořadí parametru
+    }
       end record;
 
 
@@ -1388,7 +1442,6 @@ type
       addr         : tunidata_addr;              -- adresa promenne
       -- programátorem předefinovatelné atributy
       attr_position: cc_ref.refexpr;             -- pozice složky recordu
-
       -- exportni informace
       export_info  : p_flex_record;              -- informace pro export
       end record;
@@ -1462,6 +1515,11 @@ type
       tip_pass;                                  -- předávat
       tip_dispatch;                              -- předávat, řídící parametr virtuálního volání
       end enum;
+  tinstancepassset = set of tinstancepass;
+
+const
+  -- podprogramy použitelné jako přetížený operátor v závislosti na předávání instance
+  tip_as_operator  = tinstancepassset:[tip_none,tip_optional];
 
 var
   -- předávání instance
@@ -1482,17 +1540,20 @@ type
 
   -- statický podprogram
   tentity_static_subprogram = {%%TODO(ABSTRACT)} tentity_subprogram with record
+      import_info  : p_flex_record;              -- informace pro import
+      export_info  : p_flex_record;              -- informace pro export
+
       -- hinty (%%TODO(?) předělat na množinu ?)
       no_return    : t_logical;                  -- T-z tohoto podprogramu se to již nevrátí
       end record;
+
+
 
 ----------------------------------------------------------------------------------------------------
 -- Procedura
 ----------------------------------------------------------------------------------------------------
 type
   tentity_procedure = tentity_static_subprogram with record
-      import_info  : p_flex_record;              -- informace pro import
-      export_info  : p_flex_record;              -- informace pro export
       end record;
 
 
@@ -1536,8 +1597,10 @@ type
   tentity_virtual  = tentity_subprogram with record
       vcall        : tvcalltype;                 -- typ virtuálního volání                      
       vindex       : tvirtualindex;              -- index virtuální metody                      
+    { Rezerva do budoucna - multivirtuální metody: 
       vector_set   : p_type_vector_set;          -- množina vektorů typů všech overridů
       root_vector  : p_type_vector;              -- root vektor odpovídající této virtuální metodě
+    }
       end record;
 
 
@@ -1549,7 +1612,9 @@ type
   tentity_override = tentity_code with record
       virt         : cc_ref.refentity;           -- související virtuální metoda                
       interface    : p_class_interface;          -- související interface
+    { Rezerva do budoucna - multivirtuální metody:
       type_vector  : p_type_vector;              -- vektor typů odpovídající tomuto overridu
+    }
       end record;
 
 
@@ -1910,6 +1975,10 @@ type
       end enum;
   ptrbaseset       = set of ptrbase;
 
+const
+  -- báze nesoucí typovou informaci
+  pbs_tagged       = ptrbaseset:[pb_class];
+
 var
   -- kompatibilita báze
 {%OFF}
@@ -2006,7 +2075,9 @@ type
       seval        : tentityeval{set};           -- vyhodnocení specifikace
       size         : tunidata_size;              -- velikost typu
       derive       : typederive;                 -- typ derivace
+    { Ondra 21.1.2004 : Zrušeno, nikdo to nepoužíval.
       defview      : ttypeview;                  -- default view typu
+    }
       extofs       : tunidata_addr{%%X(OFS)};    -- posunutí extension
       tflags       : typeflagsset;               -- flagy typu
       compat       : typecompat;                 -- determinace kompatibility
@@ -2045,7 +2116,9 @@ type
       -- specifikace typu procedura nebo zprava
       rflags       : procflagset;                -- další parametry
       result       : pentity_param;              -- návratová hodnota funkce
+    { Ondra 21.1.2004 : Zrušeno, nikdo to nepoužíval.
       insize       : tunidata_size;              -- celkova velikost vstupnich parametru
+    }
       parcount     : t_unsigned;                 -- počet parametrů
       call_conv    : p_flex_record;              -- volaci konvence
       -- specifikace třídy
@@ -2054,8 +2127,6 @@ type
       vtable       : pvirtualtable;              -- virtuální tabulka
       exposed      : cc_list.trefentitystring;   -- exposeované interfacy
     }
-      -- run-time informace
-    --rta_tag      : tunitag;                    -- tag (typova informace)
       -- programátorem předefinovatelné atributy
       attr_align   : cc_ref.refexpr;             -- :alignment
       attr_native_align : cc_ref.refexpr;        -- :native_alignment
@@ -2095,7 +2166,6 @@ type
 type
   tentity_message  = tentity with record
       typ          : cc_ref.reftype;             -- typ zprávy
-    --num          : tunimsg;                    -- číslo zprávy
       end record;
 
 

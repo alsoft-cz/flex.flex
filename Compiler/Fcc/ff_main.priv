@@ -10,32 +10,6 @@ with
   cc_def,
   cc_def.cc_codes;   {%%TODO(MESSAGE) kvuli config_error }
 
-message
-  fcc_error        : exception;
-
-var
-  -- konfigurace překladu
-  src_name         : p_text_name;                -- jméno zdrojového souboru
-  exe_name         : p_text_name;                -- jméno EXE souboru
-  lst_name         : p_text_name;                -- jméno listingu
-  exe_extension    : p_text_name;                -- extenze EXE souboru
-  exe_directory    : p_text_name;                -- adresář pro EXE soubor
-  mod_directory    : p_text_name;                -- adresář pro přeložené moduly
-  lib_name         : p_text_name;                -- jmeno image knihovny
-  lib_extension    : p_text_name;
-
-const
-  default_exe_extension = 'exe';                 -- implicitní přípona EXE souboru
-  lst_extension         = 'lst';                 -- přípona listingu
-  default_lib_extension = 'dll';                 -- implicitni pripona image knihovny
-
-
-----------------------------------------------------------------------------------------------------
-#separate public  ff_cmd_line;
-#separate private ff_cmd_line;
--- Zpracování příkazové řádky.
-----------------------------------------------------------------------------------------------------
-
 ----------------------------------------------------------------------------------------------------
 procedure fcc_main =
 -- Hlavní program.
@@ -44,51 +18,18 @@ with
   standard,
   standard.console,
   standard.conversions,
-  ff_cmd_line,
+  standard.program_control,
+  ff_lib,
   ff_lib.ff_text_output,
-  ff_lib.ff_files;
+  ff_lib.ff_files,
+  ff_lib.ff_cmd_line;
 
 use
-  cc_def,
   cc_def.cc_var;
 
-
-    ------------------------------------------------------------------------------------------------
-    procedure adjust_file_name (
-        org_name   : in t_text_name;             -- původní jméno souborů
-        directory  : in p_text_name;             -- volitelné jméno bázového adresáře
-        extension  : in t_text_name;             -- extenze
-        new_name   : out p_text_name) =          -- nové jméno souboru
-    -- Změní extenzi a popřípadě změní adresář zadaného jména.
-    ------------------------------------------------------------------------------------------------
-    var
-      name         : c_name;                     -- dekomponované jméno
-      full_name    : c_name;                     -- jméno včetně adresáře
-
-    begin
-      -- rozložit původní jméno
-      name.decompose_name(org_name,tnt_unspecified);
-
-      -- nahradit příponu
-      replace_source_extension(name,extension);
-
-      -- máme zadaný adresář ?
-      if directory<>nil
-
-        -- ano => doplnit do jména
-        then
-          full_name.decompose_name(directory^,tnt_unspecified);
-          full_name.components.insert(name.components.remove_last);
-          full_name.compose_name(new_name);
-
-        -- ne => a je to
-        else
-          name.compose_name(new_name);
-          end if;
-      end adjust_file_name;
-
 var
-  compiler         : c_flex_compiler;
+  compiler         : c_flex_compiler;            -- instance překladače
+  config           : c_compilation_config;       -- konfigurace překladu
 
 begin
   -- initial copyright notice
@@ -102,49 +43,45 @@ begin
   -- připravit seznam jmen dostupných souborů
   init_external_file_source;
 
-  -- zpracovat řádkové parametry
-  parse_command_line(console_writer^);
+  declare var
+    full_cmd_line  : p_char32ustr;               -- příkazový řádek
+
+  begin
+    -- získat příkazový řádek
+    get_command_line(full_cmd_line);
+
+    -- zpracovat řádkové parametry
+    parse_command_line(full_cmd_line,console_writer^,config);
+
+  leave
+    -- uvolnit paměť
+    discard full_cmd_line;
+    end declare;
 
   -- bylo uvedeno jméno souboru ?
-  if src_name=nil then
+  if config.src_name=nil then
     write_line('Source file name not specified');
     raise fcc_error;
     end if;
 
-  -- doplnit default extenzi EXE
-  if exe_extension=nil then
-    new exe_extension range default_exe_extension:length;
-    exe_extension^:=default_exe_extension;
-    new lib_extension range default_lib_extension:length;
-    lib_extension^:=default_lib_extension;
-  else
-    new lib_extension range exe_extension^:length;
-    lib_extension^:=exe_extension^;
-    end if;
-
-  -- vypočítat jméno EXE
-  adjust_file_name(src_name^,exe_directory,exe_extension^,exe_name);
-
-  -- vypocitat jmeno knihovny
-  adjust_file_name(src_name^,exe_directory,lib_extension^,lib_name);
-
-  -- vypočítat jméno 
-  adjust_file_name(src_name^,exe_directory,lst_extension,lst_name);
+  -- připravit všechna jména souborů
+  config.prepare_names;
 
   -- inicializovat compiler podle nastavene platformy, cpu etc.
   compiler.init(flex_version_string);
 
   -- přeložit
-  compiler.compile(console_writer^,src_name^,exe_name^,lib_name^,lst_name^);
+  compiler.compile(console_writer^,config.src_name^,config.exe_name^,config.lib_name^,config.lst_name^,config.ctm_name^);
 
   -- vypsat seznam chyb na obrazovku a do listingu
   print_errors(console_writer^);
-  print_errors(compiler.listing.get_output_text_stream^);
+  print_errors(compiler.get_listing_writer^);
 
-  -- zavris soubor listingu
-  compiler.listing.close;
+  -- připravit exit-code tohoto procesu podle počtu zjištěných chyb
+  set_task_exit_code(cc_def.cc_var.ce^.error_count);
 
-
+  -- zavrit soubor listingu
+  compiler.finalize;
 
 catch
   when fcc_error do
@@ -153,7 +90,6 @@ catch
   when config_error do                                                            
       {%%TODO(MESSAGE)  az bude predavani messagi do procedur, tak se to da vyhodit }  
       write_line('Configuration error');
- 
   end fcc_main;
 
 end ff_main;
