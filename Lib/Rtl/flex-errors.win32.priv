@@ -2,30 +2,50 @@
 module private errors =
 -- Error handling and misc
 -- Flex Run-time Library
--- Copyright (C) 1999-2003 A && L soft
+-- Copyright (C) 1999-2004 A && L soft
 ----------------------------------------------------------------------------------------------------
+
 with
   os_api;
 
 var
+  msg_task         : static const string 22 of t_syschar := ''\0;
 #if sub_gui then;
-    title      : static const array 1..22 of t_syschar := 'Flex Run-time Library'\0;
+  title            : static const array 1..22 of t_syschar := 'Flex Run-time Library'\0;
+#elsif sub_console  then;
+  msg_bom          : static const array 1..1 of t_syschar:= [\$FEFF];
+  errhandle        : t_handle:=nil;
+  redir            : t_rtl_logical;
 #end if;
-    msg_task   : static const string 22 of t_syschar := ''\0;
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_error_write =
 -- Displays a fatal error message.
 ----------------------------------------------------------------------------------------------------
 #if sub_console then;
-  var
-    written            : t_rtl_unsigned32;
+var
+  written          : t_rtl_unsigned32;
 #end if;
 
 begin
   #if sub_console then;
-    if WriteConsole(GetStdHandle(STD_ERROR_HANDLE),msgz[1],msgz:length-1,written,nil)=0 then
-      -- ignore errors
+    if errhandle=nil then
+      errhandle:=GetStdHandle(STD_ERROR_HANDLE);
+      if GetFileType(errhandle)<>winnt_file_type_char then
+        redir:=true;
+        if WriteFile(errhandle,msg_bom,t_syschar:size,written,nil)=0 then
+          -- ignore errors
+          end if;
+        end if;
+      end if;
+    if redir then
+      if WriteFile(errhandle,msgz[1],(msgz:length-1)*t_syschar:size,written,nil)=0 then
+        -- ignore errors
+        end if;
+    else
+      if WriteConsole(errhandle,msgz[1],msgz:length-1,written,nil)=0 then
+        -- ignore errors
+        end if;
       end if;
   #elsif sub_gui then;
     if MessageBox(0,msgz[1],title,0)=0 then
@@ -33,6 +53,7 @@ begin
       end if;
   #end if;
   end rtl_error_write;
+
 
 
 ----------------------------------------------------------------------------------------------------
@@ -65,15 +86,11 @@ procedure rtl_error_write_uni =
 -- Displays a fatal error message.
 ----------------------------------------------------------------------------------------------------
 var
-    temp           : string 256 of t_syschar;
+  sys_msgz         : t_syscharstr;
 
 begin
-  temp:length:=msgz^:length+1;
-  for p in 1 .. msgz^:length loop
-    temp[p]:unchecked:=msgz^[p];
-    end loop;
-  temp[msgz^:length+1]:ord:=0;
-  rtl_error_write(temp);
+  rtl_to_system_string(msgz^,sys_msgz);
+  rtl_error_write(sys_msgz);
   end rtl_error_write_uni;
 
 
@@ -115,6 +132,7 @@ begin
   rtl_error_write(res);
   end rtl_error_write_unsigned;
 
+                                    
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_error_write_unsigned_hex =
@@ -126,6 +144,7 @@ var
   k                : t_rtl_unsigned32;           -- temp
   z                : t_rtl_unsigned32;           -- next digit's position
   res              : string 11 of t_syschar := '0x00000000'\0;
+  
 begin
   i:=num;
   z:=3;
@@ -212,11 +231,4 @@ begin
 
 
 
-----------------------------------------------------------------------------------------------------
-procedure rtl_handle_constraint_error =
--- Handles constraint error.
-----------------------------------------------------------------------------------------------------
-begin
-  raise constraint_error;
-  end rtl_handle_constraint_error;
 end errors;

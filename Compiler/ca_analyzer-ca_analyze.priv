@@ -192,6 +192,7 @@ procedure a_program (
 begin
   -- vygenerovat inicializaci a finalizaci proměnných
   a_block_process_vars(sym_primary_context(curr),pblblock(curr.bl.getcblock),mc_static,true,true);
+  a_block_process_vars(sym_primary_context(curr),pblblock(curr.bl.getcblock),mc_auto,true,true);
   a_block_process_vars(sym_primary_context(curr),pblblock(curr.bl.getcblock),mc_task,true,true); 
 
   -- analyzovat příkazy
@@ -278,7 +279,7 @@ begin
 
     -- ne => normální zpracování
     else
-      -- vypočítat úroveň vnoření podprogramu (ovšem pouze pokud je jisté,
+      -- vypočítat úroveň vnoření podpro	gramu (ovšem pouze pokud je jisté,
       -- že toto je vnořený podprogram - jinak musí NESTING zůstat 0)
       if curr.nesting=0 and then curr.context.entity<>nil and then curr.context.entity^.etype in ets_subprogram then
         calcnesting(curr);
@@ -300,25 +301,19 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure a_procedure (
-    curr           : in out tentity_procedure) = -- analyzovaný symbol
--- Analýza podprogramu.
+procedure a_static_subprogram (
+    curr           : in out class tentity_static_subprogram) = -- analyzovaný symbol
+-- Analýza statického podprogramu.
 ----------------------------------------------------------------------------------------------------
-var
-  entity           : pentity;
-
+with
+  cc_binding;
+  
 begin
-  -- analyzovat lze jen procedury, které skutečně máme definované ve zdrojáku
-  if curr.import_info=nil then
+  -- analyzovat lze jen podprogramy, které skutečně máme definované ve zdrojáku
+  if not is_imported(^curr) then
     a_subprogram(curr);
     end if;
-
-  -- exportovany symbol?
-  if curr.export_info<>nil then
-    -- zarad symbol pro export
-    sys_export_list.add(^curr);
-    end if;
-  end a_procedure;
+  end a_static_subprogram;
  
 
 
@@ -438,21 +433,6 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure a_var (
-    curr           : in out tentity_var) =       -- analyzovaný symbol
--- Analýza speciální metody.
-----------------------------------------------------------------------------------------------------
-begin
-  -- exportovany symbol?
-  if curr.export_info<>nil then
-    -- zarad symbol pro export
-    sys_export_list.add(^curr);
-    end if;
-  end a_var;
-
-
-
-----------------------------------------------------------------------------------------------------
 procedure a_pre_module (
     curr           : in out tentity_module) =    -- analyzovaný symbol
 -- Před-analýza modulu.
@@ -487,6 +467,12 @@ var
       a_prepare_info(binfo,xinfo);
       pspec^.bl.setblock(b_make_block(pspec_context,binfo));
       d_end_internal(pspec^,true);
+      
+      -- trik: speciální metoda musí být nejlépe public, aby se správně vyexportovala do metadat
+      -- %%X No, zrovna čistá praktika to není... Nešlo by to nějak jinak?
+      pspec^.visible:=etv_public;
+      pspec^.full   :=etv_public;
+      sym_set_globaly_visible(pspec,for force use true);
       end make_special;
 
 begin
@@ -547,6 +533,12 @@ var
       pspec^.bl.setblock(b_make_block(pspec_context,binfo));
       d_end_internal(pspec^,true);
       curr.stable[spectype].setentity(pspec);
+      
+      -- trik: speciální metoda musí být nejlépe public, aby se správně vyexportovala do metadat
+      -- %%X No, zrovna čistá praktika to není... Nešlo by to nějak jinak?
+      pspec^.visible:=etv_public;
+      pspec^.full   :=etv_public;
+      sym_set_globaly_visible(pspec,for force use true);
       end make_special;
 
 
@@ -564,11 +556,16 @@ var
 
     begin
       d_create_internal(curr_context,pentity(pitem),pitem_context,et_var,id);
-      pitem^.compile+tentitycompileset:[etc_generated];
       pitem^.mclass:=mc_class;
       pitem^.addr:=addr;
       pitem^.typ.settype(typ);
       d_end_internal(pitem^,true);
+      
+      -- trik: skrytá složka musí být nejlépe public, aby se správně vyexportovala do metadat
+      -- %%X No, zrovna čistá praktika to není... Nešlo by to nějak jinak?
+      pitem^.visible:=etv_public;
+      pitem^.full   :=etv_public;
+      sym_set_globaly_visible(pitem,for force use true);
       end make_field;
 
 begin
@@ -732,7 +729,7 @@ with
 
 begin
   -- prolog analýzy
-#if #environment compiler_version;='4.0.4.5' then;
+#if #environment compiler_version;='4.0.4.6' then;
   #display 'Už by mělo být možné používat rozvoj šablony, opravit';
   -- a_analyze_prolog(sym^);
 #end if;
@@ -794,22 +791,19 @@ begin
     when et_task      do unimplemented({UNIMP=}000124);
 
     -- procedura
-    when et_procedure do a_procedure(pentity_procedure(sym)^);
+    when et_procedure do a_static_subprogram(pentity_static_subprogram(sym)^);
 
     -- statická metoda
-    when et_static    do a_subprogram(pentity_subprogram(sym)^);
+    when et_static    do a_static_subprogram(pentity_static_subprogram(sym)^);
 
     -- virtuální metoda
     when et_virtual   do a_subprogram(pentity_subprogram(sym)^);
 
     -- přetížení virtuální metody
-    when et_override  do a_subprogram(pentity_code(sym)^);{unimplemented({UNIMP=}000163);}
+    when et_override  do a_subprogram(pentity_code(sym)^);
 
     -- speciální metoda
     when et_special   do a_special(pentity_special(sym)^);
-
-    -- promenna
-    when et_var       do a_var(pentity_var(sym)^);
 
     -- typ se sem nesmí dostat
     when et_type      do verify({VERIFY=}000575,true);
@@ -822,7 +816,7 @@ begin
     end case;
 
   -- prolog analýzy
-#if #environment compiler_version;='4.0.4.5' then;
+#if #environment compiler_version;='4.0.4.6' then;
   #display 'Už by mělo být možné používat rozvoj šablony, opravit';
   -- a_analyze_epilog(sym^);
 #end if;

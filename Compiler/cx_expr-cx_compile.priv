@@ -7,6 +7,7 @@ module private cx_compile =
 ----------------------------------------------------------------------------------------------------
 
 with
+  cc_def.cc_gc,
   cc_debug,cc_attr,
   cx_imm,
   cc_options;
@@ -35,7 +36,7 @@ begin
 #end if;{%ON}
 
   -- inicializovat informace o průběhu analýzy
-  info.init(nil{typ},false{final});
+  info.init(nil{typ});
 
   -- Fáze 1: rozklad výrazu
 #if #declared advanced_resuming; #and then; advanced_resuming then;
@@ -207,7 +208,7 @@ begin
 #end if;{%ON}
 
   -- inicializovat informace o průběhu analýzy
-  info.init(typ,final);
+  info.init(typ{,final});
   info.kind:=kind;
 
   -- Fáze 2: formální kontrola
@@ -426,6 +427,15 @@ begin
       when ek_sym_export do
           if not is_symbol_ets(ets_exportable+ets_export_traceable) then
             ce^.seterror({CCERR=}000580,ce_x_ex_sym_export);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+      
+      -- symbol vhodný pro export nebo trasování k exportu
+      when ek_sym_import do
+          if not is_symbol_ets(ets_importable+ets_import_traceable) then
+            ce^.seterror({CCERR=}000647,ce_x_ex_sym_export);
             expr^.errpos;
             {%%RESUME ce^.raiseerror;}
             ce^.resumeerror;
@@ -728,10 +738,21 @@ begin
     -- realokovat paměť 
     if list=nil then
       new list range exprlistinit;
+
+      -- zaregistruj v globalnim gc
+      c_garbage_collector.get_instance^.register_memblock(list);
     elsif list^:length=list^:last then
       --%%TODO(ADJUST) adjust list range list^:last+exprlistdelta;
       new _list range list^:last+exprlistdelta;
+
+      -- zaregistruj v globalnim gc
+      c_garbage_collector.get_instance^.register_memblock(_list);
+
       _list^:=list^;
+      
+      -- odregistruj z globalniho gc
+      c_garbage_collector.get_instance^.unregister_memblock(list);
+      
       discard list;
       list:=_list;
       end if;

@@ -6,6 +6,9 @@ module private cx_imm =
 -- Ondra : 24.07.2001 : Vytvořil.
 ----------------------------------------------------------------------------------------------------
 
+with
+  cc_def.cc_gc;
+
 ----------------------------------------------------------------------------------------------------
 #separate private cx_array;
 -- Práce s agregátem pole.
@@ -130,6 +133,9 @@ begin
   -- alokovat paměť
   new imm.citems.items range imm.citems.len*imm.citems.isize;
 
+  -- zaregistruj do globalniho gc
+  c_garbage_collector.get_instance^.register_memblock(imm.citems.items);
+
   -- zkopírovat řetězec 
   for i in s:range loop
     tunichar({%%TODO(SLICE)}t_pointer(^p_aliased_unsigned8array(imm.citems.items)^[(i-1)*tunichar:size])^):=char_to_unichar(s[i]);
@@ -160,6 +166,10 @@ begin
     -- kondenzované pole
     when ic_condensed do
         new imm.citems.items range from.citems.len*from.citems.isize;
+
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_memblock(imm.citems.items);
+
         imm.citems.len  :=from.citems.len;
         imm.citems.isize:=from.citems.isize;
         advanced.low_level.unchecked_memory_access.memory_copy(from.citems.items^,imm.citems.items^,imm.citems.len*imm.citems.isize);
@@ -169,10 +179,16 @@ begin
         -- alokovat paměť pro agregát
         new imm.aitems;
 
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_memblock(imm.aitems);
+
         -- zkopírovat prvky, je-li co kopírovat
         if from.aitems^.list<>nil then
           -- alokovat paměť pro prvky
           new imm.aitems^.list range from.aitems^.list^:length;
+
+          -- zaregistruj do globalniho gc
+          c_garbage_collector.get_instance^.register_memblock(imm.aitems^.list);
 
           -- zkopírovat prvky
           for i in from.aitems^.list^:range loop
@@ -191,10 +207,16 @@ begin
         -- alokovat paměť pro agregát
         new imm.ritems;
 
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_memblock(imm.ritems);
+
         -- zkopírovat prvky, je-li co kopírovat
         if from.ritems^.list<>nil then
           -- alokovat paměť pro prvky
           new imm.ritems^.list range from.ritems^.list^:last;
+
+          -- zaregistruj do globalniho gc
+          c_garbage_collector.get_instance^.register_memblock(imm.ritems^.list);
 
           -- zkopírovat prvky
           for i in from.ritems^.list^:range loop
@@ -213,10 +235,16 @@ begin
         -- alokovat paměť pro agregát
         new imm.sitems;
 
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_memblock(imm.sitems);
+
         -- zkopírovat prvky, je-li co kopírovat
         if from.sitems^.list<>nil then
           -- alokovat paměř pro prvky
           new imm.sitems^.list range from.sitems^.list^:length;
+
+          -- zaregistruj do globalniho gc
+          c_garbage_collector.get_instance^.register_memblock(imm.sitems^.list);
 
           -- zkopírovat prvky (žádné deep copy není potřeba)
           imm.sitems^.list^:=from.sitems^.list^;
@@ -250,6 +278,9 @@ begin
 
   -- alokovat paměť pro agregát 
   new imm.aitems;
+
+  -- zaregistruj do globalniho gc
+  c_garbage_collector.get_instance^.register_memblock(imm.aitems);
 
   -- předalokovat požadovaný počet položek
   if items<>0 then
@@ -310,6 +341,9 @@ begin
   -- alokovat paměť pro agregát 
   new imm.ritems;
 
+  -- zaregistruj do globalniho gc
+  c_garbage_collector.get_instance^.register_memblock(imm.ritems);
+
   -- OTHERS je implicitně NIL 
   store_nil(imm.ritems^.othersval);
   end store_record;
@@ -351,10 +385,21 @@ begin;
       -- realokovat paměť
       if imm.ritems^.list=nil then
         new imm.ritems^.list range immitemsinit;
+
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_memblock(imm.ritems^.list);
+
       elsif imm.ritems^.list^:length+1>imm.ritems^.list^:last then
         --%%TODO(ADJUST) adjust imm.ritems^.list range imm.ritems^.list^:last+immitemsdelta;
         new _list range imm.ritems^.list^:last+immitemsdelta;
+
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_memblock(_list);
+
         _list^:=imm.ritems^.list^;
+
+        -- odregistruj z globalniho gc
+        c_garbage_collector.get_instance^.unregister_memblock(imm.ritems^.list);
         discard imm.ritems^.list;
         imm.ritems^.list:=_list;
         end if;
@@ -393,6 +438,9 @@ begin
 
   -- alokovat paměť pro agregát 
   new imm.sitems;
+
+  -- zaregistruj do globalniho gc
+  c_garbage_collector.get_instance^.register_memblock(imm.sitems);
   end store_set;
 
 
@@ -476,11 +524,6 @@ var
   j                : t_unsigned;
 
 begin
-{
-  verify({VERIFY=}000844,(imm.ic<>ic_string) or (imm.pocet<>imm.delka{Dukaz: imm.pocet=imm.delka => prvek:size=1}));
-  byte(s[0]):=imm.pocet;
-  movef(imm.citems.items^,s[1],imm.pocet);
-}
   case imm.ic
     when ic_condensed do
         s:length:=min_unsigned(s:last,imm.citems.len);
@@ -1549,6 +1592,9 @@ begin
         -- alokovat nové nosné pole
         new buffer range (imm1.citems.len+imm2.citems.len)*imm1.citems.isize;
 
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_memblock(buffer);
+
         -- konketenace
         verify({VERIFY=}000986,imm1.citems.isize<>imm2.citems.isize);
         for i in 0..imm1.citems.len-1 loop
@@ -1562,6 +1608,9 @@ begin
 
         -- aktualizovat délku výsledku
         imm1.citems.len+imm2.citems.len;
+
+        -- odregistruj z globalniho gc
+        -- c_garbage_collector.get_instance^.unregister_memblock(imm1.citems.items);
 
         -- aktualizovat hodnotu výsledku
         imm1.citems.items:=buffer;

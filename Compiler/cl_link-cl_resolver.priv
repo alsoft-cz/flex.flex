@@ -7,7 +7,7 @@ module private cl_resolver =
 ----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
-class private abstract linkresolver =
+class private abstract c_link_resolver =
 -- Vyhodnocovač cross-referencí a adres.
 ----------------------------------------------------------------------------------------------------
 
@@ -26,7 +26,8 @@ class private abstract linkresolver =
     ------------------------------------------------------------------------------------------------
     with
       cc_base,
-      cc_base.cc_sym;
+      cc_base.cc_sym,
+      cc_binding;
 
         --------------------------------------------------------------------------------------------
         procedure mark_type =
@@ -83,12 +84,62 @@ class private abstract linkresolver =
           end mark_type;
 
     begin
-      -- zajímají nás pouze entity z aktuální parition
-      if curr^.partition_id<>curr_partition then return end if;
+      -- zajímají nás pouze entity z aktuální partition
+      if curr^.partition_id<>curr_partition then
+        -- předně zajistit přilinkování té jiné kompilační partition
+        declare var
+          compi    : pentity_compile;            -- cizí kompilační jednotka
+          import_info : p_flex_record;           -- technické importní informace
+          
+        begin
+          -- dohledat kompilační jednotku
+          compi:=sym_get_enclosing_or_self(curr,et_compile);
+          
+          -- pokud ještě nebyla zařazena na import list, učinit tak nyní
+          if not import.contains(compi) then 
+            -- přidat na import list
+            import.add(compi);
+            
+            -- založit importní informace
+            -- %%TODO(PORTABILITY) Pozor, místo [sym_get_qid] přímo převzít externí jméno z exportních informací !
+            os^.create_import_info(string_to_external_entity_ident(sym_get_qid(compi))^,compi^.part_extid^,import_info);
+            
+            -- zařadit importní informace do přídavného registry
+            aux_registry.add_import_info(compi,import_info);
+            end if;
+          end declare;
 
-      -- již označenými symboly se nezabývat
-      if curr^.linked<>ls_undef then return; end if;
+        -- entita deklarovaná v jiné partition, která je fyzicky implementovaná v cizí DLL, se na
+        -- tomto místě musí zařadit do import listu entit fyzicky importovaných z této partition,
+        -- protože import byl v její domovské partition odložen
+        if curr^.etype in ets_static_subprogram and then is_imported(curr) then
+          verify({VERIFY=}001324,deferred_import);
 
+          -- entitu nepřidávat dvakrát
+          if not import.contains(curr) then 
+            declare var
+              import_info : p_flex_record;       -- technické importní informace
+              
+            begin  
+              -- zkopírovat importní informace
+              os^.clone_import_info(get_import_info(curr),import_info);
+              
+              -- zařadit importní informace do přídavného registry
+              aux_registry.add_import_info(curr,import_info);
+              
+              -- zařadit na import list
+              import.add(curr);
+              end declare;
+            end if;
+          end if;
+        
+        -- a víc to neřešit
+        return;
+        end if;
+
+      -- již zpracované entity znovu nezpracovávat
+      if curr^.linked<>ls_undef then return end if;
+      
       -- označit symbol jako použitý
       curr^.linked:=ls_used;
 
@@ -110,18 +161,26 @@ class private abstract linkresolver =
               -- zařadit do příslušného datového segmentu - neinicializovaná proměnná
               this.data.add(curr)
 
-          when mc_class do { nic nedelat }
+          when mc_class do { nic nedelat };
 
           when others do verify({VERIFY=}000191,true);
           end case;
 
       -- prvek obsahující kód
       elsif curr^.etype in ets_code then
-        if curr^.etype=et_procedure{in ets_subprog} and then pentity_procedure{subprog}(curr)^.import_info<>nil
+        if curr^.etype in ets_static_subprogram and then is_imported(curr)
 
           -- externí symbol
           then
-            this.import.add(curr);
+            -- zařadit na seznam entit k importu, pokud není zapnut odložený import
+            if not deferred_import 
+              -- není zapnut => zařadit
+              then this.import.add(curr);
+              
+              -- je zapnut => dát entitě ještě druhou šanci, kdyby se do linkování až bude odložený 
+              -- import opět vypnutý
+              else curr^.linked:=ls_undef;
+              end if;
 
            -- normální symbol
           else
@@ -185,23 +244,16 @@ class private abstract linkresolver =
       else 
         verify({VERIFY=}000032,true);
         end if;
-
-    {
-      -- projít lokální tabulku symbolů
-      p:=curr^.symtab;
-      while p<>nil loop
-        if p^.etype in ets_code+ets_enclosed{-[et_module]} then mark(p); end if;
-        p:=p^.next;
-        end loop;
-    }
       end mark_single;
 
 
     
     ------------------------------------------------------------------------------------------------
     static mark_exports (
-        export     : in tentitystring) =         -- seznam exportovaných entit
+        export     : in tentitystring;           -- seznam exportovaných entit
+        deferred_import : in t_logical := false) = -- T-odložený import
     -- Označí pro linkování všechny exportované entity.
+    -- Význam příznaku [deferred_import] viz popis procedury [mark_single].
     ------------------------------------------------------------------------------------------------
     begin
       -- je co exportovat?
@@ -209,7 +261,7 @@ class private abstract linkresolver =
 
       -- označit všechny exporované entity
       for i in export.list^:range loop
-        mark_single(export.list^[i]);
+        mark_single(export.list^[i],for deferred_import use deferred_import);
         end loop;
       end mark_exports;
 
@@ -219,10 +271,12 @@ class private abstract linkresolver =
     static mark_all =
     -- Fáze 1: Označení všech entit pro linkování.
     ------------------------------------------------------------------------------------------------
+    {
     with
       standard.console;
-
+    }
     begin
+    {
       if flex_export_list.list<>nil and then flex_export_list.list^:length>0 then
         write_line('! flex export list not empty');
         end if;
@@ -230,9 +284,11 @@ class private abstract linkresolver =
       if sys_export_list.list<>nil and then sys_export_list.list^:length>0 then
         write_line('! sys export list not empty');
         end if;
-
+    }
       -- označit entity podle seznamu entit exportovaných metodou Flex
-      mark_exports(flex_export_list);
+      -- entity exportované metodou Flex, které jsou současně importované z jiné DLL, se nemusí
+      -- nutně fyzicky naimportovat - postačí, že se dostanou do metadat
+      mark_exports(flex_export_list,for deferred_import use true);
 
       -- označit entity podle seznamu entit exportovaných metodou System
       mark_exports(sys_export_list);
@@ -282,59 +338,6 @@ class private abstract linkresolver =
             _new_relo.address    :=address;
             relocations^ & _new_relo;
             end declare;
-
-        {
-          if relocaddrs=nil then
-            -- alokuj novy seznam relokaci
-            new relocaddrs range 255;
-            end if;
-          
-          -- pokud prazdny
-          if relocaddrs^:length=0 then
-            --rovnou napln
-            relocaddrs^ & relocaddr;
-            return;
-            end if;
-
-          -- pokud jiz v seznamu
-          if relocaddrs^[relocaddrs^:length]=relocaddr then
-            -- nezarazuj
-            return;
-            end if;
-
-          -- realokuj pokud treba
-          if relocaddrs^:length=relocaddrs^:last then
-            -- naalokuj 2x vic pameti nez ma puvodni seznam
-            new ptempaddrlist range relocaddrs^:last*2;
-            
-            -- a prekopiruj puvodni seznam do nove alokovaneho seznamu
-            ptempaddrlist^:=relocaddrs^;
-
-            -- stary seznam uz nebudeme potrebovat
-            discard relocaddrs;
-            relocaddrs:=ptempaddrlist;
-            end if;
-
-          -- pridej adresu na konec uz sortnuteho seznamu
-          relocaddrs^ & relocaddr;
-
-          -- posledni prvek sortni tam kam patri - od nejmensiho k nejvetsimu
-          for i in reverse relocaddrs^:range loop
-            -- neni prvni prvek a mensi nez predchozi?
-            if i>1 and relocaddrs^[i]<relocaddrs^[i-1] 
-            
-              -- ano - swapni
-              then
-                tempaddr:=relocaddrs^[i-1];
-                relocaddrs^[i-1]:=relocaddrs^[i];
-                relocaddrs^[i]:=tempaddr;
-              
-              -- ne - vse setrideno, muzeme ukoncit loop
-              else
-                break;
-                end if;
-            end loop;
-        } 
           end add_relocation;
 
 
@@ -344,10 +347,6 @@ class private abstract linkresolver =
             relocations : out p_relocations) =   -- setříděný seznam relokací
         -- Setřídí seznam relokací a předá ho ven.
         --------------------------------------------------------------------------------------------
-        with
-          standard.console,
-          standard.conversions;
-
         var
           zmena    : t_logical;                  -- příznak změny při třídění
           i        : t_unsigned;                 
@@ -377,12 +376,17 @@ class private abstract linkresolver =
               end loop;
             pred i;
             until not zmena or i=relocations^:first;
-{
-          for j in relocations^:range loop
-            write_line(unsigned_to_string(relocations^[j].address));
-            end loop;
-}
           end get_sorted_relocations;
+
+
+
+        ------------------------------------------------------------------------------------------------
+        exit =
+        -- exit
+        ------------------------------------------------------------------------------------------------
+        begin
+          discard relocations;
+          end exit;
 
         end c_partition_relocation_list;
 
@@ -489,16 +493,54 @@ class private abstract linkresolver =
       -- seznam setřídit a předat ven
       reloc_list^.get_sorted_relocations(relocations);
       end get_sorted_relocations_by_partition_id;
-{    
+      
+      
+      
     ------------------------------------------------------------------------------------------------
-    static getrelocaddrs =
-    -- vrati seznam adres na kterych je treba provest relokaci
+    class private c_relocations_iterator = 
+    -- Iterátor setříděných seznamů relokabilních adres z cizích partition (tedy s výjimkou aktuální
+    -- partition).
+    ------------------------------------------------------------------------------------------------
+    
+        --------------------------------------------------------------------------------------------
+        static get =
+        -- Vrátí True, je-li k dispozici další seznam a pointer na něj předá v [relocations].
+        --------------------------------------------------------------------------------------------
+        with
+          cc_base.cc_sym.cc_partition;
+          
+        var
+          reloc_list : p_partition_relocation_list;
+
+        begin
+          -- načíst další prvek
+          result:=p_hash_table_iterator(^this)^.get(reloc_list); -- %%TODO(INHERITED)
+          
+          -- přeskočit aktuální partition
+          if result and then reloc_list^.item_id=t_hash_item_id(curr_partition) then
+            result:=p_hash_table_iterator(^this)^.get(reloc_list); -- %%TODO(INHERITED)
+            end if;
+          
+          -- vrátit seznam relokací, našlo-li se něco
+          if result then
+            compi:=part_get_global_partition_by_id(t_partition_id(reloc_list^.item_id));
+            reloc_list^.get_sorted_relocations(relocations);
+            end if;
+          end get;
+
+        end c_relocations_iterator;
+
+      
+      
+    ------------------------------------------------------------------------------------------------
+    static iterate_relocations =
+    -- Vytvoří iterátor seznamů relokací.
     ------------------------------------------------------------------------------------------------
     begin
-      result:=relocaddrs;
-      end getrelocaddrs;
-}    
-    end linkresolver;
+      it.init(part_reloc);
+      end iterate_relocations;
+
+    end c_link_resolver;
 
 
 

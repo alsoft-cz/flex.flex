@@ -1,14 +1,14 @@
 ﻿---------------------------------------------------------------------------------------------------
 module private tasks =
+-- Tasking
 -- Flex Run-time Library
--- task variables
--- Copyright (C) 1999-2003 A && L soft
+-- Copyright (C) 1999-2004 A && L soft
 ----------------------------------------------------------------------------------------------------
 with
-  os_api,
-  rtl_init,
-  synchronization,
-  stack,
+  flex.os_api,
+  flex.rtl_init,
+  flex.synchronization,
+  flex.stack,
   flex.exceptions.seh;
     
 type
@@ -257,7 +257,7 @@ begin
 procedure rtl_task_exception_initialize =
 ----------------------------------------------------------------------------------------------------
 var
-    tibvalptr      : ^ t_rtl_native_unsigned;
+  tibvalptr        : ^ t_rtl_native_unsigned;
 
 begin
   
@@ -338,7 +338,7 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_deinit_task_header(
+procedure rtl_deinit_task_header (
     taskheader   : in p_task_header) =
 ----------------------------------------------------------------------------------------------------
 begin
@@ -351,8 +351,8 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_init_task_helper(
-    task_header  : p_task_header)=
+procedure rtl_init_task_helper (
+    task_header  : p_task_header) =
 ----------------------------------------------------------------------------------------------------
 var
   prochandle   : t_handle;
@@ -375,8 +375,8 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_deinit_task_helper(
-    task_header  : p_task_header)=
+procedure rtl_deinit_task_helper (
+    task_header  : p_task_header) =
 ----------------------------------------------------------------------------------------------------
 begin
   rtl_critical_lock(task_header^.locker);
@@ -408,14 +408,14 @@ type
 
 
 ----------------------------------------------------------------------------------------------------
-procedure task_entry_internal:t_rtl_thread_entry_win32= 
+procedure task_entry_internal : t_rtl_thread_entry_win32 =  
 ----------------------------------------------------------------------------------------------------
 var
-    _starter       : p_task_starter;
-    stacpy         : t_task_starter;
-    taskheader     : p_task_header;
-    sys_except_handler : aliased t_rtl_exceptions_handler;
-    unhandledx     : t_rtl_except_row;
+  _starter         : p_task_starter;
+  stacpy           : t_task_starter;
+  taskheader       : p_task_header;
+  sys_except_handler : aliased t_rtl_exceptions_handler;
+  unhandledx       : t_rtl_except_row;
 
 begin
   _starter:=p_task_starter(starter);
@@ -558,9 +558,9 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_register_task_internal(
+procedure rtl_register_task_internal (
     topstackspace  : t_rtl_pointer;
-    task_type      : t_rtl_task_type)=
+    task_type      : t_rtl_task_type) =
 ----------------------------------------------------------------------------------------------------
 var
   taskheader       : p_task_header;
@@ -570,48 +570,49 @@ var
 
 begin
   taskheader:=rtl_get_current_task_safe;
-  if taskheader<>nil then
-    unknown:=false;
-    taskheader^.usagecount + 1;
-    --zalohuju posledni TIB
-    new TBIPrev;
-    TBIPrev^.prev:=taskheader^.TIBusrval.prev;
-    TBIPrev^.value:=taskheader^.TIBusrval.value;
-    taskheader^.TIBusrval.prev:=TBIPrev;
-  else
-    new taskheader;
-    rtl_ref_create_local(taskheader^.self_ref,taskheader,^rtl_ref_collector_discard,t_rtl_ref_ns_simple);
-    taskheader^.TIBusrval.prev:=nil;
-    if TlsSetValue(stask_header,taskheader)=0 then
-      raise tasking_error;
+
+  if taskheader<>nil 
+
+    then
+      unknown:=false;
+      taskheader^.usagecount+1;
+      -- zalohuju posledni TIB
+      new TBIPrev;
+      TBIPrev^.prev:=taskheader^.TIBusrval.prev;
+      TBIPrev^.value:=taskheader^.TIBusrval.value;
+      taskheader^.TIBusrval.prev:=TBIPrev;
+
+      -- obnovim svuj TIB
+      tibvalptr:=^taskheader^.TIBusrval.value;
+      #syntax asm;
+        -- backup old value of TIB user val
+        mov    eax,fs:[t_winnt_tib.aruserpointer]
+        mov    edx,tibvalptr
+        mov    [edx],eax  {%%TODO(asm) mov maintaskheader.TIBusrval.value,eax }
+        -- set new value
+        mov    eax,taskheader
+        mov    fs:[t_winnt_tib.aruserpointer],eax
+        #end asm;
+
+    else
+      new taskheader;
+      rtl_ref_create_local(taskheader^.self_ref,taskheader,^rtl_ref_collector_discard,t_rtl_ref_ns_simple);
+      taskheader^.TIBusrval.prev:=nil;
+      if TlsSetValue(stask_header,taskheader)=0 then
+        raise tasking_error;
+        end if;
+
+      -- inicializovat
+      rtl_task_exception_initialize(taskheader,p_rtl_exceptions_handler(topstackspace));
+
+      rtl_init_task_helper(taskheader);
+      rtl_init_task_header(task_type,taskheader);
+
+      rtl_get_task_priority(taskheader,taskheader^.ostask.priority);
+
+      -- stack magic
+      tasks.rtl_stack_magic;
       end if;
-    end if;
-
-  if unknown then
-    -- inicializovat
-    rtl_task_exception_initialize(taskheader,p_rtl_exceptions_handler(topstackspace));
-
-    rtl_init_task_helper(taskheader);
-    rtl_init_task_header(task_type,taskheader);
-
-    rtl_get_task_priority(taskheader,taskheader^.ostask.priority);
-  else
-    --obnovim svuj TIB
-    tibvalptr:=^taskheader^.TIBusrval.value;
-    #syntax asm;
-      --backup old value of TIB user val
-      mov    eax,fs:[t_winnt_tib.aruserpointer]
-      mov    edx,tibvalptr
-      mov    [edx],eax  {%%TODO(asm) mov maintaskheader.TIBusrval.value,eax }
-      --set new value
-      mov    eax,taskheader
-      mov    fs:[t_winnt_tib.aruserpointer],eax
-      #end asm;
-    end if;
-    
-  -- stack magic
-  tasks.rtl_stack_magic;
-
   end rtl_register_task_internal;
 
 
@@ -628,7 +629,7 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_register_task_main =
-#pragma assign(register_task,rtl_register_task_main);
+#pragma assign(register_task     ,rtl_register_task_main);
 #pragma assign(register_task_main,rtl_register_task_main);
 ----------------------------------------------------------------------------------------------------
 begin
@@ -644,7 +645,6 @@ procedure rtl_register_task_dll =
 begin
   rtl_register_task_internal(topstackspace,t_rtl_dll_main_task);
   end rtl_register_task_dll;
-
 
 
 
@@ -840,16 +840,44 @@ begin
 procedure rtl_stack_magic =
 -- Stack magic (rather don't ask).
 ----------------------------------------------------------------------------------------------------
+var
+  mem_info         : t_memory_basic_information;
+  stack_ptr        : t_rtl_pointer;
+  ab               : t_rtl_unsigned32;
+  ba               : t_rtl_unsigned32;
+
 begin
+  -- retrieve current value of the stack pointer
+  #syntax asm;
+    mov    stack_ptr,esp
+    #end asm;
+
+  -- query the parameters of the stack
+  if virtualquery(stack_ptr,mem_info,mem_info:size)=0 then
+    raise program_error;
+    end if;
+
+  -- choose the lower value
+  ab:=t_rtl_unsigned32(mem_info.allocationbase:unchecked);
+  ba:=t_rtl_unsigned32(mem_info.baseaddress:unchecked);
+  if ab<ba then
+    ba:=ab;
+    end if;
+
+  -- one page up (in order not to mess with the guard page)
+  ba+4096;
+
+  -- perform stack magic
   #syntax asm;
     mov    eax,esp
-    add    eax,65535
-    and    eax,$FFFF_0000
-    mov    ecx,239
+    add    eax,4096  -- this is not an error, don't change to 4095
+    and    eax,$FFFF_F000
 @1: sub    eax,4096
     test   <t_rtl_unsigned8>[eax],0
-    loop   @1
+    cmp    eax,<t_rtl_unsigned32>ba
+    ja     @1
     #end asm;
+
 catch
   when others do;
     --ignore errors    

@@ -1,0 +1,205 @@
+﻿----------------------------------------------------------------------------------------------------
+module private partitions =
+-- Multiple compilation partitions support.
+-- Flex Run-time Library
+-- Copyright (C) 1999-2004 A && L soft
+----------------------------------------------------------------------------------------------------
+
+type
+  -- relocation fixup block
+  t_rtl_fixup_block = record
+      -- fixup block header
+      page_rva     : t_rtl_native_mod_unsigned;  -- starting relative virtual address of the 4K fixup block
+      block_size   : t_rtl_native_unsigned;      -- total size of this record + all block size fields
+      
+      -- fixup data: the type of a particular relocation being stored in the high 4 bits; the offset 
+      -- into into 4K page where the fixup is to be applied being stored in the remaining 12 bits
+      type_and_offset : array 1..4096 of t_rtl_mod_unsigned16; 
+      end record 
+          for alignment use 1;
+  p_rtl_fixup_block = ^t_rtl_fixup_block for machine_pointer use true;
+
+const
+  rtl_fixup_none      = 0;                       -- empty fixup record
+  rtl_fixup_absolute  = 1;                       -- absolute relocation
+  rtl_fixup_relative  = 2;                       -- relative relocation
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_bind_partition_implementation =
+-- Dynamicaly links all partitions this partition depends on.
+----------------------------------------------------------------------------------------------------
+with
+  flex.os_api;
+  
+var
+  this_link_ib     : t_rtl_native_mod_unsigned;  -- image base of the calling module - link-time
+  this_real_ib     : t_rtl_native_mod_unsigned;  -- image base of the calling module - run-time
+  link_data_index  : t_rtl_native_unsigned;      -- current index into the link data
+  
+begin
+  -- determine calling module's run-time image base address
+  if _imagebase<>nil
+	
+    -- for DLL's, the image base is provided as a parameter to the DllMain function
+    then this_real_ib:=t_rtl_native_mod_unsigned(_imagebase:unchecked);
+    
+    -- for EXE's, we have to determine it by calling [GetModuleHandle] and reinterpreting a module
+    -- handle as an image base address
+    else this_real_ib:=t_rtl_native_mod_unsigned(getmodulehandle(nil));
+    end if;
+    
+  -- validate image base
+  if this_real_ib=0 then
+    raise program_error;
+    end if;
+
+  -- retrieve the original link-time image base of the calling module
+  this_link_ib:=p_rtl_native_mod_unsigned(t_rtl_pointer(^link_data^[link_data_index]))^;
+  link_data_index+this_link_ib:size;
+              
+  -- relocate all linked partitions
+  loop
+    declare var
+    {
+      dest_name      : p_rtl_char32ustr;         -- destination module's name
+      dest_name_sys  : aliased t_syscharstr;     -- destination module's name
+    }  
+      compi_import   : p_rtl_pointer;            -- destination module's @COMPILATION import slot
+      dest_link_ib   : t_rtl_native_mod_unsigned;-- image base of the destination module - link-time
+      dest_real_ib   : t_rtl_native_mod_unsigned;-- image base of the destination module - run-time
+      absolute_delta : t_rtl_native_mod_unsigned;-- image base delta for relocating absolute refs
+      relative_delta : t_rtl_native_mod_unsigned;-- image base delta for relocating relative refs
+      
+    begin
+      -- construct a pointer to the destination module's @COMPILATION import slot
+      t_rtl_native_mod_unsigned(compi_import:unchecked):=this_real_ib+p_rtl_native_mod_unsigned(t_rtl_pointer(^link_data^[link_data_index]))^;
+      
+      -- is this the end of the link data ?
+      if t_rtl_native_mod_unsigned(compi_import:unchecked)=this_real_ib then
+        -- yes => end of relocations
+        break
+        end if;
+      
+      -- shift index into link data
+      link_data_index+compi_import:size;
+      
+      -- use the value of the destination module's @COMPILATION import slot to determine the 
+      -- run-time image base of the destination module
+      declare var
+        mem_info   : t_memory_basic_information;
+        
+      begin  
+        -- query the parameters of the destination memory area
+        if virtualquery(compi_import^,mem_info,mem_info:size)=0 then
+          raise program_error;
+          end if;
+        
+        -- the run-time image base of the destination module shall be equal to the allocation base
+        dest_real_ib:=t_rtl_native_mod_unsigned(mem_info.allocationbase:unchecked);
+        end declare;
+      
+    { Left for reference. [GetModuleHandle]-based solution, not working due to DllMain restrictions.
+    
+      -- construct a pointer to the destination module's name and 
+      t_rtl_pointer(dest_name):=^link_data^[link_data_index];
+      
+      -- is this a non-empty name ?
+      if dest_name^:length=0 then
+        -- no => end of relocations
+        break
+        end if;
+      
+      -- shift index into link data
+      link_data_index+dest_name^:base:size*dest_name^:length+dest_name^:length:size;
+      
+      -- convert the name into a system string
+      rtl_to_system_string(dest_name^,dest_name_sys);
+      
+      -- query the system for the destination module's run-time image base address
+      dest_real_ib:=t_rtl_native_mod_unsigned(getmodulehandle(^dest_name_sys));
+
+      -- validate image base
+      if dest_real_ib=0 then
+        declare var 
+          x : dword;
+        begin
+          x:=getlasterror;
+          end declare;
+        raise program_error;
+        end if;
+    }  
+      -- retrieve the original link-time image base of the destination module
+      dest_link_ib:=p_rtl_native_mod_unsigned(t_rtl_pointer(^link_data^[link_data_index]))^;
+      link_data_index+dest_link_ib:size;
+      
+      -- compute deltas of relative and absolute references
+      absolute_delta:= dest_real_ib-dest_link_ib;
+    --relative_delta:=(dest_real_ib-this_real_ib)-(dest_link_ib-this_link_ib); <- equal to next line:
+      relative_delta:=(dest_real_ib-dest_link_ib)-(this_real_ib-this_link_ib);
+
+      -- process all fixup blocks for this destination module
+      loop
+        declare var
+          fixup    : p_rtl_fixup_block;          -- pointer to the current fixup block
+          page     : p_rtl_blob;                 -- pointer to a 4K page
+          saved_protect : aliased dword;         -- saved memory protection of the pages being changed
+          
+        begin
+          -- construct a pointer to the current fixup block
+          t_rtl_pointer(fixup):=^link_data^[link_data_index];
+          
+          -- is this a valid fixup block ?
+          if fixup^.page_rva=0 then
+            -- skip the terminating null value
+            link_data_index+fixup^.page_rva:size;
+            
+            -- no => end of fixups for one destination module
+            break;
+            end if;
+          
+          -- shift index into link data
+          link_data_index+fixup^.block_size;
+          
+          -- if any of the deltas is non-zero, process the fixup block
+          if absolute_delta<>0 or relative_delta<>0 then 
+            -- prepare a pointer to the start of the 4K page
+            t_rtl_native_mod_unsigned(page:unchecked):=this_real_ib+fixup^.page_rva;
+            
+            -- unprotect the destination 4K page
+            if virtualprotect(page,4096,page_readwrite,saved_protect)=0 then
+              raise program_error;
+              end if;
+            
+            -- process one fixup block
+            for i in 1..(fixup^.block_size-t_rtl_fixup_block.type_and_offset:position) div t_rtl_fixup_block.type_and_offset:base:size loop
+              case (fixup^.type_and_offset[i] and $F0_00) shr 12
+                -- empty relocation
+                when rtl_fixup_none     do -- do nothing
+                
+                -- absolute relocation => apply the absolute delta
+                when rtl_fixup_absolute do 
+                    p_rtl_native_mod_unsigned(t_rtl_pointer(^page^[t_rtl_blob:range(fixup^.type_and_offset[i] and $0F_FF)]))^+absolute_delta;
+                
+                -- relative relocation => apply the relative delta
+                when rtl_fixup_relative do 
+                    p_rtl_native_mod_unsigned(t_rtl_pointer(^page^[t_rtl_blob:range(fixup^.type_and_offset[i] and $0F_FF)]))^+relative_delta;
+                
+                -- unsupported fixup record type
+                when others do raise program_error;
+                end case;
+              end loop;
+            
+            -- reset the protection of the destination 4K page to the original value
+            if virtualprotect(page,4096,saved_protect,saved_protect)=0 then
+              raise program_error;
+              end if;
+            end if;  
+          end declare;
+        end loop;  
+      end declare;
+    end loop;
+  end rtl_bind_partition_implementation;
+
+  
+  
+end partitions;

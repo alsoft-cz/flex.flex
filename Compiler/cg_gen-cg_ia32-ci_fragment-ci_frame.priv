@@ -1,0 +1,775 @@
+﻿----------------------------------------------------------------------------------------------------
+module private ci_frame =
+-- Překladač Flexu.
+-- Rutiny pro vytvoření framu podprogramu.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 14.04.2004 : Vytvořil
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_var,
+  cc_def.cc_gc,
+  cc_base.cc_options,
+  cc_base.cc_sym,
+  cc_base.cc_sym.cc_partition,
+  cg_gen.cg_debug,
+  cg_gen.cg_ia32.ci_code.ci_rtl,
+  cg_gen.cg_ia32.ci_context;
+
+----------------------------------------------------------------------------------------------------
+procedure addcallrtl (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o překladu
+    rtl            : in t_rtl_entity;            -- volaný interní podprogram
+    save_regs      : in t_logical:=false) =      -- ulozit pouzite registry?
+-- Přidá volání interního podprogramu.
+-- Varianta [cg_gen.cg_ia32.ci_code.ci_instr.addcallrtl], která si sama připraví kontext výrazu.
+----------------------------------------------------------------------------------------------------
+with
+  ci_context;
+
+var
+  context          : iexprcontext;
+
+begin
+  -- připravit prázdný kontext
+  i_createcontext(context,lm_gen,nil);
+
+  -- zavolat skutečný [addjump]
+  ci_instr.addcallrtl(inst,info,context,rtl,save_regs);
+  end addcallrtl;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_runtime_initialization (
+    curr           : in class tentity_code{compile};     -- kompilační jednotka
+    inst           : in out icodeinst;
+    info           : in out igeninfo;
+    context        : in out iexprcontext;        -- kontext výrazu
+    register_task  : in t_rtl_entity;            -- interní procedura pro registraci tasku
+    do_initialize  : in t_logical := true) =     -- T-volat early run-time inicializaci
+-- Vygeneruje kód pro inicializaci run-time knihovny.
+----------------------------------------------------------------------------------------------------
+with
+  cp_os;
+
+var
+  size             : t_unsigned;                 -- velikost rezervovaného místa
+
+begin
+  -- dynamicky slinkovat tuto partition
+  if do_initialize and part_get_partition_type(sym_primary_context(curr)) not in parts_contains_runtime then
+    -- na stack uložit image-base tohoto modulu
+    declare var
+      opimagebase  : c_operand;
+      
+    begin  
+      -- vytvořit operand reprezentující imagebase
+      if part_get_partition_result(sym_primary_context(curr))=tpr_library
+        -- pro DLL je to první parametr DllMain
+        then opimagebase.create_memory_address_on_stack(inst,edt_unsigned,4,8);
+        -- pro EXE údaj není k dispozici a RTL si musí nějak poradit
+        else opimagebase.create_imm(edt_unsigned,4,0);
+        end if;
+
+      -- uložit na stack
+      addii(inst,info,ii_push,opimagebase,op0,op0);
+      
+    leave
+      -- uvolnit operand
+      opimagebase.free(info,context);
+      end declare;
+    
+    -- na stack uložit pointer na sekci s relokačními informacemi
+    declare var
+      opsection    : c_operand;
+      
+    begin
+      -- vytvořit operand
+      opsection.create_imm(edt_pointer,4,0);
+      opsection.set_relo_section(tis_flex_relocations);
+      
+      -- uložit na stack
+      addii(inst,info,ii_push,opsection,op0,op0);
+      
+    leave
+      -- uvolnit operand
+      opsection.free(info,context);
+      end declare;
+    
+    -- vygenerovat volání
+    addcallrtl(inst,info,rtl_bind_partition); 
+    end if;
+
+  -- inicializovat runtime knihovnu
+  if do_initialize and part_get_partition_type(sym_primary_context(curr)) in parts_contains_runtime then
+    addcallrtl(inst,info,rtl_early_runtime_initialize); 
+    end if;
+
+  -- zjistit velikost rezervovaneho mista
+  size:=unidata_size_to_unsigned(os^.getstackreserve(pentity_compile(sym_get_enclosing_or_self(^curr,et_compile))^));
+
+  -- je vůbec potřeba nějakou paměť rezervovat?
+  if size<>0
+
+    -- ano => na stack uložit adresu pracovní proměnné, která ji bude reprezentovat
+    then
+      declare var
+        stack_reserve_addr : c_operand;          -- adresa rezervy na stacku
+
+      begin
+        -- sestavit pracovní proměnnou, která bude zabírat požadované místo
+        stack_reserve_addr.create_temporary(inst,info,edt_binary,size);  
+        -- %%TODO(TEMPORARY) Pozor, zde by se místo temporary proměnné měla alokovat spíše 
+        -- anonymní trvalá lokální proměnné, aby ji [free] tohoto operandu nemohlo dealokovat.
+  
+        -- načíst adresu rezervy
+        i_gen_load_address_to_register(inst,info,context,stack_reserve_addr);
+
+        -- uložit na stack
+        addii(inst,info,ii_push,stack_reserve_addr,op0,op0);
+
+      leave
+        -- uvolnit operand
+        -- %%TODO(TEMPORARY) POZOR !!! Zde nesmí dojít k fyzické dealokaci temporary proměnné,
+        -- jinak by se to celé mohlo rozbít.
+        stack_reserve_addr.free(info,context);
+        end declare;
+
+    -- ne => na stack uložit NIL
+    else 
+      addii(inst,info,ii_push,op_0_32bit,op0,op0);
+      end if;
+
+  -- inicializovat task control block pro hlavní task
+  addcallrtl(inst,info,register_task);
+  end i_gen_runtime_initialization;
+
+                             
+                             
+----------------------------------------------------------------------------------------------------
+procedure i_gen_entrypoint_prolog =
+-- Prolog bootstrap kódu kompilační jednotky. 
+-- Inicializuje run-time knihovnu a sestaví první exception frame. Očekává, že je již připraven 
+-- stack frame.
+----------------------------------------------------------------------------------------------------
+begin
+  if not cfg_no_runtime then
+    -- alokovat návěští obsluhy neobsloužených výjimek
+    newtarget(info,tg_endxframe);
+
+    -- inicializovat run-time
+    i_gen_runtime_initialization(curr,inst,info,context,register_task,do_initialize);
+
+    -- vytvořit exception-frame
+    i_create_xframe(inst,info,framehandler,tg_endxframe);
+    end if;
+  end i_gen_entrypoint_prolog;
+
+
+  
+----------------------------------------------------------------------------------------------------
+procedure i_gen_entrypoint_epilog =
+-- Epilog bootstrap kódu kompilační jednotky. 
+-- Zruší nejvrchnější exception frame, finalizuje run-time knihovnu a ukončí proces.
+----------------------------------------------------------------------------------------------------
+begin
+  if not cfg_no_runtime then 
+    -- adresa obsluhy neobsloužených výjimek
+    settarget(info,tg_endxframe,getaddr(inst));
+
+    -- zrusit exception-frame
+    addcallrtl(inst,info,rtl_end_topmost_xframe);
+
+    -- deinicializovat task control block pro hlavní task
+    addcallrtl(inst,info,rtl_unregister_task);
+
+    -- finalizovat runtime knihovnu
+    if do_finalize and part_get_partition_type(sym_primary_context(curr)) in parts_contains_runtime then
+      addcallrtl(inst,info,rtl_late_runtime_finalize); 
+      end if;
+    
+    -- exit procesu s exitcodem
+    if do_terminate and part_get_partition_type(sym_primary_context(curr))=part_standalone {in parts_contains_program} then
+      addcallrtl(inst,info,rtl_terminate); 
+      end if;
+    end if;
+  end i_gen_entrypoint_epilog;
+
+                                      
+                                      
+----------------------------------------------------------------------------------------------------
+procedure i_allocpar (
+    curr           : in class tentity_code;      -- generovaný symbol
+    inst           : in out icodeinst;           -- instance
+    ppar           : in pentity_param;           -- parametr/návratová hodnota
+    ofs            : in out t_signed32;          -- offset od stack-frame
+    retval         : in t_logical) =             -- PPAR je návratová hodnota.
+-- Vymyslí adresu přes jakou bude dostupný parametr procedury, (nebo její návratová hodnota).
+-- RETVAL: Je-li TRUE, považuje se PPAR za návratovou hodnotu procedury.
+--         prostor který zde bude tomuto parametru přidělen nebude započítán
+--         do velikosti, která bude uvolněna při návratu z procedury. To musí
+--         zařídit volající procedura až po zpracování návratové hodnoty.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_util;
+
+var
+  par_info         : iparinfo;                   -- informace o jednom parametru
+
+begin
+  -- doplnit záznam pro generování debug informací
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_allocpar_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_begin].b,nil);
+  --  end if;
+
+  -- parametr
+  par_info.pparam:=ppar;
+
+  -- pozice
+  par_info.ofs:=ofs;
+
+  -- základní velikost (stejná konstrukce je v CI_EXPR.I_GEN_CALL)
+  if ppar^.pass in pps_ref
+
+    -- odkazem
+    then
+      addalign(par_info.size,0,lpointer32,istackalign)
+
+    -- hodnotou
+    else
+      addalign(par_info.size,0,unidata_size_to_unsigned(ppar^.typ.getctype^.size),istackalign);
+      end if;
+
+  -- započítat run-time atributy
+  if ppar^.rta_used<>rtattribset:[] then
+    for rta in rtattrib loop
+      if rta in ppar^.rta_used then
+        addalign(par_info.size,par_info.size,unidata_size_to_unsigned(cpu32_rtattribsize[rta]),istackalign);
+        end if;
+      end loop;
+    end if;
+
+  -- přibyl jeden parametr
+  ofs+t_signed(par_info.size);
+
+  -- bude se odstraňovat ze stacku při návratu z procedury
+  if not retval then
+    inst.profile.retfree+par_info.size;
+    end if;
+
+  -- další parametr zpracován
+  inst.profile.par^ & par_info;
+  end i_allocpar;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_allocpar_local (
+    curr           : in class tentity_code;      -- generovaný symbol
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    ppar           : in pentity_param) =         -- parametr/návratová hodnota
+-- Alokuje pro parametr prostor mezi lokálními proměnnými. 
+-- Používá se například pro reprezentaci návratové hodnoty vracené v EAX.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_util;
+
+var
+  par_info         : iparinfo;                   -- informace o jednom parametru
+  par_size         : t_unsigned32;               -- velikost parametru
+  par_ofs          : timm32;                     -- pozice parametru
+
+begin
+  -- implementační omezení: neporadíme si s návratovými hodnotami o velikosti <> 4 B,
+  -- viz zejména kopírování návratové hodnoty do EAX v [i_gen_exit].
+  if ppar^.rta_used<>rtattribset:[] or ppar^.pass not in pps_value then
+    unimplemented({UNIMP=}000254);
+    end if;
+  
+  -- započítat run-time atributy
+  if ppar^.rta_used<>rtattribset:[] then
+    for rta in rtattrib loop
+      if rta in ppar^.rta_used then
+        addalign(par_size,par_size,unidata_size_to_unsigned(cpu32_rtattribsize[rta]),istackalign);
+        end if;
+      end loop;
+    end if;
+
+  -- započítat vlastní hodnotu nebo adresu parametru
+  if ppar^.pass in pps_ref
+
+    -- odkazem
+    then addalign(par_size,0,lpointer32,istackalign)
+
+    -- hodnotou
+    else addalign(par_size,0,unidata_size_to_unsigned(ppar^.typ.getctype^.size),istackalign);
+    end if;
+
+  -- alokovat pracovní proměnnou
+  alloctemp(inst,info,par_size,par_ofs);
+  
+  -- parametr
+  par_info.pparam:=ppar;
+
+  -- pozice
+  par_info.ofs:=imm32_to_signed(par_ofs);
+
+  -- další parametr zpracován
+  inst.profile.par^ & par_info;
+  end i_allocpar_local;
+
+
+
+------------------------------------------------------------------------------------------------
+procedure handle_reg (
+  inst           : in out icodeinst;           -- instance
+  info           : in out igeninfo;            -- informace o průběhu generování
+  ii             : in iinstr;                  -- generovaná unární instrukce (obv. PUSH, POP)
+  reg            : in ireg) =                  -- zpracovávaný registr
+-- Nad registrem [reg] provede zadanou unární operaci.
+------------------------------------------------------------------------------------------------
+var
+ opreg             : c_operand;
+ xcontext          : iexprcontext;               -- prázdný kontext výrazu
+
+begin
+ opreg.create_use_register_low_level(edt_unsigned,reg);
+ addii(inst,info,ii,opreg,op0,op0);
+leave
+  opreg.free(info,xcontext);
+ end handle_reg;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_copypar (
+    curr           : in class tentity_code;      -- generovaný symbol
+    inst           : in out icodeinst;           -- nová instance
+    instref        : in icodeinst) =             -- referenční instance
+-- Zkopíruje adresy všech parametrů z referenční instance (INSTREF) do nové
+-- instance (INST).
+----------------------------------------------------------------------------------------------------
+var
+  x                : t_unsigned32;
+  rta              : rtattrib;
+
+begin
+  -- doplnit záznam pro generování debug informací
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_allocpar_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_begin].b,nil);
+  --  end if;
+
+  -- realokovat paměť
+  new inst.profile.par range instref.profile.par^:length;
+
+  -- zaregistruj do globalniho gc
+  c_garbage_collector.get_instance^.register_memblock(inst.profile.par);
+
+  -- zkopírovat základní údaje profilu parametů
+  inst.profile.call:=instref.profile.call;
+  inst.profile.thisofs:=instref.profile.thisofs;
+  inst.profile.retfree:=instref.profile.retfree;
+
+  -- zkopírovat adresy parametrů
+  inst.profile.par^:=instref.profile.par^;
+  end i_copypar;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_subprogram_prolog =
+-- Vygeneruje entry sekvenci podprogramu.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_sym;
+
+var
+  ptyp             : pentity_type;               -- typ procedury
+  pvirt            : pentity_virtual;            -- související virtuální metoda
+  srch             : tentitysearch;              -- hledátor
+  ofs              : t_signed32;                 -- offset od stack-frame
+  addr             : timm32;                     -- pro kompatibilitu parametru
+  i                : t_unsigned;
+
+begin
+  -- doplnit záznam pro generování debug informací
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_entry_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_begin].b,nil);
+  --  end if;
+
+
+  ----- (1) vyrobit stack-frame --------------------------------------------------------------------
+  case inst.frame
+    -- ESP-relativní
+    when isf_sptr do
+        verify({VERIFY=}000498,curr.nesting<>0);
+        -- nic nedělat
+
+    -- EBP-relativní
+    when isf_fptr do
+        if curr.nesting=0
+
+          -- podporogram není vnořený, ani neobsahuje jiné vnořené podprogramy
+          then
+            -- PUSH EBP
+            addii(inst,info,ii_push,op_ebp,op0,op0);
+
+            -- MOV EBP,ESP
+            addii(inst,info,ii_mov,op_ebp,op_esp,op0);
+
+          -- vnořený podprogram, nebo obsahuje jiné vnořené podprogramy
+          else
+            verify({VERIFY=}000499,curr.nesting>31);
+
+            declare var
+              opnesting : c_operand;             -- úroveň vnoření podprogramu
+              xcontext  : iexprcontext;          -- prázdný kontext generování výrazu
+
+            begin
+              -- úroveň vnoření
+              opnesting.create_imm(edt_unsigned,0,unsigned_to_imm32(curr.nesting));
+
+              -- ENTER <velikost stacku>,<vnoření>
+              addii(inst,info,ii_enter,op_0_16bit,opnesting,op0);
+
+            leave
+              -- uvolnit pracovní operand
+              opnesting.free(info,xcontext);
+              end declare;
+
+            -- poznamenat si, že prvních NESTING*4 bytů stacku pod EBP je obsazených
+            inst.layout.display:=curr.nesting*4;
+
+            -- poznamenat si, kam se má doplnit potřebná velikost stacku
+            -- info.espmark:=getfieldaddr(info,iif_imm1);
+            end if;
+
+        -- Poznámka : instrukce ENTER umožňuje upravovat velikost ESP jen o 16bitovou hodnotu, takže
+        -- se rezervace místa na stacku řeší obecněji přes dodatečné SUB ESP,<velikot>.
+        -- %%X Dodělat, aby se používalo rovnou ENTER, pokud je to možné (e.g. <64 KB dat na stacku)
+
+        -- SUB ESP,0
+        addii(inst,info,ii_sub,op_esp,op_0_32bit,op0);
+
+        -- poznamenat si, kam se má doplnit potřebná velikost stacku
+        info.espmark:=getfieldaddr(info,iif_imm1);
+
+    when others do verify({VERIFY=}000792,true);
+    end case;
+
+
+  if curr.etype in ets_subprogram then
+    ----- (2) uložení rezervovaných registrů --------------------------------------------------------
+    if inst.profile.call in iccs_save_regs then 
+      handle_reg(inst,info,ii_push,ir_esi);
+      handle_reg(inst,info,ii_push,ir_edi);
+      handle_reg(inst,info,ii_push,ir_ebx);
+      end if;
+
+    ----- (3) profil parametrů ---------------------------------------------------------------------
+    -- pro různé typy podprogramů se to dělá jinak
+    case curr.etype
+      -- procedura, metoda nebo speciální metoda
+      when et_procedure,et_static,et_virtual,et_special do
+          -- počáteční offset v oblasti "nad" stack-frame (parametry)
+          ofs:=t_signed(istackframesize[inst.frame]);
+
+          --- pointer na instanci ---
+          if pentity_subprogram(^curr)^.instance<>tip_none then
+            -- připravit THIS
+            inst.profile.thisofs:=ofs;
+
+            -- posunout offset na parametry
+            ofs+linstanceptr32;
+
+            -- započítat mezi uvolňované hodnoty
+            inst.profile.retfree+linstanceptr32;
+            end if;
+
+          -- získat typ procedury
+          ptyp:=pentity_procedure(^curr)^.typ.getutype;
+
+          -- speciální metody tříd nemají typ
+          if ptyp<>nil then
+            --- parametry ---
+            -- alokovat paměť pro popis parametrů
+            new inst.profile.par range srch.count_et(ptyp,rc_primary,et_param,[]);
+
+            -- zaregistruj do globalniho gc
+            c_garbage_collector.get_instance^.register_memblock(inst.profile.par);
+
+            -- určit adresu všech parametrů
+            -- Parametry musí adresovat v na první pohled divném pořadí: opačně než
+            -- specifikuje volací konvence. To je dáno stackem rostoucím shora dolů.
+            if inst.profile.call not in iccs_reverse
+              then srch.find_et_first(ptyp,rc_primary,et_param,[esf_reverse]);
+              else srch.find_et_first(ptyp,rc_primary,et_param,[]);
+              end if;
+            while srch.psym<>nil loop
+              -- vytvoř prostor na stacku a zapamatuj si jeho pozici (ofset).
+              -- návratovou hodnotu si necháme na konec
+              if srch.psym<>ptyp^.result then
+                i_allocpar(curr,inst,pentity_param(srch.psym),ofs,false);
+                end if;
+
+              -- další parametr
+              srch.find_et_next;
+              end loop;
+
+            --- návratová hodnota ---
+            -- Nakonec vyhradíme prostor pro RESULT hodnotu procedury. Ta musí být
+            -- vždy nejvýše na stacku, nezávisle na volací konvenci.
+            if ptyp^.result<>nil then
+              -- pozor, některé volací konvence vrací návratovou hodnotu v EAX
+              if inst.profile.call not in iccs_ret_eax 
+                
+                -- není to ten případ => vytvoř prostor na stacku a zapamatuj si jeho pozici (ofset)
+                then i_allocpar(curr,inst,ptyp^.result,ofs,true);
+
+                -- je to ten případ => alokuj pracovní proměnnou pro návratovou hodnotu
+                else i_allocpar_local(curr,inst,info,ptyp^.result);
+                end if;
+              end if;
+            end if;
+
+      -- přetížení virtuální metody
+      when et_override  do
+          --ptyp:=pdefprocedure(pdefoverride(@curr)^.virt.getcsym)^.typ.getctype;
+
+          -- získat související virtuální metodu
+          pvirt:=pentity_virtual(pentity_override(^curr)^.virt.getcentity);
+
+          -- zkopírovat profil parametrů do přetížení
+          verify({VERIFY=}000539,pvirt^.codegen=nil); 
+          verify({VERIFY=}000966,picodegen_subprog(pvirt^.codegen)^.ifirst<>picodegen_subprog(pvirt^.codegen)^.ilast);
+          i_copypar(curr,inst,picodegen_subprog(pvirt^.codegen)^.ifirst^);
+
+          -- je-li to override virtuální metody v exposovaném interfacu, pak upravit THIS pointer
+          if pentity_override(^curr)^.interface^.is_exposed then
+            declare var
+              xcontext : iexprcontext;           -- prázdný kontext generování výrazu
+              opthis   : c_operand;              -- THIS poitner
+              opoffset : c_operand;              -- offset instance interfacu v nadřazené instanci
+
+            begin
+              -- THIS pointer
+              i_gen_this_address(inst,opthis);
+
+              -- offset instance interfacu v nadřazené instanci
+              opoffset.create_imm(edt_offset,0,unidata_addr_to_imm32(pentity_var(pentity_override(^curr)^.interface^.instance.getcentity)^.addr));
+ 
+              -- od THIS pointeru odečíst offset instance interfacu a získat tak pointer 
+              -- na nadřazenou instanci
+              addii(inst,info,ii_sub,opthis,opoffset,op0);
+
+            leave
+              -- uvolnit operandy
+              opthis.free(info,xcontext);
+              opoffset.free(info,xcontext);
+              end declare;
+            end if;
+
+      -- nic jiného neumíme
+      when others do verify({VERIFY=}000538,true);
+      end case;
+
+
+    ----- (4) profil lokálních proměnných ----------------------------------------------------------
+    -- %%X Pozor, FIND_ET_FIRST to neprohledá do hloubky. Není to špatně?
+    srch.find_et_first(^curr,rc_primary,et_var,[]);
+    while srch.psym<>nil loop
+      -- bude se proměnná umísťovat hned ?
+    {%%TECH(OPT) Optimalizátor si s konstantní podmínkou neporadí.
+      if (pentity_var(srch.psym)^.pparam=nil) and (pentity_var(srch.psym)^.mclass=mc_auto) and {%%X}false then
+        setvaraddr(inst,info,pentity_var(srch.psym),addr);
+        end if;
+    }
+      -- další proměnná
+      srch.find_et_next;
+      end loop;
+    end if;
+  end i_gen_subprogram_prolog;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_subprogram_epilog =
+-- Vygeneruje exit sekvenci podprogramu.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_sym,
+  cb_block.cb_def,
+  ci_expr.ci_rcheck;
+
+begin
+  -- doplnit záznam pro generování debug informací
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_exit_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_end].b,nil);
+  --  end if;
+
+  ----- (1) v některých případech je potřeba ošetřit předání návratové hodnoty v EAX ---------------
+  if inst.profile.call in iccs_ret_eax then
+    declare var
+      ptyp         : pentity_type;               -- typ procedury
+
+    begin  
+      -- typ procedury
+      ptyp:=pentity_procedure(^curr)^.typ.getutype;
+
+      -- je nějaká návratová hodnota vůbec k dispozici ?
+      if ptyp<>nil and then ptyp^.result<>nil then
+        declare var
+          op1      : c_operand;                  -- adresa návratové hodnoty
+          opeax    : c_operand;                  -- EAX
+          xcontext : iexprcontext;               -- prázdný kontext výrazu
+          disp     : timm32;                     -- offset návratové hodnoty
+          srch     : tentitysearch;              -- hledátko
+
+        begin
+          -- implementační omezení: neporadíme si s návratovými hodnotami o velikosti <> 4 B,
+          -- viz volání unimplemented 937 v [i_allocpar_local].
+
+          -- dohledat proměnnou odpovídající parametru
+          srch.find_et_first(^curr,rc_primary,et_var,[]);
+          while srch.psym<>nil and then (pentity_var(srch.psym)^.vimplements<>vi_parameter 
+          or else pentity_var(srch.psym)^.imp_param<>ptyp^.result) loop
+            srch.find_et_next;
+            end loop;
+          verify({VERIFY=}000938,srch.psym=nil);
+
+          -- zjistit offset návratové hodnoty
+          getvaraddr(inst,info,srch.psym,disp);
+
+          -- sestavit adresu návratové hodnoty
+          op1.create_memory_address_on_stack(inst,edt_binary,4,disp);
+
+          -- připravit si EAX
+          opeax.create_use_register_low_level(edt_binary,ir_eax);
+
+          -- předat do EAX
+          addii(inst,info,ii_mov,opeax,op1,op0);
+        leave
+          opeax.free(info,xcontext);
+          op1.free(info,xcontext);
+          end declare;
+        end if;
+      end declare;
+    end if;
+
+
+  ----- (2) kontrola konzistence heapu -------------------------------------------------------------
+  if not cfg_no_runtime and o_is_option_by_entity(opt_validate_heap,info.entity^) then 
+    addcallrtl(inst,info,rtl_validate_heap);
+    end if;
+
+  if curr.etype in ets_subprogram then
+    ----- (3) obnovení rezervovaných registrů --------------------------------------------------------
+    if inst.profile.call in iccs_save_regs then 
+      handle_reg(inst,info,ii_pop,ir_ebx);
+      handle_reg(inst,info,ii_pop,ir_edi);
+      handle_reg(inst,info,ii_pop,ir_esi);
+      end if;
+    end if;
+
+  ----- (4) zrušit stack-frame, popřípadě zkontrolovat jeho konzistenci ----------------------------
+  case inst.frame
+    -- ESP-relativní
+    when isf_sptr do -- nic nedělat
+
+    -- EBP-relativní
+    when isf_fptr do
+        -- v předpřipravené instrukci SUB ESP,0 (I_ENTRY) opravit skutečnou
+        -- velikost stacku
+        if inst.layout.last=nil
+
+          -- prostor na stacku není potřeba, to je něco pro optimalizátor
+          then
+            -- nic nedělat
+
+          -- ano ňákej prostor potřebujeme, velikost se dá odvodit z maximální
+          -- použité hloubky stacku (stačí obrátit znaménko):
+          else
+            setfield(inst,info.espmark,t_unsigned(-t_signed(inst.layout.last^.ofs)));
+            end if;
+
+        declare
+
+          ------------------------------------------------------------------------------------------
+          procedure stack_validate =
+          -- Vygeneruje kód pro kontrolu konzistence stacku.
+          ------------------------------------------------------------------------------------------
+          var
+            context : iexprcontext;              -- kontext generování výrazu
+
+          begin
+            if not cfg_no_runtime and o_is_option_by_entity(opt_validate_stack,info.entity^) then
+              -- vytvořit pracovní kontext
+              i_createcontext(context,lm_gen,nil);
+
+              -- EBP musí být > ESP
+              i_gen_rcheck_constraint_error_on_compare(inst,info,context,op_ebp,op_esp,ic_b);
+              end if;
+            end stack_validate;
+
+        begin
+          -- kontrola konzistence stacku
+          stack_validate;
+
+          -- MOV ESP,EBP
+          addii(inst,info,ii_mov,op_esp,op_ebp,op0);
+
+          -- POP EBP
+          addii(inst,info,ii_pop,op_ebp,op0,op0);
+
+          -- kontrola konzistence stacku
+          stack_validate;
+          end declare;
+
+    when others do verify({VERIFY=}000793);
+    end case;
+
+
+  ----- (5) exit sekvence --------------------------------------------------------------------------
+  if inst.profile.retfree>0 and inst.profile.call not in iccs_leave_params
+
+    -- s odstraněním parametrů
+    then
+      declare var
+        op1        : c_operand;                  -- velikost parametrů
+        xcontext   : iexprcontext;               -- prázdný kontext výrazu
+
+      begin
+        -- operand
+        op1.create_imm(edt_unsigned,0,unsigned_to_imm32(inst.profile.retfree));
+
+        -- instrukce
+        addii(inst,info,ii_ret,op1,op0,op0);
+
+      leave
+        op1.free(info,xcontext);
+        end declare;
+
+    -- bez odstranění parametrů
+    else
+      addii(inst,info,ii_ret,op0,op0,op0);
+      end if;
+
+  -- záplata pro CodeView: ještě jeden dummy řádek
+  -- %%TODO(CODEVIEW) Generovat jen tehdy, když se generují CodeView debug informace
+  if curr.bl.isset then
+    adddebuginfo(inst.di,dbt_block_end,getaddr(inst),pblnode(curr.bl.getcblock)^.pos[bp_end],nil);
+    addii(inst,info,ii_nop,op0,op0,op0);
+    end if;
+
+  -- doplnit záznam pro generování debug informací
+  --if curr.bl._b<>nil then
+  --  adddebuginfo(inst.di,dbt_highpc,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_end].b,nil);
+  --  end if;
+  end i_gen_subprogram_epilog;
+
+
+
+end ci_frame;

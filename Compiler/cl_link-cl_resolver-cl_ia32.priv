@@ -7,15 +7,47 @@ module private cl_ia32 =
 ----------------------------------------------------------------------------------------------------
 
 with
+  cc_def.cc_gc,
   cc_base,
   cc_base.cc_sym,
+  cp_os,
   cp_cpu,
   cp_cpu.cp_32,
   cp_cpu.cp_32.cp_def,
   cl_map;
 
 ----------------------------------------------------------------------------------------------------
-class private abstract linkresolver_ia32 =
+#template build_section (section,data_buffer,build_method,parameters);
+-- Volání sestavení section image-specifickou metodou.
+----------------------------------------------------------------------------------------------------
+  declare var
+    wr             : c_stream_binary_writer;     -- binární zapisovač do streamu
+
+  begin
+    -- připravit zapisovač
+    wr.init_writer(^c_output_stream:(data_buffer));
+
+    -- sestavit sekci image-specifickou metodou
+    image_specific.build_method(wr,parameters);
+
+    -- konec dat
+    c_output_stream:(data_buffer).write_eod;
+    
+    -- zaznamenat celkovou velikost dat sekce
+    declare var
+      size         : t_offset;
+    begin  
+      c_output_stream:(data_buffer).get_flow(size);
+      _address.shift_address(size);
+      --seg[section].len:=size;
+      end declare;
+    end declare;
+  #end build_section;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private abstract c_link_resolver_ia32 =
 -- Vyhodnocovač cross-referencí a adres: IA-32.
 ----------------------------------------------------------------------------------------------------
 
@@ -42,15 +74,15 @@ class private abstract linkresolver_ia32 =
     -- Inicializace.
     ------------------------------------------------------------------------------------------------
     begin
-      imagebase:=_ibase;
+      imagebase:=unicode_addr_to_unsigned(_ibase);
       gran:=_gran;
       calign:=_calign;
       dalign:=_dalign;
-      for s in tsegment loop
+      for s in t_image_section loop
         seg[s].start:=_start;
         seg[s].len:=0;
         end loop;
-      seg[tseg_code].start:=_ibase+_start;
+      seg[tis_code].start:=imagebase+_start;
       compi:=_compi;
       end init;
 
@@ -67,10 +99,11 @@ class private abstract linkresolver_ia32 =
         --------------------------------------------------------------------------------------------
         begin
           if entity<>curr then 
+            verify({VERIFY=}001385,entity=nil);
             mark_single(entity); 
             end if;
           end mark_entity;
-    
+
     var
       zarad            : t_logical;                  -- T-zaradit na vyhodnocení relokací
       pi               : picodeinst;
@@ -100,6 +133,7 @@ class private abstract linkresolver_ia32 =
                     cdata.add(^pexpimm(pi^.r^[i].relo_info.rexpr)^.imm,pexpimm(pi^.r^[i].relo_info.rexpr)^.t.getctype);
                     end if;
               when irt_interface do mark_entity(pi^.r^[i].relo_info.rinterface^.refclass.getcentity);
+              when irt_section   do {nic nedělat};
               when others do verify({VERIFY=}000202,true);
               end case;
             end loop;
@@ -137,6 +171,7 @@ class private abstract linkresolver_ia32 =
 
         -- alokovat paměť
         new picodegen_var(pvar^.codegen);
+        c_garbage_collector.get_instance^.register_record(pvar^.codegen);
 
         -- přidělit adresu
         picodegen_var(pvar^.codegen)^.addr:=addr.get_address_and_adjust(unidata_size_to_unsigned(pvar^.typ.getctype^.size));
@@ -161,12 +196,14 @@ class private abstract linkresolver_ia32 =
     ------------------------------------------------------------------------------------------------
       -- alokovat paměť
       new codegen_type(codegen);
+      c_garbage_collector.get_instance^.register_record(codegen);
 
       -- vypočítat velikost deskriptoru
       codegen_type(codegen)^.desc_size:=desc_type:base:size;
 
       -- alokovat deskriptor typu
       new desc_type(codegen_type(codegen)^.desc);
+      c_garbage_collector.get_instance^.register_record(codegen_type(codegen)^.desc);
       #end new_entity_descriptor;
 
 
@@ -239,6 +276,20 @@ class private abstract linkresolver_ia32 =
       -- tabulka interfaců leží hned za virtuální tabulkou
       result:=get_vtable_addr(codegen)+get_vtable_size(codegen);
       end get_itable_addr;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_itable_entry_addr (
+        codegen    : in picodegen_interface;     -- řídící struktura generátoru kódu
+        index      : in t_interface_table:range) -- index položky tabulky interfaců
+        return t_unsigned =                      -- adresa tabulky interfaců
+    -- Zjistí absolutní adresu [index]-té položky tabulky interfaců.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- tabulka interfaců leží hned za virtuální tabulkou
+      result:=p_desc_class(codegen^.desc)^.itable+codegen^.itable^:length:size+codegen^.itable^:base:size*(index-1);
+      end get_itable_entry_addr;
 
 
 
@@ -333,7 +384,6 @@ class private abstract linkresolver_ia32 =
     -- Do deskriptoru typu dosadí adresy virtuálních metod.
     ------------------------------------------------------------------------------------------------
     var
-    { reg_size     : t_mod_unsigned; }
       vtable_addr  : tdata32;                    -- absolutní adresa virtuální tabulky
 
     begin
@@ -431,7 +481,7 @@ class private abstract linkresolver_ia32 =
 
     ------------------------------------------------------------------------------------------------
     static build_finalize_class_descriptor_interfaces (
-        interface  : in p_class_interface) =     -- interface třídy
+        native_iface : in p_class_interface) =   -- interface třídy
     -- Do deskriptoru typu dosadí informace o interfacech.
     -- Část 2: doplnění tagů interfaců.
     ------------------------------------------------------------------------------------------------
@@ -441,21 +491,22 @@ class private abstract linkresolver_ia32 =
     var
       it           : c_list_iterator;            -- iterátor přes rozhraní třídy
       exposed_iface: p_class_interface;          -- exposovaný interface
-      ref_index    : t_unsigned;
 
     begin
-      verify({VERIFY=}001004,picodegen_interface(interface^.codegen)^.itable=nil);
+      verify({VERIFY=}001004,picodegen_interface(native_iface^.codegen)^.itable=nil);
 
       -- připravit iterátor
-      pentity_type(interface^.refclass.getcentity)^.interfaces^.get_exposed_interfaces(it);
+      pentity_type(native_iface^.refclass.getcentity)^.interfaces^.get_exposed_interfaces(it);
 
       -- pro každý exposovaný interface vygenerovat záznam do tabulky interfaců
       while it.get(exposed_iface) loop
+        --p_desc_class(picodegen_interface(native_iface^.codegen)^.desc)^.itable+t_interface_table:length:size+t_interface_table:base:size*(exposed_iface^.interface_index-1),
+
         -- doplnit tag třídy-interfacu
-        set_tag(p_desc_class(picodegen_interface(interface^.codegen)^.desc)^.itable,
-                picodegen_interface(interface^.codegen)^.itable^[exposed_iface^.interface_index].class_tag,
+        set_tag(get_itable_entry_addr(native_iface^.codegen,exposed_iface^.interface_index),
+                picodegen_interface(native_iface^.codegen)^.itable^[exposed_iface^.interface_index].class_tag,
                 picodegen_interface(exposed_iface^.codegen),
-                exposed_iface^.instance.getcentity^.partition_id);
+                curr_partition{exposed_iface^.instance.getcentity^.partition_id});
         end loop;
       end build_finalize_class_descriptor_interfaces;
 
@@ -508,10 +559,12 @@ class private abstract linkresolver_ia32 =
 
           -- alokovat tabulku virtuálních metod
           new picodegen_interface(interface^.codegen)^.vtable range interface^.get_vtable_size;
+          c_garbage_collector.get_instance^.register_memblock(picodegen_interface(interface^.codegen)^.vtable);
 
           -- alokovat tabulku interfaců
           if not is_exposed and then pentity_type(interface^.refclass.getcentity)^.interfaces^.exposed_interfaces>0 then
             new picodegen_interface(interface^.codegen)^.itable range pentity_type(interface^.refclass.getcentity)^.interfaces^.exposed_interfaces;
+            c_garbage_collector.get_instance^.register_memblock(picodegen_interface(interface^.codegen)^.itable);
             end if;
           end new_codegen;
 
@@ -543,21 +596,21 @@ class private abstract linkresolver_ia32 =
           end build_all;
 
     var
-      interface    : p_class_interface;          -- interface třídy
+      native_iface : p_class_interface;          -- interface třídy
 
     begin
       ----- zpracovat nativní rozhraní třídy -----
       -- získat nativní interface
-      interface:=pclass^.interfaces^.get_native_interface;
+      native_iface:=pclass^.interfaces^.get_native_interface;
 
       -- alokovat řídící strukturu deskriptor
-      new_codegen(interface,false);
+      new_codegen(native_iface,false);
 
       -- zkopírovat pointer na řídící strukturu přímo do třídy
-      pclass^.codegen:=interface^.codegen;
+      pclass^.codegen:=native_iface^.codegen;
 
       -- sestavit deskriptor
-      build_all(interface,false);
+      build_all(native_iface,false);
 
 
       ----- zpracovat všechny exposované interfacy -----
@@ -581,7 +634,7 @@ class private abstract linkresolver_ia32 =
 
       ---- do nativního rozhraní dosadit vypočtené tagy interfaců ----
       if pclass^.interfaces^.exposed_interfaces>0 then
-        build_finalize_class_descriptor_interfaces(interface);
+        build_finalize_class_descriptor_interfaces(native_iface);
         end if;
       end build_class_descriptor;
 
@@ -712,6 +765,7 @@ class private abstract linkresolver_ia32 =
     -- Vyhodnotí relokace daného symbolu.
     ------------------------------------------------------------------------------------------------
     with
+      cc_binding,
       cg_gen.cg_ia32.ci_code,
       cg_gen.cg_ia32.ci_code.ci_instr;
 
@@ -729,7 +783,8 @@ class private abstract linkresolver_ia32 =
 
           ------------------------------------------------------------------------------------------
           procedure set_absolute (
-              value: in t_unsigned32) =
+              value: in t_unsigned32;            -- hodnota relokabilního pole
+              local: in t_logical := false) =    -- T-vynutit relokaci do této partition
           -- Dosadí hodnotu absolutní relokace a udělá ji load-time relokabilní.
           ------------------------------------------------------------------------------------------
           begin
@@ -738,7 +793,10 @@ class private abstract linkresolver_ia32 =
             setfield(inst,r.disp,value);
             
             -- zapamatovat si relokaci pro generování EXE
-            add_relocation(r.relo_info.rpartition,inst.cstart+r.disp,trd_absolute);
+            if local
+              then add_relocation(curr_partition,inst.cstart+r.disp,trd_absolute);
+              else add_relocation(r.relo_info.rpartition,inst.cstart+r.disp,trd_absolute);
+              end if;
             end set_absolute;
 
           ------------------------------------------------------------------------------------------
@@ -767,31 +825,32 @@ class private abstract linkresolver_ia32 =
 
           case r.relo_info.rtype
             -- prázdná relokace
-            when irt_none     do { nic nedělat };
+            when irt_none      do { nic nedělat };
 
             -- symbol
-            when irt_entity do
+            when irt_entity    do
                 case pentity(r.relo_info.rentity)^.etype
                   -- proměnná
                   when et_var do set_absolute(picodegen_var(pentity(r.relo_info.rentity)^.codegen)^.addr);
 
                   -- procedura
-                  when et_procedure do
-                      if pentity_procedure(r.relo_info.rentity)^.import_info<>nil
+                  when et_procedure,et_static do
+                      if is_imported(r.relo_info.rentity,^aux_registry)
                         
                         -- externí symbol
-                        then set_absolute(getindirect(pentity_procedure(r.relo_info.rentity)));
+                        then set_absolute(getindirect(pentity_procedure(r.relo_info.rentity)),for local use true);
                         
                         -- normální symbol %%X A která instance to je ?
                         else 
+                          {%%X A která instance to je ? }
                           if not r.absolute
                             then set_relative(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
                             else set_absolute(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
                             end if;
                           end if;
 
-                  -- program, metoda, speciálná metoda, kompilační jednotka
-                  when et_program, et_static, et_virtual, et_override, et_special, et_compile do
+                  -- program, virtuální metoda, override, speciálná metoda, kompilační jednotka
+                  when et_program,et_virtual,et_override,et_special,et_compile do
                       {%%X A která instance to je ? }
                       if not r.absolute
                         then set_relative(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
@@ -808,12 +867,13 @@ class private abstract linkresolver_ia32 =
                   end case;                       
 
             -- přímá hodnota
-            when irt_imm do set_absolute(picodegen_imm(pexpimm(r.relo_info.rexpr)^.imm.codegen)^.addr);
+            when irt_imm       do set_absolute(picodegen_imm(pexpimm(r.relo_info.rexpr)^.imm.codegen)^.addr);
 
             -- interface třídy
             when irt_interface do set_absolute(picodegen_type(r.relo_info.rinterface^.codegen)^.desc_addr);
 
-            when others do verify({VERIFY=}000203,true);
+            -- adresa sekce v image
+            when irt_section   do set_absolute(unicode_addr_to_unsigned(getsegbase(r.relo_info.rsection)));
             end case;
           end declare;
         end loop;
@@ -822,7 +882,7 @@ class private abstract linkresolver_ia32 =
 
 
     ------------------------------------------------------------------------------------------------
-    override link_segment_code =
+    override link_section_code =
     -- Segment: kód.
     ------------------------------------------------------------------------------------------------
     var
@@ -840,6 +900,8 @@ class private abstract linkresolver_ia32 =
           -- přidělit adresy všem instancím
           p:=picodegen_subprog(code.list^[i]^.codegen)^.ifirst;
           loop
+            verify({VERIFY=}001375,p=nil);
+
             -- přidělit adresu
             p^.cstart:=_address.get_address_and_adjust(p^.c^:length);
 
@@ -883,27 +945,67 @@ class private abstract linkresolver_ia32 =
           code.list^[i]^.linked:=ls_linked;
           end loop;
         end if;
-      end link_segment_code;
+      end link_section_code;
 
 
 
     ------------------------------------------------------------------------------------------------
-    override link_segment_metadata =
+    override link_section_flex_metadata =
     -- Segment: deskriptory typů.
     ------------------------------------------------------------------------------------------------
     begin
       build_metadata(metadata,_address);
-      end link_segment_metadata;
+      end link_section_flex_metadata;
 
 
 
     ------------------------------------------------------------------------------------------------
-    override link_segment_const =
+    override link_section_flex_relocations =
+    -- Linkování segmentu: flex relokace. 
+    ------------------------------------------------------------------------------------------------
+    var
+      it           : c_relocations_iterator;
+      
+    begin 
+      -- vyhodnotit odkazy v kódu
+      if reloc.list<>nil then
+        for i in reloc.list^:range loop
+          declare var
+            p      : picodeinst;
+          begin
+            p:=picodegen_subprog(reloc.list^[i]^.codegen)^.ifirst;
+            loop
+              -- vyhodnotit
+              resolve_relocations(p^);
+
+              -- další instance
+              p:=p^.next;
+              until p=nil;
+            end declare;
+          end loop;
+        end if;
+
+      -- připravit iterátor setříděných seznamů relokabilních adres
+      iterate_relocations(it);
+      
+      -- sestavit image-specifickou relokační tabulku
+      #expand build_section;
+        #for section      use; tis_flex_relocations
+        #for data_buffer  use; data_flex_relocations
+        #for build_method use; build_flex_relocations
+        #for parameters   use; getsegbase(tis_flex_relocations),p_link_resolver(^this)^,it
+                                                 --%%TODO(COMPATIBILITY) ^^^^^^^^^^^^^^
+        #end build_section;
+      end link_section_flex_relocations;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override link_section_constants =
     -- Segment: konstanty.
     ------------------------------------------------------------------------------------------------
     var
       pimm             : pimm_value;                 -- ukládaná přímá hodnota
-      bin              : p_unsigned8array;           -- ukládaná přímá hodnota v binárním tvaru
       binsize          : tunidata_size;              -- velikost binárního tvaru
 
     begin
@@ -914,6 +1016,7 @@ class private abstract linkresolver_ia32 =
           if pimm^.codegen=nil then
             -- alokovat paměť
             new picodegen_imm(pimm^.codegen);
+            c_garbage_collector.get_instance^.register_record(pimm^.codegen);
 
             -- vypočítat požadovanou velikost paměti
             cpu^.getimmstoragesize(pimm^,cdata.list^[i].ptyp,binsize);
@@ -923,27 +1026,27 @@ class private abstract linkresolver_ia32 =
             end if;
           end loop;
         end if;
-      end link_segment_const;
+      end link_section_constants;
 
 
 
     ------------------------------------------------------------------------------------------------
-    override link_segment_init_var =
+    override link_section_initialized_data =
     -- Segment: inicializované proměnné.
     ------------------------------------------------------------------------------------------------
     begin
       assign_var_addresses(idata,_address);
-      end link_segment_init_var;
+      end link_section_initialized_data;
 
 
 
     ------------------------------------------------------------------------------------------------
-    override link_segment_uninit_var =
+    override link_section_uninitialized_data =
     -- Segment: neinicializované proměnné.
     ------------------------------------------------------------------------------------------------
     begin
       assign_var_addresses(data,_address);
-      end link_segment_uninit_var;
+      end link_section_uninitialized_data;
 
 
 
@@ -961,10 +1064,10 @@ class private abstract linkresolver_ia32 =
       segment_address : c_address_aligner_32;    -- přidělovač adres segmentů
 
         --------------------------------------------------------------------------------------------
-        procedure link_segment (
+        procedure link_section (
             _name  : in t_char32ustr;            -- popisné jméno segmentu pro listing
-            _seg   : in tsegment;                -- sestavovaný segment
-          --_proc  : in p_link_segment;          -- metoda pro sestavení zadaného segmentu
+            _seg   : in t_image_section;         -- sestavovaný segment
+          --_proc  : in p_link_section;          -- metoda pro sestavení zadaného segmentu
             _align : in t_unsigned32) =          -- zarovnání v rámci segementu
         -- Sestavení zadaného segmentu.
         --------------------------------------------------------------------------------------------
@@ -982,14 +1085,16 @@ class private abstract linkresolver_ia32 =
           local_address.init(segment_address.get_address,_align);
 
           -- vlastní sestavení
-          case _seg
-            when tseg_code     do link_segment_code(local_address);
-            when tseg_metadata do link_segment_metadata(local_address);
-            when tseg_const    do link_segment_const(local_address);
-            when tseg_init     do link_segment_init_var(local_address);
-            when tseg_data     do link_segment_uninit_var(local_address);
-            when tseg_import   do link_segment_import(local_address);
-            when tseg_export   do link_segment_export(local_address);
+          case _seg    
+            when tis_code               do link_section_code(local_address,image_specific);
+            when tis_constants          do link_section_constants(local_address,image_specific);
+            when tis_initialized_data   do link_section_initialized_data(local_address,image_specific);
+            when tis_uninitialized_data do link_section_uninitialized_data(local_address,image_specific);
+            when tis_flex_metadata      do link_section_flex_metadata(local_address,image_specific);
+            when tis_flex_relocations   do link_section_flex_relocations(local_address,image_specific);
+            when tis_import_table       do link_section_import_table(local_address,image_specific);
+            when tis_import_metadata    do link_section_import_metadata(local_address,image_specific);
+            when tis_export_metadata    do link_section_export_metadata(local_address,image_specific);
             end case;
 
           -- vypočítat délku segmentu
@@ -1000,70 +1105,51 @@ class private abstract linkresolver_ia32 =
 
           -- konec segmentu
           map_end_segment;
-          end link_segment;
-
-    var
-      pimm             : pimm_value;                 -- ukládaná přímá hodnota
-      bin              : p_unsigned8array;           -- ukládaná přímá hodnota v binárním tvaru
-      binsize          : tunidata_size;              -- velikost binárního tvaru
-      p                : picodeinst;
-      k                : t_unsigned32;               -- aktuální adresa
-      ud_addr          : tunidata_addr;              -- adresa objektu
-      ud_size          : tunidata_size;              -- velikost objektu
-      avail            : t_logical;                  -- T-automatická proměnná má přiřazenu adresu
-      srch             : tentitysearch;
-      block            : pimemblock;                 -- přidělený blok paměti
+          end link_section;
 
     begin
       -- inicializovat přidělovač adres segmentů
-      segment_address.init(seg[tseg_code].start,gran);
+      segment_address.init(seg[tis_code].start,gran);
 
-      ----- Fáze 1: vypočítat adresy kódu -----
-      -- přidělit adresy všem instancím
-      link_segment('Code',tseg_code,calign);
+      ----- Fáze 1: přidělit adresy ve všech segmentech -----
+      -- 1. kód
+      link_section('Code',tis_code,calign);
 
-      ----- Fáze 2: přidělit adresy proměnných, konstant a deskriptorů -----
-      -- 1. metadata
-      link_segment('Metadata',tseg_metadata,dalign);
+      -- 2. metadata
+      link_section('Flex Metadata',tis_flex_metadata,dalign);
 
-      -- 2. konstanty
-      link_segment('Constants',tseg_const,dalign);
+      -- 3. konstanty
+      link_section('Constants',tis_constants,dalign);
 
-      -- 3. inicializované proměnné
-      link_segment('Initialized Variables',tseg_init,dalign);
+      -- 4. inicializované proměnné
+      link_section('Initialized Variables',tis_initialized_data,dalign);
 
-      -- 4. neinicializované proměnné
-      link_segment('Uninitialized Variables',tseg_data,dalign);
+      -- 5. neinicializované proměnné
+      link_section('Uninitialized Variables',tis_uninitialized_data,dalign);
 
-      ----- Fáze 3.1 : připravit importované funkce -----
-      -- sestavit tabulku importovaných funkcí
-      link_segment('Import',tseg_import,1);
+      -- 2. připravit importované funkce
+      link_section('Import Table',tis_import_table,1);
 
-      ----- Fáze 3.2 : připravit exportované funkce -----
-      -- sestavit tabulku exportovaných funkcí
-      link_segment('Export',tseg_export,1);
+      -- 3. připravit importované funkce
+      link_section('Import Metadata',tis_import_metadata,1);
 
-      ----- Fáze 3.3 : vyhodnotit odkazy v kódu -----
-      if reloc.list<>nil then
-        for i in reloc.list^:range loop
-          p:=picodegen_subprog(reloc.list^[i]^.codegen)^.ifirst;
-          loop
-            -- vyhodnotit
-            resolve_relocations(p^);
+      -- 4. připravit exportované funkce
+      link_section('Export Metadata',tis_export_metadata,1);
+              
+      -- 1. připravit tabulku run-time relokací
+      link_section('Flex Relocations',tis_flex_relocations,1);
 
-            -- další instance
-            p:=p^.next;
-            until p=nil;
-          end loop;
-        end if;
 
-      ----- Fáze 4 : debug informace -----
+      ----- Fáze 2: debug informace -----
       -- jaky typ debug informaci budeme generovat
       if not cfg_no_debug_info then
       #if codeview then;
         case debug_mode
           -- CodeView debug inforation
-          when tdit_codeview do new p_codeview(debug_info);
+          when tdit_codeview do 
+              new p_codeview(debug_info);
+              c_garbage_collector.get_instance^.register_class(debug_info);
+
           end case;
       #end if;
         end if;
@@ -1140,7 +1226,7 @@ class private abstract linkresolver_ia32 =
 
 
     ------------------------------------------------------------------------------------------------
-    override writesegment =
+    override write_section =
     -- Do výstupního souboru zapíše zadaný segment.
     ------------------------------------------------------------------------------------------------
     with
@@ -1169,7 +1255,6 @@ class private abstract linkresolver_ia32 =
           binsize  : tunidata_size;              -- velikost binárního tvaru
           fill     : t_unsigned32;               -- velikost zarovnání
           x        : t_unsigned32;
-          ud       : tunidata_size;
 
         begin
           -- určit velikost binárního tvaru
@@ -1315,13 +1400,12 @@ class private abstract linkresolver_ia32 =
       size             : t_unsigned32;               -- velikost proměnné
       fill             : t_unsigned32;               -- velikost dodatečné výplně
       imm              : pimm_value;                 -- přímá hodnota
-      pcodegen         : picodegen_type;
       p                : picodeinst;
 
     begin
       case _seg
         -- kód
-        when tseg_code do
+        when tis_code do
             for i in code.list^:range loop
               p:=picodegen_subprog(code.list^[i]^.codegen)^.ifirst;
 
@@ -1341,7 +1425,7 @@ class private abstract linkresolver_ia32 =
               end loop;
 
         -- metadata
-        when tseg_metadata do
+        when tis_flex_metadata do
             for i in metadata.list^:range loop
               if metadata.list^[i]^.etype=et_class
 
@@ -1368,7 +1452,7 @@ class private abstract linkresolver_ia32 =
               end loop;
 
         -- konstanty
-        when tseg_const do
+        when tis_constants do
             allocsize:=uds_0;
             bin:=nil;
             for i in cdata.list^:range loop
@@ -1377,7 +1461,7 @@ class private abstract linkresolver_ia32 =
             discard bin;
 
         -- inicializovaná data
-        when tseg_init do
+        when tis_initialized_data do
             allocsize:=uds_0;
             bin:=nil;
             for i in idata.list^:range loop 
@@ -1386,17 +1470,43 @@ class private abstract linkresolver_ia32 =
             discard bin;
 
         -- neinicializovaná data
-        when tseg_data do { není co zapisovat };
+        --when tis_initialized_data do { není co zapisovat };
 
-        -- importy
-        when tseg_import do { nevím jak zapsat };
+        -- importní tabulka
+        when tis_import_table     do
+            -- %%TODO(LIB) Nepoužívat přímo [_target] ale nějaké [get_target_stream]
+            os^.set_lazy_buffer(false);
+            data_import_table.transfer_buffered_packets(os^._target);
+            c_output_stream:(data_import_table).close;
+            os^.set_lazy_buffer(true);
+        
+        -- importní metadata
+        when tis_import_metadata  do 
+            -- %%TODO(LIB) Nepoužívat přímo [_target] ale nějaké [get_target_stream]
+            os^.set_lazy_buffer(false);
+            data_import_metadata.transfer_buffered_packets(os^._target);
+            c_output_stream:(data_import_metadata).close;
+            os^.set_lazy_buffer(true);
 
-        -- exporty
-        when tseg_export do { nevím jak zapsat };
-
+        -- exportní metadata
+        when tis_export_metadata  do 
+            -- %%TODO(LIB) Nepoužívat přímo [_target] ale nějaké [get_target_stream]
+            os^.set_lazy_buffer(false);
+            data_export_metadata.transfer_buffered_packets(os^._target);
+            c_output_stream:(data_export_metadata).close;
+            os^.set_lazy_buffer(true);
+        
+        -- Flex relokace
+        when tis_flex_relocations do 
+            -- %%TODO(LIB) Nepoužívat přímo [_target] ale nějaké [get_target_stream]
+            os^.set_lazy_buffer(false);
+            data_flex_relocations.transfer_buffered_packets(os^._target);
+            c_output_stream:(data_flex_relocations).close;
+            os^.set_lazy_buffer(true);
+ 
         when others do verify({VERIFY=}000204,true);
         end case;
-      end writesegment;
+      end write_section;
 
 
 
@@ -1408,12 +1518,12 @@ class private abstract linkresolver_ia32 =
       result:=0;
       end getindirect;
 
-    end linkresolver_ia32;
+    end c_link_resolver_ia32;
 
 
 
 ----------------------------------------------------------------------------------------------------
-class private linkresolver_ia32_win32 =
+class private c_link_resolver_ia32_win32 =
 -- Vyhodnocovač cross-referencí a adres: Win32 na IA-32.
 ----------------------------------------------------------------------------------------------------
 
@@ -1423,11 +1533,12 @@ class private linkresolver_ia32_win32 =
       cp_os.cp_win32;
 
     ------------------------------------------------------------------------------------------------
-    override link_segment_import =
-    -- Linkování segmentu: importované entity.
+    override link_section_import_table =
+    -- Linkování segmentu: importované entity - tabulka.
     ------------------------------------------------------------------------------------------------
     with
-      standard.templates;
+      standard.templates,
+      cc_binding;
 
     begin
       -- je vůbec co importovat ?
@@ -1446,15 +1557,9 @@ class private linkresolver_ia32_win32 =
         loop
           zmena:=false;
           for j in 1..i_sort-1 loop
-            if pimportinfo(pentity_procedure(import.list^[j])^.import_info)^.libname>pimportinfo(pentity_procedure(import.list^[j+1])^.import_info)^.libname then
-              --%%TODO(#TEMPLATE) exchange(import.list^[j],import.list^[j+1]);
-              declare var
-                psym : pentity;
-              begin
-                psym:=import.list^[j];
-                import.list^[j]:=import.list^[j+1];
-                import.list^[j+1]:=psym;
-                end declare;
+            if pimportinfo(get_import_info(import.list^[j]  ,^aux_registry))^.libname^>
+               pimportinfo(get_import_info(import.list^[j+1],^aux_registry))^.libname^ then
+              exchange(import.list^[j],import.list^[j+1]);
               zmena:=true;
               end if;
             end loop;
@@ -1462,29 +1567,73 @@ class private linkresolver_ia32_win32 =
           until not zmena or i_sort=1;
         end declare;
 
+      -- %%TODO(PORTABILITY) Nepatří náhodou níže uvedený FOR cyklus do [c_link_resolver_image_specific]?
+      
       -- přiřadit adresy na adresy procedur
       for i in import.list^:range loop
-        -- mezera při změně knihovny
-        if i>import.list^:first and pimportinfo(pentity_procedure(import.list^[i-1])^.import_info)^.libname<>pimportinfo(pentity_procedure(import.list^[i])^.import_info)^.libname then
-          _address.shift_address(lprg32);
-          end if;
+        declare var
+          import_info : pimportinfo;             -- importní informace aktuální entity
+          
+        begin  
+          -- pro zjednodušení si zjistit importní informace aktuální entity
+          import_info:=pimportinfo(get_import_info(import.list^[i],^aux_registry));
+          
+          -- mezera při změně knihovny
+          if i>import.list^:first and pimportinfo(get_import_info(import.list^[i-1],^aux_registry))^.libname^<>import_info^.libname^ then
+            _address.shift_address(lprg32);
+            end if;
 
-        -- adresa
-        pimportinfo(pentity_procedure(import.list^[i])^.import_info)^.addr:=_address.get_address_and_adjust(lprg32);
+          -- adresa
+          import_info^.addr:=unsigned_to_unicode_addr(_address.get_address_and_adjust(lprg32));
+          end declare;
         end loop;
 
       -- mezera za poslední knihovnou
       _address.shift_address(lprg32);
-      end link_segment_import;
+      end link_section_import_table;
 
 
 
     ------------------------------------------------------------------------------------------------
-    override link_segment_export =
-    -- Linkování segmentu: exportované entity.
+    override link_section_import_metadata =
+    -- Linkování segmentu: importované entity - systémová metadata.
+    ------------------------------------------------------------------------------------------------
+    var
+      wr_table     : c_stream_binary_writer;     -- binární zapisovač do streamu
+      wr_metadata  : c_stream_binary_writer;     -- binární zapisovač do streamu
+
+    begin
+      -- připravit zapisovač
+      wr_table.init_writer(^c_output_stream:(data_import_table));
+      wr_metadata.init_writer(^c_output_stream:(data_import_metadata));
+
+      -- sestavit sekci image-specifickou metodou
+      image_specific.build_import_table_and_metadata(wr_table,wr_metadata,getsegbase(tis_import_table),getsegbase(tis_import_metadata),p_link_resolver(^this)^,import);
+                                                                                                                         --%%TODO(COMPATIBILITY) ^^^^^^^^^^^^^^
+      -- konec dat
+      c_output_stream:(data_import_table).write_eod;
+      c_output_stream:(data_import_metadata).write_eod;
+
+      -- zaznamenat celkovou velikost data sekce importních metadat (velikost sekce importní tabulky
+      -- se již vypočetla v předchozím kroku [link_section_import_table]).
+      declare var
+        size         : t_offset;
+      begin  
+        c_output_stream:(data_import_metadata).get_flow(size);
+        _address.shift_address(size);
+        --seg[tis_import_metadata].len:=size;
+        end declare;
+      end link_section_import_metadata;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override link_section_export_metadata =
+    -- Linkování segmentu: exportované entity - systémová metadata.
     ------------------------------------------------------------------------------------------------
     with 
       standard.templates,                           
+      cc_binding,
       cc_def.cc_var;
 
     begin
@@ -1496,78 +1645,53 @@ class private linkresolver_ia32_win32 =
 
       -- zjistit plne kvalifikovana jmena exportu
       for i in sys_export_list.list^:range loop
-        case sys_export_list.list^[i]^.etype
-          when et_procedure do
-            if pexportinfo(pentity_procedure(sys_export_list.list^[i])^.export_info)^.export_name:length=0 then
-              pexportinfo(pentity_procedure(sys_export_list.list^[i])^.export_info)^.export_name:=sym_get_qid(sys_export_list.list^[i]);
-              end if;
+        declare var
+          export_info : pexportinfo;
           
-          when et_var do
-            if pexportinfo(pentity_var(sys_export_list.list^[i])^.export_info)^.export_name:length=0 then
-              pexportinfo(pentity_var(sys_export_list.list^[i])^.export_info)^.export_name:=sym_get_qid(sys_export_list.list^[i]);
-              end if;
+        begin
+          -- zjistit si informace o exportu
+          export_info:=get_export_info(sys_export_list.list^[i]);
           
-          when others do verify({VERIFY=}000905, true);
-          end case;
+          -- pokud nebylo explicitně určeno exportní jméno, použít kvalifikovaný identifikátor entity
+          if export_info^.export_name=nil then
+            export_info^.export_name:=string_to_external_entity_ident(sym_get_qid(sys_export_list.list^[i]));
+            end if;
+          end declare;  
         end loop;
-      
+       
       -- setřídit podle exportovaných jmen
       declare var
         zmena      : t_logical;
         i_sort     : t_unsigned;
-        expname1   : t_char32str;
-        expname2   : t_char32str;
 
       begin
         i_sort:=sys_export_list.list^:length;
         loop
           zmena:=false;
           for j in 1..i_sort-1 loop
-    
-            -- jmeno j-teho exportu
-            case sys_export_list.list^[j]^.etype
-              when et_procedure do
-                expname1:=pexportinfo(pentity_procedure(sys_export_list.list^[j])^.export_info)^.export_name;
-              
-              when et_var do
-                expname1:=pexportinfo(pentity_var(sys_export_list.list^[j])^.export_info)^.export_name;
-              
-              when others do verify({VERIFY=}000906, true);
-              end case;
-            
-            -- jmeno j+1-teho exportu
-            case sys_export_list.list^[j+1]^.etype
-              when et_procedure do
-                expname2:=pexportinfo(pentity_procedure(sys_export_list.list^[j+1])^.export_info)^.export_name;
-              
-              when et_var do
-                expname2:=pexportinfo(pentity_var(sys_export_list.list^[j+1])^.export_info)^.export_name;
-              
-              when others do verify({VERIFY=}000907, true);
-              end case;
-
-            if expname1>expname2 then
-              --%%TODO(#TEMPLATE) exchange(sys_export_list.list^[j],sys_export_list.list^[j+1]);
-              declare var
-                psym : pentity;
-              begin
-                psym:=sys_export_list.list^[j];
-                sys_export_list.list^[j]:=sys_export_list.list^[j+1];
-                sys_export_list.list^[j+1]:=psym;
-                end declare;
+            if pexportinfo(get_export_info(sys_export_list.list^[j]))^.export_name^>pexportinfo(get_export_info(sys_export_list.list^[j+1]))^.export_name^ then
+              exchange(sys_export_list.list^[j],sys_export_list.list^[j+1]);
               zmena:=true;
               end if;
             end loop;
           pred i_sort;
           until not zmena or i_sort=1;
         end declare;
+        
+      -- sestavit image-specifickou exportní tabulku
+      #expand build_section;
+        #for section      use; tis_export_metadata
+        #for data_buffer  use; data_export_metadata
+        #for build_method use; build_export_metadata
+        #for parameters   use; getsegbase(tis_export_metadata),sys_export_list
+        #end build_section;
 
       -- vypsat exporty do listingu
       map_write_line('Exported symbols:');
       for i in sys_export_list.list^:range loop
         map_exported_entity(sym_get_qid(sys_export_list.list^[i]));
         end loop;
-      end link_segment_export;
+      end link_section_export_metadata;
 
 
 
@@ -1575,11 +1699,14 @@ class private linkresolver_ia32_win32 =
     override getindirect =
     -- Vrátí nepřímou adresu importovaného podprogramu.
     ------------------------------------------------------------------------------------------------
+    with
+      cc_binding;
+      
     begin
-      result:=pimportinfo(proc^.import_info)^.addr;
+      result:=unicode_addr_to_unsigned(pimportinfo(get_import_info(proc,^aux_registry))^.addr);
       end getindirect;
     
-    end linkresolver_ia32_win32;
+    end c_link_resolver_ia32_win32;
 
 
 

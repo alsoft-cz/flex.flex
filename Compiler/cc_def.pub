@@ -7,7 +7,8 @@ module public cc_def =
 ----------------------------------------------------------------------------------------------------
 
 with
-  standard;
+  standard,
+  standard.characters;
 
 ----- Základní deklarace ---------------------------------------------------------------------------
 type
@@ -90,28 +91,156 @@ procedure string_to_entityident (
 -- Převede řetězec na identifikátor.
 -- Volajici uvolni vraceny identifikator.
 ----------------------------------------------------------------------------------------------------
+procedure entityident_to_external_entity_ident (
+    ident          : in tentityident)
+                   return p_external_entity_ident;
+-- Převede identifikátor na externí identifikátor.
+-- Volajici uvolni vraceny identifikator.
+----------------------------------------------------------------------------------------------------
 procedure external_entity_ident_to_string (
     ident          : in t_external_entity_ident)
                    return t_char32str;
--- Převede identifikátor na řetězec.
+-- Převede externí identifikátor na řetězec.
 ----------------------------------------------------------------------------------------------------
 procedure string_to_external_entity_ident (
     txt            : in t_char32str)
                    return p_external_entity_ident;
--- Převede řetězec na identifikátor.
+-- Převede řetězec na externí identifikátor.
 -- Volajici uvolni vraceny identifikator.
 ----------------------------------------------------------------------------------------------------
 procedure qualified_entity_ident_to_string (
     ident          : in t_qualified_entity_ident)
                    return t_char32str;
--- Převede identifikátor na řetězec.
+-- Převede kvalifikovaný identifikátor na řetězec.
 ----------------------------------------------------------------------------------------------------
 procedure string_to_qualified_entity_ident (
     txt            : in t_char32str)
                    return p_qualified_entity_ident;
--- Převede řetězec na identifikátor.
+-- Převede řetězec na kvalifikovaný identifikátor.
 -- Volajici uvolni vraceny identifikator.
 ----------------------------------------------------------------------------------------------------
+procedure qualified_entity_ident_to_external_entity_ident (
+    ident          : in t_qualified_entity_ident)
+                   return p_external_entity_ident;
+-- Převede kvalifikovaný identifikátor na externí identifikátor.
+-- Volajici uvolni vraceny identifikator.
+----------------------------------------------------------------------------------------------------
+
+        
+        
+----- Partitiony -----------------------------------------------------------------------------------
+type
+  -- kód partition
+  t_partition_id   = private t_unsigned;
+
+type
+  -- typ partition
+  t_partition_type = enum
+      part_standalone;                           -- standalone kompilační jednotka
+      part_runtime;                              -- runtime partition kompilační jednotky
+      part_global;                               -- globální partition kompilační jednotky
+      part_temporary;                            -- dočasná partition kompilační jednotky
+      end enum;
+  t_partition_type_set = set of t_partition_type;
+
+const
+  -- typy partition, které obsahují run-time podporu
+  parts_contains_runtime = t_partition_type_set:[part_standalone,part_runtime];
+  -- typy partition, které vyžadují automatický překlad run-time podpory
+  parts_compile_runtime  = t_partition_type_set:[part_standalone];
+  -- typy partition, které obsahují program
+  parts_contains_program = t_partition_type_set:[part_standalone,part_temporary];
+
+var
+  -- popisné jméno typu partition
+  t_partition_type_txt : const array t_partition_type of t_char32str := [
+      for part_standalone use 'Standalone',
+      for part_runtime    use 'Run-time',
+      for part_global     use 'Global',
+      for part_temporary  use 'Temporary'];
+  
+{%OFF}
+  -- identifikátor typu partition
+  t_partition_type_name : const array t_partition_type of t_char32str := [
+      for part_standalone use 'STANDALONE',
+      for part_runtime    use 'RUNTIME',
+      for part_global     use 'GLOBAL',
+      for part_temporary  use 'TEMPORARY'];
+  
+  -- identifikátor typu partition pro účely exportu
+  t_partition_type_export_id : const aliased array t_partition_type of t_char32str := [
+      for part_standalone use 'standalone',
+      for part_runtime    use 'runtime',
+      for part_global     use 'global',
+      for part_temporary  use 'temporary'];
+{%ON}
+
+----------------------------------------------------------------------------------------------------
+procedure get_partition_type_by_name (
+    part_type_name : in t_char32ustr;            -- jméno typu partition
+    part_type      : out t_partition_type;       -- zjištěný typ partition
+    os             : in c_text_writer);          -- výstupní stream
+-- Nastaví typ partition podle jeho jména. Pro neznámé typy způsobí výjimku [config_error].   
+----------------------------------------------------------------------------------------------------
+            
+type
+  -- výsledný tvar přeložené partition
+  t_partition_result = enum
+      tpr_auto_select;                           -- automaticky zvolit vhodný tvar
+      tpr_program;                               -- spustitelný program
+      tpr_library;                               -- dynamicky linkovaná knihovna
+      end enum;
+
+var
+  -- popis [tcompilationtype] pro účely exportu
+{%OFF}
+  t_partition_result_export_id : const aliased array t_partition_result of t_char32str := [
+      for tpr_auto_select use 'auto_select',
+      for tpr_program     use 'program',
+      for tpr_library     use 'library'];
+{%ON}       
+
+type
+  -- bezpečnostní úroveň entity ovlivňující možnosti použití některých jazykových konstrukcí
+  t_security_level = protected t_unsigned;
+  
+const  
+  -- význačné bezpečnostní úrovně
+  sl_maximal_security      = t_security_level:first; -- maximální bezpečnost: zcela důvěryhodné/potenciálně maximálně nebezpečné
+  sl_minimal_security      = t_security_level:last;  -- minimální bezpečnost: zcela nedůvěryhodné/nemůže způsobit žádnou škodu
+  
+  -- bezpečnostní úrovně vybraných jazykových konstrukcí
+  sl_inline_assembly       = t_security_level(100);  -- inline asembler                                +
+  sl_import_entity         = t_security_level(100);  -- import entity                                  +
+  sl_export_entity         = t_security_level(100);  -- export entity                                  +
+  sl_attr_unchecked        = t_security_level(100);  -- použití atributu :unchecked                    +
+  sl_spec_position         = t_security_level(100);  -- specifikace atributu :position                 +
+  sl_machine_pointer       = t_security_level(100);  -- deklarace a použití machine pointeru           *
+  sl_unchecked_pointer     = t_security_level(100);  -- deklarace a použití unchecked pointeru         *
+  sl_unchecked_param       = t_security_level(100);  -- deklarace a použití unchecked parametru        *
+
+{
+----------------------------------------------------------------------------------------------------
+#template check_security_level (
+    num,                                         -- číslo chyby
+    context,                                     -- kontext
+    req_sec_level,                               -- požadovaná bezepčnostní úroveň
+    err_pos,                                     -- pozice konstruktu
+    param);                                      -- volitelný parametr
+-- Zkontroluje, jestli bezpečnostní úroveň dodaného kontextu je dostatečná (tj. <=) vzhledem 
+-- k dodané požadované bezpečnostní úrovni.
+----------------------------------------------------------------------------------------------------
+{
+  if context.entity^.sec_level>req_sec_level then
+    ce^.seterror(num,ce_forbidden_construct);
+    param;
+    err_pos;
+    end if;
+}    
+  #end check_security_level;
+}
+
+
 
 {
 ----------------------------------------------------------------------------------------------------
@@ -144,7 +273,10 @@ procedure unimplemented (
 ----------------------------------------------------------------------------------------------------
 
 
-
+----------------------------------------------------------------------------------------------------
+#separate public cc_gc;
+#separate private cc_gc;
+-- garbage colelctor
 ----------------------------------------------------------------------------------------------------
 #separate public cc_unitype;
 #separate private cc_unitype;
@@ -165,6 +297,7 @@ type
       hints        : cc_codes.thintcodeset;      -- hinty
       diags        : cc_codes.tdiagcodeset;      -- diagnostická hlášení
       end record;
+
 var
 {%OFF}
   opt_warning      : const tshortident := 'WARNING';
@@ -224,5 +357,22 @@ procedure unimplementedx (
     pos            : in cc_lexsym.lexposblock);  -- pozice chyby
 -- Způsobí chybu Neimplementováno.
 ----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+-- %%TODO(SECURITY) Dočasné, odstranit a změnit na textovou substituci (viz zakomentovaná výše), až
+-- přestane pada generování codeview.
+procedure check_security_level (
+    num : cc_errors.t_message_num;                                         -- číslo chyby
+    context : cc_entity.tcontext;                                     -- kontext
+    req_sec_level : t_security_level) =                               -- požadovaná bezepčnostní úroveň
+-- Zkontroluje, jestli bezpečnostní úroveň dodaného kontextu je dostatečná (tj. <=) vzhledem 
+-- k dodané požadované bezpečnostní úrovni.
+----------------------------------------------------------------------------------------------------
+begin
+  if context.entity^.sec_level>req_sec_level then
+    cc_var.ce^.seterror(num,cc_codes.ce_forbidden_construct);
+    cc_var.ce^.loadpos;
+    end if;
+  end check_security_level;
 
 end cc_def;

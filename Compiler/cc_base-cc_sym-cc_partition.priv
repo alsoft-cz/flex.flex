@@ -8,6 +8,74 @@ module private cc_partition =
 
 with
   cc_def.cc_var;
+  
+----------------------------------------------------------------------------------------------------
+procedure part_get_partition_type =
+-- Typ partition, do které patří zadaný kontext.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=pentity_compile(sym_get_enclosing_or_self(context.entity,et_compile))^.part_type;
+  end part_get_partition_type;
+
+  
+  
+----------------------------------------------------------------------------------------------------
+procedure part_get_partition_result =
+-- Výsledný tvar partition, do které patří zadaný kontext.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=pentity_compile(sym_get_enclosing_or_self(context.entity,et_compile))^.part_result;
+  end part_get_partition_result;
+
+
+  
+----------------------------------------------------------------------------------------------------
+procedure part_get_global_partition_by_id =
+-- Podle ID dohledá globální parition.    
+----------------------------------------------------------------------------------------------------
+begin
+  if global_partitions.list<>nil then 
+    for i in global_partitions.list^:range loop
+      if global_partitions.list^[i]^.partition_id=partition_id then
+        result:=global_partitions.list^[i];
+        break;
+        end if;
+      end loop;
+    end if;
+  end part_get_global_partition_by_id;
+
+  
+  
+----------------------------------------------------------------------------------------------------
+procedure part_get_runtime_partition =
+-- Pro zadanou překládanou partition dohledá související run-time partition.
+----------------------------------------------------------------------------------------------------
+begin
+  -- dodaná partition obsahuje run-time podporu
+  if compi.part_type in parts_contains_runtime 
+  -- nebo je run-time podpora zakázání
+  or cfg_no_runtime then
+    -- tak rovnou vrátit dodanou partition
+    result:=^compi;
+    return;
+    end if;
+    
+  -- dohledat run-time partition mezi withnutými partition
+  if compi.regions[rc_primary]^.withtable<>nil then
+    for i in compi.regions[rc_primary]^.withtable^:range loop
+      if compi.regions[rc_primary]^.withtable^[i].entity.getcentity^.etype=et_compile
+      and then pentity_compile(compi.regions[rc_primary]^.withtable^[i].entity.getcentity)^.part_type in parts_contains_runtime then
+        result:=compi.regions[rc_primary]^.withtable^[i].entity.getcentity;
+        return;
+        end if;
+      end loop;
+    end if;
+  
+  -- něco se najít muselo, jinak je něco v nepořádku
+  verify({VERIFY=}001388,result=nil);
+  end part_get_runtime_partition;
+  
+  
 
 ----------------------------------------------------------------------------------------------------
 procedure part_register_partition =
@@ -30,11 +98,19 @@ procedure part_with_partitions =
 with
   cc_base.cc_sym.cc_advanced;
 
+var
+  this_user        : t_compile_userid;
+
 begin
-  -- WITHnout všechny dosud přeložené globální partition
+  -- zjistit uživatele partitiony aktuálního kontextu
+  this_user:=pentity_compile(sym_get_enclosing_or_self(compi_context.entity,et_compile))^.part_userid;
+
+  -- WITHnout všechny dosud přeložené globální partition patřící tomuto uživateli nebo úplně všem
   if global_partitions.list<>nil then
     for i in global_partitions.list^:range loop
-      sym_add_with(compi_context,nil,global_partitions.list^[i],twm_with,twl_normal,true);
+      if pentity_compile(global_partitions.list^[i])^.part_userid=compile_userid_global or pentity_compile(global_partitions.list^[i])^.part_userid=this_user then
+        sym_add_with(compi_context,nil,global_partitions.list^[i],twm_with,twl_normal,true);
+        end if;
       end loop;
     end if;
   end part_with_partitions;

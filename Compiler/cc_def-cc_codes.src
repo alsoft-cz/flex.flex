@@ -146,6 +146,8 @@ type
       ce_x_ex_const_str;
       ce_x_ex_const_choice;
       --- sémantické chyby ---
+      ce_forbidden_construct;
+      ce_forbidden_entity;
       ce_dupid;
       ce_undeclared;
       ce_unevaluated;
@@ -244,6 +246,8 @@ type
       ce_i_attr_size;
       ce_i_attr_align;
       ce_i_attr_position;
+      ce_i_attr_required_security;
+      ce_i_attr_security_level;
       ce_i_machineptr;
       ce_i_callspec;
       ce_i_this;
@@ -277,6 +281,7 @@ type
       --- chyby při linkování ---
       --- chyby při práci s compile-time metadaty ---
       ce_ctm_corrupt;
+      ce_ctm_unsupported_version;
       --- implementační omezení ---
       ce_im_numsize;
       ce_im_floatsize;
@@ -292,7 +297,7 @@ type
 const
   -- kódy chyb, pro které nemá význam pozice ve zdrojáku
   ces_unpositioned = terrorcodeset:[ce_mem,ce_f_notfound,ce_f_open,ce_f_create,ce_f_read,ce_f_write,
-                                    ce_break,ce_ctm_corrupt];
+                                    ce_break,ce_ctm_corrupt,ce_ctm_unsupported_version];
 
 var
   terrorcodetxt    : const array terrorcode of t_char32str := [
@@ -418,6 +423,8 @@ var
       for ce_x_ex_const_choice   use 'Constant choice expected',--'Očekáván konstantní výběr',
 
       --- sémantické chyby ---
+      for ce_forbidden_construct use 'Language construct not allowed at this security level',
+      for ce_forbidden_entity    use 'Entity "%1" not accesible at this security level',
       for ce_dupid               use 'Duplicate identifier "%1"',--'Duplicitní identifikátor "%1"',
       for ce_undeclared          use 'Unknown identifier "%1"',--'Neznámý identifikátor "%1"',
       for ce_unevaluated         use 'Cannot evaluate the declaration of "%1"',--'Nelze vyhodnotit deklaraci symbolu "%1"',
@@ -456,8 +463,8 @@ var
       for ce_operator_pass1      use 'Illegal control of the first parameter of an overloaded procedure',--'Nepřípustná volací konvence prvního parametru přetížené procedury',
       for ce_operator_pass2      use 'Illegal control of the second parameter of an overloaded procedure',--'Nepřípustná volací konvence druhého parametru přetížené procedury',
       for ce_ambiguous           use 'Ambiguous type of an expression',--'Typ výrazu není určen jednoznačně',
-      for ce_noclassptr          use 'The TAG part has not interpretation, the pointer is not CLASS',--'Část TAG nemá smysl, pointer není CLASS',
-      for ce_nounconstrainedptr  use 'The RANGE part has not interpretation, the pointer has not an unconstrained base',--'Část RANGE nemá smysl, pointer nemá neomezenou bázi',
+      for ce_noclassptr          use 'The TAG part has no interpretation, the pointer is not CLASS',--'Část TAG nemá smysl, pointer není CLASS',
+      for ce_nounconstrainedptr  use 'The RANGE part has no interpretation, the pointer has not an unconstrained base',--'Část RANGE nemá smysl, pointer nemá neomezenou bázi',
       for ce_sizenotknown        use 'The size of the base of a pointer is not known',--'Velikost báze pointeru není určena',
       for ce_multioverride       use 'The virtual method "%1" was already overriden in this class',--'Virtuální metoda "%1" byla v této třídě již jednou předefinována',
       for ce_abstract_must_match use 'All parts of a declaration must have "ABSTRACT" either all present or all missing',
@@ -516,6 +523,8 @@ var
       for ce_i_attr_size         use 'Illegal value of the ":size" attribute',--'Nepřípustná hodnota atributu ":size"',
       for ce_i_attr_align        use 'Illegal value of the ":alignment" attribute',--'Nepřípustná hodnota atributu ":alignment"',
       for ce_i_attr_position     use 'Illegal value of the ":position" attribute',--'Nepřípustná hodnota atributu ":position"',
+      for ce_i_attr_required_security use 'Illegal value of the ":required_security" attribute',--'Nepřípustná hodnota atributu ":required_security"',
+      for ce_i_attr_security_level use 'Illegal value of the ":security_level" attribute',--'Nepřípustná hodnota atributu ":security_level"',
       for ce_i_machineptr        use 'Illegal machine-pointer declaration',--'Nepřípustná deklarace strojového pointeru',
       for ce_i_callspec          use 'Illegal special method call',--'Nepřípustné volání speciální metody',
       for ce_i_this              use 'Illegal use of THIS',--'Nepřípustné použití THIS',
@@ -552,7 +561,8 @@ var
       --- chyby při linkování ---
 
       --- chyby při práci s compile-time metadaty ---
-      for ce_ctm_corrupt         use 'Compile-time metadata corrupt',
+      for ce_ctm_corrupt         use 'Compile-Time Metadata corrupt',
+      for ce_ctm_unsupported_version use 'Unsupported version of Compile-Time Metadata',
 
       --- implementační omezení ---
       for ce_im_numsize          use 'Implementation restriction: Unsupported ordinal type size',--'Implementační omezení: Nepodporovaná velikost diskrétního typu',
@@ -575,7 +585,6 @@ type
       cw_null_choice;          -- nulový výběr
       cw_duplicate_choice;     -- duplicitní výběr
       cw_duplicate_association;-- duplicitní vazba položky
-      cw_concat_strlength;     -- {%%TODO(HINT) ??? } příliš dlouhý řetězec po provedení &
       cw_strange_design;       -- neobvyklá konstrukce
       --- varování preprocesoru ---
       cw_unknown_meta;         -- neznámý metapříkaz
@@ -586,7 +595,8 @@ type
       cw_unknown_syntax;       -- neznámá syntaxe
       cw_meta_warning;         -- varování generované direktivou #WARNING
       cw_option_redefined;     -- parametr prekladace predefinovan
-      cw_option_not_applicable;-- parametr prekladace neplatny pro kontext
+      cw_option_not_applicable;-- #option není aplikovatelná v tomto kontextu
+      cw_pragma_not_applicable;-- #pragma není aplikovatelná v tomto kontextu
       --- varování optimalizátoru kódu ---
       cw_cond_removed;         -- odstraněn podmíněný blok spolu s výpočtem nekonst. podmínky
       end enum;
@@ -602,7 +612,6 @@ var
   -- tabulka popisů varování
   -- musí být setříděná! (vyhledává se v ní binárním půlením)
   cc_warning_desc : const array 0..16 of twarningdesc := [
-      [for id use 'CONCATENATION_RESULT_TOO_LARGE'  , for warn use cw_concat_strlength      ],
       [for id use 'CONDITION_REMOVED'               , for warn use cw_cond_removed          ],
       [for id use 'DUPLICATE_ASSOCIATION'           , for warn use cw_duplicate_association ],
       [for id use 'DUPLICATE_CHOICE'                , for warn use cw_duplicate_choice      ],
@@ -611,9 +620,10 @@ var
       [for id use 'OBSOLETE_SYNTAX'                 , for warn use cw_obsolete_syntax       ],
       [for id use 'OPTION_NOT_APPLICABLE'           , for warn use cw_option_not_applicable ],
       [for id use 'OPTION_REDEFINED'                , for warn use cw_option_redefined      ],
+      [for id use 'PRAGMA_NOT_APPLICABLE'           , for warn use cw_pragma_not_applicable ],
       [for id use 'STRANGE_DESIGN'                  , for warn use cw_strange_design        ],
       [for id use 'UNKNOWN_ENVIRONMENT_VARIABLE'    , for warn use cw_unknown_environment   ],
-      [for id use 'UNKNOWN_INTERNAL_SUBPROGRAM'     , for warn use cw_unknown_assign        ],
+      [for id use 'UNKNOWN_INTERNAL_ENTITY'         , for warn use cw_unknown_assign        ],
       [for id use 'UNKNOWN_METASTATEMENT'           , for warn use cw_unknown_meta          ],
       [for id use 'UNKNOWN_OPTION'                  , for warn use cw_unknown_option        ],
       [for id use 'UNKNOWN_PRAGMA'                  , for warn use cw_unknown_pragma        ],
@@ -638,7 +648,6 @@ var
       for cw_null_choice           use 'Null choive',--'Nulový výběr',
       for cw_duplicate_choice      use 'Duplicate choice',--'Duplicitní výběr',
       for cw_duplicate_association use 'Duplicate item association',--'Duplicitní vazba položky',
-      for cw_concat_strlength      use 'Resulting string too long',--'Výsledný řětězec je příliš dlouhý',
       for cw_strange_design        use 'Strange design',--'Neobvyklá konstrukce',
 
       --- varování preprocesoru ---
@@ -649,11 +658,12 @@ var
       for cw_unknown_environment   use 'Unknown variable "%1"',--'Neznámá proměnná "%1"',
       for cw_unknown_syntax        use 'Unknown syntax "%1"',--'Neznámá syntaxe "%1"',
       for cw_meta_warning          use '%1',
-      for cw_option_redefined      use 'Compiler option %1 redefined',--'Parametr prekladace %1 predefinovan'
-      for cw_option_not_applicable use 'Compiler option %1 not applicable in this context',--'Parametr prekladace %1 neni platny pro tento kontext'
+      for cw_option_redefined      use 'Compiler option "%1" redefined',--'Parametr prekladace %1 predefinovan'
+      for cw_option_not_applicable use 'Compiler option "%1" not applicable in this context',--'Parametr prekladace %1 neni platny pro tento kontext'
+      for cw_pragma_not_applicable use 'Compiler pragma "%1" not applicable in this context',--'Parametr prekladace %1 neni platny pro tento kontext'
 
       --- varování optimalizátoru kódu ---
-      for cw_cond_removed          use 'Optimalizací odstraněn podmíněný blok i s výpočtem podmínky'];
+      for cw_cond_removed          use 'Condition evaluation and conditional sequence of statements removed due to optimization'];
 
 type
   -- kódy hintů
@@ -710,14 +720,14 @@ var
       for ch_constant_condition         use 'Constant condition',               --'Konstantní podmínka'
       for ch_multiple_clause_with       use 'Multiple WITH or USE of "%1" in clause',  --'Vicenasobny WITH/USE "%1" v klausuli'
       for ch_multiple_module_with       use '"%1" already WITHed or USEd in parent entity',  --'Vicenasobny WITH/USE "%1" v modulu'
-      for ch_par_is_default             use 'Skutečný parametr odpovídá implicitní hodnotě' ,
+      for ch_par_is_default             use 'Actual parameter matches default value' ,
       for ch_unused_entity              use 'Unused entity "%1"',               --'Nepoužitá entita "%1"'
       for ch_unused_module              use 'Unused module "%1"',               --'Nepoužity modul "%1"'
-      for ch_unreachable_code           use 'Nedosažitelný kód',
-      for ch_one_pass_loop              use 'Cyklus je jednoprůchodový',
-      for ch_infinite_loop              use 'Cyklus je nekonečný, užijte konstrukci loop ... end loop;',
-      for ch_if_reduced                 use 'Příkaz if byl optimalizací redukován na blok jedné ze svých větví',
-      for ch_declaration_hides_ancestor use 'Declaration hides the declaration of "%1" in ancestor class',
+      for ch_unreachable_code           use 'Unreacheable code',
+      for ch_one_pass_loop              use 'Single-pass loop',
+      for ch_infinite_loop              use 'Infinite loop, use LOOP .. END LOOP instead',
+      for ch_if_reduced                 use 'IF statement reduced to one of its branches due to optimizations',
+      for ch_declaration_hides_ancestor use 'Declaration hides the declaration of "%1" in ancestor',
       for ch_unsafe_range               use 'Unsafe range'];
 
 type

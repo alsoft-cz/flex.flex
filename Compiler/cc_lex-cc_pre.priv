@@ -8,6 +8,7 @@ module private cc_pre =
 ----------------------------------------------------------------------------------------------------
 with
   standard.console,
+  cc_def.cc_gc,
   cc_def.cc_codes,
   cc_def.cc_var,
   cc_def.cc_env,
@@ -196,7 +197,6 @@ begin
     ce^.seterror({CCERR=}000080,ce_x_scol);
     ce^.loadpos;
     end if;
-
   end p_skipparams;
     
 
@@ -206,6 +206,9 @@ procedure p_pragma_import (
     curr           : in tcontext) =              -- aktuální kontext
 -- Pragma IMPORT.
 ----------------------------------------------------------------------------------------------------
+with
+  cc_binding;
+
 use
   cc_sym.cc_advanced;
 
@@ -214,86 +217,81 @@ var
   x1               : pexpnode;                   -- výraz
   x2               : pexpnode;                   -- výraz
   eval             : tentityeval;                -- vyhodnocení
-  proc             : pentity_procedure;          -- procedura
+  psym             : pentity;                    -- importovaná entita
   extname          : t_char32str;                -- jméno knihovny
   libname          : t_char32str;                -- jméno knihovny
-  pos              : lexposblock;                -- pozice
 
 begin
+  -- bezpečnostní kontroly
+  check_security_level({CCERR=}000656,curr,sl_import_entity{%%TODO(SECURITY),ce^.loadpos});
+
   -- levá závorka
   if followlex(curr,lex_lpar) then
     ce^.seterror({CCERR=}000081,ce_x_lpar);
     ce^.loadpos;
     end if;
 
-  -- jméno procedury
+  -- jméno importované entity
   x_vyraz(curr,x1,es_name);
-  x_evaluate(curr,x1,ek_sym_proc,nil,eu_formal,true,eval);
+  x_evaluate(curr,x1,ek_sym_import,nil,eu_formal,true,eval);
   {%%X a co když je EVAL<>SE_EVALUATED ? }
-  pentity(proc):=x1^.getsymbol;
+  psym:=x1^.getsymbol;
+  verify({VERIFY=}001331,psym=nil);
 
   -- čárka
   if followlex(curr,lex_comma) then
-    ce^.seterror({CCERR=}000082,ce_x_comma);
+    ce^.seterror({CCERR=}000644,ce_x_comma);
     ce^.loadpos;
     {%%RESUME ce^.raiseerror;}
     end if;
 
-  -- externí jméno
+  -- další parametr: externí jméno nebo jméno knihovny
   x_vyraz(curr,x2,es_expr);
   x_evaluate(curr,x2,ek_const_str,nil,eu_read,true,eval);
   {%%X a co když je EVAL<>SE_EVALUATED ? }
-  x_const_sysstr(x2,extname);
 
-  -- čárka
-  if followlex(curr,lex_comma) then
-    ce^.seterror({CCERR=}000083,ce_x_comma);
-    ce^.loadpos;
-    {%%RESUME ce^.raiseerror;}
-    end if;
+  -- pro přímo importovatelnou entitu může být uvedeno explicitní externí jméno
+  if psym^.etype in ets_importable and then checklex(curr,lex_comma) 
+  
+    -- následuje čárka, je to externí jméno => následuje jméno knihovny
+    then
+      -- převzít externí jméno
+      x_const_sysstr(x2,extname);
+     
+      -- další parametr: již určitě jméno knihovny
+      x_vyraz(curr,x2,es_expr);
+      x_evaluate(curr,x2,ek_const_str,nil,eu_read,true,eval);
 
-  -- jméno knihovny
-  x_vyraz(curr,x2,es_expr);
-  x_evaluate(curr,x2,ek_const_str,nil,eu_read,true,eval);
-  {%%X a co když je EVAL<>SE_EVALUATED ? }
+    -- nenásleduje čárka, už je to jméno externí knihovny
+    else
+      -- nic nedělat
+      end if;
+      
+  -- převzít jméno knihovny    
   x_const_sysstr(x2,libname);
 
   -- pravá závorka
   if followlex(curr,lex_rpar) then
-    ce^.seterror({CCERR=}000084,ce_x_rpar);
+    ce^.seterror({CCERR=}000645,ce_x_rpar);
     ce^.loadpos;
     end if;
 
   -- středník
   if followlex(curr,lex_scol) then
-    ce^.seterror({CCERR=}000085,ce_x_scol);
+    ce^.seterror({CCERR=}000646,ce_x_scol);
     ce^.loadpos;
     {%%RESUME ce^.raiseerror;}
     end if;
 
-  -- procedura už je importovaná
-  if proc^.import_info<>nil then
-    ce^.seterror({CCERR=}000086,ce_imported);
-    ce^.setparam(sym_get_qid(proc));
-    x1^.errpos;
-    {%%RESUME ce^.raiseerror;}
-    ce^.resumeerror;
-    end if;
-
-  -- z proceduru musí existovat pouze neúplná deklarace
-  x1^.getpos(pos);
-  if proc^.declared<>etd_incomplete or proc^.evaluated<>etd_incomplete then
-    ce^.seterror({CCERR=}000087,ce_cantimport);
-    x1^.errpos;
-    {%%RESUME ce^.raiseerror;}
-    ce^.resumeerror;
-    end if;
-
   -- importovat
-  os^.importproc(proc,extname,libname);
+  import_entity(psym,
+      for library_name use string_to_external_entity_ident(libname)^,
+      for external_name use string_to_external_entity_ident(extname)^,
+      for traverse use psym^.etype not in ets_importable{extname=''});
+  verify({VERIFY=}001391,psym^.etype in ets_importable and not is_imported(psym));
 
-  -- proceduru označit jako deklarovanou a vyhodnocenou
-  cc_sym.cc_advanced.sym_set_evaluated(proc);
+  -- entitu označit jako deklarovanou a vyhodnocenou
+  cc_sym.cc_advanced.sym_set_evaluated(psym);
   end p_pragma_import;
 
 
@@ -424,6 +422,9 @@ procedure p_pragma_assign (
     curr           : in tcontext) =              -- aktuální kontext
 -- Pragma ASSIGN.
 ----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_sym.cc_partition;
+  
 var
   lex              : lexsym;                     -- lexikální symbol
   expr             : pexpnode;                   -- výraz
@@ -480,6 +481,13 @@ begin
     {%%RESUME ce^.raiseerror;}
     end if;
 
+  -- má #pragma assign v této partition vůbec smysl ?
+  if part_get_partition_type(curr) not in parts_contains_runtime then
+    ce^.setwarning(curr,{CCERR=}000640,cw_pragma_not_applicable);
+    ce^.loadpos;
+    return;
+    end if;
+                  
   -- vytvořit vazbu na překladač
   if rtl<>rtl_unknown then
     rtl_set_entity(rtl,expr^.getsymbol);
@@ -505,13 +513,16 @@ var
   expname          : t_char32str;                -- volitelné jméno pro export
 
 begin
+  -- bezpečnostní kontroly
+  check_security_level({CCERR=}000655,curr,sl_export_entity{%%TODO(SECURITY),ce^.loadpos});
+
   -- levá závorka
   if followlex(curr,lex_lpar) then
     ce^.seterror({CCERR=}000103,ce_x_lpar);
     ce^.loadpos;
     end if;
 
-  -- jméno procedury
+  -- jméno exportované entity
   x_vyraz(curr,x1,es_name);
   x_evaluate(curr,x1,ek_sym_export,nil,eu_formal,true,eval);
   {%%X a co když je EVAL<>SE_EVALUATED ? }
@@ -542,7 +553,8 @@ begin
     end if;
 
   -- exportovat symbol
-  export_entity(psym,expname);
+  export_entity(psym,string_to_external_entity_ident(expname)^);
+  verify({VERIFY=}001392,psym^.etype in ets_exportable and not is_exported(psym));
   end p_pragma_export;
 
 
@@ -941,6 +953,7 @@ begin
   end p_meta_option_diagnostic;
 
 
+
 ----------------------------------------------------------------------------------------------------
 procedure p_meta_option : tmetaaction =
 -- Metapříkaz #OPTION.
@@ -1005,7 +1018,6 @@ begin
         
         -- preskoc zbytek
         p_skipparams(curr);
-        
         return;
     end;
 
@@ -1041,8 +1053,8 @@ begin
     x_const_logical(expr,ul);
     end if;
 
-  -- pokud se neda nastaveni vypnout a je jiz definovane
-  if not switchable and o_is_option_by_context(option,curr) then
+  -- pokud se neda nastaveni vypnout, je jiz definovane, ale nededi se, varuj
+  if not switchable and not o_is_option_inheritable(option) and o_is_option_by_context(option,curr) then
     -- varuj
     ce^.setwarning(curr,{CCERR=}000138,cw_option_redefined);
     ce^.setparam(entityident_to_string(idopt^));
@@ -1925,6 +1937,8 @@ begin
           
           -- alokovat paměť
           new plexnode_param(lexnode);
+          c_garbage_collector.get_instance^.register_record(lexnode);
+
           plexnode(lexnode)^._tag:=_tag_param;
 
           -- doplnit údaje
@@ -1934,6 +1948,8 @@ begin
         else
           -- alokovat paměť
           new plexnode_lex(lexnode);
+          c_garbage_collector.get_instance^.register_record(lexnode);
+
           plexnode(lexnode)^._tag:=_tag_lex;
 
           -- doplnit údaje

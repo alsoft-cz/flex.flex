@@ -1,0 +1,873 @@
+﻿----------------------------------------------------------------------------------------------------
+module private cc_gc =
+-- GC - Garbage Collector
+----------------------------------------------------------------------------------------------------
+
+#if not #declared cc_gc_debug; then;
+const
+  cc_gc_debug = false;
+#end if;
+
+  
+----------------------------------------------------------------------------------------------------
+class private c_alloc_zone =
+-- alokacni zona
+----------------------------------------------------------------------------------------------------
+
+    var
+      name   : t_char32str;
+      filter : p_collect_filter; 
+
+    ------------------------------------------------------------------------------------------------
+    static set_name =
+    -- nastavi jmeno zony
+    ------------------------------------------------------------------------------------------------
+    begin
+      name:=_name;
+      end set_name;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_name =
+    -- vrati jmeno zony
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=name;
+      end get_name;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static set_collect_filter =
+    -- nastavi collect filtr
+    ------------------------------------------------------------------------------------------------
+    begin 
+      filter:=_filter;
+      end set_collect_filter;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_collect_filter =
+    -- vrati nastaveny collect filtr
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=filter;
+      end get_collect_filter;
+
+    end c_alloc_zone;
+
+
+                                                   
+----------------------------------------------------------------------------------------------------
+class private c_garbage_collector =
+-- "garbage collector"
+----------------------------------------------------------------------------------------------------
+
+    with
+      -- debug
+      standard.console,
+      standard.conversions,
+      supervised c_alloc_zone;
+
+    type
+      -- seznam alokacnich zon
+      t_zone_list    = string of p_alloc_zone;
+      p_zone_list    = ^t_zone_list;
+
+
+    const 
+      -- konstanty
+      init_list_size         = 128;
+      max_multiple_list_size = 983040;
+      multiple_factor        = 2;
+      incremental_size       = max_multiple_list_size;
+
+    var
+      -- promenne
+      global       : static p_garbage_collector;
+      local        : static p_garbage_collector;
+      zone_list    : p_zone_list;
+      name         : t_char32str;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure get_instance =
+    -- vrati globalni instanci
+    ------------------------------------------------------------------------------------------------
+    begin 
+      -- pokud existuje lokalni specializovany gc, vratit jeho
+      if local<>nil then
+        result:=local;
+        return;
+        end if;
+
+      -- pokud jeste nil
+      if global=nil then 
+        new global; 
+        global^.set_name('Global');
+        end if;
+
+      result:=global;
+      end get_instance;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure set_local_instance =
+    -- Nastavi k pouzivani lokalni specializovanou instanci gc.
+    -- Pokud se nastavi lokalni instance, je prednostne pouzivana. Pomoci set_local_instance(nil)
+    -- se vrati pouzivani globalni instance.
+    ------------------------------------------------------------------------------------------------
+    begin
+      local:=instance;
+      end set_local_instance;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static set_name =
+    -- nastavi jmeno
+    ------------------------------------------------------------------------------------------------
+    begin
+      name:=_name;
+      end set_name;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_name =
+    -- vrati jmeno
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=name;
+      end get_name;
+
+
+    
+    ------------------------------------------------------------------------------------------------
+    static get_root_zone return p_alloc_zone =
+    -- vrati korenovou alokacni zonu
+    ------------------------------------------------------------------------------------------------
+    begin
+      verify({VERIFY=}001367,zone_list^[1]=nil);
+      result:=zone_list^[1];
+      end get_root_zone;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static init_root_zone =
+    -- inicializuje korenovou zonu
+    ------------------------------------------------------------------------------------------------
+    var
+      zone : p_alloc_zone;
+
+    begin
+      -- seznam zon musi byt prazdny
+      verify({VERIFY=}001364,zone_list^:length<>0);
+
+      new zone;
+      zone^.set_name('root');
+
+      zone_list^ & zone;
+      end init_root_zone;
+    
+    
+
+    ------------------------------------------------------------------------------------------------
+    static discard_root_zone =
+    -- deinicializuje korenovou zonu
+    ------------------------------------------------------------------------------------------------
+    var
+      zone : p_alloc_zone;
+
+    begin
+      -- musi zbyt pouze jedna zona
+      verify({VERIFY=}001365,zone_list^:length<>1);
+      
+      zone:=zone_list^[1];
+      discard zone;
+      zone_list^[1]:=nil;
+      pred zone_list^:length;
+      end discard_root_zone;
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    static get_current_zone return p_alloc_zone =
+    -- vrati aktualni alokacni zonu
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=zone_list^[zone_list^:length];
+      end get_current_zone;
+
+
+    
+    ------------------------------------------------------------------------------------------------
+    #template gen_init_list (proc_name,p_list_type);
+    -- sablona pro inicializaci seznamu
+    ------------------------------------------------------------------------------------------------
+      procedure proc_name (list : in out p_list_type) =
+      begin
+        -- pro jistotu
+        verify({VERIFY=}001357,list<>nil);
+        
+        -- alokuj
+        new list range init_list_size;
+        end proc_name
+      #end gen_init_list;
+
+    ------------------------------------------------------------------------------------------------
+    gen_init_list(init_class_list,p_class_list);
+    -- inicializuje seznam flexovych trid
+    ------------------------------------------------------------------------------------------------
+    gen_init_list(init_record_list,p_record_list);
+    -- inicializuje seznam flexovych recordu
+    ------------------------------------------------------------------------------------------------
+    gen_init_list(init_collectable_list,p_collectable_list);
+    -- inicializuje seznam pametovych bloku
+    ------------------------------------------------------------------------------------------------
+    gen_init_list(init_memblock_list,p_memblock_list);
+    -- inicializuje seznam pametovych bloku
+    ------------------------------------------------------------------------------------------------
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    #template gen_discard_list (proc_name,p_list_type);
+    -- sablona pro zniceni seznamu
+    ------------------------------------------------------------------------------------------------
+      procedure proc_name (list : in out p_list_type) =
+      begin
+        discard list;
+        end proc_name
+      #end gen_discard_list;
+
+    ------------------------------------------------------------------------------------------------
+    gen_discard_list(discard_class_list, p_class_list);
+    -- znici seznam flexovych trid
+    ------------------------------------------------------------------------------------------------
+    gen_discard_list(discard_record_list, p_record_list);
+    -- znici seznam flexovych recordu
+    ------------------------------------------------------------------------------------------------
+    gen_discard_list(discard_collectable_list, p_collectable_list);
+    -- znici seznam pametovych bloku
+    ------------------------------------------------------------------------------------------------
+    gen_discard_list(discard_memblock_list, p_memblock_list);
+    -- znici seznam pametovych bloku
+    ------------------------------------------------------------------------------------------------
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    #template adjust_list (proc_name,p_list_type);
+    -- realokuje seznam pokud treba
+    ------------------------------------------------------------------------------------------------
+      procedure proc_name (list : in out p_list_type) =
+      var
+        new_size   : t_unsigned;
+        new_list   : p_list_type;
+        length     : t_unsigned;
+
+      begin
+        length:=list^:length;
+
+        -- treba realokovat?
+        if length=list^:last then
+
+          #if cc_gc_debug then; 
+            write('Reallocating GC ');
+            write(get_name);
+            write(' of ');
+            write(unsigned_to_string(length));
+            write(' elements ... ');
+            #end if;
+          
+          -- dosazena maximalni velikost pro prechod na narust aritmetickou radou?
+          if length>=max_multiple_list_size
+            -- ano
+            then  
+              new_size:=length+incremental_size;
+
+            -- ne
+            else
+              new_size:=length*multiple_factor;
+            end if;
+
+          -- alokuj novy seznam
+          new new_list range new_size;
+
+          -- presun
+          new_list^:=list^;
+
+          --zrus stary
+          discard list;
+
+          -- nastav novy seznam
+          list:=new_list;
+
+          #if cc_gc_debug then; 
+            write(' now space for '); 
+            write(unsigned_to_string(new_size));
+            write_line(' elements.');
+            #end if;
+
+          end if;
+      
+        end proc_name
+      #end adjust_list;
+
+    
+    ------------------------------------------------------------------------------------------------  
+    adjust_list(adjust_class_list,p_class_list);
+    -- realokuje seznam trid pokud treba
+    ------------------------------------------------------------------------------------------------
+    adjust_list(adjust_record_list,p_record_list);
+    -- realokuje seznam recordu pokud treba
+    ------------------------------------------------------------------------------------------------
+    adjust_list(adjust_collectable_list,p_collectable_list);
+    -- realokuje seznam pametovych bloku pokud treba
+    ------------------------------------------------------------------------------------------------
+    adjust_list(adjust_memblock_list,p_memblock_list);
+    -- realokuje seznam pametovych bloku pokud treba
+    ------------------------------------------------------------------------------------------------
+
+
+
+    ------------------------------------------------------------------------------------------------
+    #template gen_add_to_list (proc_name,p_list_item_type,p_list_type,adjust_proc_name);
+    -- prida polozku do seznamu
+    ------------------------------------------------------------------------------------------------
+      procedure proc_name (item : in p_list_item_type; list : in out p_list_type) =
+      var
+        length : t_unsigned;
+        curr   : p_list_item_type;
+
+      begin
+        verify({VERIFY=}001342,list=nil);
+
+        -- je co registrovat?
+        if item=nil then return; end if;
+
+        length:=list^:length;
+
+        
+        #if cc_gc_debug then; 
+          -- pozpatku najdi ruseny mblock
+          for i in list^:range loop
+            curr:=list^[t_unsigned(length-i+1)];
+            if curr=item then
+              -- nesmi tam uz byt!!
+              verify({VERIFY=}001369);
+              end if;
+            if i=10000 then break; end if;
+            end loop;
+          #end if;
+
+        -- realokuj seznam pokud treba
+        adjust_proc_name(list);
+
+        -- pridej polozku do seznamu
+        list^ & item;
+
+        end proc_name
+      #end gen_add_to_list;
+
+    ------------------------------------------------------------------------------------------------
+    gen_add_to_list(add_class_to_list,p_flex_class,p_class_list,adjust_class_list);
+    -- prida flex tridu do seznamu flex trid
+    ------------------------------------------------------------------------------------------------
+    gen_add_to_list(add_record_to_list,p_flex_record,p_record_list,adjust_record_list);
+    -- prida flex record do seznamu flex recordu
+    ------------------------------------------------------------------------------------------------
+    gen_add_to_list(add_collectable_to_list,p_collectable,p_collectable_list,adjust_collectable_list);
+    -- prida pametovy blok do seznamu pametovych bloku
+    ------------------------------------------------------------------------------------------------
+    gen_add_to_list(add_memblock_to_list,p_memblock,p_memblock_list,adjust_memblock_list);
+    -- prida pametovy blok do seznamu pametovych bloku
+    ------------------------------------------------------------------------------------------------
+
+
+
+    ------------------------------------------------------------------------------------------------
+    #template gen_remove_from_list (proc_name,p_list_item_type,p_list_type);
+    -- odebere polozku seznamu
+    ------------------------------------------------------------------------------------------------
+      procedure proc_name (item : in p_list_item_type; list : in out p_list_type) =
+      var
+        length     : t_unsigned;
+        removed    : t_logical:=false;
+
+      begin
+        verify({VERIFY=}001362,list=nil);
+
+        -- je co odregistrovat?
+        if item=nil then return; end if;
+
+        length:=list^:length;
+        
+        -- pozpatku najdi ruseny mblock
+        for i in list^:range loop
+          if list^[t_unsigned(length-i+1)]=item then
+            list^[t_unsigned(length-i+1)]:=nil;
+            removed:=true;
+            break;
+            end if;
+          end loop;
+
+        verify({VERIFY=}001368,not removed);
+        
+        end proc_name
+      #end gen_remove_from_list;
+
+    ------------------------------------------------------------------------------------------------
+    gen_remove_from_list(remove_class_from_list,p_flex_class,p_class_list);
+    -- odebere flexovou tridu ze seznamu flexovych trid
+    ------------------------------------------------------------------------------------------------
+    gen_remove_from_list(remove_record_from_list,p_flex_record,p_record_list);
+    -- odebere flexovy record ze seznamu flexovych recordu
+    ------------------------------------------------------------------------------------------------
+    gen_remove_from_list(remove_collectable_from_list,p_collectable,p_collectable_list);
+    -- odebere pametovy blok ze seznamu pametovych bloku
+    ------------------------------------------------------------------------------------------------
+    gen_remove_from_list(remove_memblock_from_list,p_memblock,p_memblock_list);
+    -- odebere pametovy blok ze seznamu pametovych bloku
+    ------------------------------------------------------------------------------------------------
+    
+    
+    ------------------------------------------------------------------------------------------------
+    #template gen_move_items (proc_name,p_list_type,add_to_list_proc_name);
+    -- sablona pro presunuti polozek dvou seznamu
+    ------------------------------------------------------------------------------------------------
+      procedure proc_name (src_list : in p_list_type; dest_list : in out p_list_type) =
+      begin
+        -- projdi vsechny prvky
+        for i in src_list^:range loop
+          -- pouze nenil polozky
+          if src_list^[i]<>nil then
+            -- pridej do ciloveho seznamu
+            add_to_list_proc_name(src_list^[i],dest_list);
+            
+            -- niluj zdroj
+            src_list^[i]:=nil;
+            end if;
+          end loop;
+        end proc_name
+      #end gen_move_items;
+
+
+    ------------------------------------------------------------------------------------------------
+    gen_move_items(move_class_items,p_class_list,add_class_to_list);
+    -- presune flexove tridy ze zdrojoveho do ciloveho seznamu
+    ------------------------------------------------------------------------------------------------
+    gen_move_items(move_record_items,p_record_list,add_record_to_list);
+    -- presune flexove recordy ze zdrojoveho do ciloveho seznamu
+    ------------------------------------------------------------------------------------------------
+    gen_move_items(move_collectable_items,p_collectable_list,add_collectable_to_list);
+    -- presune pametove bloky ze zdrojoveho do ciloveho seznamu
+    ------------------------------------------------------------------------------------------------
+    gen_move_items(move_memblock_items,p_memblock_list,add_memblock_to_list);
+    -- presune pametove bloky ze zdrojoveho do ciloveho seznamu
+    ------------------------------------------------------------------------------------------------
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    #template gen_defrag_list (proc_name,p_list_type,move_items_proc_name,init_list_proc_name,discard_list_proc_name);
+    -- sablona pro defragmentaci seznamu
+    ------------------------------------------------------------------------------------------------
+      procedure proc_name (list : in out p_list_type) =
+      var
+        new_list   : p_list_type;
+
+      begin
+        #if cc_gc_debug then; 
+          write('Defragmenting GC ');
+          write(get_name);
+          write(' ...');
+          #end if;
+
+        -- inicializuj novy seznam
+        init_list_proc_name(new_list);
+
+        -- presun polozky bez mezer
+        move_items_proc_name(list,new_list);
+
+        -- zrus stary seznam
+        discard_list_proc_name(list);
+
+        -- nastav novy seznam
+        list:=new_list;
+
+        #if cc_gc_debug then; 
+          write_line(' OK');
+          #end if;
+        end proc_name
+      #end gen_defrag_list;
+
+
+    ------------------------------------------------------------------------------------------------
+    gen_defrag_list(defrag_class_list,p_class_list,move_class_items,init_class_list,discard_class_list);
+    -- defragmentuje seznam flexovych trid
+    ------------------------------------------------------------------------------------------------
+    gen_defrag_list(defrag_record_list,p_record_list,move_record_items,init_record_list,discard_record_list);
+    -- defragmentuje seznam flexovych recordu
+    ------------------------------------------------------------------------------------------------
+    gen_defrag_list(defrag_collectable_list,p_collectable_list,move_collectable_items,init_collectable_list,discard_collectable_list);
+    -- defragmentuje seznam pametovych bloku
+    ------------------------------------------------------------------------------------------------
+    gen_defrag_list(defrag_memblock_list,p_memblock_list,move_memblock_items,init_memblock_list,discard_memblock_list);
+    -- defragmentuje seznam pametovych bloku
+    ------------------------------------------------------------------------------------------------
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    static register_class =
+    -- zaregistruje flex tridu do aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    begin
+      add_class_to_list(_class, get_current_zone^.class_list);
+      end register_class;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static register_record =
+    -- zaregistruje flex record do aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    begin
+      add_record_to_list(_record, get_current_zone^.record_list);
+      end register_record;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static register_collectable =
+    -- zaregistruje collectable tridu do aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    begin
+      add_collectable_to_list(_collectable, get_current_zone^.collectable_list);
+      end register_collectable;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static register_memblock =
+    -- zaregistruje pametovy blok
+    ------------------------------------------------------------------------------------------------
+    var
+      is_not_class  : t_logical;
+      is_not_record : t_logical;
+      is_not_collectable : t_logical;
+
+    begin
+      -- zpusobovalo to interni chybu, tak jsem to rozepsal
+      is_not_class:=_memblock:tag<>p_flex_class:tag;
+      is_not_record:=_memblock:tag<>p_flex_record:tag;
+      is_not_collectable:=_memblock:tag<>p_collectable:tag;
+
+      -- memblock nesmi byt p_flex_class nebo p_flex_record
+      verify({VERIFY=}001363,not (is_not_class and is_not_record and is_not_collectable));
+
+      add_memblock_to_list(_memblock, get_current_zone^.memblock_list);
+      end register_memblock;
+
+   
+    
+    ------------------------------------------------------------------------------------------------
+    static unregister_class =
+    -- odregistruje flex tridu z aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    begin
+      remove_class_from_list(_class,get_current_zone^.class_list);
+      end unregister_class;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static unregister_record =
+    -- odregistruje flex record z aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    begin
+      remove_record_from_list(_record,get_current_zone^.record_list);
+      end unregister_record;
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    static unregister_collectable =
+    -- odregistruje collectable tridu z aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    begin
+      remove_collectable_from_list(_collectable,get_current_zone^.collectable_list);
+      end unregister_collectable;
+
+    
+
+    ------------------------------------------------------------------------------------------------
+    static unregister_memblock =
+    -- odregistruje pametovy blok
+    ------------------------------------------------------------------------------------------------
+    var
+      is_not_class  : t_logical;
+      is_not_record : t_logical;
+      is_not_collectable : t_logical;
+
+    begin
+      -- zpusobovalo to interni chybu, tak jsem to rozepsal
+      is_not_class:=_memblock:tag<>p_flex_class:tag;
+      is_not_record:=_memblock:tag<>p_flex_record:tag;
+      is_not_collectable:=_memblock:tag<>p_collectable:tag;
+
+      -- memblock nesmi byt p_flex_class nebo p_flex_record
+      verify({VERIFY=}001366,not (is_not_class and is_not_record and is_not_collectable));
+
+      remove_memblock_from_list(_memblock,get_current_zone^.memblock_list);
+      end unregister_memblock;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static push_create_alloc_zone =
+    -- vytvori a prida alokacni zonu na stack alokacnich zon
+    -- vytvorena zona se stane aktualni alokacni zonou
+    -- vrati vytvorenou zonu
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- alokuj novou zonu
+      new result;
+
+      -- je nam seznam zon maly? Pak zvetsit zone_list.
+      verify({VERIFY=}001355,zone_list^:length=zone_list^:last);
+
+      -- inicializuj seznamy zdroju zony
+      init_class_list(result^.class_list);
+      init_record_list(result^.record_list);
+      init_collectable_list(result^.collectable_list);
+      init_memblock_list(result^.memblock_list);
+      
+      -- zvys stack o zonu [result]
+      zone_list^ & result;
+      end push_create_alloc_zone;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static pop_discard_alloc_zone =
+    -- odebere alokacni zonu ze stacku alokacnich zon
+    -- alokacni zona na vrchu stacku se stane aktualni alokacni zonou
+    -- neodalokovane zdroje odebirane zony se presunou na konec prave nastavene aktualni alokacni zony
+    -- odebrana zona se zrusi
+    ------------------------------------------------------------------------------------------------
+    var
+      zone : p_alloc_zone;
+
+    begin
+      -- uz jsme na konci, nelze popnout korenovou zonu
+      verify({VERIFY=}001356,get_root_zone=get_current_zone);
+
+      -- vrat zonu na vrcholu stacku
+      zone:=zone_list^[zone_list^:length];
+
+      -- niluj
+      zone_list^[zone_list^:length]:=nil;
+      
+      -- sniz stack
+      pred zone_list^:length;
+
+      -- presun seznamy zdroju do nizsi zony
+      move_class_items(zone^.class_list,zone_list^[zone_list^:length]^.class_list);
+      move_record_items(zone^.record_list,zone_list^[zone_list^:length]^.record_list);
+      move_collectable_items(zone^.collectable_list,zone_list^[zone_list^:length]^.collectable_list);
+      move_memblock_items(zone^.memblock_list,zone_list^[zone_list^:length]^.memblock_list);
+      
+      -- zrus seznamy odebrane zony
+      discard_class_list(zone^.class_list);
+      discard_record_list(zone^.record_list);
+      discard_collectable_list(zone^.collectable_list);
+      discard_memblock_list(zone^.memblock_list);
+
+      -- zrus zonu
+      discard zone;
+      end pop_discard_alloc_zone;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    #template gen_collect_list (proc,item_type,list_type,filter_proc,init_list,discard_list,defrag_list,discard_expr);
+    -- odalokuje zaregistrovane zdroje aktualni alokacni zony
+    -- odalokuje pouze ty zdroje, ktere vyhovi kolekcnimu filtru
+    -- dealokace probiha v opacnem poradi registrace
+    ------------------------------------------------------------------------------------------------
+    static proc (list : in out list_type; filter : in p_collect_filter) =
+    var
+      item           : item_type;
+      counter        : t_unsigned;
+      survive_counter: t_unsigned;
+      discard_counter: t_unsigned;
+      length         : t_unsigned;
+
+    begin
+      verify({VERIFY=}001372,list=nil);
+      
+      #if cc_gc_debug then; 
+        write('Collecting GC ');
+        write(get_name);
+        write(' ...');
+        #end if;
+      
+      length:=list^:length;
+      
+      -- pozpatku zrus vsechny bloky ktere projdou filtrem
+      for i in list^:range loop
+        item:=list^[t_unsigned(length-i+1)];
+
+        -- v seznamu muzou byt diry (napr. po odregistrovani zdroje)
+        if item<>nil then 
+          if filter=nil or else filter^.filter_proc(item)
+            -- filtr neexistuje, nebo existuje a polozka je oznacena filtrem
+            then 
+              -- zrus polozku
+              discard_expr;
+              list^[t_unsigned(length-i+1)]:=nil;
+
+              succ discard_counter;
+
+            -- filtr neexistuje nebo polozka neni oznacena filtrem
+            else
+              -- pocitej zdroje, ktere prezily
+              succ survive_counter;
+              end if;
+
+          end if;
+
+        end loop;
+      
+      -- prezilo neco?
+      if survive_counter=0 
+        -- ne 
+        then
+          -- zrus cely seznam a vytvor novy
+          discard_list(list);
+          init_list(list);
+        
+        -- ano
+        else
+          -- defragmentuj seznam
+          defrag_list(list);
+          end if;
+
+      #if cc_gc_debug then; 
+        write(unsigned_to_string(discard_counter));
+        write(' elements collected, ');
+        write(unsigned_to_string(survive_counter));
+        write_line(' elements survived.');
+        #end if;
+      
+      end proc
+    #end gen_collect_list;
+
+    ------------------------------------------------------------------------------------------------
+    gen_collect_list(collect_class_list,p_flex_class,p_class_list,collect_class_if_match,init_class_list,discard_class_list,defrag_class_list,discard item);
+    -- odalokuje flexove tridy seznamu flexovych trid
+    -- odalokuje pouze ty zdroje, ktere vyhovi kolekcnimu filtru
+    -- dealokace probiha v opacnem poradi registrace
+    ------------------------------------------------------------------------------------------------
+    gen_collect_list(collect_record_list,p_flex_record,p_record_list,collect_record_if_match,init_record_list,discard_record_list,defrag_record_list,discard item);
+    -- odalokuje flexove rekordy seznamu flexovych rekordu
+    -- odalokuje pouze ty zdroje, ktere vyhovi kolekcnimu filtru
+    -- dealokace probiha v opacnem poradi registrace
+    ------------------------------------------------------------------------------------------------
+    gen_collect_list(collect_collectable_list,p_collectable,p_collectable_list,collect_collectable_if_match,init_collectable_list,discard_collectable_list,defrag_collectable_list,item^.collect);
+    -- odalokuje pametove bloky seznamu paametovych bloku
+    -- odalokuje pouze ty zdroje, ktere vyhovi kolekcnimu filtru
+    -- dealokace probiha v opacnem poradi registrace
+    ------------------------------------------------------------------------------------------------
+    gen_collect_list(collect_memblock_list,p_memblock,p_memblock_list,collect_memblock_if_match,init_memblock_list,discard_memblock_list,defrag_memblock_list,discard item);
+    -- odalokuje pametove bloky seznamu paametovych bloku
+    -- odalokuje pouze ty zdroje, ktere vyhovi kolekcnimu filtru
+    -- dealokace probiha v opacnem poradi registrace
+    ------------------------------------------------------------------------------------------------
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    static collect_zone (
+        zone       : in p_alloc_zone) =
+    -- odalokuje zaregistrovane zdroje dodane alokacni zony
+    -- odalokuje pouze ty zdroje, ktere vyhovi kolekcnimu filtru
+    -- dealokace probiha v opacnem poradi registrace
+    ------------------------------------------------------------------------------------------------
+    begin
+      verify({VERIFY=}001373,zone=nil);
+
+      collect_class_list(zone^.class_list,zone^.get_collect_filter);
+      collect_record_list(zone^.record_list,zone^.get_collect_filter);
+      collect_collectable_list(zone^.collectable_list,zone^.get_collect_filter);
+      collect_memblock_list(zone^.memblock_list,zone^.get_collect_filter);
+      end collect_zone;
+    
+    
+    
+    ------------------------------------------------------------------------------------------------
+    static collect =
+    -- odalokuje zaregistrovane zdroje aktualni alokacni zony
+    -- odalokuje pouze ty zdroje, ktere vyhovi kolekcnimu filtru
+    -- dealokace probiha v opacnem poradi registrace
+    ------------------------------------------------------------------------------------------------
+    var
+      zone         : p_alloc_zone;
+
+    begin
+      -- aktualni zona
+      zone:=get_current_zone;
+
+      collect_zone(zone);
+      end collect;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- entry
+    ------------------------------------------------------------------------------------------------
+    begin
+      new zone_list range 100;
+
+      init_root_zone;
+      init_class_list(get_root_zone^.class_list);
+      init_record_list(get_root_zone^.record_list);
+      init_collectable_list(get_root_zone^.collectable_list);
+      init_memblock_list(get_root_zone^.memblock_list);
+      end entry;
+
+
+    
+    ------------------------------------------------------------------------------------------------
+    exit = 
+    -- exit
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- behem destrukce musi zbyt uz jen korenova zona, jinak je neco spatne
+      verify({VERIFY=}001374,zone_list^:length<>1);
+
+      -- kolektni korenovou zonu
+      collect_zone(get_root_zone);
+
+      -- zrus seznamy
+      discard_memblock_list(get_root_zone^.memblock_list);
+      discard_collectable_list(get_root_zone^.collectable_list);
+      discard_record_list(get_root_zone^.record_list);
+      discard_class_list(get_root_zone^.class_list);
+      discard_root_zone;    
+
+      discard zone_list;
+      end exit;
+
+    end c_garbage_collector;
+
+end cc_gc;

@@ -27,365 +27,367 @@ with
 ----------------------------------------------------------------------------------------------------
 class private c_source_file = 
 ----------------------------------------------------------------------------------------------------
-const
-    usize          : t_unsigned = 1024;
-    unreadmax      : t_offset = 8;
-    readsize       : t_offset = 4;
 
-var
-    -- streams
-    infile         : aliased c_file_input_stream;
-    coder          : aliased c_input_stream_text_recoder;
-    dec            : aliased c_character_decoder_utf8;
-    sbuffer        : p_input_stream_buffer;
-    input          : p_input_stream;
+    const
+      usize        : t_unsigned = 1024;
+      unreadmax    : t_offset = 8;
+      readsize     : t_offset = 4;
 
-    -- position info
-    num            : t_unsigned;                 -- cislo souboru
-    eod            : t_logical;                  -- indikator konce souboru
-    last_column    : t_unsigned;                 -- delka predchoziho radku
-    column         : t_unsigned;                 -- aktualni sloupec
-    lines          : t_unsigned;                 -- aktualni radek
+    var
+      -- streams
+      infile       : aliased c_file_input_stream;
+      coder        : aliased c_input_stream_text_recoder;
+      dec          : aliased c_character_decoder_utf8;
+      sbuffer      : p_input_stream_buffer;
+      input        : p_input_stream;
 
-    include        : t_logical;                  -- T-je to includovaný soubor
-    effective      : t_logical;                  -- T-poslední zpracovávaný řádek byl efektivní
-    effective_lines: t_unsigned;
+      -- position info
+      num          : t_unsigned;                 -- cislo souboru
+      eod          : t_logical;                  -- indikator konce souboru
+      last_column  : t_unsigned;                 -- delka predchoziho radku
+      column       : t_unsigned;                 -- aktualni sloupec
+      lines        : t_unsigned;                 -- aktualni radek
 
-    -- generic packet reader
-    packet         : t_data_packet;              -- aktualni packet
-    position       : t_offset;                   -- pozice v packetu
+      include      : t_logical;                  -- T-je to includovaný soubor
+      effective    : t_logical;                  -- T-poslední zpracovávaný řádek byl efektivní
+      effective_lines: t_unsigned;
 
-    -- unget support
-    unreadpos      : t_offset;                   -- zaporna pozice pred packetem
-    unreadlen      : t_offset;                   -- delka dat v unread bufferu
-    unreadbuff     : aliased array 0..7 of aliased t_data_byte; -- unget buffer
+      -- generic packet reader
+      packet       : t_data_packet;              -- aktualni packet
+      position     : t_offset;                   -- pozice v packetu
 
-
-
-  --------------------------------------------------------------------------------------------------
-  static open =
-  --------------------------------------------------------------------------------------------------
-  var
-    f              : p_file;
-
-  begin
-    this.include:=include;
-    column:=0;
-    lines:=1;
-    
-    -- otevru soubor
-    if cfg_sharing 
-      then infile.open(name,tfss_shared_read,false);
-      else infile.open(name,tfss_not_shared,false);
-      end if;
-
-    -- nastavim decoder
-    --dec.set_codepage(^cp1250_to_ascii);
-    --dec.set_codepage(^cp895_to_ascii);
-    coder.init_recoder(^infile,^dec,nil);
-
-    -- rozhodnu se pro buffer
-    infile.get_file(f);
-    
-    if true or f^.get_size<=16_384 then
-      input:=^c_input_stream:(coder);
-    else
-      -- pripojim a spustim buffer
-      infile.set_optimal_packet_size(16_384);
-      new sbuffer;
-      sbuffer^.init_input_buffer(^c_input_stream:(coder));
-      input:=^c_input_stream:(sbuffer^);
-      end if;
-
-    -- registruju soubor
-    used_files^.add_file_name(name,num);
-
-  catch
-    when file_error do
-        ce^.seterror({CCERR=}000578,ce_f_open);
-        ce^.setparam(name);
-        ce^.raiseerror;
-    end open;
+      -- unget support
+      unreadpos    : t_offset;                   -- zaporna pozice pred packetem
+      unreadlen    : t_offset;                   -- delka dat v unread bufferu
+      unreadbuff   : aliased array 0..7 of aliased t_data_byte; -- unget buffer
 
 
 
-  ------------------------------------------------------------------------------------------------
-  static close =
-  ------------------------------------------------------------------------------------------------
-  begin
-    -- uvolnim posledni packet
-    discard_packet(packet);
+    ------------------------------------------------------------------------------------------------
+    static open =
+    ------------------------------------------------------------------------------------------------
+    var
+      f              : p_file;
 
-    -- zavru soubor
-    input^.close;
-    if sbuffer<>nil then
-      discard sbuffer;
-      end if;
-    end close;
-
-
-
-  --------------------------------------------------------------------------------------------------
-  static ungetchar =
-  --------------------------------------------------------------------------------------------------
-  begin
-    -- zjistuju jestli jsme na zacatku packetu
-    if position>=readsize then
-      --write('~!');
-      position - readsize;
-    else
-      --if unreadlen<readsize then raise stream_error; end if;
-      --if unreadpos>0 then
-      --  write('~#');
-      --else
-      --  write('~%');
-      --  end if;
-      unreadpos + (readsize-position);
-      position:=0;
-      end if;
-
-    -- vratim pozici
-    eod:=false;
-    --if column>0 then
-      pred column;
-    --else
-      --column:=last_column;
-      --pred lines;
-      --end if;
-    end ungetchar;
-
-
-
-  ------------------------------------------------------------------------------------------------
-  static getchar =
-  ------------------------------------------------------------------------------------------------
-  var
-    _data          : p_data_array;
-    readbytes      : t_offset;
-    readun         : t_offset;
-    name           : p_text_name;             -- jméno otvíraného souboru
-    invalidchar    : t_logical;
-
-  begin
-    _data:unchecked:=^char;
-
-    -- pokud jsme pred zacatkem packetu
-    if unreadpos<>0 then
-      if readsize>=unreadpos then
-        readun:=unreadpos;
-      else
-        readun:=readsize;
+    begin
+      this.include:=include;
+      column:=0;
+      lines:=1;
+      
+      -- otevru soubor
+      if cfg_sharing 
+        then infile.open(name,tfss_shared_read,false);
+        else infile.open(name,tfss_not_shared,false);
         end if;
-      copy_data(^unreadbuff,unreadlen-unreadpos,_data,readbytes,readun);
-      unreadpos - readun;
-      readbytes + readun;
-      end if;
 
-    -- pokud byl konec dat
-    if packet.style=t_dps_signal and then packet.signal=t_dpss_eod then
-      --write('~0');
-      char:ord:=0;
-      eod:=true;
-      return;
-      end if;
+      -- nastavim decoder
+      --dec.set_codepage(^cp1250_to_ascii);
+      --dec.set_codepage(^cp895_to_ascii);
+      coder.init_recoder(^infile,^dec,nil);
 
-    -- stale jsme nevycetli cely znak
-    while (readsize>readbytes) loop
-      -- pokud neni platny packet, stahni ho
-      if packet.style=t_dps_invalid then
-        invalidchar:=false;
-        begin
-          input^.read_packet(packet,t_ro_default);
-        catch 
-          when stream_invalid_data do
-          invalidchar:=true;
-          end;
-        --%%TODO move into catch and drop invalidchar bool
-        if invalidchar then
-          ce^.seterror({CCERR=}000577,ce_illegal_char);
-          get_full_name(name);
-          ce^.setparam(name^);
-          discard name;
+      -- rozhodnu se pro buffer
+      infile.get_file(f);
+      
+      if true or f^.get_size<=16_384 then
+        input:=^c_input_stream:(coder);
+      else
+        -- pripojim a spustim buffer
+        infile.set_optimal_packet_size(16_384);
+        new sbuffer;
+        sbuffer^.init_input_buffer(^c_input_stream:(coder));
+        input:=^c_input_stream:(sbuffer^);
+        end if;
+
+      -- registruju soubor
+      used_files^.add_file_name(name,num);
+
+    catch
+      when file_error do
+          ce^.seterror({CCERR=}000578,ce_f_open);
+          ce^.setparam(name);
           ce^.raiseerror;
-          end if;
-        --write('~?');
+      end open;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static close =
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- uvolnim posledni packet
+      discard_packet(packet);
+
+      -- zavru soubor
+      input^.close;
+      if sbuffer<>nil then
+        discard sbuffer;
         end if;
+      end close;
 
-      -- pokud neni packet signal
-      if packet.style<>t_dps_signal then
-        copy_from_packet(packet,position,_data,readbytes,readsize-readbytes);
-        if position=packet.size then
-          --zapamatuju si posledni byty ze stareho packetu
-          if position>=unreadmax then
-            readun:=unreadmax;
-            unreadlen:=0;
-          else
-            readun:=position;
-            --move
-            copy_data(^unreadbuff,readun,^unreadbuff,0,unreadlen-readun);
-            unreadlen - readun;
-            end if;
-          
-          position - readun;
-          copy_from_packet(packet,position,^unreadbuff,unreadlen,readun);
 
-          -- uvolnim stary packet
-          position:=0;
-          discard_packet(packet);
-          packet:=nil;
-          end if;
-      -- pokud je packet signal
+
+    ------------------------------------------------------------------------------------------------
+    static ungetchar =
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zjistuju jestli jsme na zacatku packetu
+      if position>=readsize then
+        --write('~!');
+        position - readsize;
       else
-        -- end of data
-        if packet.signal=t_dpss_eod then
-          --write('~0');
-          char:ord:=0;
-          eod:=true;
-          return;
-        -- cokoliv jineho
-        else
-          discard_packet(packet);
-          packet:=nil;
-          end if;
+        --if unreadlen<readsize then raise stream_error; end if;
+        --if unreadpos>0 then
+        --  write('~#');
+        --else
+        --  write('~%');
+        --  end if;
+        unreadpos + (readsize-position);
+        position:=0;
         end if;
-      end loop;
-      --write_char(t_char32(char));
 
-      -- nastavim pozici
+      -- vratim pozici
       eod:=false;
-      succ column;
-    end getchar;
-
-  
-  
-  ------------------------------------------------------------------------------------------------
-  static get_file_name =
-  ------------------------------------------------------------------------------------------------
-  var
-    f              : p_file;
-
-  begin
-    infile.get_file(f);
-    result:=f^.name;
-    end get_file_name;
+      --if column>0 then
+        pred column;
+      --else
+        --column:=last_column;
+        --pred lines;
+        --end if;
+      end ungetchar;
 
 
 
-  ------------------------------------------------------------------------------------------------
-  static get_full_name =
-  ------------------------------------------------------------------------------------------------
-  var
-    f              : p_file;
+    ------------------------------------------------------------------------------------------------
+    static getchar =
+    ------------------------------------------------------------------------------------------------
+    var
+      _data          : p_data_array;
+      readbytes      : t_offset;
+      readun         : t_offset;
+      name           : p_text_name;             -- jméno otvíraného souboru
+      invalidchar    : t_logical;
 
-  begin
-    infile.get_file(f);
-    f^.name.compose_name(name);
-    end get_full_name;
+    begin
+      _data:unchecked:=^char;
 
+      -- pokud jsme pred zacatkem packetu
+      if unreadpos<>0 then
+        if readsize>=unreadpos then
+          readun:=unreadpos;
+        else
+          readun:=readsize;
+          end if;
+        copy_data(^unreadbuff,unreadlen-unreadpos,_data,readbytes,readun);
+        unreadpos - readun;
+        readbytes + readun;
+        end if;
 
+      -- pokud byl konec dat
+      if packet.style=t_dps_signal and then packet.signal=t_dpss_eod then
+        --write('~0');
+        char:ord:=0;
+        eod:=true;
+        return;
+        end if;
 
-  ------------------------------------------------------------------------------------------------
-  static is_eof =
-  ------------------------------------------------------------------------------------------------
-  begin
-    result:=eod;
-    end is_eof;
+      -- stale jsme nevycetli cely znak
+      while (readsize>readbytes) loop
+        -- pokud neni platny packet, stahni ho
+        if packet.style=t_dps_invalid then
+          invalidchar:=false;
+          begin
+            input^.read_packet(packet,t_ro_default);
+          catch 
+            when stream_invalid_data do
+            invalidchar:=true;
+            end;
+          --%%TODO move into catch and drop invalidchar bool
+          if invalidchar then
+            ce^.seterror({CCERR=}000577,ce_illegal_char);
+            get_full_name(name);
+            ce^.setparam(name^);
+            discard name;
+            ce^.raiseerror;
+            end if;
+          --write('~?');
+          end if;
 
+        -- pokud neni packet signal
+        if packet.style<>t_dps_signal then
+          copy_from_packet(packet,position,_data,readbytes,readsize-readbytes);
+          if position=packet.size then
+            --zapamatuju si posledni byty ze stareho packetu
+            if position>=unreadmax then
+              readun:=unreadmax;
+              unreadlen:=0;
+            else
+              readun:=position;
+              --move
+              copy_data(^unreadbuff,readun,^unreadbuff,0,unreadlen-readun);
+              unreadlen - readun;
+              end if;
+            
+            position - readun;
+            copy_from_packet(packet,position,^unreadbuff,unreadlen,readun);
 
-
-  ------------------------------------------------------------------------------------------------
-  static next_line =
-  ------------------------------------------------------------------------------------------------
-  begin
-    if effective then
-      succ effective_lines;
-      end if;
-    effective:=false;
-    last_column:=column;
-    column:=0;
-    succ lines;
-    end next_line;
-
-
-
-  ------------------------------------------------------------------------------------------------
-  static get_effective =
-  ------------------------------------------------------------------------------------------------
-  begin
-    result:=effective_lines;
-    end get_effective;
-
-
-
-  ------------------------------------------------------------------------------------------------
-  static get_lines =
-  ------------------------------------------------------------------------------------------------
-  begin
-    result:=lines;
-    end get_lines;
-
-
-
-  ------------------------------------------------------------------------------------------------
-  static get_position =
-  ------------------------------------------------------------------------------------------------
-  begin
-    pos.line:=lines;
-    pos.col:=column;
-    pos.num:=num;
-    end get_position;
-
-
-
-  ------------------------------------------------------------------------------------------------
-  static get_length =
-  ------------------------------------------------------------------------------------------------
-  begin
-    if pos.line=lines then
-      pos.len:=column-pos.col+1;
-      end if;
-    end get_length;
-
-
-
-  ------------------------------------------------------------------------------------------------
-  static is_include =
-  ------------------------------------------------------------------------------------------------
-  begin
-    result:=include;
-    end is_include;
-
-
-
-  ------------------------------------------------------------------------------------------------
-  static is_effective =
-  ------------------------------------------------------------------------------------------------
-  begin
-    result:=effective;
-    end is_effective;
-
-
-  ------------------------------------------------------------------------------------------------
-  static set_effective =
-  ------------------------------------------------------------------------------------------------
-  begin
-    effective:=true;
-    end set_effective;
-
-  
-  ------------------------------------------------------------------------------------------------
-  static check_meta_statements =
-  ------------------------------------------------------------------------------------------------
-  begin
-    if metastack:length>0 then
-      for i in metastack:range loop
-        ce^.seterror({CCERR=}000569,ce_meta_no_end);
-        ce^.setpos(metastack[i].pos);
+            -- uvolnim stary packet
+            position:=0;
+            discard_packet(packet);
+            packet:=nil;
+            end if;
+        -- pokud je packet signal
+        else
+          -- end of data
+          if packet.signal=t_dpss_eod then
+            --write('~0');
+            char:ord:=0;
+            eod:=true;
+            return;
+          -- cokoliv jineho
+          else
+            discard_packet(packet);
+            packet:=nil;
+            end if;
+          end if;
         end loop;
-      metastack:=nil;
-      end if;
-    end check_meta_statements;
-  end c_source_file;
+        --write_char(t_char32(char));
+
+        -- nastavim pozici
+        eod:=false;
+        succ column;
+      end getchar;
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    static get_file_name =
+    ------------------------------------------------------------------------------------------------
+    var
+      f              : p_file;
+
+    begin
+      infile.get_file(f);
+      result:=f^.name;
+      end get_file_name;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_full_name =
+    ------------------------------------------------------------------------------------------------
+    var
+      f              : p_file;
+
+    begin
+      infile.get_file(f);
+      f^.name.compose_name(name);
+      end get_full_name;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static is_eof =
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=eod;
+      end is_eof;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static next_line =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if effective then
+        succ effective_lines;
+        end if;
+      effective:=false;
+      last_column:=column;
+      column:=0;
+      succ lines;
+      end next_line;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_effective =
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=effective_lines;
+      end get_effective;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_lines =
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=lines;
+      end get_lines;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_position =
+    ------------------------------------------------------------------------------------------------
+    begin
+      pos.line:=lines;
+      pos.col:=column;
+      pos.num:=num;
+      end get_position;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_length =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if pos.line=lines then
+        pos.len:=column-pos.col+1;
+        end if;
+      end get_length;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static is_include =
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=include;
+      end is_include;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static is_effective =
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=effective;
+      end is_effective;
+
+
+    ------------------------------------------------------------------------------------------------
+    static set_effective =
+    ------------------------------------------------------------------------------------------------
+    begin
+      effective:=true;
+      end set_effective;
+
+    
+    ------------------------------------------------------------------------------------------------
+    static check_meta_statements =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if metastack:length>0 then
+        for i in metastack:range loop
+          ce^.seterror({CCERR=}000569,ce_meta_no_end);
+          ce^.setpos(metastack[i].pos);
+          end loop;
+        metastack:=nil;
+        end if;
+      end check_meta_statements;
+      
+    end c_source_file;
 
 
 var

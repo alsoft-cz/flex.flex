@@ -13,14 +13,14 @@ class c_export_iterator = extend c_entity_iterator;
 ----------------------------------------------------------------------------------------------------
 
     var
-      expname      : t_char32str;
+      expname      : p_external_entity_ident;
       try_export   : t_logical;                  -- T-zkusit exportovat, nejde-li, nic se neděje
 
     ------------------------------------------------------------------------------------------------
     override process_entity_var =
     ------------------------------------------------------------------------------------------------
     begin
-      os^.export_variable(node,try_export,expname);
+      os^.export_variable(node,try_export,expname^);
       end process_entity_var;
 
 
@@ -29,8 +29,17 @@ class c_export_iterator = extend c_entity_iterator;
     override process_entity_static_subprogram =
     ------------------------------------------------------------------------------------------------
     begin
-      os^.export_static_subprogram(node,try_export,expname);
+      os^.export_static_subprogram(node,try_export,expname^);
       end process_entity_static_subprogram;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_entity_compile =
+    ------------------------------------------------------------------------------------------------
+    begin
+      os^.export_compile(node,try_export,expname^);
+      end process_entity_compile;
 
 
 
@@ -38,8 +47,22 @@ class c_export_iterator = extend c_entity_iterator;
     override process_entity_program =
     ------------------------------------------------------------------------------------------------
     begin
-      os^.export_program(node,try_export,expname);
+      os^.export_program(node,try_export,expname^);
       end process_entity_program;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override leave_node =
+    -- Událost spuštěná při výstupu z uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- pokud byla entita exportována, tak zařadit na systémový export list
+      if process then 
+        verify({VERIFY=}001323,get_export_info(node)=nil);
+        sys_export_list.add(node);
+        end if;
+      end leave_node;
 
 
 
@@ -71,11 +94,105 @@ var
   it               : c_export_iterator;          -- exportní iterátor
 
 begin
-  it.expname:=external_name;
+  -- připravit iterátor
+  it.expname:=^external_name;
   it.try_export:=entity^.etype not in ets_exportable;
+  if not traverse then 
+    it.set_traversal_filter([],[]);
+    end if;
+  
+  -- provést export
   it.traverse_entity(entity);
   end export_entity;
 
+
+
+----------------------------------------------------------------------------------------------------
+class c_import_iterator = extend c_entity_iterator;
+-- Iterátor pro import entit.
+----------------------------------------------------------------------------------------------------
+
+    var
+      libname      : p_external_entity_ident;    -- jméno knihovny
+      extname      : p_external_entity_ident;    -- externí jméno
+      try_import   : t_logical;                  -- T-zkusit importovat, nejde-li, nic se neděje
+
+    ------------------------------------------------------------------------------------------------
+    override process_entity_var =
+    ------------------------------------------------------------------------------------------------
+    begin
+      os^.import_variable(node,try_import,extname^,libname^);
+      end process_entity_var;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_entity_static_subprogram =
+    ------------------------------------------------------------------------------------------------
+    begin
+      os^.import_static_subprogram(node,try_import,extname^,libname^);
+      end process_entity_static_subprogram;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_entity_compile =
+    ------------------------------------------------------------------------------------------------
+    begin
+      os^.import_compile(node,try_import,extname^,libname^);
+      end process_entity_compile;
+
+                                                          
+                                                         
+    ------------------------------------------------------------------------------------------------
+    procedure set_filters (
+        traverse   : in t_logical) =             -- T-bude se trasovat strom a importovat vše co jde
+    -- Počáteční nastavení filtrů.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nastavit filtry na zpracování a trasování
+      if traverse
+      
+        -- pro variantu trasování pouze nelokální entity
+        then
+          set_processing_filter(ets_importable,[etv_public,etv_protected,etv_supervised]);
+          set_traversal_filter(ets_import_traceable,[etv_public,etv_protected,etv_supervised]);
+        
+        -- pro variantu bez trasování i privátní entity
+        else
+          set_processing_filter(ets_importable);
+          set_traversal_filter([],[]);
+          end if;
+      end set_filters;
+
+    end c_import_iterator;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure import_entity =
+-- Importuje zadanou entitu pod uvedeným externím jménem.
+-- Importovat je možné procedury, statické metody, kompilační jednotku a proměnné. Pokud je dodán 
+-- modul, třída, nebo kompilační jednotka a [traverse] je True, tak rekurzivně trasuje strom entit 
+-- a importuje všechny viditelné importovatelné entity.
+----------------------------------------------------------------------------------------------------
+with
+  cc_def.cc_var;
+
+var
+  it               : c_import_iterator;          -- importní iterátor
+
+begin
+  -- připravit iterátor
+  it.libname:=^library_name;
+  it.extname:=^external_name;
+  it.try_import:=entity^.etype not in ets_importable;
+  it.set_filters(traverse);
+  
+  -- provést import
+  it.traverse_entity(entity);
+  end import_entity;
+  
 
 
 ----------------------------------------------------------------------------------------------------
@@ -87,9 +204,188 @@ begin
     when et_procedure do result:=pentity_procedure(entity)^.export_info;
     when et_static    do result:=pentity_static(entity)^.export_info;
     when et_var       do result:=pentity_var(entity)^.export_info;
+    when et_compile   do result:=pentity_compile(entity)^.export_info;
     when et_program   do result:=pentity_program(entity)^.export_info;
-    when others do verify({VERIFY=}001101);
+    when others       do verify({VERIFY=}001101);
     end case;
   end get_export_info;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure is_exported =
+-- True, pokud je entita exportovaná. Pro neexportovatelné entity vrací False.
+----------------------------------------------------------------------------------------------------
+begin
+  case entity^.etype
+    when et_procedure do result:=pentity_procedure(entity)^.export_info<>nil;
+    when et_static    do result:=pentity_static(entity)^.export_info<>nil;
+    when et_var       do result:=pentity_var(entity)^.export_info<>nil;
+    when et_compile   do result:=pentity_compile(entity)^.export_info<>nil;
+    when et_program   do result:=pentity_program(entity)^.export_info<>nil;
+    when others       do result:=false;
+    end case;
+  end is_exported;
+  
+
+
+----------------------------------------------------------------------------------------------------
+procedure get_import_info =
+-- Získá pointer na importní informace zadané entity.
+----------------------------------------------------------------------------------------------------
+begin
+  -- pro entitu z cizí partition zkusit vyhledat importní informace v přídavném registry
+  if aux_registry<>nil and entity^.partition_id<>curr_partition then
+    -- zkusit vyhledat importní informace
+    result:=aux_registry^.get_import_info(entity);
+    
+    -- našlo-li se něco, tak předat ven
+    if result<>nil then return end if;
+    end if;
+    
+  -- ve všech ostatních případech postupovat standardně  
+  case entity^.etype
+    when et_procedure do result:=pentity_procedure(entity)^.import_info;
+    when et_static    do result:=pentity_static(entity)^.import_info;
+    when et_var       do unimplemented({UNIMP=}000287); --result:=pentity_var(entity)^.import_info; !! pozor, doplnit i do [is_imported]
+    when et_compile   do result:=pentity_compile(entity)^.import_info;
+    when others       do verify({VERIFY=}001325);
+    end case;
+  end get_import_info;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure is_imported =
+-- True, pokud je entita importovaná. Pro neimportovatelné entity vrací False.
+----------------------------------------------------------------------------------------------------
+begin
+  -- pro entitu z cizí partition zkusit vyhledat importní informace v přídavném registry
+  if aux_registry<>nil and entity^.partition_id<>curr_partition then
+    -- zkusit vyhledat importní informace
+    result:=aux_registry^.get_import_info(entity)<>nil;
+    
+    -- našlo-li se něco, tak konec
+    if result then return end if;
+    end if;
+    
+  -- ve všech ostatních případech postupovat standardně  
+  case entity^.etype
+    when et_procedure do result:=pentity_procedure(entity)^.import_info<>nil;
+    when et_static    do result:=pentity_static(entity)^.import_info<>nil;
+    when et_var       do result:=false --pentity_var(entity)^.import_info<>nil;
+    when et_compile   do result:=pentity_compile(entity)^.import_info<>nil;
+    when others       do result:=false;
+    end case;
+  end is_imported;
+  
+
+  
+----------------------------------------------------------------------------------------------------
+procedure set_import_info =
+-- Do entity dosadí bez dalších formálních kontrol předpřipravené importní informace
+----------------------------------------------------------------------------------------------------
+begin
+  case entity^.etype
+    when et_procedure do pentity_procedure(entity)^.import_info:=import_info;
+    when et_static    do pentity_static(entity)^.import_info:=import_info;
+    when et_var       do unimplemented({UNIMP=}000291);
+    when et_compile   do pentity_compile(entity)^.import_info:=import_info;
+    when others       do verify({VERIFY=}001390);
+    end case;
+  end set_import_info;
+  
+  
+
+----------------------------------------------------------------------------------------------------
+class private c_import_info_registry = 
+-- Registry importních informací pro entity z cízích partition.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    class c_import_info_registry_item = extend c_hash_table_item;
+    -- Položka registry importních informací.
+    ------------------------------------------------------------------------------------------------
+    
+        var
+          import_info : p_flex_record;           -- importní informace
+          
+        end c_import_info_registry_item;
+      
+    type
+      p_import_info_registry_item = ^class c_import_info_registry_item;
+    
+    
+    
+    ------------------------------------------------------------------------------------------------
+    procedure entity_to_hash (entity : in pentity) return t_hash_item_id =
+    -- Pro entitu odvodí jednoznačné hash id.
+    ------------------------------------------------------------------------------------------------
+    with
+      advanced.low_level.unchecked_memory_access;
+      
+    begin
+      result:=t_hash_item_id(machine_pointer_to_memory_address(entity));
+      end entity_to_hash;
+      
+      
+
+    ------------------------------------------------------------------------------------------------
+    static add_import_info =
+    -- Zařadí importní informace do registry.    
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_import_info_registry_item;-- nově zakládaná položka registry
+
+    begin
+      -- založit položku
+      new item;
+      
+      -- doplnit údaje
+      item^.item_id:=entity_to_hash(entity);
+      item^.import_info:=import_info;
+      
+      -- vložit do hash tabulky
+      store(item);
+      end add_import_info;
+      
+      
+      
+    ------------------------------------------------------------------------------------------------
+    static get_import_info =
+    -- Dohledá importní informace pro zadanou entitu.    
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_import_info_registry_item;-- nově zakládaná položka registry
+
+    begin
+      -- zkusit najít
+      find(entity_to_hash(entity),item);
+      
+      -- předat ven výsledek
+      if item<>nil then result:=item^.import_info end if;
+      end get_import_info;
+      
+      
+      
+    ------------------------------------------------------------------------------------------------
+    override assign_hash_id =
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- ID položek se v této tabulce přidělují ručně
+      verify({VERIFY=}001336);
+      end assign_hash_id;
+      
+      
+      
+    ------------------------------------------------------------------------------------------------
+    entry =
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- inicializovat hash tabulku
+      init(257,c_import_info_registry_item:tag);
+      end entry;
+   
+    end c_import_info_registry;
 
 end cc_binding;

@@ -7,37 +7,12 @@ class private cp_osspecific =
 ----------------------------------------------------------------------------------------------------
 
 with
+  cc_def.cc_gc,
   cc_def.cc_var,
   cc_def.cc_codes,
   cc_base,
   cc_base.cc_sym,
   cc_base.cc_options;
-
-----------------------------------------------------------------------------------------------------
-override importproc =
--- Import procedury z externí knihovny.
-----------------------------------------------------------------------------------------------------
-var
-  info             : pimportinfo;                -- informace pro import
-
-begin
-  --%%X umím importovat jen procedury, ne metody
-  if proc^.etype<>et_procedure then
-    ce^.seterror({CCERR=}000388,ce_cantimport);
-    {%%POS}
-    ce^.raiseerror;
-    end if;
-
-  -- alokovat paměť
-  new info;
-
-  -- doplnit údaje
-  for i in 1..extname:length loop info^.extname & t_char8(extname[i]) end loop;
-  for i in 1..libname:length loop info^.libname & t_char8(libname[i]) end loop;
-
-  -- poznamenat do procedury
-  proc^.import_info:=info;
-  end importproc;
 
 
 
@@ -46,7 +21,8 @@ override setconvention =
 -- Nastaví volací konvenci procedury.
 ----------------------------------------------------------------------------------------------------
 with
-  {%%TODO(?) Tahle závistost se mi nelíbí}cp_cpu,cp_cpu.cp_ia32,cp_cpu.cp_ia32.ci_abi;
+  {%%TODO(PORTABILITY) Tahle závistost se mi nelíbí}
+  cp_cpu.cp_ia32.ci_abi;
 
 var
   call             : icallconvention;  -- volací konvence
@@ -105,7 +81,6 @@ begin
     -- jen proceduralni typy a podprogramy
     verify({VERIFY=}000910, true);
     end if;
-
   end setconvention;
 
 
@@ -116,7 +91,6 @@ override setlibrary =
 ----------------------------------------------------------------------------------------------------
 var
   lib              : tlibrarytype;
-  res              : t_logical;
 
 begin
   -- chybny parametr?
@@ -130,12 +104,17 @@ begin
     return;
     end if;
 
+#if #declared hynek; #and then; hynek then;     
+  #error 'Málo okomentovaný kód';
+#end if;
+     
   lib:=tlt_system;
   
   id_to_librarytype(id,lib);
 
   -- identifikator je platny
   new plibraryinfo(modl^.lib_info);
+  c_garbage_collector.get_instance^.register_record(modl^.lib_info);
 
   -- vytvoren?
   verify({VERIFY=}000659,modl^.lib_info=nil);   
@@ -144,13 +123,25 @@ begin
 
 catch
   when unknown_libtype do
-    -- identifikator je neplatny
-    ce^.seterror({CCERR=}000392,ce_libtypeunknown);
-    ce^.setparam(entityident_to_string(id));
-    ce^.loadpos;
-    ce^.resumeerror;
-
+      -- identifikator je neplatny
+      ce^.seterror({CCERR=}000392,ce_libtypeunknown);
+      ce^.setparam(entityident_to_string(id));
+      ce^.loadpos;
+      ce^.resumeerror;
   end setlibrary;
+
+
+                  
+----------------------------------------------------------------------------------------------------
+#template copy_name (dest,src);
+-- Zkopíruje dodané jméno do zadaného cíle. Provede alokaci paměti. Jméno nekopíruje, je-li prázdné.
+----------------------------------------------------------------------------------------------------
+  if src<>'' then
+    new dest range src:length;
+    c_garbage_collector.get_instance^.register_memblock(dest);
+    dest^:=src;
+    end if;
+  #end copy_name;
 
 
 
@@ -160,6 +151,8 @@ catch
 ----------------------------------------------------------------------------------------------------
   verify({VERIFY=}000660,entity=nil);
 
+  -- %%TODO(PORTABILITY) Testy na exportovatelnost entity podle všeho patří do vyšší, obecné vrstvy.
+  
   -- ma entita již definovanou informaci pro export?
   if entity^.export_info<>nil then
     if try_export 
@@ -177,10 +170,23 @@ catch
 
   -- založit informace o exportu
   new pexportinfo(entity^.export_info);
+  c_garbage_collector.get_instance^.register_record(entity^.export_info);
 
   -- doplnit exportní jméno
-  pexportinfo(entity^.export_info)^.export_name:=expname;
+  copy_name(pexportinfo(entity^.export_info)^.export_name,extname);
   #end export_scheme;
+
+
+
+----------------------------------------------------------------------------------------------------
+override export_compile =
+-- Export kompilační jednotky do externí knihovny pod jménem [expname].
+----------------------------------------------------------------------------------------------------
+begin
+  #expand export_scheme;
+    #for export_allowance_check use; -- není co kontrolovat
+    #end export_scheme;
+  end export_compile;
 
 
 
@@ -215,9 +221,11 @@ override export_variable =
 begin
   #expand export_scheme;
     #for export_allowance_check use;
+        -- %%TODO(PORTABILITY) Testy na exportovatelnost entity podle všeho patří do vyšší, obecné vrstvy.
+        
         -- %%TODO(HYNEK) - dodelat export taskovych promennych
         -- pouze taskové a statické promenne
-        if entity^.mclass<>mc_static {and variable^.mclass<>mc_task}then
+        if entity^.mclass<>mc_static {and variable^.mclass<>mc_task} then
           if try_export
             then return
             else
@@ -233,12 +241,106 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-override genlibentry =
--- Vygeneruje entry proceduru pro knihovnu [modl], entry procedura se prida do [context]
+override create_import_info =
+-- Vytvoří importní informace a naplní je dodanými jmény externí entity a knihovny.    
 ----------------------------------------------------------------------------------------------------
 begin
-  -- %%TODO(HYNEK) - presunout sem generovani z generatoru
-  end genlibentry;
+  -- založit informace o importu
+  new pimportinfo(import_info);
+  c_garbage_collector.get_instance^.register_record(pimportinfo(import_info));
+
+  -- doplnit importní jméno
+  copy_name(pimportinfo(import_info)^.extname,extname);
+  copy_name(pimportinfo(import_info)^.libname,libname);
+  end create_import_info;
+
+
+  
+----------------------------------------------------------------------------------------------------
+override clone_import_info =
+-- Vytvoří kopii importních informací.
+----------------------------------------------------------------------------------------------------
+begin
+  -- založit informace o importu
+  new pimportinfo(new_import_info);
+  c_garbage_collector.get_instance^.register_record(pimportinfo(new_import_info));
+  
+  -- zkopírovat vybrané údaje
+  if pimportinfo(old_import_info)^.extname<>nil then copy_name(pimportinfo(new_import_info)^.extname,pimportinfo(old_import_info)^.extname^) end if;
+  if pimportinfo(old_import_info)^.libname<>nil then copy_name(pimportinfo(new_import_info)^.libname,pimportinfo(old_import_info)^.libname^) end if;
+  end clone_import_info;
+  
+  
+
+----------------------------------------------------------------------------------------------------
+#template import_scheme (import_allowance_check);
+-- Schéma procedury pro import entity.
+----------------------------------------------------------------------------------------------------
+  verify({VERIFY=}001330,entity=nil);
+
+  -- %%TODO(PORTABILITY) Testy na importovatelnost entity podle všeho patří do vyšší, obecné vrstvy.
+  
+  -- ma entita již definovanou informaci pro import?
+  if entity^.import_info<>nil then
+    if try_import 
+      then return 
+      else 
+        ce^.seterror({CCERR=}000642,ce_imported);
+        ce^.setparam(sym_get_qid(entity));
+        ce^.loadpos;
+        ce^.resumeerror;
+        end if;
+    end if;
+    
+  -- musí existovat pouze neúplná deklarace
+  if entity^.declared<>etd_incomplete or entity^.evaluated<>etd_incomplete then
+    ce^.seterror({CCERR=}000087,ce_cantimport);
+    ce^.setparam(sym_get_qid(entity));
+    ce^.loadpos;
+    ce^.resumeerror;
+    end if;
+
+  -- kontrola povolení importu
+  import_allowance_check;
+
+  -- založit informace o importu a doplnit údaje
+  create_import_info(extname,libname,entity^.import_info);
+  #end import_scheme;
+
+
+
+----------------------------------------------------------------------------------------------------
+override import_compile =
+-- import kompilační jednotky do externí knihovny pod jménem [impname].
+----------------------------------------------------------------------------------------------------
+begin
+  #expand import_scheme;
+    #for import_allowance_check use; -- není co kontrolovat
+    #end import_scheme;
+  end import_compile;
+
+
+
+----------------------------------------------------------------------------------------------------
+override import_static_subprogram =
+-- import statického podprogramu do externí knihovny pod jménem [impname].
+----------------------------------------------------------------------------------------------------
+begin
+  #expand import_scheme;
+    #for import_allowance_check use; -- není co kontrolovat
+    #end import_scheme;
+  end import_static_subprogram;
+
+
+
+----------------------------------------------------------------------------------------------------
+override import_variable =
+-- import proměnné do externí knihovny pod jménem [impname].
+----------------------------------------------------------------------------------------------------
+begin
+  -- s importem proměnných je problém, pokud jsou taskové, protože kombinaci [vm_ref]+[vm_index] neumíme
+  unimplemented({UNIMP=}000286);
+  end import_variable;
 
 
 
@@ -246,28 +348,19 @@ begin
 override getimagebase =
 -- Vrati bazovou adresu vysledneho image
 ----------------------------------------------------------------------------------------------------
-with
-  cc_base,
-  cc_base.cc_options;
-
-var
-  addr : tunicode_addr;
-
 begin
   -- %%TODO(ANCESTOR) -- ziskat imagebase z implementace predka
   -- pokud adresa nastavena, jednoduse ji vrat...
-  o_get_option_param_unicode_addr(opt_image_base,pentity(^compi)^,addr);
-  result:=addr;
+  o_get_option_param_unicode_addr(opt_image_base,compi,result);
 
 catch
   when o_operation_failed do
-    -- ... jinak vrat defaultni hodnoty
-    case compi.part_result
-      when tpr_auto_select do verify({VERIFY=}001321,true);
-      when tpr_program     do result:=unsigned_to_unicode_addr($0040_0000);
-      when tpr_library     do result:=unsigned_to_unicode_addr($1000_0000);
-      end case;
-
+      -- ... jinak vrat defaultni hodnoty
+      case compi.part_result
+        when tpr_auto_select do verify({VERIFY=}001321,true);
+        when tpr_program     do result:=unsigned_to_unicode_addr($0040_0000);
+        when tpr_library     do result:=unsigned_to_unicode_addr($1000_0000);
+        end case;
   end getimagebase;
 
 
@@ -276,18 +369,23 @@ catch
 override getstackreserve =
 -- Vrati velikost alokovaneho mista na stacku kompilacni jednotky
 ----------------------------------------------------------------------------------------------------
-var
-  size : tunidata_size;
-
-begin
-  result:=0;
+with
+  cc_base.cc_sym.cc_partition;
   
-  o_get_option_param_unidata_size(opt_stack_reserve,pentity(^compi)^,size);
-  result:=unidata_size_to_unsigned(size);
+begin
+#if #declared hynek; #and then; hynek then;     
+  #error 'Málo okomentovaný kód';
+#end if;
+  
+  o_get_option_param_unidata_size(opt_stack_reserve,part_get_runtime_partition(compi)^,result);
 
 catch
-  when o_operation_failed do;
-
+  when o_operation_failed do ;
+      #if #declared hynek; #and then; hynek then;     
+        #error 'E? A co nějaký default?';
+      #end if;
   end getstackreserve;
+
+
 
 end cp_osspecific;

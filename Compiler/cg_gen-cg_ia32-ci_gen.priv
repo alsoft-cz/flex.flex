@@ -8,6 +8,7 @@ module private ci_gen =
 
 with
   standard,
+  cc_def.cc_gc,
   cc_def.cc_var,
   cc_base,
   cc_base.cc_debug,
@@ -24,6 +25,7 @@ with
   cg_gen.cg_ia32.ci_context,
   cg_gen.cg_ia32.ci_code.ci_operand,
   cg_gen.cg_ia32.ci_code.ci_operand.c_operand,
+  cg_gen.cg_ia32.ci_fragment.ci_frame,
   cc_options;
 
 
@@ -61,31 +63,6 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure addcallrtl (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o překladu
-    rtl            : in t_rtl_entity;            -- volaný interní podprogram
-    save_regs      : in t_logical:=false) =      -- ulozit pouzite registry?
--- Přidá volání interního podprogramu.
--- Varianta [cg_gen.cg_ia32.ci_code.ci_instr.addcallrtl], která si sama připraví kontext výrazu.
-----------------------------------------------------------------------------------------------------
-with
-  ci_context;
-
-var
-  context          : iexprcontext;
-
-begin
-  -- připravit prázdný kontext
-  i_createcontext(context,lm_gen,nil);
-
-  -- zavolat skutečný [addjump]
-  ci_instr.addcallrtl(inst,info,context,rtl,save_regs);
-  end addcallrtl;
-
-
-
-----------------------------------------------------------------------------------------------------
 procedure i_instance (
     curr           : in out class tentity_code;  -- generovaný symbol
     inst           : in out picodeinst) =        -- instance
@@ -99,17 +76,12 @@ begin
   i_prepare(curr);
 
   -- připravit instanci
-  new inst;
-  if picodegen_subprog(curr.codegen)^.ifirst=nil
-    then picodegen_subprog(curr.codegen)^.ifirst:=inst;
-    else picodegen_subprog(curr.codegen)^.ilast^.next:=inst;
-    end if;
-  picodegen_subprog(curr.codegen)^.ilast:=inst;
+  i_create_instance(curr,inst);
 
   -- default volací konvence
-  if get_call_conv(pentity(^curr)^)=icc_default
+  if get_call_conv(curr)=icc_default
     then inst^.profile.call:=icc_flex;
-    else inst^.profile.call:=get_call_conv(pentity(^curr)^);
+    else inst^.profile.call:=get_call_conv(curr);
     end if;
 
   -- zvolit stack-frame
@@ -124,6 +96,9 @@ begin
     if curr.nesting-1>0 then
       -- alokovat paměť
       new inst^.nested.nlist range curr.nesting-1;
+      
+      -- zaregistruj do globalniho gc
+      c_garbage_collector.get_instance^.register_memblock(inst^.nested.nlist);
 
       -- sestavit seznam
       psym:=curr.context.entity;
@@ -136,70 +111,51 @@ begin
       end if;
     end if;
   end i_instance;
-
-
-
+  
+                                   
+                                   
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_runtime_initialization (
-    curr           : in out tentity_compile;     -- kompilační jednotka
+procedure i_gen_entry_modules (
     inst           : in out icodeinst;
-    info           : in out igeninfo;
-    context        : in out iexprcontext;        -- kontext výrazu
-    register_task  : in t_rtl_entity;            -- interní procedura pro registraci tasku
-    do_initialize  : in t_logical := true) =     -- T-volat early run-time inicializaci
--- Vygeneruje kód pro inicializaci run-time knihovny.
+    info           : in out igeninfo) =
+-- Vygeneruje volání ENTRY všech modulů.
 ----------------------------------------------------------------------------------------------------
-with
-  ci_fragment;
-
 var
-  size             : t_unsigned;                 -- velikost rezervovaného místa
+  srch             : tentitysearch;              -- hledátko
+  
+begin
+  -- zavolat ENTRY všech modulů
+  for i in 1..entrylist.count loop
+    -- vyhledat ENTRY
+    srch.find_local_all(sym_primary_context(entrylist.list^[i]^),id_entry);
+
+    -- zavolat
+    if srch.psym<>nil then addcall(inst,info,pentity_code(srch.psym)); end if;
+    end loop;
+  end i_gen_entry_modules;
+  
+  
+  
+----------------------------------------------------------------------------------------------------
+procedure i_gen_exit_modules (
+    inst           : in out icodeinst;
+    info           : in out igeninfo) =
+-- Vygeneruje volání EXIT všech modulů.
+----------------------------------------------------------------------------------------------------
+var
+  srch             : tentitysearch;              -- hledátko
 
 begin
-  -- inicializovat runtime knihovnu
-  if do_initialize then
-    addcallrtl(inst,info,rtl_early_runtime_initialize); 
-    end if;
+  -- zavolat EXIT všech modulů
+  for i in reverse 1..entrylist.count loop
+    -- vyhledat EXIT
+    srch.find_local_all(sym_primary_context(entrylist.list^[i]^),id_exit);
 
-  -- zjisti velikost rezervovaneho mista
-  size:=os^.getstackreserve(curr);
-
-  -- je vůbec potřeba nějakou paměť rezervovat?
-  if size<>0
-
-    -- ano => na stack uložit adresu pracovní proměnné, která ji bude reprezentovat
-    then
-      declare var
-        stack_reserve_addr : c_operand;          -- adresa rezervy na stacku
-
-      begin
-        -- sestavit pracovní proměnnou, která bude zabírat požadované místo
-        stack_reserve_addr.create_temporary(inst,info,edt_binary,size);  
-        -- %%TODO(TEMPORARY) Pozor, zde by se místo temporary proměnné měla alokovat spíše 
-        -- anonymní trvalá lokální proměnné, aby ji [free] tohoto operandu nemohlo dealokovat.
+    -- zavolat
+    if srch.psym<>nil then addcall(inst,info,pentity_code(srch.psym)); end if;
+    end loop;
+  end i_gen_exit_modules;
   
-        -- načíst adresu rezervy
-        i_gen_load_address_to_register(inst,info,context,stack_reserve_addr);
-
-        -- uložit na stack
-        addii(inst,info,ii_push,stack_reserve_addr,op0,op0);
-
-      leave
-        -- uvolnit operand
-        -- %%TODO(TEMPORARY) POZOR !!! Zde nesmí dojít k fyzické dealokaci temporary proměnné,
-        -- jinak by se to celé mohlo rozbít.
-        stack_reserve_addr.free(info,context);
-        end declare;
-
-    -- ne => na stack uložit NIL
-    else 
-      addii(inst,info,ii_push,op_0_32bit,op0,op0);
-      end if;
-
-  -- inicializovat task control block pro hlavní task
-  addcallrtl(inst,info,register_task);
-  end i_gen_runtime_initialization;
-
 
 
 ----------------------------------------------------------------------------------------------------
@@ -210,11 +166,8 @@ procedure i_gen_program_compile (
 var
   inst             : picodeinst;                 -- instance
   info             : igeninfo;                   -- informace o generování
-  srch             : tentitysearch;              -- hledátko
   framehandler     : timm32;                     -- adresa položky HANDLER v exception-frame
-  tg_unhandled     : itarget;                    -- návěští obsluhy neobsloužených výjimek
   tg_endxframe     : itarget;                    -- návěští obsluhy neobsloužených výjimek
-  p                : pentity;
   context          : iexprcontext;               -- kontext výrazu
 
 begin
@@ -231,95 +184,44 @@ begin
   -- pripravit prazdny kontext vyrazu
   i_createcontext(context,lm_gen,nil);
 
-  if not cfg_no_runtime then
-    -- alokovat návěští obsluhy neobsloužených výjimek
-    newtarget(info,tg_unhandled);
-    newtarget(info,tg_endxframe);
-
-    -- prenastavit vyjimky
-    i_set_handler(inst^,info,framehandler,tg_unhandled);
-    end if;
-
   -- vytvořit stack-frame
-  i_gen_entry(curr,inst^,info);
-
-  if not cfg_no_runtime then
-    -- inicializovat run-time
-    i_gen_runtime_initialization(curr,inst^,info,context,rtl_register_task_main);
-
-    -- vytvořit exception-frame
-    i_create_xframe(inst^,info,framehandler,tg_endxframe);
-    end if;
-
-  -- zavolat ENTRY všech modulů
-  for i in 1..entrylist.count loop
-    -- vyhledat ENTRY
-    srch.find_local_all(sym_primary_context(entrylist.list^[i]^),id_entry);
-
-    -- zavolat
-    if srch.psym<>nil then addcall(inst^,info,pentity_code(srch.psym)); end if;
-    end loop;
+  i_gen_subprogram_prolog(curr,inst^,info);
+  
+  -- prolog bootstrap kódu kompilační jednotky
+  i_gen_entrypoint_prolog(curr,inst^,info,context,framehandler,tg_endxframe,rtl_register_task_main);
+  
+  -- zavolat ENTRY všech modulů 
+  i_gen_entry_modules(inst^,info);
 
   -- zavolat program
-  srch.find_et_first(^curr,rc_primary,et_program,[]);
-  if srch.psym<>nil then 
-    addcall(inst^,info,pentity_code(srch.psym)); 
-    end if;
-
+  declare var
+    srch           : tentitysearch;              -- hledátko
+    
+  begin  
+    srch.find_et_first(^curr,rc_primary,et_program,[]);
+    if srch.psym<>nil then 
+      addcall(inst^,info,pentity_code(srch.psym)); 
+      end if;
+    end declare;  
+    
   -- zavolat EXIT všech modulů
-  for i in reverse 1..entrylist.count loop
-    -- vyhledat EXIT
-    srch.find_local_all(sym_primary_context(entrylist.list^[i]^),id_exit);
+  i_gen_exit_modules(inst^,info);
 
-    -- zavolat
-    if srch.psym<>nil then addcall(inst^,info,pentity_code(srch.psym)); end if;
-    end loop;
-
-  if not cfg_no_runtime then 
-    -- adresa obsluhy neobsloužených výjimek
-    settarget(info,tg_endxframe,getaddr(inst^));
-
-    -- zrusit exception-frame
-    addcallrtl(inst^,info,rtl_end_topmost_xframe);
-
-    --prenastavit handler
-    i_set_handler(inst^,info,framehandler,tg_unhandled);
-
-    -- deinicializovat task control block pro hlavní task
-    addcallrtl(inst^,info,rtl_unregister_task);
-
-    -- finalizovat runtime knihovnu
-    addcallrtl(inst^,info,rtl_late_runtime_finalize); 
-    
-    -- exit procesu s exitcodem
-    addcallrtl(inst^,info,rtl_terminate); 
-    
-    end if;
+  -- epilog bootstrap kódu kompilační jednotky
+  i_gen_entrypoint_epilog(curr,inst^,info,tg_endxframe);
 
   -- zrušit stack-frame
-  i_gen_exit(curr,inst^,info);
-
-  if not cfg_no_runtime then 
-    -- ukončit program
-    addcallrtl(inst^,info,rtl_terminate);
-
-    -- adresa obsluhy neobsloužených výjimek
-    settarget(info,tg_unhandled,getaddr(inst^));
-
-    -- zavolat osbluhu neobsloužených výjimek
-    addcallrtl(inst^,info,rtl_unhandled_exception);
-    end if;
+  i_gen_subprogram_epilog(curr,inst^,info);
 
   -- vyhodnotit lokální relokace
   localresolve(curr,inst^,info);
-
   end i_gen_program_compile;
 
 
 
 -- %%TODO(?) - vykonnou cast i_gen_lib_compile presunout do os specific
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_lib_compile (
+procedure i_gen_library_compile (
     curr           : in out tentity_compile) =   -- kompilační jednotka
 -- Vygeneruje kód kompilační jednotky knihovny
 ----------------------------------------------------------------------------------------------------
@@ -329,16 +231,71 @@ with
 var
   inst             : picodeinst;                 -- instance
   info             : igeninfo;                   -- informace o generování
-  srch             : tentitysearch;              -- hledátko
-  framehandler     : timm32;                     -- adresa položky HANDLER v exception-frame
-  p                : pentity;
-  opvar            : c_operand;
-  l1               : itarget;
-  l_konec          : itarget;
   context          : iexprcontext;               -- kontext výrazu
-  tg_unhandled     : itarget;                    -- návěští obsluhy neobsloužených výjimek
-  tg_endxframe     : itarget;                    -- návěští obsluhy neobsloužených výjimek
-  tg_endxframe2    : itarget;                    -- návěští obsluhy neobsloužených výjimek
+  
+    ------------------------------------------------------------------------------------------------
+    procedure handle_reg (ii : in iinstr; reg : in ireg) =
+    -- Nad registrem [reg] provede zadanou unární operaci.
+    ------------------------------------------------------------------------------------------------
+    var
+      opreg        : c_operand;
+      
+    begin
+      opreg.create_use_register(inst^,info,context,edt_unsigned,reg);
+      addii(inst^,info,ii,opreg,op0,op0);
+    leave
+      opreg.free(info,context);
+      end handle_reg;
+
+      
+      
+    ------------------------------------------------------------------------------------------------
+    procedure jump_on_reason (reason : in t_unsigned; tg : in itarget) =
+    -- Podmíněný skok pokud je parametr [DllMain.fdwReason] roven zadané hodnotě [reason].
+    ------------------------------------------------------------------------------------------------
+    var
+      opreason     : c_operand;                  -- parametr [DllMain.fdwReason]
+
+    begin
+      -- vytvořit operand reprezentující [fdwReason], 2. parametr [DllMain]
+      opreason.create_memory_address_on_stack(inst^,edt_unsigned,4,signed_to_imm32(12));
+
+      -- porovnat s dodanou hodnotou
+      addopimm(inst^,info,context,ii_cmp,opreason,reason);
+
+      -- skok
+      addjump(inst^,info,context,ic_e,tg);
+
+    leave  
+      -- uvolnit operand
+      opreason.free(info,context);
+      end jump_on_reason;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure set_result (result : in t_unsigned) =
+    -- Do EAX nastaví návratový kód procedury.
+    ------------------------------------------------------------------------------------------------
+    var
+      opeax        : c_operand;
+
+    begin
+      -- alokovat EAX
+      opeax.create_use_register(inst^,info,context,edt_unsigned,ir_eax);
+
+      -- nastavit návratovou hodnotu
+      addopimm(inst^,info,context,ii_mov,opeax,unsigned_to_imm32(result));
+
+    leave
+      -- uvolnit operand
+      opeax.free(info,context);
+      end set_result;
+
+var
+  tg_attach        : itarget;                    -- návěští obsluhy varianty [DLL_PROCESS_ATTACH]
+  tg_detach        : itarget;                    -- návěští obsluhy varianty [DLL_PROCESS_DETACH]
+  tg_end           : itarget;                    -- návěští konce procedury
 
 begin
   if o_is_option_by_entity(opt_dump_code,curr) then
@@ -351,197 +308,104 @@ begin
   -- připravit informace o generování
   initinfo(curr,info);
 
-  -- pripravit prazdny kontext vyrazu
+  -- připravit prázdný kontext výrazu
   i_createcontext(context,lm_gen,nil);
 
-  -- alokovat navesti
-  newtarget(info,l1);
-  newtarget(info,l_konec);
-  newtarget(info,tg_unhandled);
-  newtarget(info,tg_endxframe);
-  newtarget(info,tg_endxframe2);
+
+
+  ----- 1. Společný prolog a rozhodovací logika ----------------------------------------------------
 
   -- vytvořit stack-frame
-  -- stack-frame musi byt EBP relativni
-  i_gen_entry(curr,inst^,info);
+  i_gen_subprogram_prolog(curr,inst^,info);
 
-  -- pushnout esi - windows pouziva pro obnovu stacku
+  -- uložit rezervované registry
+  handle_reg(ii_push,ir_ebx);
+  handle_reg(ii_push,ir_esi);
+  handle_reg(ii_push,ir_edi);
+
+  -- alokovat návěští
+  newtarget(info,tg_attach);
+  newtarget(info,tg_detach);
+  newtarget(info,tg_end);
+
+  -- výběr varianty [DLL_PROCESS_ATTACH]
+  jump_on_reason(1,tg_attach);
+  
+  -- výběr varianty [DLL_PROCESS_DETACH]
+  jump_on_reason(0,tg_detach);
+  
+  -- a skok na konec procedury
+  addjump(inst^,info,context,ic_ucond,tg_end);
+  
+
+  
+  ----- 1. Obsluha varianty [DLL_PROCESS_ATTACH] ---------------------------------------------------
   declare var
-    opesi   : c_operand;
-  begin
-    opesi.create_use_register(inst^,info,context,edt_unsigned,ir_esi);
-    addii(inst^,info,ii_push,opesi,op0,op0);
+    framehandler   : timm32;                     -- adresa položky HANDLER v exception-frame
+    tg_endxframe   : itarget;                    -- návěští obsluhy neobsloužených výjimek
     
-    leave
-      opesi.free(info,context);;
-    end declare;
+  begin  
+    -- návěští skoku na obsluhu této varianty
+    settarget(info,tg_attach,getaddr(inst^));
 
-  if not cfg_no_runtime then 
-    -- prenastavit vyjimky
-    i_set_handler(inst^,info,framehandler,tg_unhandled);
-    end if;
-  
-  -- fdwReason je 2. parametr DllMain
-  opvar.create_memory_address_on_stack(inst^,edt_unsigned,4,signed_to_imm32(12));
-
-  -- pokud fdwReason se nerovna DLL_PROCESS_ATTACH...
-  declare var
-    opeax   : c_operand;
-
-  begin
-    -- pouzijeme eax
-    opeax.create_use_register(inst^,info,context,edt_unsigned,ir_eax);
+    -- prolog bootstrap kódu kompilační jednotky
+    i_gen_entrypoint_prolog(curr,inst^,info,context,framehandler,tg_endxframe,rtl_register_task_dll);
     
-    addii(inst^,info,ii_mov,opeax,opvar,op0);
-    addopimm(inst^,info,context,ii_cmp,opeax,unsigned_to_imm32(1{DLL_PROCESS_ATTACH}));
+    -- zavolat ENTRY všech modulů
+    i_gen_entry_modules(inst^,info);
+
+    -- epilog bootstrap kódu kompilační jednotky
+    i_gen_entrypoint_epilog(curr,inst^,info,tg_endxframe,for do_finalize use false,for do_terminate use false);
+
+    -- a skok na konec procedury
+    addjump(inst^,info,context,ic_ucond,tg_end);
+    end declare;
+
+  
+
+  ----- 2. Obsluha varianty [DLL_PROCESS_DETACH] ---------------------------------------------------
+  declare var
+    framehandler   : timm32;                     -- adresa položky HANDLER v exception-frame
+    tg_endxframe   : itarget;                    -- návěští obsluhy neobsloužených výjimek
     
-  leave
-    -- uvolnime registr
-    opeax.free(info,context);
-    end declare;
-  
-  -- ... odskoc na dalsi test
-  addjump(inst^,info,context,ic_ne,l1);
-  
-  if not cfg_no_runtime then 
-    -- inicializovat run-time
-    i_gen_runtime_initialization(curr,inst^,info,context,rtl_register_task_dll);
+  begin  
+    -- návěští skoku na obsluhu této varianty
+    settarget(info,tg_detach,getaddr(inst^));
 
-    -- vytvořit exception-frame
-    i_create_xframe(inst^,info,framehandler,tg_endxframe);
-    end if;
-
-  -- zavolat ENTRY všech modulů
-  for i in 1..entrylist.count loop
-    -- vyhledat ENTRY
-    srch.find_local_all(sym_primary_context(entrylist.list^[i]^),id_entry);
-
-    -- zavolat
-    if srch.psym<>nil then addcall(inst^,info,pentity_code(srch.psym)); end if;
-    end loop;
-
-  if not cfg_no_runtime then 
-    -- adresa obsluhy neobsloužených výjimek
-    settarget(info,tg_endxframe,getaddr(inst^));
-
-    -- zrušit exception-frame
-    addcallrtl(inst^,info,rtl_end_topmost_xframe);
-
-    --prenastavit handler
-    i_set_handler(inst^,info,framehandler,tg_unhandled);
-
-    -- deinicializovat task control block pro hlavní task
-    addcallrtl(inst^,info,rtl_unregister_task);
-    end if;
-
-  -- navratova hodnota
-  -- uspech 1{TRUE}, neuspech 0{FALSE}
-  declare var
-    opeax   : c_operand;
-
-  begin
-    -- pouzijeme eax
-    opeax.create_use_register(inst^,info,context,edt_unsigned,ir_eax);
-
-    addopimm(inst^,info,context,ii_mov,opeax,unsigned_to_imm32(1{TRUE}));
+    -- prolog bootstrap kódu kompilační jednotky
+    i_gen_entrypoint_prolog(curr,inst^,info,context,framehandler,tg_endxframe,rtl_register_task_dll,for do_initialize use false);
     
-  leave
-    opeax.free(info,context);
+    -- zavolat EXIT všech modulů
+    i_gen_exit_modules(inst^,info);
+
+    -- epilog bootstrap kódu kompilační jednotky               
+    i_gen_entrypoint_epilog(curr,inst^,info,tg_endxframe,for do_terminate use false);
+
+    -- a skok na konec procedury
+    addjump(inst^,info,context,ic_ucond,tg_end);
     end declare;
 
-  -- koncime
-  addjump(inst^,info,context,ic_ucond,l_konec);
+
   
-  -- navesti pro ne-DLL_PROCESS_ATTACH
-  settarget(info,l1,getaddr(inst^));
-
-  -- pokud fdwReason se nerovna DLL_PROCESS_DETACH...
-  declare var
-    opeax   : c_operand;
-
-  begin
-    -- pouzijeme eax
-    opeax.create_use_register(inst^,info,context,edt_unsigned,ir_eax);
-
-    addii(inst^,info,ii_mov,opeax,opvar,op0);
-    addopimm(inst^,info,context,ii_cmp,opeax,unsigned_to_imm32(0{DLL_PROCESS_DETACH}));
-
-  leave
-    opeax.free(info,context);
-    end declare;
+  ----- 3. Společný epilog -------------------------------------------------------------------------
   
-  -- ...koncime
-  addjump(inst^,info,context,ic_ne,l_konec);
-
-  if not cfg_no_runtime then 
-    -- inicializovat run-time
-    i_gen_runtime_initialization(curr,inst^,info,context,rtl_register_task_dll,for do_initialize use false);
-
-    -- vytvořit exception-frame
-    i_create_xframe(inst^,info,framehandler,tg_endxframe2);
-    end if;
-
-  -- zavolat EXIT všech modulů
-  for i in reverse 1..entrylist.count loop
-    -- vyhledat EXIT
-    srch.find_local_all(sym_primary_context(entrylist.list^[i]^),id_exit);
-
-    -- zavolat
-    if srch.psym<>nil then addcall(inst^,info,pentity_code(srch.psym)); end if;
-    end loop;
-
-  if not cfg_no_runtime then 
-    -- adresa obsluhy neobsloužených výjimek
-    settarget(info,tg_endxframe2,getaddr(inst^));
-
-    -- zrušit exception-frame
-    addcallrtl(inst^,info,rtl_end_topmost_xframe);
-
-    --prenastavit handler
-    i_set_handler(inst^,info,framehandler,tg_unhandled);
-
-    -- deinicializovat task control block pro hlavní task
-    addcallrtl(inst^,info,rtl_unregister_task);
-
-    -- finalizovat runtime knihovnu
-    addcallrtl(inst^,info,rtl_late_runtime_finalize); 
-    end if;
-
-  -- navratova hodnota se pouziva jen pri DLL_PROCESS_ATTACH 
-
-  -- navesti konce
-  settarget(info,l_konec,getaddr(inst^));
-
-  -- popnout esi - windows pouziva pro obnovu stacku
-  declare var
-    opesi   : c_operand;
-  begin
-    opesi.create_use_register(inst^,info,context,edt_unsigned,ir_esi);
-    addii(inst^,info,ii_pop,opesi,op0,op0);
-
-    leave
-      opesi.free(info,context);;
-    end declare;
+  -- návěští skoku na konec obsluhy
+  settarget(info,tg_end,getaddr(inst^));
+                                          
+  -- když se to dostalo až sem, tak se to patrně povedlo
+  set_result(1);
   
-  opvar.free(info,context);
+  -- obnovit rezervované registry
+  handle_reg(ii_pop,ir_edi);
+  handle_reg(ii_pop,ir_esi);
+  handle_reg(ii_pop,ir_ebx);
 
   -- zrušit stack-frame
-  i_gen_exit(curr,inst^,info);
+  i_gen_subprogram_epilog(curr,inst^,info);
 
-  if not cfg_no_runtime then 
-    -- adresa obsluhy neobsloužených výjimek
-    settarget(info,tg_unhandled,getaddr(inst^));
-
-    -- zavolat osbluhu neobsloužených výjimek
-    addcallrtl(inst^,info,rtl_unhandled_exception);
-    end if;
-  
   -- vyhodnotit lokální relokace
   localresolve(curr,inst^,info);
-
-leave
-  opvar.free(info,context);
-  end i_gen_lib_compile;
+  end i_gen_library_compile;
 
 
 
@@ -554,7 +418,7 @@ begin
   -- co generujeme?
   case curr.part_result
     -- knihovna
-    when tpr_library do i_gen_lib_compile(curr);
+    when tpr_library do i_gen_library_compile(curr);
     
     -- program
     when tpr_program do i_gen_program_compile(curr);

@@ -1,0 +1,237 @@
+﻿----------------------------------------------------------------------------------------------------
+module public cc_gc =
+-- GC - Garbage Collector
+----------------------------------------------------------------------------------------------------
+
+with
+  standard;
+
+type
+  -- memblock
+  p_memblock       = ^unchecked;
+
+-- dopredne deklarace
+class c_garbage_collector;       type p_garbage_collector = ^class c_garbage_collector;
+class c_alloc_zone;              type p_alloc_zone        = ^class c_alloc_zone;
+class abstract c_collect_filter; type p_collect_filter    = ^class c_collect_filter;
+class abstract c_collectable;    type p_collectable       = ^class c_collectable;
+
+----------------------------------------------------------------------------------------------------
+class public c_garbage_collector =
+-- Garbage Collector
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure get_instance return p_garbage_collector;
+    -- vrati globalni instanci
+    ------------------------------------------------------------------------------------------------
+    procedure set_local_instance (
+        instance   : in p_garbage_collector);    -- specializovany gc, [nil] pro pouzivani globalni
+    -- Nastavi k pouzivani lokalni specializovanou instanci gc.
+    -- Pokud se nastavi lokalni instance, je prednostne pouzivana. Pomoci set_local_instance(nil)
+    -- se vrati pouzivani globalni instance.
+    -- %%X Tohle je tak trochu zaplata, jenze tezko nejak jinak donutit kompilator k pouzivani jineho
+    -- specialniho gc.
+    ------------------------------------------------------------------------------------------------
+    static set_name (
+        _name      : in t_char32str);
+    -- nastavi jmeno
+    ------------------------------------------------------------------------------------------------
+    static get_name return t_char32str;
+    -- vrati jmeno
+    ------------------------------------------------------------------------------------------------
+    static register_class (
+        _class     : in p_flex_class);
+    -- zaregistruje flex tridu do aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    static register_record (
+        _record    : in p_flex_record);
+    -- zaregistruje flex record do aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    static register_collectable (
+        _collectable : in p_collectable);
+    -- zaregistruje collectable tridu do aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    static register_memblock (
+        _memblock  : in p_memblock);
+    -- zaregistruje pametovy blok
+    ------------------------------------------------------------------------------------------------
+    static unregister_class (
+        _class     : in p_flex_class);
+    -- odregistruje flex tridu z aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    static unregister_record (
+        _record    : in p_flex_record);
+    -- odregistruje flex record z aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    static unregister_collectable (
+        _collectable : in p_collectable);
+    -- odregistruje collectable tridu z aktualni alokacni zony
+    ------------------------------------------------------------------------------------------------
+    static unregister_memblock (
+        _memblock  : in p_memblock);
+    -- odregistruje pametovy blok
+    ------------------------------------------------------------------------------------------------
+    -- overload register : register_class, register_record, register_memblock;
+    -- pretizene register
+    ------------------------------------------------------------------------------------------------
+    -- overload unregister : unregister_class, unregister_record, unregister_memblock;
+    -- pretizene unregister
+    ------------------------------------------------------------------------------------------------
+    static push_create_alloc_zone return p_alloc_zone;
+    -- vytvori a prida alokacni zonu na stack alokacnich zon
+    -- vytvorena zona se stane aktualni alokacni zonou
+    -- vrati vytvorenou zonu
+    ------------------------------------------------------------------------------------------------
+    static pop_discard_alloc_zone;
+    -- odebere alokacni zonu ze stacku alokacnich zon
+    -- alokacni zona na vrchu stacku se stane aktualni alokacni zonou
+    -- neodalokovane zdroje odebirane zony se presunou na konec prave nastavene aktualni alokacni zony
+    -- odebrana zona se zrusi
+    ------------------------------------------------------------------------------------------------
+    static collect;
+    -- odalokuje zaregistrovane zdroje aktualni alokacni zony
+    -- odalokuje pouze ty zdroje, ktere vyhovi kolekcnimu filtru
+    -- dealokace probiha v opacnem poradi registrace
+    ------------------------------------------------------------------------------------------------
+
+    end c_garbage_collector;
+
+
+    
+type  
+  -- typy seznamu zdroju
+  t_class_list     = string of p_flex_class;
+  p_class_list     = ^t_class_list;
+
+  t_record_list    = string of p_flex_record;
+  p_record_list    = ^t_record_list;
+
+  t_collectable_list = string of p_collectable;
+  p_collectable_list = ^t_collectable_list;
+
+  t_memblock_list  = string of p_memblock;
+  p_memblock_list  = ^t_memblock_list;
+
+
+----------------------------------------------------------------------------------------------------
+class public c_alloc_zone = extend c_flex_class;
+-- alokacni zona
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static set_name (
+        _name      : in t_char32str);
+    -- nastavi jmeno zony
+    ------------------------------------------------------------------------------------------------
+    static get_name return t_char32str;
+    -- vrati jmeno zony
+    ------------------------------------------------------------------------------------------------
+    static set_collect_filter (
+        _filter    : in p_collect_filter);
+    -- nastavi collect filtr
+    ------------------------------------------------------------------------------------------------
+    static get_collect_filter return p_collect_filter;
+    -- vrati nastaveny collect filtr
+    ------------------------------------------------------------------------------------------------
+
+  supervised
+    
+    var
+      -- seznamy zdroju
+      -- kdo na to sahne, toho nebudu mit rad!
+      class_list   : p_class_list;
+      record_list  : p_record_list;
+      collectable_list : p_collectable_list;
+      memblock_list: p_memblock_list;
+
+    end c_alloc_zone;
+
+                              
+
+----------------------------------------------------------------------------------------------------
+class abstract c_collect_filter = extend c_flex_class;
+-- collect filtr
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    virtual abstract collect_class_if_match (
+        _class     : in p_flex_class)
+        return t_logical;
+    -- vola se pri kolekci
+    -- pokud vrati false zdroj prezije kolekci
+    ------------------------------------------------------------------------------------------------
+    virtual abstract collect_record_if_match (
+        _record    : in p_flex_record)
+        return t_logical;
+    -- vola se pri kolekci
+    -- pokud vrati false zdroj prezije kolekci
+    ------------------------------------------------------------------------------------------------
+    virtual abstract collect_collectable_if_match (
+        _collectable : in p_collectable)
+        return t_logical;
+    -- vola se pri kolekci
+    -- pokud vrati false zdroj prezije kolekci
+    ------------------------------------------------------------------------------------------------
+    virtual abstract collect_memblock_if_match (
+        _memblock  : in p_memblock)
+        return t_logical;
+    -- vola se pri kolekci
+    -- pokud vrati false zdroj prezije kolekci
+    ------------------------------------------------------------------------------------------------
+
+    end c_collect_filter;
+
+                   
+
+----------------------------------------------------------------------------------------------------
+class abstract c_collectable =
+-- kolekcni interface
+-- umoznuje registraci tridam, ktere nededi z c_flex_class
+----------------------------------------------------------------------------------------------------
+  
+    ------------------------------------------------------------------------------------------------
+    virtual abstract collect;
+    -- vola se pri kolekci garbage kolektoru
+    ------------------------------------------------------------------------------------------------
+    
+    end c_collectable;
+  
+
+{
+----------------------------------------------------------------------------------------------------
+#template newgc_class (object);
+----------------------------------------------------------------------------------------------------
+  new object;
+  c_garbage_collector.get_instance^.register_class(object);
+  #end newgc_class;
+
+
+
+----------------------------------------------------------------------------------------------------
+#template newgc_record (object);
+----------------------------------------------------------------------------------------------------
+  new object;
+  c_garbage_collector.get_instance^.register_record(object);
+  #end newgc_record;
+
+
+ 
+----------------------------------------------------------------------------------------------------
+#template discardgc_class (object);
+----------------------------------------------------------------------------------------------------
+  c_garbage_collector.get_instance^.unregister_class(object);
+  discard object;
+  #end discardgc_class;
+
+
+
+----------------------------------------------------------------------------------------------------
+#template discardgc_record (object);
+----------------------------------------------------------------------------------------------------
+  c_garbage_collector.get_instance^.unregister_record(object);
+  discard object;
+  #end discardgc_record;
+}
+
+end cc_gc;

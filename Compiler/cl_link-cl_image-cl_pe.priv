@@ -6,8 +6,16 @@ module private cl_pe =
 -- Ondra : 12.04.2002 : Vytvořil
 ----------------------------------------------------------------------------------------------------
 
+with
+  cc_def.cc_var,
+  cc_def.cc_unitype,
+  cp_os.cp_win32;
+
+type
+  tperva           = private t_unsigned32;       -- Relative Virtual Address
+
 ----------------------------------------------------------------------------------------------------
-class private linkimage_pe =
+class private c_link_image_pe =
 -- Portable Executable image creator.
 ----------------------------------------------------------------------------------------------------
 
@@ -16,21 +24,14 @@ class private linkimage_pe =
       standard.files,
       standard.streams,
       standard.numerics,
-      cc_def.cc_unitype,
       cc_def.cc_codes,
       cc_def.cc_entity.cc_list,
-      cc_def.cc_var,
       cp_os,
-      cp_os.cp_win32,
       cl_link.cl_debug,
-      #if codeview then;
+    #if codeview then;
       cl_link.cl_debug.cl_codeview,
-      #end if;
-      cl_def,
-      cg_gen,
-      cg_gen.cg_ia32,
-      cg_gen.cg_ia32.ci_def,
-      standard.console,
+    #end if;
+      cl_link.cl_def,
       standard.conversions;
 
     var
@@ -52,24 +53,27 @@ class private linkimage_pe =
 
     type
       tpefileptr       = private t_unsigned32;   -- File Pointer
-      tperva           = private t_unsigned32;   -- Relative Virtual Address
       tpesize          = private t_unsigned32;   -- velikost objektu v bytech
       tpever1          = record                  -- číslo verze
           major        : t_unsigned8;            -- - verze
           minor        : t_unsigned8;            -- - revize
-          end record;
+          end record
+              for alignment use 1;
       tpever2          = record                  -- číslo verze
           major        : t_unsigned16;           -- - verze
           minor        : t_unsigned16;           -- - revize
-          end record;
+          end record
+              for alignment use 1;
       tpememsize       = record                  -- velikost paměti
           reserve_size : tpesize;                -- - rezervovat
           commit_size  : tpesize;                -- - alokovat
-          end record;
+          end record
+              for alignment use 1;
       tpedirentry      = record                  -- položka data directory
           rva          : tperva;                 -- - RVA
           size         : tpesize;                -- - velikost
-          end record;
+          end record
+              for alignment use 1;
 
       -- COFF hlavička
       tcoffheader      = record
@@ -83,7 +87,6 @@ class private linkimage_pe =
           end record
               for alignment use 1
               for size      use 20;
-      --%%TODO(CHECK) __tcoffheader        = true..tcoffheader:size=20;
 
       -- základ PE hlavičky
       tpe0header       = record
@@ -94,7 +97,8 @@ class private linkimage_pe =
           datatotal    : tpesize;                -- velikost sekcí s daty
           entrypoint   : tperva;                 -- entry point
           codebase     : tperva;                 -- relativní báze kódu
-          end record;
+          end record
+              for alignment use 1;
 
       -- PE32 hlavička (COFF optional header)
       tpe32header      = tpe0header with record
@@ -102,7 +106,6 @@ class private linkimage_pe =
           end record
               for alignment use 1
               for size      use 28;
-      --%%TODO(CHECK) __tpe32header        = true..tpe32header:size=28;
 
       -- PE32+ hlavička (COFF optional header)
       tpe32pheader     = tpe0header with record
@@ -132,7 +135,6 @@ class private linkimage_pe =
           end record
               for alignment use 1
               for size      use 64;
-      --%%TODO(CHECK) __tpewinheader       = true..tpewinheader:size=64;
 
       -- PE32 a PE32+ data directory
       tpedatadir       = record
@@ -152,7 +154,8 @@ class private linkimage_pe =
           delayimport  : tpedirentry;            -- delay import descriptor
           compruntime  : tpedirentry;            -- COM+ runtime header
           rezerva      : tpedirentry;
-          end record;
+          end record
+              for alignment use 1;
 
       -- PE32 a PE32+ section header
       tpesectname      = array 1..8 of t_char8;
@@ -170,97 +173,6 @@ class private linkimage_pe =
           end record
               for alignment use 1
               for size      use 40;
-      --%%TODO(CHECK) __tpesectheader  = true..tpesectheader:size=40;
-
-      -- Import Directory Entry
-      tpeidirentry     = record
-          ilt          : tperva;                 -- Import Lookup Table
-          datetime     : t_unsigned32;           -- 0 (datim knihovny)
-          forwarder    : t_unsigned32;           -- forwarder chain
-          name         : tperva;                 -- jméno knihovny
-          iat          : tperva;                 -- Import Address Table
-          end record;
-      tpeidir          = array of tpeidirentry;
-      ppeidir          = ^tpeidir;
-
-      -- Import Lookup Table
-      tpeilookupentry  = record
-          {%%TODO(POSITION)}
-        --typ          : t_unsigned32 for position use 0; -- 0=by name, $8000_0000=by ordinal
-          addr         : t_unsigned32 {for position use 0}; -- adresa Hint-name Tbl/ord. hodnota
-          end record
-              for alignment use 1
-              for size      use 4;
-      tpeilookup       = array of tpeilookupentry;
-      ppeilookup       = ^tpeilookup;
-
-      -- Hint-Name Table
-      tpeiname         = record
-          hint         : t_unsigned16;           -- 0
-          name         : array 0..255 of t_char8;-- jméno, \0
-          end record;
-
-      -- Export Directory Entry
-      tpeedirentry     = record
-          exportflags  : t_mod_unsigned32;       -- reserved, set to 0
-          datetime     : t_unsigned32;           -- time and date when the export data was created
-          majver       : t_unsigned16;           -- major version
-          minver       : t_unsigned16;           -- minor version
-          namerva      : tperva;                 -- address of the ASCII containing the DLL name 
-          ordbase      : t_unsigned32;           -- starting ordinal for the exports
-          addrtblentrs : t_unsigned32;           -- number of entries in the Export Address Table
-          numnameptr   : t_unsigned32;           -- number of entries in the Name Pointer and Ordinal Table
-          expaddrtblrva: tperva;                 -- address of the Export Address Table
-          nameptrrva   : tperva;                 -- address of the Export Name Pointer
-          ordtblrva    : tperva;                 -- address of the Ordinal Table
-          end record
-              for alignment use 1;
-
-
-      -- Export Address Table
-      tpeeaddrentry    = tperva;                 -- address of the exported symbol when loaded into memory
-
-      tpeeaddrtable    = array of tpeeaddrentry;
-      ppeeaddrtable    = ^tpeeaddrtable;
-
-
-      -- Export Name Pointer Table
-      tpeenameptrentry = tperva;                 -- rva into Export Name Table, ordered lexically
-      tpeenameptrtable = array of tpeenameptrentry;
-      ppeenameptrtable = ^tpeenameptrtable;
-
-
-      -- Export Ordinal Table
-      tpeeordentry     = t_unsigned16;           -- index into Export Address Table
-      tpeeordtable     = array of tpeeordentry;
-      ppeeordtable     = ^tpeeordtable;
-        
-      -- Export Name Table
-      tpeenametable    = array of t_char8;       -- list of ascii null-terminated exported names
-      ppeenametable    = ^tpeenametable;
-
-      -- %%TECH Algorithm for finding exported symbol's address:
-      -- i = Search_ExportNamePointerTable (ExportName);
-      -- ordinal = ExportOrdinalTable [i];
-      -- SymbolRVA = ExportAddressTable [ordinal - OrdinalBase];
-
-
-      -- reloc fixup block
-      tperelocfixupblock = record
-        pagerva        : tperva;                 -- start RVA of the 4K fixup block
-        blocksize      : t_unsigned32;           -- total size of this record + all block size fields
-        typeandoffset  : ^array of t_mod_unsigned16; -- block size fields
-                                                 -- type of the fixup stored in high 4 bits
-                                                 -- offset into the 4K page where the fixup is to be applied  
-                                                 -- stored in the remaining 12 bits of the t_unsigned16
-        end record
-            for alignment use 1;
-
-      -- reloc fixup block table
-      tperelocfixuptable = array of tperelocfixupblock;
-      pperelocfixuptable = ^tperelocfixuptable;
-
-
 
     const
       -- cílové platformy
@@ -356,43 +268,6 @@ class private linkimage_pe =
       IMAGE_SCN_MEM_READ                 = $40000000;-- can be read
       IMAGE_SCN_MEM_WRITE                = $80000000;-- can be written to
 
-      -- dispozice relokací fixup bloků pro vyhodnocení relokací systémem (reloc fixup types)
-      IMAGE_REL_BASED_ABSOLUTE           = 0;    -- The fixup is skipped. This type can be used to
-                                                 -- pad a block.
-      IMAGE_REL_BASED_HIGH               = 1;    -- The fixup adds the high 16 bits of the delta to
-                                                 -- the 16-bit field at Offset. The 16-bit field
-                                                 -- represents the high value of a 32-bit word.
-      IMAGE_REL_BASED_LOW                = 2;    -- The fixup adds the low 16 bits of the delta to
-                                                 -- the 16-bit field at Offset. The 16-bit field
-                                                 -- represents the low half of a 32-bit word.
-      IMAGE_REL_BASED_HIGHLOW            = 3;    -- The fixup applies the delta to the 32-bit field
-                                                 -- at Offset.
-      IMAGE_REL_BASED_HIGHADJ            = 4;    -- The fixup adds the high 16 bits of the delta to
-                                                 -- the 16-bit field at Offset. The 16-bit field
-                                                 -- represents the high value of a 32-bit word.
-                                                 -- The low 16 bits of the 32-bit value are stored
-                                                 -- in the 16-bit word that follows this base
-                                                 -- relocation. This means that this base
-                                                 -- relocation occupies two slots.
-      IMAGE_REL_BASED_MIPS_JMPADDR       = 5;    -- Fixup applies to a MIPS jump instruction.
-      IMAGE_REL_BASED_SECTION            = 6;    -- Reserved for future use
-      IMAGE_REL_BASED_REL32              = 7;    -- Reserved for future use
-      IMAGE_REL_BASED_MIPS_JMPADDR16     = 9;    -- Fixup applies to a MIPS16 jump instruction.
-      IMAGE_REL_BASED_DIR64              = 10;   -- This fixup applies the delta to the 64-bit field
-                                                 -- at Offset
-      IMAGE_REL_BASED_HIGH3ADJ           = 11;   -- The fixup adds the high 16 bits of the delta to
-                                                 -- the 16-bit field at Offset. The 16-bit field
-                                                 -- represents the high value of a 48-bit word.
-                                                 -- The low 32 bits of the 48-bit value are stored
-                                                 -- in the 32-bit word that follows this base
-                                                 -- relocation. This means that this base
-                                                 -- relocation occupies three slots.
-
-      -- dispozice relokací fixup bloků pro vyhodnocení relokací run-time knihovnou
-      image_rel_flex_none     = 0;               -- vynechaný fixup záznam
-      image_rel_flex_absolute = 1;               -- absolutní relokace
-      image_rel_flex_relative = 2;               -- relativní relokace
-
     var
       stub             : const array 0..255 of t_unsigned8 := [
           $4D, $5A, $50, $00, $02, $00, $00, $00, $04, $00, $0F, $00, $FF, $FF, $00, $00,
@@ -415,362 +290,6 @@ class private linkimage_pe =
 
 
     ------------------------------------------------------------------------------------------------
-    static buildimport (
-        import     : in tentitystring;           -- seznam importovaných procedur
-        idata      : in t_unsigned32;            -- bázová adresa Import Directory Table
-        ibase      : in t_unsigned32;            -- bázová adresa Import Address Table
-        dir        : out ppeidir;                -- Import Directory Table
-        idirsize   : out t_unsigned32;           -- velikost
-        lookup     : out ppeilookup;             -- Import Lookup Table
-        ilookupsize: out t_unsigned32;           -- velikost
-        name       : out p_unsigned8array;       -- Hint/Name Table
-        inamesize  : out t_unsigned32) =         -- velikost
-    -- Sestaví importní tabulky.
-    ------------------------------------------------------------------------------------------------
-    var
-      nindex       : t_unsigned;                 -- index do NAME
-
-        --------------------------------------------------------------------------------------------
-        procedure add_name (
-            xname  : in t_char8str) =
-        -- Do tabulky jmen [name] doplni zadané jméno [xname].
-        --------------------------------------------------------------------------------------------
-        with
-          advanced.low_level.unchecked_memory_access;
-
-        begin
-          --%%TODO(SLICE)
-          memory_copy(xname[1],name^[nindex],xname:length);
-          nindex+((xname:length+{\0}1+{pad}1) div 2)*2;
-          end add_name;
-
-    var
-      libcount     : t_unsigned;                 -- počet knihoven
-      lookupcount  : t_unsigned;                 -- počet lookup záznamů
-      namelen      : t_unsigned;                 -- paměť potřebná pro jména
-      lindex       : t_unsigned;                 -- index do DIR
-      pindex       : t_unsigned;                 -- index do LOOKUP
-      pbase        : t_unsigned32;               -- bázová adresa LOOKUP
-      nbase        : t_unsigned32;               -- bázová adresa NAME
-
-    begin
-      -- není co řešit
-      if import.list=nil or else import.list^:length=0 then 
-        return; 
-        end if;
-
-      -- spočítat knihovny
-      libcount:=0;
-      lookupcount:=0;
-      namelen:=0;
-      for i in import.list^:range loop
-        -- změna knihovny, započítat
-        if (i=import.list^:first) or else (pimportinfo(pentity_procedure(import.list^[i-1])^.import_info)^.libname<>
-        pimportinfo(pentity_procedure(import.list^[i])^.import_info)^.libname) then
-          -- započítat délku jména knihovny (zarovnání 2)
-          namelen+((pimportinfo(pentity_procedure(import.list^[i])^.import_info)^.libname:length+{\0}1+{pad}1) div 2)*2;
-
-          -- další knihovna
-          succ libcount;
-
-          -- prázdný lookup záznam
-          if i>import.list^:first then succ lookupcount; end if;
-          end if;
-
-        -- započítat délku jména (zarovnání 2)
-        namelen+{hint}2+((pimportinfo(pentity_procedure(import.list^[i])^.import_info)^.extname:length+{\0}1+{pad}1) div 2)*2;
-
-        -- započítat lookup záznam
-        succ lookupcount;
-        end loop;
-
-      -- započítat mezery na konci seznamů
-      succ libcount;
-      succ lookupcount;
-
-      -- alokovat paměť
-      idirsize:=tpeidirentry:size*libcount;
-      new dir range libcount;
-      ilookupsize:=tpeilookupentry:size*lookupcount;
-      new lookup range lookupcount;
-      inamesize:=namelen;
-      new name range namelen;
-
-      -- sestavit tabulky
-      lindex:=0;
-      pindex:=0;
-      nindex:=0;
-      pbase:=idata+libcount*tpeidirentry:size;
-      nbase:=pbase+tpeilookupentry:size*lookupcount;
-      for i in import.list^:range loop 
-        -- změnila se knihovna, vygenerovat pro ni záznam
-        if (i=import.list^:first) or (pimportinfo(pentity_procedure(import.list^[i-1])^.import_info)^.libname<>
-        pimportinfo(pentity_procedure(import.list^[i])^.import_info)^.libname) then
-          -- mezera za předchozí knihovnou v LOOKUP
-          if i>import.list^:first then succ pindex; end if;
-
-          -- deskriptor knihovny
-          dir^[lindex].ilt :=pbase+pindex*tpeilookupentry:size;
-          dir^[lindex].name:=nbase+nindex;
-          dir^[lindex].iat :=ibase+pindex*tpeilookupentry:size;
-
-          -- doplnit jméno knihovny
-          add_name(pimportinfo(pentity_procedure(import.list^[i])^.import_info)^.libname);
-
-          -- další knihovna
-          succ lindex;
-          end if;
-
-        -- deskriptor procedury
-        lookup^[pindex].addr:=nbase+nindex;
-
-        -- hint: 0
-        nindex+2;
-
-        -- doplnit jméno procedury
-        add_name(pimportinfo(pentity_procedure(import.list^[i])^.import_info)^.extname);
-
-        -- další procedura
-        succ pindex;
-        end loop;
-
-    commit
-      verify({VERIFY=}001216,dir   =nil and then idirsize   <>0);
-      verify({VERIFY=}001217,lookup=nil and then ilookupsize<>0);
-      verify({VERIFY=}001218,name  =nil and then inamesize  <>0);
-      end buildimport;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static buildexport (
-        base          : in tpe32base;            --
-        export        : in tentitystring;        -- seznam exportovaných symbolu
-        edata         : in t_unsigned32;         -- bázová adresa Export Directory Table
-        dir           : out tpeedirentry;        -- Export Directory Table (obsahuje jen jeden zaznam)
-        addr          : out ppeeaddrtable;       
-        addrsize      : out t_unsigned32;
-        nameptrs      : out ppeenameptrtable;
-        nameptrssize  : out t_unsigned32;
-        ordinals      : out ppeeordtable;
-        ordinalssize  : out t_unsigned32;
-        names         : out ppeenametable;
-        namessize     : out t_unsigned32)=
-    -- Sestaví exportní tabulky.
-    ------------------------------------------------------------------------------------------------
-    with
-      cc_binding;
-
-        --------------------------------------------------------------------------------------------
-        procedure add_name (
-            name       : in t_char32str;
-            names      : in ppeenametable;
-            names_index : in out t_unsigned32) =
-        -- Do jmen [names] doplni zadané jméno [name] na pozici [names_index], kterou updateuje
-        --------------------------------------------------------------------------------------------
-        with
-          advanced,
-          advanced.low_level,
-          advanced.low_level.unchecked_memory_access;
-
-        begin
-          for i in name:range loop
-            names^[names_index+i-1]:=t_char8(name[i]);
-            end loop;
-          
-          names_index+name:length+{\0}1;
-          names^[names_index]:=\0;
-          end add_name;
-      
-    var
-      expnameslength  : t_unsigned32;
-      expnum          : t_unsigned32; -- pocet exportu
-      curraddr        : t_unsigned32;
-      n               : t_unsigned32;
-
-      -- %%TODO(DLL) - dllname nahradit jmenem souboru linkimage
-      dllname         : t_char32str := 'main.dll';
-
-    begin
-      -- osetrit vstup. parametry
-      if export.count<=0 or export.list=nil then return; end if;
-
-      -- pocet exportu
-      expnum:=export.count;
-
-      -- suma velikosti exportnich jmen
-      expnameslength:=0;
-      for i in export.list^:range loop
-        -- započítat délku vlastního jméno
-        expnameslength+pexportinfo(get_export_info(export.list^[i]))^.export_name:length;
-
-        -- a koncovou nulu
-        expnameslength+1;
-        end loop;
-
-      expnameslength+dllname:length+1;
-
-      dir.exportflags:=0;
-      dir.datetime:=0;
-      dir.majver:=0;
-      dir.minver:=0;
-      dir.namerva:=0;
-      dir.ordbase:=1;
-      dir.addrtblentrs:=expnum;
-      dir.numnameptr:=expnum;
-
-      new addr range expnum;
-      addrsize:=tpeeaddrentry:size*expnum;
-
-      new ordinals range expnum;
-      ordinalssize:=tpeeordentry:size*expnum;
-
-      new nameptrs range expnum;
-      nameptrssize:=tpeenameptrentry:size*expnum;
-
-      new names range expnameslength;
-      namessize:=expnameslength;
-
-      dir.expaddrtblrva:=edata+tpeedirentry:size;
-      dir.nameptrrva:=dir.expaddrtblrva+addrsize;
-      dir.ordtblrva:=dir.nameptrrva+nameptrssize;
-      n:=0;
-
-      -- jmeno dllka
-      dir.namerva:=dir.ordtblrva+ordinalssize;
-      add_name(dllname,names,n);
-
-      for i in export.list^:range loop
-        -- export address table
-        addr^[i-1]:=i_get_entity_instance_address(export.list^[i]);
-
-        -- name ptr table and names
-        nameptrs^[i-1]:=dir.ordtblrva+ordinalssize+n;
-        add_name(pexportinfo(get_export_info(export.list^[i]))^.export_name,names,n);
-
-        -- ord table
-        ordinals^[i-1]:=i;
-        ordinals^[i-1]-1; {%%TODO(DYNAMIC_CHECK) záplata kvůli rozsahu i od 1 do N }
-        end loop;
-
-    commit
-      verify({VERIFY=}001219,addr    =nil and then addrsize    <>0);
-      verify({VERIFY=}001220,nameptrs=nil and then nameptrssize<>0);
-      verify({VERIFY=}001221,ordinals=nil and then ordinalssize<>0);
-      verify({VERIFY=}001222,names   =nil and then namessize   <>0);
-      end buildexport; 
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static build_relocations (
-        base       : in t_unsigned32;            -- bázová adresa PE
-        relocaddrs : in t_relocations;           -- setrideny seznam adres na kterych je treba provest relokaci
-        fixups     : out pperelocfixuptable;     -- PE relokacni informace
-        relocdatasize : out t_unsigned32;        -- celkova velikost PE relokacnich informaci
-        absrel_code: t_mod_unsigned16;           -- kód absolutní relokace
-        relrel_code: t_mod_unsigned16) =         -- kód relativní relokace
-    -- Sestaví relokacni tabulku
-    ------------------------------------------------------------------------------------------------
-    var
-      fixupblocks  : t_unsigned;
-
-    begin
-      -- prazdny seznam relokaci?
-      if relocaddrs:length=0 then return; end if;
-
-      -- zjisti kolik ze to 4-kilovych fixup bloku budeme mit
-      declare var
-        tempaddr   : t_unsigned;
-
-      begin
-        -- alespon jeden 4K fixup blok
-        fixupblocks:=1;
-  
-        -- inicalizuj tempaddr prvni adresou
-        tempaddr:=relocaddrs[1].address;
-        
-        -- projed vsechny adresy
-        for i in relocaddrs:range loop
-          if relocaddrs[i].address-tempaddr>=4096 then
-            tempaddr:=relocaddrs[i].address;
-            
-            -- incrementuj pocet fixup bloku kazdych 4096 bytu
-            succ fixupblocks;
-            end if;
-          end loop;
-        end declare;
-
-      -- alokuj pamet pro zjisteny pocet 4-kilovych bloku
-      new fixups range fixupblocks;
-
-      -- projed vsechny adresy a vygeneruj relokacni informace
-      declare var
-        blockindex : t_unsigned := 0;
-        blockrelocs: t_unsigned;
-        checkrelocs: t_unsigned;                 
-        i          : t_unsigned;
-
-      begin
-        i:=relocaddrs:first;
-        while i<=relocaddrs:length loop
-          verify({VERIFY=}000663,not (blockindex<fixupblocks));
-
-          -- do hlavicky bloku uloz page rva, 
-          fixups^[blockindex].pagerva:=relocaddrs[i].address-base;
-
-          -- zjisti pocet jednotlivych relokaci v tomto bloku
-          declare var
-            k    : t_unsigned;
-          begin
-            k:=i;
-            while k<=relocaddrs:length and then relocaddrs[k].address-relocaddrs[i].address<4096 loop 
-              succ k;
-              end loop;
-            blockrelocs:=k-i;
-            end declare;
-
-          -- alokuj pole typeandoffset poctem jednotlicych relokaci zjistenym v predchozim kroku
-          new fixups^[blockindex].typeandoffset range blockrelocs;
-
-          -- napln typeandoffset jednotlivymi relokacemi
-          declare var
-            k    : t_unsigned;
-          begin
-            k:=i;
-            while k<=relocaddrs:length and then relocaddrs[k].address-relocaddrs[i].address<4096 loop 
-              -- hornich 4 bitu udava typ relokace, zbylych 12 offset od fixups^[blockindex].pagerva
-              fixups^[blockindex].typeandoffset^[k-i]:=t_mod_unsigned16(relocaddrs[k].address-relocaddrs[i].address);
-              case relocaddrs[k].disposition
-                when trd_absolute do fixups^[blockindex].typeandoffset^[k-i] or (absrel_code shl 12);
-                when trd_relative do fixups^[blockindex].typeandoffset^[k-i] or (relrel_code shl 12);
-                end case;
-              succ k;
-              
-              -- kontrolni promenna
-              succ checkrelocs;
-              end loop;
-            i:=k;
-            end declare;
-
-          -- uloz velikost hlavicky bloku a vsech relokaci v bloku do hlavicky 4-K bloku
-          fixups^[blockindex].blocksize:=fixups^[blockindex].pagerva:size+fixups^[blockindex].blocksize:size+blockrelocs*t_unsigned16:size;
-          
-          -- pricist velikost bloku k celkove velikosti PE relokacnich informaci
-          relocdatasize+fixups^[blockindex].blocksize;
-
-          -- dalsi block
-          succ blockindex;      
-          end loop;
-
-        -- pokud checkrelocs se nebude rovnat poctu adres v seznamu relokaci, je chyba v algoritmu teto funkce
-        verify({VERIFY=}000665,checkrelocs<>relocaddrs:length);
-        end declare;
-      end build_relocations;
-
-
-
-    ------------------------------------------------------------------------------------------------
     override create =
     -- Vytvoří image na základě seznamu vyhodnocených prvků.
     ------------------------------------------------------------------------------------------------
@@ -779,7 +298,7 @@ class private linkimage_pe =
 
         --------------------------------------------------------------------------------------------
         procedure get_seg_virtualsize (
-            seg    : in tsegment) 
+            seg    : in t_image_section) 
             return tpesize =
         -- Vypočítá virtuální velikost zadaného segmentu.
         --------------------------------------------------------------------------------------------
@@ -791,7 +310,7 @@ class private linkimage_pe =
 
         --------------------------------------------------------------------------------------------
         procedure get_seg_virtualaddr (
-            seg    : in tsegment) 
+            seg    : in t_image_section) 
             return tperva =
         -- Vypočítá relativní virtuální adresu zadaného segmentu.
         --------------------------------------------------------------------------------------------
@@ -802,13 +321,25 @@ class private linkimage_pe =
 
 
         --------------------------------------------------------------------------------------------
+        #template align_datasize (size);
+        --------------------------------------------------------------------------------------------
+          ((size+filealign-1) div filealign)*filealign
+          #end align_datasize;
+          
+
+
+        --------------------------------------------------------------------------------------------
         procedure get_seg_datasize (
-            seg    : in tsegment) 
+            seg    : in t_image_section;
+            aligned: in t_logical := true) 
             return tperva =
         -- Vypočítá skutečnou velikost zadaného segmentu v souboru.
         --------------------------------------------------------------------------------------------
         begin
-          result:=((unidata_size_to_unsigned(resolver.getsegtotal(seg))+filealign-1) div filealign)*filealign;
+          if aligned
+            then result:=align_datasize(unidata_size_to_unsigned(resolver.getsegtotal(seg)));
+            else result:=unidata_size_to_unsigned(resolver.getsegtotal(seg));
+            end if;
           end get_seg_datasize;
 
 
@@ -834,6 +365,8 @@ class private linkimage_pe =
       sdata_ofs    : tpefileptr;                 -- offset sekce
       srelo        : tpesectheader;              -- sekce: relokace pro operační systém
       srelo_ofs    : tpefileptr;                 -- offset sekce
+      srelo_data   : c_output_stream_passive_buffer; -- data sekce
+      srelo_size   : t_offset;                   -- velikost data sekce
       sflexrelo    : tpesectheader;              -- sekce: relokace pro Flex
       sflexrelo_ofs: tpefileptr;                 -- offset sekce
       sdebug       : tpesectheader;              -- sekce: debug informace
@@ -842,40 +375,14 @@ class private linkimage_pe =
       sicode_ofs   : tpefileptr;                 -- offset sekce
       simport      : tpesectheader;              -- sekce: importy
       simport_ofs  : tpefileptr;                 -- offset sekce
+      sexport      : tpesectheader;              -- sekce: exporty
+      sexport_ofs  : tpefileptr;                 -- offset sekce
       maxrva       : tperva;                     -- maximální dosažená relativní virtuální adr.
-      idir         : ppeidir;                    -- Import Directory Table
-      idirsize     : t_unsigned32;               -- velikost
-      ilookup      : ppeilookup;                 -- Import Lookup Table
-      ilookupsize  : t_unsigned32;               -- velikost
-      iname        : p_unsigned8array;           -- Hint/Name Table
-      inamesize    : t_unsigned32;               -- velikost
+      debuginfo_data : p_unsigned8array;         -- pointer na codeview debug data              
+      debuginfo_size : t_unsigned32;             -- velikost dat v bufferu                      
       os           : p_stream_binary_writer;     -- output stream
       os_bwriter   : aliased c_stream_binary_writer; -- binary writer
       os_buffer    : aliased c_buffered_file_output_stream;  -- output buffered stream
-
-      -- promenne pro export
-      sexport      : tpesectheader;              -- sekce: exporty
-      sexport_ofs  : tpefileptr;                 -- offset sekce
-      edir         : tpeedirentry;
-      eaddr        : ppeeaddrtable;
-      eaddrsize    : t_unsigned32;
-      enameptrs    : ppeenameptrtable;
-      enameptrssize: t_unsigned32;
-      eordinals    : ppeeordtable;
-      eordinalssize: t_unsigned32;
-      enames       : ppeenametable;
-      enamessize   : t_unsigned32;
-
-      -- promenne pro relokace
-      reloctable   : pperelocfixuptable;         -- tabulka PE relokacnich informaci
-      relocdatasize : t_unsigned32;
-
-      debuginfo_data : p_unsigned8array;         -- pointer na codeview debug data              
-      debuginfo_size : t_unsigned32;             -- velikost dat v bufferu                      
-
-    var
-      ofs              : t_unsigned32;
-      x                : array 1..16 of t_unsigned8;
 
     begin
       -- zjistit si bázovou adresu relokací
@@ -886,11 +393,11 @@ class private linkimage_pe =
         f.create(t_fs_object_mode_set:[tfm_write],tfa_random,tfss_not_shared,true);
       catch
         when file_error do
-          ce^.seterror({CCERR=}000377,ce_f_create);
-          --%%FLEX ce^.setparam(f.name);
-          --ce^.raiseerror;
-          --%%TODO(EXCEPTION) Záplata, pokud v catch bloku výjimky E1 vyvolám _nepřímo_ E2, pak E1 zůstane neošetřená (na stacku)
-          raise compiler_error;
+            ce^.seterror({CCERR=}000377,ce_f_create);
+            --%%FLEX ce^.setparam(f.name);
+            --ce^.raiseerror;
+            --%%TODO(EXCEPTION) Záplata, pokud v catch bloku výjimky E1 vyvolám _nepřímo_ E2, pak E1 zůstane neošetřená (na stacku)
+            raise compiler_error;
         end;
 
       -- získat output stream
@@ -940,14 +447,14 @@ class private linkimage_pe =
       pehdr.magic:=magic_pe32;
       pehdr.linkerver.major:=linkver_major;
       pehdr.linkerver.minor:=linkver_minor;
-      pehdr.codetotal :=unidata_size_to_unsigned(resolver.getsegtotal(tseg_code));
-      pehdr.inittotal :=unidata_size_to_unsigned(resolver.getsegtotal(tseg_metadata))
-                       +unidata_size_to_unsigned(resolver.getsegtotal(tseg_const))
-                       +unidata_size_to_unsigned(resolver.getsegtotal(tseg_init));
-      pehdr.datatotal :=unidata_size_to_unsigned(resolver.getsegtotal(tseg_data));
-        pehdr.entrypoint:=unicode_addr_to_unsigned(resolver.getentrypoint)-base;
-      pehdr.codebase  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_code))-base;
-      pehdr.database  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_metadata))-base;
+      pehdr.codetotal :=unidata_size_to_unsigned(resolver.getsegtotal(tis_code));
+      pehdr.inittotal :=unidata_size_to_unsigned(resolver.getsegtotal(tis_flex_metadata))
+                       +unidata_size_to_unsigned(resolver.getsegtotal(tis_constants))
+                       +unidata_size_to_unsigned(resolver.getsegtotal(tis_initialized_data));
+      pehdr.datatotal :=unidata_size_to_unsigned(resolver.getsegtotal(tis_uninitialized_data));
+      pehdr.entrypoint:=unicode_addr_to_unsigned(resolver.getentrypoint)-base;
+      pehdr.codebase  :=unicode_addr_to_unsigned(resolver.getsegbase(tis_code))-base;
+      pehdr.database  :=unicode_addr_to_unsigned(resolver.getsegbase(tis_flex_metadata))-base;
       os^.write_unchecked(pehdr);
 
       -- image base
@@ -991,7 +498,7 @@ class private linkimage_pe =
 
 
       ----- sekce: kód -----------------------------------------------------------------------------
-      if resolver.checkseg(tseg_code) then
+      if resolver.checkseg(tis_code) then
         os^.get_flow(t_offset(scode_ofs));
         scode.name           :={%OFF}'.text'\0\0\0{%ON};
         scode.virtualsize    :=((pehdr.codetotal+sectalign-1) div sectalign)*sectalign;
@@ -1006,7 +513,7 @@ class private linkimage_pe =
 
       #if codeview then;
         if debug_mode=tdit_codeview and debug_info<>nil then
-          p_codeview(debug_info)^.register_segment(tseg_code,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_execute,tcvsf_read],scode.dataptr,scode.datasize);
+          p_codeview(debug_info)^.register_segment(tis_code,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_execute,tcvsf_read],scode.dataptr,scode.datasize);
           end if;
       #end if;
 
@@ -1017,12 +524,12 @@ class private linkimage_pe =
 
 
       ----- sekce: deskriptory typů ----------------------------------------------------------------
-      if resolver.checkseg(tseg_metadata) then
+      if resolver.checkseg(tis_flex_metadata) then
         os^.get_flow(t_offset(smetadata_ofs));
-        smetadata.name       :={%OFF}'METADATA'{%ON};
-        smetadata.virtualsize:=get_seg_virtualsize(tseg_metadata); 
-        smetadata.virtualaddr:=get_seg_virtualaddr(tseg_metadata);
-        smetadata.datasize   :=get_seg_datasize(tseg_metadata);
+        smetadata.name       :={%OFF}'FLEXMETA'{%ON};
+        smetadata.virtualsize:=get_seg_virtualsize(tis_flex_metadata); 
+        smetadata.virtualaddr:=get_seg_virtualaddr(tis_flex_metadata);
+        smetadata.datasize   :=get_seg_datasize(tis_flex_metadata);
         smetadata.dataptr    :=0;
         smetadata.flags      :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ;
@@ -1030,7 +537,7 @@ class private linkimage_pe =
 
       #if codeview then;
         if debug_mode=tdit_codeview and debug_info<>nil then
-          p_codeview(debug_info)^.register_segment(tseg_metadata,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],smetadata.dataptr,smetadata.datasize);
+          p_codeview(debug_info)^.register_segment(tis_flex_metadata,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],smetadata.dataptr,smetadata.datasize);
           end if;
       #end if;
 
@@ -1041,12 +548,12 @@ class private linkimage_pe =
 
 
       ----- sekce: konstanty -----------------------------------------------------------------------
-      if resolver.checkseg(tseg_const) then
+      if resolver.checkseg(tis_constants) then
         os^.get_flow(t_offset(sconst_ofs));
         sconst.name          :={%OFF}'.const'\0\0{%ON};
-        sconst.virtualsize   :=get_seg_virtualsize(tseg_const); 
-        sconst.virtualaddr   :=get_seg_virtualaddr(tseg_const);
-        sconst.datasize      :=get_seg_datasize(tseg_const);
+        sconst.virtualsize   :=get_seg_virtualsize(tis_constants); 
+        sconst.virtualaddr   :=get_seg_virtualaddr(tis_constants);
+        sconst.datasize      :=get_seg_datasize(tis_constants);
         sconst.dataptr       :=0;
         sconst.flags         :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ;
@@ -1054,7 +561,7 @@ class private linkimage_pe =
 
       #if codeview then;
         if debug_mode=tdit_codeview and debug_info<>nil then
-          p_codeview(debug_info)^.register_segment(tseg_const,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],sconst.dataptr,sconst.datasize);
+          p_codeview(debug_info)^.register_segment(tis_constants,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],sconst.dataptr,sconst.datasize);
           end if;
       #end if;
 
@@ -1065,12 +572,12 @@ class private linkimage_pe =
 
 
       ----- sekce: inicializovaná data -------------------------------------------------------------
-      if resolver.checkseg(tseg_init) then
+      if resolver.checkseg(tis_initialized_data) then
         os^.get_flow(t_offset(sinit_ofs));
         sinit.name           :={%OFF}'.data'\0\0\0{%ON};
-        sinit.virtualsize    :=get_seg_virtualsize(tseg_init); 
-        sinit.virtualaddr    :=get_seg_virtualaddr(tseg_init);
-        sinit.datasize       :=get_seg_datasize(tseg_init);
+        sinit.virtualsize    :=get_seg_virtualsize(tis_initialized_data); 
+        sinit.virtualaddr    :=get_seg_virtualaddr(tis_initialized_data);
+        sinit.datasize       :=get_seg_datasize(tis_initialized_data);
         sinit.dataptr        :=0;
         sinit.flags          :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ
@@ -1079,7 +586,7 @@ class private linkimage_pe =
 
       #if codeview then;
         if debug_mode=tdit_codeview and debug_info<>nil then
-          p_codeview(debug_info)^.register_segment(tseg_init,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read,tcvsf_write],sinit.dataptr,sinit.datasize);
+          p_codeview(debug_info)^.register_segment(tis_initialized_data,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read,tcvsf_write],sinit.dataptr,sinit.datasize);
           end if;                    
       #end if;
 
@@ -1090,11 +597,11 @@ class private linkimage_pe =
       
       
       ----- sekce: neinicializovaná data -----------------------------------------------------------
-      if resolver.checkseg(tseg_data) then
+      if resolver.checkseg(tis_uninitialized_data) then
         os^.get_flow(t_offset(sdata_ofs));
         sdata.name           :={%OFF}'.bss'\0\0\0\0{%ON};
-        sdata.virtualsize    :=get_seg_virtualsize(tseg_data); 
-        sdata.virtualaddr    :=get_seg_virtualaddr(tseg_data);
+        sdata.virtualsize    :=get_seg_virtualsize(tis_uninitialized_data); 
+        sdata.virtualaddr    :=get_seg_virtualaddr(tis_uninitialized_data);
         sdata.datasize       :=0;
         sdata.dataptr        :=0;
         sdata.flags          :=IMAGE_SCN_CNT_UNINITIALIZED_DATA
@@ -1104,7 +611,7 @@ class private linkimage_pe =
 
       #if codeview then;
         if debug_mode=tdit_codeview and debug_info<>nil then
-          p_codeview(debug_info)^.register_segment(tseg_data,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read,tcvsf_write],sdata.dataptr,sdata.datasize);
+          p_codeview(debug_info)^.register_segment(tis_uninitialized_data,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read,tcvsf_write],sdata.dataptr,sdata.datasize);
           end if;
       #end if;
 
@@ -1125,9 +632,9 @@ class private linkimage_pe =
       ----- sekce: Import Address Table (povinné) --------------------------------------------------
       os^.get_flow(t_offset(sicode_ofs));
       sicode.name            :={%OFF}'.icode'\0\0{%ON};
-      sicode.virtualsize     :=get_seg_virtualsize(tseg_import); 
-      sicode.virtualaddr     :=get_seg_virtualaddr(tseg_import);
-      sicode.datasize        :=0;
+      sicode.virtualsize     :=get_seg_virtualsize(tis_import_table); 
+      sicode.virtualaddr     :=get_seg_virtualaddr(tis_import_table);
+      sicode.datasize        :=get_seg_datasize(tis_import_table);
       sicode.dataptr         :=0;
       sicode.flags           :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ
@@ -1141,32 +648,27 @@ class private linkimage_pe =
       ----- sekce: importy (povinné) ---------------------------------------------------------------
       os^.get_flow(t_offset(simport_ofs));
       simport.name           :={%OFF}'.idata'\0\0{%ON};
-      simport.virtualsize    :=0;
-      simport.virtualaddr    :=maxrva;
-      simport.datasize       :=0;
+      simport.virtualsize    :=get_seg_virtualsize(tis_import_metadata);
+      simport.virtualaddr    :=get_seg_virtualaddr(tis_import_metadata);
+      simport.datasize       :=get_seg_datasize(tis_import_metadata);
       simport.dataptr        :=0;
       simport.flags          :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ
                             or IMAGE_SCN_MEM_WRITE;
       os^.write_unchecked(simport);
       succ coff.sectioncount;
-
-      -- sestavit importní tabulky
-      buildimport(resolver.import,simport.virtualaddr,sicode.virtualaddr,idir,idirsize,ilookup,ilookupsize,iname,inamesize);
-
-      -- velikost importních tabulek
-      simport.virtualsize:=((idirsize+ilookupsize+inamesize+sectalign-1) div sectalign)*sectalign;
       maxrva:=max_unsigned(maxrva,((simport.virtualaddr+simport.virtualsize+sectalign-1) div sectalign)*sectalign);
 
-
+                                                                       
 
       ----- sekce: exporty -------------------------------------------------------------------------
-      if sys_export_list.count>0 or library then
+      if resolver.checkseg(tis_export_metadata) then
+    --if {!!section} sys_export_list.count>0 or library then
         os^.get_flow(t_offset(sexport_ofs));
         sexport.name           :={%OFF}'.edata'\0\0{%ON};
-        sexport.virtualsize    :=0;
-        sexport.virtualaddr    :=maxrva;
-        sexport.datasize       :=0;
+        sexport.virtualsize    :=get_seg_virtualsize(tis_export_metadata);
+        sexport.virtualaddr    :=get_seg_virtualaddr(tis_export_metadata);
+        sexport.datasize       :=get_seg_datasize(tis_export_metadata);
         sexport.dataptr        :=0;
         sexport.flags          :=IMAGE_SCN_CNT_INITIALIZED_DATA
                               or IMAGE_SCN_MEM_READ
@@ -1174,22 +676,36 @@ class private linkimage_pe =
                               
         os^.write_unchecked(sexport);
         succ coff.sectioncount;
-
-        -- sestavit exportni tabulky
-        buildexport(base,sys_export_list,sexport.virtualaddr,edir,eaddr,eaddrsize,enameptrs,enameptrssize,eordinals,eordinalssize,enames,enamessize);
-
-        -- velikost exportnich tabulek
-        sexport.virtualsize:=max_unsigned(tpeedirentry:size+eaddrsize+enameptrssize+eordinalssize+enamessize, ((tpeedirentry:size+eaddrsize+enameptrssize+eordinalssize+enamessize-1) div sectalign)*sectalign);
         maxrva:=max_unsigned(maxrva,((sexport.virtualaddr+sexport.virtualsize+sectalign-1) div sectalign)*sectalign);
         end if;
 
 
       
+      ----- sekce: relokace Flex (nepovinné) -------------------------------------------------------
+      if resolver.checkseg(tis_flex_relocations) then
+    --if {!!section} curr_partition_type<>part_standalone then
+        os^.get_flow(t_offset(sflexrelo_ofs));
+        sflexrelo.name         :={%OFF}'FLEXRELO'{%ON};
+        sflexrelo.virtualsize  :=get_seg_virtualsize(tis_flex_relocations); 
+        sflexrelo.virtualaddr  :=get_seg_virtualaddr(tis_flex_relocations);
+        sflexrelo.datasize     :=get_seg_datasize(tis_flex_relocations);
+        sflexrelo.dataptr      :=0;
+        sflexrelo.flags        :=IMAGE_SCN_CNT_INITIALIZED_DATA
+                              or IMAGE_SCN_MEM_DISCARDABLE
+                              or IMAGE_SCN_MEM_READ;
+        os^.write_unchecked(sflexrelo);
+        succ coff.sectioncount;
+        maxrva:=max_unsigned(maxrva,((sflexrelo.virtualaddr+sflexrelo.virtualsize+sectalign-1) div sectalign)*sectalign);
+        end if;
+
+
+
       ----- sekce: relokace (povinné) --------------------------------------------------------------
+      {!!section if ... then }
       os^.get_flow(t_offset(srelo_ofs));
       srelo.name             :={%OFF}'.reloc'\0\0{%ON};
-      srelo.virtualsize      :=0;
-      srelo.virtualaddr      :=maxrva;
+      srelo.virtualsize      :=0;      {!!section}
+      srelo.virtualaddr      :=maxrva; {!!section}
       srelo.datasize         :=0;
       srelo.dataptr          :=0;
       srelo.flags            :=IMAGE_SCN_CNT_INITIALIZED_DATA
@@ -1200,40 +716,33 @@ class private linkimage_pe =
       succ coff.sectioncount;
 
       declare var
-        relocations : p_relocations;
+        relocations  : p_relocations;
+        srelo_writer : c_stream_binary_writer;
+        
       begin
+        -- inicializovat writer
+        srelo_writer.init_writer(^c_output_stream:(srelo_data));
+        
         -- načíst setříděný seznam relokačních informací pro aktuální partition
         resolver.get_sorted_relocations_by_partition_id(curr_partition,relocations);
 
         -- mame nejake relokacni informace ?
         if relocations<>nil then
           -- sestav
-          build_relocations(base,relocations^,reloctable,relocdatasize,for absrel_code use IMAGE_REL_BASED_HIGHLOW,for relrel_code use nil);
+          p_link_resolver_image_specific_pe(^image_specific)^.build_pe_relocations(srelo_writer,relocations^);
           end if;
+          
+        -- konec dat
+        c_output_stream:(srelo_data).write_eod;
         end declare;
-
+    
       -- minimální velikost
-      if relocdatasize<sectalign then srelo.virtualsize:=sectalign; else srelo.virtualsize:=relocdatasize; end if;
+      c_output_stream:(srelo_data).get_flow(srelo_size);
+      srelo.datasize:=align_datasize(srelo_size);
+      srelo.virtualsize:=((srelo_size+sectalign-1) div sectalign)*sectalign;
       maxrva:=max_unsigned(maxrva,((srelo.virtualaddr+srelo.virtualsize+sectalign-1) div sectalign)*sectalign);
 
-
-
-      ----- sekce: relokace Flex (nepovinné) -------------------------------------------------------
-      if curr_partition_type<>part_standalone then
-        os^.get_flow(t_offset(sflexrelo_ofs));
-        sflexrelo.name         :={%OFF}'FLEXRELO'{%ON};
-        sflexrelo.virtualsize  :=0;
-        sflexrelo.virtualaddr  :=maxrva;
-        sflexrelo.datasize     :=0;
-        sflexrelo.dataptr      :=0;
-        sflexrelo.flags        :=IMAGE_SCN_CNT_INITIALIZED_DATA
-                              or IMAGE_SCN_MEM_DISCARDABLE
-                              or IMAGE_SCN_MEM_READ;
-        os^.write_unchecked(sflexrelo);
-        succ coff.sectioncount;
-        end if;
-
-
+  
 
       ----- sekce: debug  --------------------------------------------------------------------------
       if debug_info<>nil then
@@ -1260,31 +769,32 @@ class private linkimage_pe =
       falign(os,filealign);
       os^.get_flow(t_offset(winhdr.hdrsize));
 
+
       -- kód
-      if resolver.checkseg(tseg_code) then
+      if resolver.checkseg(tis_code) then
         os^.get_flow(t_offset(scode.dataptr));
-        resolver.writesegment(tseg_code,os);
+        resolver.write_section(tis_code,os);
         falign(os,filealign);
         end if;
 
-      -- deskriptory typů
-      if resolver.checkseg(tseg_metadata) then
+      -- Flex metadata
+      if resolver.checkseg(tis_flex_metadata) then
         os^.get_flow(t_offset(smetadata.dataptr));
-        resolver.writesegment(tseg_metadata,os);
+        resolver.write_section(tis_flex_metadata,os);
         falign(os,filealign);
         end if;
 
       -- konstanty
-      if resolver.checkseg(tseg_const) then
+      if resolver.checkseg(tis_constants) then
         os^.get_flow(t_offset(sconst.dataptr));
-        resolver.writesegment(tseg_const,os);
+        resolver.write_section(tis_constants,os);
         falign(os,filealign);
         end if;
 
       -- inicializovaná data
-      if resolver.checkseg(tseg_init) then
+      if resolver.checkseg(tis_initialized_data) then
         os^.get_flow(t_offset(sinit.dataptr));
-        resolver.writesegment(tseg_init,os);
+        resolver.write_section(tis_initialized_data,os);
         falign(os,filealign);
         end if;
 
@@ -1293,71 +803,44 @@ class private linkimage_pe =
 
       -- importní tabulky (1)
       os^.get_flow(t_offset(sicode.dataptr));
-      sicode.datasize:=((ilookupsize+filealign-1) div filealign)*filealign;
-      if ilookup<>nil then
-        os^.write_unchecked_part(ilookup^,ilookupsize);
-        end if;
+      resolver.write_section(tis_import_table,os);
       falign(os,filealign);
+      dir.iat.rva:=sicode.virtualaddr;
+      dir.iat.size:=get_seg_datasize(tis_import_table,false);{simport.virtualsize;}
 
       -- importní tabulky (2)
       os^.get_flow(t_offset(simport.dataptr));
-      simport.datasize:=((idirsize+ilookupsize+inamesize+filealign-1) div filealign)*filealign;
-      if idir<>nil then
-        os^.write_unchecked_part(idir^,idirsize);
-        end if;
-      if ilookup<>nil then
-        os^.write_unchecked_part(ilookup^,ilookupsize);
-        end if;
-      if iname<>nil then
-        os^.write_unchecked_part(iname^,inamesize);
-        end if;
+      resolver.write_section(tis_import_metadata,os);
       falign(os,filealign);
-
       dir.import.rva:=simport.virtualaddr;
-      dir.import.size:=simport.virtualsize;{sectalign;}
-
-      -- exportni tabulky
-      if sys_export_list.count>0 or library then
+      dir.import.size:=get_seg_datasize(tis_import_metadata,false);{simport.virtualsize;}
+      
+      -- exportní tabulky
+      if resolver.checkseg(tis_export_metadata) then
         os^.get_flow(t_offset(sexport.dataptr));
-        sexport.datasize:=((tpeedirentry:size+eaddrsize+enameptrssize+eordinalssize+enamessize+filealign-1) div filealign)*filealign;
-        os^.write_unchecked_part(edir,tpeedirentry:size);
-        if eaddr<>nil then
-          os^.write_unchecked_part(eaddr^,eaddrsize);
-          end if;
-        if enameptrs<>nil then
-          os^.write_unchecked_part(enameptrs^,enameptrssize);
-          end if;
-        if eordinals<>nil then
-          os^.write_unchecked_part(eordinals^,eordinalssize);
-          end if;
-        if enames<>nil then
-          os^.write_unchecked_part(enames^,enamessize);
-          end if;
-
+        resolver.write_section(tis_export_metadata,os);
         falign(os,filealign);
-
         dir.export.rva:=sexport.virtualaddr;
-        dir.export.size:=sexport.virtualsize;
+        dir.export.size:=get_seg_datasize(tis_export_metadata,false);{sexport.virtualsize;}
         end if;
-      
-      -- relokace
-      os^.get_flow(t_offset(srelo.dataptr));
-      srelo.datasize:=relocdatasize;
-      
-      if reloctable<>nil then    
-        for i in reloctable^:range loop
-          os^.write_unchecked_part(reloctable^[i].pagerva,reloctable^[i].pagerva:size);
-          os^.write_unchecked_part(reloctable^[i].blocksize,reloctable^[i].blocksize:size);
-          for k in reloctable^[i].typeandoffset^:range loop
-            os^.write_unchecked_part(reloctable^[i].typeandoffset^[k],reloctable^[i].typeandoffset^[k]:size);
-            end loop;
-          end loop;
+     
+      -- Flex relokace
+      if resolver.checkseg(tis_flex_relocations) then
+        os^.get_flow(t_offset(sflexrelo.dataptr));
+        resolver.write_section(tis_flex_relocations,os);
+        falign(os,filealign);
         end if;
-      
-      falign(os,filealign);
 
+      -- relokace 
+      os^.get_flow(t_offset(srelo.dataptr));
+      -- %%TODO(LIB) Nepoužívat přímo [_target] ale nějaké [get_target_stream]
+      os^.set_lazy_buffer(false);
+      srelo_data.transfer_buffered_packets(os^._target); 
+      c_output_stream:(srelo_data).close;
+      os^.set_lazy_buffer(true);
+      falign(os,filealign);
       dir.baserelo.rva:=srelo.virtualaddr;
-      dir.baserelo.size:=sectalign;
+      dir.baserelo.size:=srelo_size;{srelo.virtualsize;}
 
     #if codeview then;
       if debug_info<>nil and debug_mode=tdit_codeview then
@@ -1368,7 +851,7 @@ class private linkimage_pe =
         os^.write_unchecked_part(p_codeview(debug_info)^.pe_dir_entry,p_codeview(debug_info)^.pe_dir_entry:size);
         falign(os,filealign);
 
-        dir.debuginfo.rva:=sdebug.virtualaddr;{sdebug.dataptr;}
+        dir.debuginfo.rva:=sdebug.virtualaddr;
         dir.debuginfo.size:={sectalign}28;
         end if;
     #end if;
@@ -1378,39 +861,47 @@ class private linkimage_pe =
       
       os_bwriter.set_lazy_buffer(false);
       os_bwriter.flush;
-      os_buffer.close;
-
+      os_bwriter.close;
+      
       -- opravit offset PE hlavičky zapsaný ve stubu
-      ofs:=stub:size;
-      f.write(peptrofs,ofs,ofs:size);
+      declare var
+        ofs        : t_unsigned32;
+      begin
+        ofs:=stub:size;
+        f.write(peptrofs,ofs,ofs:size);
+        end declare;
 
       -- zpětně přepsat změněné hlavičky
       f.write(coff_ofs,coff,coff:size);
       f.write(pehdr_ofs,pehdr,pehdr:size);
       f.write(winhdr_ofs,winhdr,winhdr:size);
       f.write(dir_ofs,dir,dir:size);
-      if resolver.checkseg(tseg_code) then
+      if resolver.checkseg(tis_code) then
         f.write(scode_ofs,scode,scode:size);
         end if;
-      if resolver.checkseg(tseg_metadata) then
+      if resolver.checkseg(tis_flex_metadata) then
         f.write(smetadata_ofs,smetadata,smetadata:size);
         end if;
-      if resolver.checkseg(tseg_const) then
+      if resolver.checkseg(tis_constants) then
         f.write(sconst_ofs,sconst,sconst:size);
         end if;
-      if resolver.checkseg(tseg_init) then
+      if resolver.checkseg(tis_initialized_data) then
         f.write(sinit_ofs,sinit,sinit:size);
         end if;
-      if resolver.checkseg(tseg_data) then
+      if resolver.checkseg(tis_uninitialized_data) then
         f.write(sdata_ofs,sdata,sdata:size);
         end if;
       f.write(srelo_ofs,srelo,srelo:size);
       f.write(sicode_ofs,sicode,sicode:size);
       f.write(simport_ofs,simport,simport:size);
-      if sys_export_list.count>0 or library then
+      if resolver.checkseg(tis_export_metadata) then
+    --if sys_export_list.count>0 or library then
         f.write(sexport_ofs,sexport,sexport:size);
         end if;
-
+      if resolver.checkseg(tis_flex_relocations) then
+        f.write(sflexrelo_ofs,sflexrelo,sflexrelo:size);
+        end if;
+        
       if debug_info<>nil then
         f.write(sdebug_ofs,sdebug,sdebug:size);
 
@@ -1439,6 +930,663 @@ class private linkimage_pe =
     begin
       end info;
     
-    end linkimage_pe;
+    end c_link_image_pe;
+    
+    
+    
+----------------------------------------------------------------------------------------------------
+class private c_link_resolver_image_specific_pe = 
+-- Vyhodnocovač sekcí specifických pro různé druhy image souborů: Portable Executable.
+----------------------------------------------------------------------------------------------------
+      
+    var
+      imagebase    : t_unsigned32;               -- image base výsledného souboru
+                 
+    ------------------------------------------------------------------------------------------------
+    static init =
+    -- Inicializace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      this.imagebase:=unicode_addr_to_unsigned(imagebase);
+      end init;
+      
+      
+
+    ------------------------------------------------------------------------------------------------
+    override build_import_table_and_metadata =
+    -- Sestaví importní tabulky.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_binding;
+      
+    type  
+      -- Import Directory Entry
+      tpeidirentry     = record
+          ilt          : tperva;                 -- Import Lookup Table
+          datetime     : t_unsigned32;           -- 0 (datim knihovny)
+          forwarder    : t_unsigned32;           -- forwarder chain
+          name         : tperva;                 -- jméno knihovny
+          iat          : tperva;                 -- Import Address Table
+          end record;
+      tpeidir          = array of tpeidirentry;
+      ppeidir          = ^tpeidir;
+
+      -- Import Lookup Table
+      tpeilookupentry  = record
+          {%%TODO(POSITION)}
+        --typ          : t_unsigned32 for position use 0; -- 0=by name, $8000_0000=by ordinal
+          addr         : t_unsigned32 {for position use 0}; -- adresa Hint-name Tbl/ord. hodnota
+          end record
+              for alignment use 1
+              for size      use 4;
+      tpeilookup       = array of tpeilookupentry;
+      ppeilookup       = ^tpeilookup;
+
+      -- Hint-Name Table
+      tpeiname         = record
+          hint         : t_unsigned16;           -- 0
+          name         : array 0..255 of t_char8;-- jméno, \0
+          end record;
+
+    var  
+      dir          : ppeidir;                    -- Import Directory Table
+      idirsize     : t_unsigned32;               -- velikost
+      lookup       : ppeilookup;                 -- Import Lookup Table
+      ilookupsize  : t_unsigned32;               -- velikost
+      name         : p_char8uarray;              -- Hint/Name Table
+      inamesize    : t_unsigned32;               -- velikost
+
+    var
+      nindex       : t_unsigned;                 -- index do NAME
+
+        --------------------------------------------------------------------------------------------
+        procedure add_name (
+            xname  : in t_external_entity_ident) =
+        -- Do tabulky jmen [name] doplni zadané jméno [xname].
+        --------------------------------------------------------------------------------------------
+        begin
+          for i in xname:range loop
+            name^[nindex]:=xname[i];
+            nindex+1;
+            end loop;
+          nindex+{\0}1;
+          if is_odd_unsigned(nindex) then nindex+{pad}1; end if;
+          end add_name;
+
+    var
+      libcount     : t_unsigned;                 -- počet knihoven
+      lookupcount  : t_unsigned;                 -- počet lookup záznamů
+      namelen      : t_unsigned;                 -- paměť potřebná pro jména
+      lindex       : t_unsigned;                 -- index do DIR
+      pindex       : t_unsigned;                 -- index do LOOKUP
+      pbase        : t_unsigned32;               -- bázová adresa LOOKUP
+      nbase        : t_unsigned32;               -- bázová adresa NAME
+
+    begin
+      -- není co řešit
+      if import.list=nil or else import.list^:length=0 then 
+        return; 
+        end if;
+
+      -- spočítat knihovny
+      libcount:=0;
+      lookupcount:=0;
+      namelen:=0;
+      for i in import.list^:range loop
+        declare var
+          import_info : pimportinfo;             -- importní informace aktuální entity
+
+        begin
+          -- pro zjednodušení si zjistit importní informace aktuální entity
+          import_info:=get_import_info(import.list^[i],^resolver.aux_registry);
+      
+          -- změna knihovny, započítat
+          if i=import.list^:first or else pimportinfo(get_import_info(import.list^[i-1],^resolver.aux_registry))^.libname^<>import_info^.libname^ then
+            -- započítat délku jména knihovny (zarovnání 2)
+            namelen+((import_info^.libname^:length+{\0}1+{pad}1) div 2)*2;
+
+            -- další knihovna
+            succ libcount;
+
+            -- prázdný lookup záznam
+            if i>import.list^:first then succ lookupcount; end if;
+            end if;
+
+          -- započítat délku jména (zarovnání 2)
+          namelen+{hint}2+((import_info^.extname^:length+{\0}1+{pad}1) div 2)*2;
+          end declare;
+
+        -- započítat lookup záznam
+        succ lookupcount;
+        end loop;
+
+      -- započítat mezery na konci seznamů
+      succ libcount;
+      succ lookupcount;
+
+      -- alokovat paměť
+      idirsize:=tpeidirentry:size*libcount;
+      new dir range libcount;
+      ilookupsize:=tpeilookupentry:size*lookupcount;
+      new lookup range lookupcount;
+      inamesize:=namelen;
+      new name range namelen;
+
+      -- sestavit tabulky
+      lindex:=0;
+      pindex:=0;
+      nindex:=0;
+      pbase:=unicode_addr_to_unsigned(base_metadata)-imagebase+libcount*tpeidirentry:size;
+      nbase:=pbase+tpeilookupentry:size*lookupcount;
+      for i in import.list^:range loop 
+        declare var
+          import_info : pimportinfo;             -- importní informace aktuální entity
+          
+        begin  
+          -- pro zjednodušení si zjistit importní informace aktuální entity
+          import_info:=get_import_info(import.list^[i],^resolver.aux_registry);
+
+          -- změnila se knihovna, vygenerovat pro ni záznam
+          if i=import.list^:first or pimportinfo(get_import_info(import.list^[i-1],^resolver.aux_registry))^.libname^<>import_info^.libname^ then
+            -- mezera za předchozí knihovnou v LOOKUP
+            if i>import.list^:first then succ pindex; end if;
+
+            -- deskriptor knihovny
+            dir^[lindex].ilt :=pbase+pindex*tpeilookupentry:size;
+            dir^[lindex].name:=nbase+nindex;
+            dir^[lindex].iat :=unicode_addr_to_unsigned(base_table)-imagebase+pindex*tpeilookupentry:size;
+
+            -- doplnit jméno knihovny
+            add_name(import_info^.libname^);
+
+            -- další knihovna
+            succ lindex;
+            end if;
+
+          -- deskriptor procedury
+          lookup^[pindex].addr:=nbase+nindex;
+
+          -- hint: 0
+          nindex+2;
+
+          -- doplnit jméno procedury
+          add_name(import_info^.extname^);
+          end declare;
+
+        -- další procedura
+        succ pindex;
+        end loop;
+
+    commit
+      verify({VERIFY=}001345,dir   =nil and then idirsize   <>0);
+      verify({VERIFY=}001346,lookup=nil and then ilookupsize<>0);
+      verify({VERIFY=}001347,name  =nil and then inamesize  <>0);
+
+      -- zapsat data sekce importní tabulky
+      section_table.write_unchecked(lookup^);
+
+      -- zapsat data sekce importních metadat
+      section_metadata.write_unchecked(dir^);
+      section_metadata.write_unchecked(lookup^);
+      section_metadata.write_unchecked(name^);
+
+    leave
+      -- uvolnit pracovní paměť
+      discard dir;
+      discard lookup;
+      discard name;
+      end build_import_table_and_metadata;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override build_export_metadata =
+    -- Sestaví exportní tabulky.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_binding,
+      cg_gen.cg_ia32.ci_def;
+
+    type
+      -- Export Directory Entry
+      tpeedirentry     = record
+          exportflags  : t_mod_unsigned32;       -- reserved, set to 0
+          datetime     : t_unsigned32;           -- time and date when the export data was created
+          majver       : t_unsigned16;           -- major version
+          minver       : t_unsigned16;           -- minor version
+          namerva      : tperva;                 -- address of the ASCII containing the DLL name 
+          ordbase      : t_unsigned32;           -- starting ordinal for the exports
+          addrtblentrs : t_unsigned32;           -- number of entries in the Export Address Table
+          numnameptr   : t_unsigned32;           -- number of entries in the Name Pointer and Ordinal Table
+          expaddrtblrva: tperva;                 -- address of the Export Address Table
+          nameptrrva   : tperva;                 -- address of the Export Name Pointer
+          ordtblrva    : tperva;                 -- address of the Ordinal Table
+          end record
+              for alignment use 1;
+
+      -- Export Address Table
+      tpeeaddrentry    = tperva;                 -- address of the exported symbol when loaded into memory
+
+      tpeeaddrtable    = array of tpeeaddrentry;
+      ppeeaddrtable    = ^tpeeaddrtable;
+
+      -- Export Name Pointer Table
+      tpeenameptrentry = tperva;                 -- rva into Export Name Table, ordered lexically
+      tpeenameptrtable = array of tpeenameptrentry;
+      ppeenameptrtable = ^tpeenameptrtable;
+
+      -- Export Ordinal Table
+      tpeeordentry     = t_unsigned16;           -- index into Export Address Table
+      tpeeordtable     = array of tpeeordentry;
+      ppeeordtable     = ^tpeeordtable;
+        
+      -- Export Name Table
+      tpeenametable    = array of t_char8;       -- list of ascii null-terminated exported names
+      ppeenametable    = ^tpeenametable;
+
+      -- %%TECH Algorithm for finding exported symbol's address:
+      -- i = Search_ExportNamePointerTable (ExportName);
+      -- ordinal = ExportOrdinalTable [i];
+      -- SymbolRVA = ExportAddressTable [ordinal - OrdinalBase];
+    
+    var
+      dir          : tpeedirentry;               -- Export Directory Table (obsahuje jen jeden zaznam)
+      addr         : ppeeaddrtable;       
+      addrsize     : t_unsigned32;
+      nameptrs     : ppeenameptrtable;
+      nameptrssize : t_unsigned32;
+      ordinals     : ppeeordtable;
+      ordinalssize : t_unsigned32;
+      names        : ppeenametable;
+      namessize    : t_unsigned32;
+      
+        --------------------------------------------------------------------------------------------
+        procedure add_name (
+            name        : in t_external_entity_ident;
+            names       : in ppeenametable;
+            names_index : in out t_unsigned32) =
+        -- Do jmen [names] doplni zadané jméno [name] na pozici [names_index], kterou updateuje
+        --------------------------------------------------------------------------------------------
+        begin
+          for i in name:range loop
+            names^[names_index]:=t_char8(name[i]);
+            names_index+1;
+            end loop;
+          names_index+{\0}1;
+          end add_name;
+      
+    var
+      expnameslength  : t_unsigned32;
+      expnum          : t_unsigned32; -- pocet exportu
+      curraddr        : t_unsigned32;
+      n               : t_unsigned32;
+
+    const                 
+      -- %%TODO(DLL) - dllname nahradit jmenem souboru linkimage
+      dllname         = {: t_char32str :=} 'main.dll';
+
+    begin
+      -- osetrit vstup. parametry
+      if export.count<=0 or export.list=nil then return; end if;
+
+      -- pocet exportu
+      expnum:=export.count;
+
+      -- suma velikosti exportnich jmen
+      expnameslength:=0;
+      for i in export.list^:range loop
+        -- započítat délku vlastního jméno a koncovou nulu
+        expnameslength+pexportinfo(get_export_info(export.list^[i]))^.export_name^:length+1;
+        end loop;
+
+      expnameslength+dllname:length+1;
+
+      dir.exportflags:=0;
+      dir.datetime:=0;
+      dir.majver:=0;
+      dir.minver:=0;
+      dir.namerva:=0;
+      dir.ordbase:=1;
+      dir.addrtblentrs:=expnum;
+      dir.numnameptr:=expnum;
+
+      new addr range expnum;
+      addrsize:=tpeeaddrentry:size*expnum;
+
+      new ordinals range expnum;
+      ordinalssize:=tpeeordentry:size*expnum;
+
+      new nameptrs range expnum;
+      nameptrssize:=tpeenameptrentry:size*expnum;
+
+      new names range expnameslength;
+      namessize:=expnameslength;
+
+      dir.expaddrtblrva:=unicode_addr_to_unsigned(base_addr)-imagebase+tpeedirentry:size;
+      dir.nameptrrva:=dir.expaddrtblrva+addrsize;
+      dir.ordtblrva:=dir.nameptrrva+nameptrssize;
+      n:=0;
+
+      -- jmeno dllka
+      dir.namerva:=dir.ordtblrva+ordinalssize;
+      add_name(dllname,names,n);
+
+      for i in export.list^:range loop
+        -- export address table
+        addr^[i-1]:=i_get_entity_instance_address(export.list^[i])-imagebase;
+
+        -- name ptr table and names
+        nameptrs^[i-1]:=dir.ordtblrva+ordinalssize+n;
+        add_name(pexportinfo(get_export_info(export.list^[i]))^.export_name^,names,n);
+
+        -- ord table
+        ordinals^[i-1]:=i;
+        ordinals^[i-1]-1; {%%TODO(DYNAMIC_CHECK) záplata kvůli rozsahu i od 1 do N }
+        end loop;
+
+    commit
+      verify({VERIFY=}001348,addr    =nil and then addrsize    <>0);
+      verify({VERIFY=}001349,nameptrs=nil and then nameptrssize<>0);
+      verify({VERIFY=}001350,ordinals=nil and then ordinalssize<>0);
+      verify({VERIFY=}001351,names   =nil and then namessize   <>0);
+
+      -- zapsat data sekce exportních metadat
+      section.write_unchecked(dir);
+      section.write_unchecked(addr^);
+      section.write_unchecked(nameptrs^);
+      section.write_unchecked(ordinals^);
+      section.write_unchecked(names^);
+
+    leave
+      -- uvolnit pracovní paměť
+      discard addr;
+      discard nameptrs;
+      discard ordinals;
+      discard names;
+      end build_export_metadata;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static build_relocations_internal (
+        section    : in out c_stream_binary_writer; -- zapisovač data sekce
+        relocaddrs : in t_relocations;           -- setrideny seznam adres na kterych je treba provest relokaci
+        absrel_code: in t_mod_unsigned16;        -- kód absolutní relokace
+        relrel_code: in t_mod_unsigned16;        -- kód relativní relokace
+        null_term  : in t_logical := false) =    -- null-terminated sekvence fixup bloku
+    -- Sestaví relokační tabulku parametrizovanou buď pro PE nebo pro Flex relokace.
+    ------------------------------------------------------------------------------------------------
+    type  
+      -- reloc fixup block
+      tperelocfixupblock = record
+          pagerva        : tperva;               -- start RVA of the 4K fixup block
+          blocksize      : t_unsigned32;         -- total size of this record + all block size fields
+          typeandoffset  : ^array of t_mod_unsigned16; -- block size fields
+                                                 -- type of the fixup stored in high 4 bits
+                                                 -- offset into the 4K page where the fixup is to be applied  
+                                                 -- stored in the remaining 12 bits of the t_unsigned16
+          end record
+              for alignment use 1;
+
+      -- reloc fixup block table
+      tperelocfixuptable = array of tperelocfixupblock;
+      pperelocfixuptable = ^tperelocfixuptable;
+
+    var
+      fixups     : pperelocfixuptable;           -- PE relokacni informace
+      relocdatasize : t_unsigned32;              -- celkova velikost PE relokacnich informaci
+    
+    var
+      fixupblocks  : t_unsigned;
+
+    begin
+      -- prazdny seznam relokaci?
+      if relocaddrs:length=0 then return; end if;
+
+      -- zjisti kolik ze to 4-kilovych fixup bloku budeme mit
+      declare var
+        tempaddr   : t_unsigned;
+
+      begin
+        -- alespon jeden 4K fixup blok
+        fixupblocks:=1;
+  
+        -- inicalizuj tempaddr prvni adresou
+        tempaddr:=relocaddrs[1].address;
+        
+        -- projed vsechny adresy
+        for i in relocaddrs:range loop
+          if relocaddrs[i].address-tempaddr>=4096 then
+            tempaddr:=relocaddrs[i].address;
+            
+            -- incrementuj pocet fixup bloku kazdych 4096 bytu
+            succ fixupblocks;
+            end if;
+          end loop;
+        end declare;
+
+      -- alokuj pamet pro zjisteny pocet 4-kilovych bloku
+      new fixups range fixupblocks;
+
+      -- projed vsechny adresy a vygeneruj relokacni informace
+      declare var
+        blockindex : t_unsigned := 0;
+        blockrelocs: t_unsigned;
+        checkrelocs: t_unsigned;                 
+        i          : t_unsigned;
+
+      begin
+        i:=relocaddrs:first;
+        while i<=relocaddrs:length loop
+          verify({VERIFY=}001352,not (blockindex<fixupblocks));
+
+          -- do hlavicky bloku uloz page rva, 
+          fixups^[blockindex].pagerva:=relocaddrs[i].address-imagebase;
+
+          -- zjisti pocet jednotlivych relokaci v tomto bloku
+          declare var
+            k    : t_unsigned;
+          begin
+            k:=i;
+            while k<=relocaddrs:length and then relocaddrs[k].address-relocaddrs[i].address<4096 loop 
+              succ k;
+              end loop;
+            blockrelocs:=k-i;
+            end declare;
+
+          -- alokuj pole typeandoffset poctem jednotlicych relokaci zjistenym v predchozim kroku
+          new fixups^[blockindex].typeandoffset range blockrelocs;
+
+          -- napln typeandoffset jednotlivymi relokacemi
+          declare var
+            k    : t_unsigned;
+          begin
+            k:=i;
+            while k<=relocaddrs:length and then relocaddrs[k].address-relocaddrs[i].address<4096 loop 
+              -- hornich 4 bitu udava typ relokace, zbylych 12 offset od fixups^[blockindex].pagerva
+              fixups^[blockindex].typeandoffset^[k-i]:=t_mod_unsigned16(relocaddrs[k].address-relocaddrs[i].address);
+              case relocaddrs[k].disposition
+                when trd_absolute do fixups^[blockindex].typeandoffset^[k-i] or (absrel_code shl 12);
+                when trd_relative do fixups^[blockindex].typeandoffset^[k-i] or (relrel_code shl 12);
+                end case;
+              succ k;
+              
+              -- kontrolni promenna
+              succ checkrelocs;
+              end loop;
+            i:=k;
+            end declare;
+
+          -- uloz velikost hlavicky bloku a vsech relokaci v bloku do hlavicky 4-K bloku
+          fixups^[blockindex].blocksize:=fixups^[blockindex].pagerva:size+fixups^[blockindex].blocksize:size+blockrelocs*t_mod_unsigned16:size;
+          
+          -- pricist velikost bloku k celkove velikosti PE relokacnich informaci
+          relocdatasize+fixups^[blockindex].blocksize;
+
+          -- dalsi block
+          succ blockindex;      
+          end loop;
+
+        -- pokud checkrelocs se nebude rovnat poctu adres v seznamu relokaci, je chyba v algoritmu teto funkce
+        verify({VERIFY=}001353,checkrelocs<>relocaddrs:length);
+        end declare;
+      
+    commit
+      -- zapsat data sekce relokací
+      for i in fixups^:range loop
+        section.write_unchecked(fixups^[i].pagerva);
+        section.write_unchecked(fixups^[i].blocksize);
+        section.write_unchecked(fixups^[i].typeandoffset^);
+        --for j in fixups^[i].typeandoffset^:range loop
+        --  section.write_unchecked_part(fixups^[i].typeandoffset^[j],fixups^[i].typeandoffset^[j]:size);
+        --  end loop;
+        end loop;
+    
+      -- koncová nula, je-li požadována
+      if null_term then
+        declare var
+          zero     : tperva;
+        begin
+          section.write_unchecked(zero);
+          end declare;
+        end if;  
+    
+    leave
+      -- uvolnit paměť
+      for i in fixups^:range loop
+        discard fixups^[i].typeandoffset;
+        end loop;
+      discard fixups;
+      end build_relocations_internal;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override build_flex_relocations =
+    -- Sestaví relokační tabulku.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_options,
+      cc_binding;
+      
+    const
+      -- dispozice relokací fixup bloků pro vyhodnocení relokací run-time knihovnou
+      image_rel_flex_none     = 0;               -- vynechaný fixup záznam
+      image_rel_flex_absolute = 1;               -- absolutní relokace
+      image_rel_flex_relative = 2;               -- relativní relokace
+
+    var
+      relocations  : p_relocations;              -- setříděný seznam relokací
+      compi        : pentity_compile;            -- související kompilační jednotka
+
+    begin
+      -- načíst první seznam
+      if not relo_it.get(relocations,compi) then return end if;
+      
+      -- uložit originální image base tohoto modulu
+      section.write_unchecked(imagebase);
+      
+      loop
+        verify({VERIFY=}001370,compi=nil or else compi^.part_extid=nil);
+{        
+0040_0000          -- my image base
+
+0000_3000          -- FLEX.@COMPILATION RVA
+1000_0000          -- FLEX image base
+0000_103F          -- page RVA
+0000_0012          -- block size => 5 relokace
+     2000
+     101A
+     2016
+     2020
+     2025
+0000_0000
+
+0000_300C          -- SMPL.@COMPILATION
+1000_0000          -- SMPL image base
+0000_10A0          -- page RVA
+0000_000C          -- block size => 2 relokace
+     1000
+     200A
+0000_0000
+
+0000_0000
+}
+        -- odkaz na import @COMPILATION
+        declare var
+          addr     : t_unsigned32;
+        begin  
+          addr:=unicode_addr_to_unsigned(pimportinfo(get_import_info(compi,^resolver.aux_registry))^.addr)-imagebase;
+          section.write_unchecked(addr);
+          end declare;
+      { 
+        -- externí jméno partition
+        section.write_unchecked_part(compi^.part_extid^,compi^.part_extid^:length:size+compi^.part_extid^:length*compi^.part_extid^:base:size);
+      } 
+        -- image base, proti které je tento modul linkován
+        declare var
+          imagebase : t_unsigned32;
+
+        begin  
+          imagebase:=unicode_addr_to_unsigned(os^.getimagebase(compi^));
+          section.write_unchecked(imagebase);
+          end declare;
+
+        -- tabulka relokací
+        build_relocations_internal(section,relocations^,for absrel_code use image_rel_flex_absolute,for relrel_code use image_rel_flex_relative,for null_term use true);
+        until not relo_it.get(relocations,compi);
+
+      -- koncová nula, je-li požadována
+      declare var
+        zero     : tperva;
+      begin
+        section.write_unchecked(zero);
+        end declare;
+      end build_flex_relocations;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static build_pe_relocations =
+    -- Sestaví relokační tabulku PE souboru.
+    ------------------------------------------------------------------------------------------------
+    const
+      -- dispozice relokací fixup bloků pro vyhodnocení relokací systémem (reloc fixup types)
+      IMAGE_REL_BASED_ABSOLUTE           = 0;    -- The fixup is skipped. This type can be used to
+                                                 -- pad a block.
+      IMAGE_REL_BASED_HIGH               = 1;    -- The fixup adds the high 16 bits of the delta to
+                                                 -- the 16-bit field at Offset. The 16-bit field
+                                                 -- represents the high value of a 32-bit word.
+      IMAGE_REL_BASED_LOW                = 2;    -- The fixup adds the low 16 bits of the delta to
+                                                 -- the 16-bit field at Offset. The 16-bit field
+                                                 -- represents the low half of a 32-bit word.
+      IMAGE_REL_BASED_HIGHLOW            = 3;    -- The fixup applies the delta to the 32-bit field
+                                                 -- at Offset.
+      IMAGE_REL_BASED_HIGHADJ            = 4;    -- The fixup adds the high 16 bits of the delta to
+                                                 -- the 16-bit field at Offset. The 16-bit field
+                                                 -- represents the high value of a 32-bit word.
+                                                 -- The low 16 bits of the 32-bit value are stored
+                                                 -- in the 16-bit word that follows this base
+                                                 -- relocation. This means that this base
+                                                 -- relocation occupies two slots.
+      IMAGE_REL_BASED_MIPS_JMPADDR       = 5;    -- Fixup applies to a MIPS jump instruction.
+      IMAGE_REL_BASED_SECTION            = 6;    -- Reserved for future use
+      IMAGE_REL_BASED_REL32              = 7;    -- Reserved for future use
+      IMAGE_REL_BASED_MIPS_JMPADDR16     = 9;    -- Fixup applies to a MIPS16 jump instruction.
+      IMAGE_REL_BASED_DIR64              = 10;   -- This fixup applies the delta to the 64-bit field
+                                                 -- at Offset
+      IMAGE_REL_BASED_HIGH3ADJ           = 11;   -- The fixup adds the high 16 bits of the delta to
+                                                 -- the 16-bit field at Offset. The 16-bit field
+                                                 -- represents the high value of a 48-bit word.
+                                                 -- The low 32 bits of the 48-bit value are stored
+                                                 -- in the 32-bit word that follows this base
+                                                 -- relocation. This means that this base
+                                                 -- relocation occupies three slots.
+
+    begin
+      build_relocations_internal(section,relocations,for absrel_code use IMAGE_REL_BASED_HIGHLOW,for relrel_code use nil);
+      end build_pe_relocations;
+
+    end c_link_resolver_image_specific_pe;
 
 end cl_pe;

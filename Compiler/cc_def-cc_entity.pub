@@ -9,7 +9,8 @@ module public cc_entity =
 with
   standard.classes,
   standard.classes.lists,
-  cc_def.cc_unitype;
+  cc_def.cc_unitype,
+  cc_def.cc_gc;
 
 use
   cc_def.cc_lexsym;
@@ -344,13 +345,14 @@ var
   id_result        : const aliased tshortident := 'RESULT';      -- identifikátor návratové hodnoty funkce      
 
   -- interní identifikátory 
-  id_int_tag       : const aliased tshortident := '@TAG';        -- identifikátor interní složky třídy @TAG     
+  id_int_tag       : const aliased tshortident := '@TAG';        -- identifikátor interní složky třídy @TAG
   id_int_t_tag     : const aliased tshortident := '@T_TAG';      -- identifikátor typu interní složky třídy @TAG
-  id_int_status    : const aliased tshortident := '@STATUS';     -- identifikátor interní složky třídy @STATUS    
-  id_int_t_status  : const aliased tshortident := '@T_STATUS';   -- identifikátor typu interní složky třídy @STATUS    
+  id_int_status    : const aliased tshortident := '@STATUS';     -- identifikátor interní složky třídy @STATUS
+  id_int_t_status  : const aliased tshortident := '@T_STATUS';   -- identifikátor typu interní složky třídy @STATUS
   id_int_t_size    : const aliased tshortident := '@T_SIZE';     -- identifikátor interního typu atributů :size a :last
   id_int_t_mptr    : const aliased tshortident := '@T_MPTR';     -- identifikátor interního typu strojového pointeru
-  id_compilation   : const aliased tshortident := '@COMPILATION';-- identifikátor kompilační jednotky       
+  id_compilation   : const aliased tshortident := '@COMPILATION';-- identifikátor kompilační jednotky
+  id_program       : const aliased tshortident := '@PROGRAM';    -- identifikátor programu pro účely normalizovaného exportu
   id_init          : const aliased tshortident := '@INIT';
   id_entry         : const aliased tshortident := '@ENTRY';
   id_exit          : const aliased tshortident := '@EXIT';
@@ -604,66 +606,6 @@ procedure __get_type_expr (ptyp : in pentity_type) return p_flex_construct;
 -- Seznamy entit a přímých hodnot.
 ----------------------------------------------------------------------------------------------------
 
-----------------------------------------------------------------------------------------------------
--- Partitiony
-----------------------------------------------------------------------------------------------------
-type
-  -- kód partition
-  t_partition_id   = private t_unsigned;
-
-type
-  -- typ partition
-  t_partition_type = enum
-      part_standalone;                           -- standalone kompilační jednotka
-      part_runtime;                              -- runtime partition kompilační jednotky
-      part_global;                               -- globální partition kompilační jednotky
-      part_temporary;                            -- dočasná partition kompilační jednotky
-      end enum;
-  t_partition_type_set = set of t_partition_type;
-
-const
-  -- typy partition, které obsahují run-time podporu
-  parts_contains_runtime = t_partition_type_set:[part_standalone,part_runtime];
-  -- typy partition, které vyžadují automatický překlad run-time podpory
-  parts_compile_runtime  = t_partition_type_set:[part_standalone];
-  -- typy partition, které obsahují program
-  parts_contains_program = t_partition_type_set:[part_standalone,part_temporary];
-
-var
-  -- typ partition
-  t_partition_type_txt : const array t_partition_type of t_char32str := [
-      for part_standalone use 'Standalone',
-      for part_runtime    use 'Run-time',
-      for part_global     use 'Global',
-      for part_temporary  use 'Temporary'];
-  
-  -- popis [t_partition_type] pro účely exportu
-{%OFF}
-  t_partition_type_export_id : const aliased array t_partition_type of t_char32str := [
-      for part_standalone use 'standalone',
-      for part_runtime    use 'runtime',
-      for part_global     use 'global',
-      for part_temporary  use 'temporary'];
-{%ON}
-
-type
-  -- výsledný tvar přeložené partition
-  t_partition_result = enum
-      tpr_auto_select;                           -- automaticky zvolit vhodný tvar
-      tpr_program;                               -- spustitelný program
-      tpr_library;                               -- dynamicky linkovaná knihovna
-      end enum;
-
-var
-  -- popis [tcompilationtype] pro účely exportu
-{%OFF}
-  t_partition_result_export_id : const aliased array t_partition_result of t_char32str := [
-      for tpr_auto_select use 'auto_select',
-      for tpr_program     use 'program',
-      for tpr_library     use 'library'];
-{%ON}       
-
-
 
 
 ----------------------------------------------------------------------------------------------------
@@ -683,11 +625,11 @@ var
   -- typ regionu
 {%OFF}
   tregiontype_export_id : const array tregiontype of t_char32str := [
-      for rt_primary use 'primary',
-      for rt_component use 'component',
+      for rt_primary     use 'primary',
+      for rt_component   use 'component',
       for rt_enumeration use 'enumeration',
-      for rt_attribute use 'attribute',
-      for rt_meta use 'meta'];
+      for rt_attribute   use 'attribute',
+      for rt_meta        use 'meta'];
 {%ON}
 
 type
@@ -745,7 +687,7 @@ type
 var
   -- režim vazby
   t_with_mode_export_id : const array t_with_mode of t_char32str := [
-      for twm_use use 'use',
+      for twm_use  use 'use',
       for twm_with use 'with'];
 
 type
@@ -891,11 +833,14 @@ const
   -- prvky s run-time atributy (jen odvozené od TENTITY_VALUE)
   ets_rtattrib     = tentitytypeset:[et_var];
   -- exportovatelné entity 
-  ets_exportable   = tentitytypeset:[et_var,et_procedure,et_static,et_program,et_type,et_class];
+  ets_exportable   = tentitytypeset:[et_var,et_procedure,et_static,et_program,et_compile,et_type,et_class];
   -- entity trasovatelné na vnořené exportovatelné entity
   ets_export_traceable = tentitytypeset:[et_module,et_class,et_compile];
+  -- importovatelné entity 
+  ets_importable   = tentitytypeset:[et_var,et_procedure,et_static,et_compile,et_type,et_class];
+  -- entity trasovatelné na vnořené importovatelné entity
+  ets_import_traceable = tentitytypeset:[et_module,et_class,et_compile];
   -- entity, které je při exportu metodou Flex potřeba zpracovat v resolveru
-  -- Poznámka: Jsou to 
   ets_export_flex  = ets_code+ets_type+tentitytypeset:[et_var,et_message];
 
 type
@@ -1062,7 +1007,7 @@ var
   -- datove typy
   tdatatypename    : const array tdatatype of t_char32str := [
       for dt_undef      use '<neznámý>',
-      for dt_uniint     use 'Universal integer',     
+      for dt_uniint     use 'Universal integer',
       for dt_unireal    use 'Universal real',
       for dt_unilogical use 'Universal logical',
       for dt_unichar    use 'Universal character',
@@ -1154,6 +1099,10 @@ type
       pos          : tentitypositions;           -- pozice symbolu
       compv        : tcompvar;                   -- parametry překladu
       is_abstract  : t_logical;                  -- entita je abstraktní (má smysl jen pro některé typy entit)
+      sec_level    : t_security_level;           -- maximální security level, který má tato entita povoleno používat (default :first)
+      sec_required : t_security_level;           -- security level této entity, tzn. level, který je minimálně vyžadován v [sec_level] odkazující entity (default :last)
+                                                 -- u každé entity platí sec_level<=sec_required
+                                                 -- %%TECH Kvůli lepšímu výkonu není použit mechanismus options.
       ---- informace přidané globální analýzou ----
       analyzed     : analyzestatus;              -- stav globální analýzy
       loc_var_cache: t_var_cache;                -- lokální příznak volání spec. metod pro proměnné
@@ -1167,6 +1116,8 @@ type
       debugstat    : analyzestatus;              -- stav generování debug informace
       ---- statistiky ---- 
       stat_usage   : t_unsigned;                 -- počet použití
+      -- programátorem předefinovatelné atributy
+      attr_sec_required: cc_ref.refexpr;         -- vyžadovaný security level
       end record;
 
 ----------------------------------------------------------------------------------------------------
@@ -1200,11 +1151,23 @@ type
 -- Kompilační jednotka
 ----------------------------------------------------------------------------------------------------
 type
+  -- identifikátor uživatele jednotky
+  t_compile_userid = protected t_unsigned;
+
+const
+  -- identifikátor globální jednotky: patří všem uživatelům
+  compile_userid_global = t_compile_userid(0);
+
+type
   -- kompilační jednotka
   tentity_compile  = tentity_code with record
       part_type    : t_partition_type;           -- typ partition
       part_result  : t_partition_result;         -- výsledný tvar přeložené partition
       part_extid   : p_external_entity_ident;    -- externí identifikátor kompilační partition
+      part_userid  : t_compile_userid;           -- identifikátor uživatele, kterému tato partition patří
+      -- exportní informace
+      import_info  : p_flex_record;              -- informace pro import
+      export_info  : p_flex_record;              -- informace pro export
       end record;
 
 
@@ -1214,6 +1177,7 @@ type
 ----------------------------------------------------------------------------------------------------
 type
   tentity_program  = tentity_code with record
+      -- exportní informace
       export_info  : p_flex_record;              -- informace pro export
       end record;
 
@@ -1408,7 +1372,7 @@ type
   varmode          = enum
       vm_direct;                                 -- přímo
       vm_ref;                                    -- přes referenci
-      vm_index;                                  -- pres index (napriklad taskove promenne)
+      vm_index;                                  -- přes index (například taskové proměnné)
       end enum;
   varmodeset       = set of varmode;
 
@@ -1473,10 +1437,13 @@ type
       valiased     : t_mem_aliased;              -- příznak, zda je možné získat adresu proměnné (ALIASED)
       vimplements  : varimplements;              -- jakou "higher-order" konstrukci proměnná implementuje
       imp_param    : pentity_param;              -- související parametr
+      -- %%TODO(FORMAL) Složka [addr] je relevantní pouze pro proměnné s paměťovými třídami
+      -- [mc_class] a [mc_record]. Nemělo by se to zohlednit v hierarchii a od [tentity_var] odvodit
+      -- potomka [tentity_item], který by tuto složku přidával?
       addr         : tunidata_addr;              -- adresa promenne
       -- programátorem předefinovatelné atributy
       attr_position: cc_ref.refexpr;             -- pozice složky recordu
-      -- exportni informace
+      -- exportní informace
       export_info  : p_flex_record;              -- informace pro export
       end record;
 
@@ -1574,6 +1541,7 @@ type
 
   -- statický podprogram
   tentity_static_subprogram = {%%TODO(ABSTRACT)} tentity_subprogram with record
+      -- exportní informace
       import_info  : p_flex_record;              -- informace pro import
       export_info  : p_flex_record;              -- informace pro export
 
@@ -1918,7 +1886,7 @@ var
 
 type
   -- statické parametry reálného čísla (nezměnitelné uživatelem)
-  tfloatsparams    = record
+  tfloatsparams    = t_flex_record with record
       low          : tunireal;                   -- nejmenší číslo
       high         : tunireal;                   -- největší číslo
       small        : tunireal;                   -- nejmenší číslo větší než 0
@@ -1939,7 +1907,7 @@ type
   pfloatsparams    = ^tfloatsparams;
 
   -- parametry reálného čísla (definované nebo změnitelné uživatelem)
-  tfloatparams     = record
+  tfloatparams     = t_flex_record with record
       fdelta       : tunireal;                   -- přesnost
       fdigits      : tuniint;                    -- počet míst
       rounding     : tunilogical;                -- T-zaokrouhlování
@@ -1951,7 +1919,8 @@ type
       oflw         : tunilogical;                -- T-přetečení způsobí CONSTRAINT_ERROR
       sparams      : pfloatsparams;              -- statické parametry
       end record;
-
+  pfloatparams     = ^tfloatparams;
+  
   ----- %%LANG Pointery ve Flexu -------------------------------------------------------------------
   -- Ve Flexu jsou čtyři typy pointerů:
   --   -- na data,
@@ -2106,7 +2075,7 @@ type
       -- specifikace celočíselného typu
       intaritm     : tintaritm;                  -- typ celočíselné aritmetiky
       -- specifikace typu reálné číslo
-      fp           : tfloatparams;               -- parametry reálného čísla
+      fp           : pfloatparams;               -- parametry reálného čísla
       -- specifikace typu s rozsahem
       srange       : cc_ref.reftype;             -- rozsah
       saliased     : t_mem_aliased;              -- příznak, zda je možné získat adresu složky (ALIASED)
@@ -2173,7 +2142,6 @@ type
 type
   tentity_label    = tentity with record
       num          : t_unsigned;                 -- cislo navesti
-    --addr         : tuniprg;                    -- adresa navesti
       reachable    : t_logical;                  -- přístupné jako cíl skoku
       placed       : t_logical;                  -- návěští bylo umístěno
       level        : t_unsigned;                 -- úroveň umístění návěští
@@ -2208,7 +2176,7 @@ type
   -- reprezentace lexikálního elementu přečteného ze vstupu
   tlexnode;
   plexnode         = ^class tlexnode;
-  tlexnode         = record
+  tlexnode         = t_flex_record with record
       prev         : plexnode;                   -- předchozí lexikální symbol
       next         : plexnode;                   -- následující lexikální symbol
       _tag         : enum _tag_param; _tag_lex; end enum; -- %%TODO(TAG)

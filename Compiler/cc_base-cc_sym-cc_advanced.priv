@@ -6,7 +6,9 @@ module private cc_advanced =
 -- Ondra : 04.12.2002 : Oddělil od CC_SYM.
 ----------------------------------------------------------------------------------------------------
 
-with cc_lex;
+with 
+  cc_def.cc_gc,
+  cc_lex;
 
 ----------------------------------------------------------------------------------------------------
 -- Primitiva pro budování stromu entit a regionů
@@ -103,9 +105,6 @@ procedure addnode (
     zvys           : out t_logical) =            -- zvýšen strom
 -- Vloží do stromu uzel.
 ----------------------------------------------------------------------------------------------------
-var
-  cmp              : t_unsigned;
-
 begin
   -- doleva
   if n^.id^<p^.id^ then
@@ -185,12 +184,12 @@ procedure sym_add_ident =
 ----------------------------------------------------------------------------------------------------
 var
   newid            : pidnode;                    -- nove vytvareny uzel tabulky
-  pid              : pidnode;                    -- pro vyhledani uzlu
   zvys             : t_logical;                  -- zvýšen strom
 
 begin
   -- vytvořit uzel
   new newid;
+  c_garbage_collector.get_instance^.register_record(newid);
 
   -- doplnit údaje
   newid^.entity:=entity;
@@ -328,7 +327,6 @@ type
 var
   _withtable       : context.region^.withtable:type;
   _with            : ^context.region^.withtable^:base;
-  position         : lexposblock;
 
 begin
   -- eliminovat duplicity
@@ -337,11 +335,21 @@ begin
 
   -- relokovat paměť
   if context.region^.withtable=nil then
+    -- alokuj
     new context.region^.withtable range withtabinit;
+    
+    -- zaregistruj do gc
+    c_garbage_collector.get_instance^.register_memblock(context.region^.withtable);
   elsif context.region^.withtable^:length=context.region^.withtable^:last then
     --%%TODO(ADJUST) adjust context.region^.withtable^ range context.region^.withtable^:last+withtabdelta;
     new _withtable range context.region^.withtable^:last+withtabdelta;
+    
+    -- zaregistruj do gc
+    c_garbage_collector.get_instance^.register_memblock(_withtable);
     _withtable^:=context.region^.withtable^;
+    
+    -- odregistruj starou instanci
+    c_garbage_collector.get_instance^.unregister_memblock(context.region^.withtable);
     discard context.region^.withtable;
     context.region^.withtable:=_withtable;
     end if;
@@ -378,16 +386,18 @@ begin
   -- převzít viditelnost
   entity^.visible:=context.region^.vsect;
 
+  -- převzít bezpečnostní úroveň
+  entity^.sec_level:=context.entity^.sec_level;
+  entity^.sec_required:=context.entity^.sec_required;
+  
   -- režim překladu
   entity^.compile:=context.entity^.compile*etcs_modemask;
 
   -- dopočítat příznak globální viditelnosti
-  if entity^.visible in etvs_non_local and etc_globaly_visible in context.entity^.compile then
-    entity^.compile+tentitycompileset:[etc_globaly_visible];
-    end if;
+  sym_set_globaly_visible(entity);
 
   -- zkopiruj nastaveni z nadrazene entity
-  o_clone_options(context.entity^, entity^);
+  o_clone_options(context.entity^,entity^);
 
   -- parametry překladu
   entity^.compv.warns:=context.entity^.compv.warns;
@@ -445,30 +455,102 @@ procedure sym_new_entity =
 begin
   -- alokovat paměť
   case etype
-    when et_undef      do new pentity(entity);
-    when et_compile    do new pentity_compile(entity);
-    when et_program    do new pentity_program(entity);
-    when et_module     do new pentity_module(entity);
-    when et_special    do new pentity_special(entity);
-    when et_procedure  do new pentity_procedure(entity);
-    when et_static     do new pentity_static(entity);
-    when et_virtual    do new pentity_virtual(entity);
-    when et_task       do new pentity_task(entity);
-    when et_override   do new pentity_override(entity);
-    when et_macro      do new pentity_macro(entity);
-    when et_overload   do new pentity_overload(entity);
-    when et_operator   do new pentity_operator(entity);
-    when et_var        do new pentity_var(entity);
-    when et_type       do new pentity_type(entity);
-    when et_class      do new pentity_type(entity);
-    when et_const      do new pentity_const(entity);
-    when et_enum       do new pentity_enum(entity);
-    when et_param      do new pentity_param(entity);
-    when et_message    do new pentity_message(entity);
-    when et_label      do new pentity_label(entity);
-    when et_template   do new pentity_template(entity);
-    when et_tparam     do new pentity_tparam(entity);
-    when et_attribute  do new pentity_attribute(entity);
+    when et_undef      do 
+        new pentity(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_compile    do 
+        new pentity_compile(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_program    do 
+        new pentity_program(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_module     do 
+        new pentity_module(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_special    do 
+        new pentity_special(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_procedure  do 
+        new pentity_procedure(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_static     do 
+        new pentity_static(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_virtual    do 
+        new pentity_virtual(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_task       do 
+        new pentity_task(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_override   do 
+        new pentity_override(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_macro      do 
+        new pentity_macro(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_overload   do 
+        new pentity_overload(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_operator   do 
+        new pentity_operator(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_var        do 
+        new pentity_var(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_type       do 
+        new pentity_type(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_class      do 
+        new pentity_type(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_const      do 
+        new pentity_const(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_enum       do 
+        new pentity_enum(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_param      do 
+        new pentity_param(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_message    do 
+        new pentity_message(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_label      do 
+        new pentity_label(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_template   do 
+        new pentity_template(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_tparam     do 
+        new pentity_tparam(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
+    when et_attribute  do 
+        new pentity_attribute(entity);
+        c_garbage_collector.get_instance^.register_record(entity);
+
     when others        do verify({VERIFY=}000543,true);
     end case;
   
@@ -488,6 +570,7 @@ procedure sym_new_region =
 begin
   -- alokovat paměť
   new region;
+  c_garbage_collector.get_instance^.register_record(region);
   
   -- počáteční naplnění regionu
   region^.rtype:=rtype;
@@ -497,19 +580,43 @@ begin
   end sym_new_region;
 
 
-
 ----------------------------------------------------------------------------------------------------
 -- Nastavování vlastností entit a regionů.
 ----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure sym_set_globaly_visible =
+-- Aktualizuje příznak globální viditelnosti entity.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure check_non_local (context : tcontext) return t_logical =
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=context.region=nil or else (context.region^.vsect in etvs_non_local and check_non_local(context.region^.context));
+      end check_non_local;
+
+begin
+  -- tato entita není pouze lokálně viditelná
+  if entity^.visible in etvs_non_local
+  -- nadřazená entita je sama o sobě globálně viditelná
+  and then etc_globaly_visible in entity^.context.entity^.compile
+  -- a není to její dokončení deklarace v lokální části nadřazené entity
+  and then (force or else check_non_local(entity^.context.entity^.context)) then
+    entity^.compile+tentitycompileset:[etc_globaly_visible];
+    end if;
+  end sym_set_globaly_visible;
+  
+  
 
 ----------------------------------------------------------------------------------------------------
 procedure sym_set_evaluated =
 -- Označí symbol za vyhodnocený a deklarovaný.
 ----------------------------------------------------------------------------------------------------
 begin
-  psym^.eval:=ete_evaluated;
-  psym^.evaluated:=etd_full;
-  psym^.declared:=etd_full;
+  entity^.eval:=ete_evaluated;
+  entity^.evaluated:=etd_full;
+  entity^.declared:=etd_full;
   end sym_set_evaluated;
 
 

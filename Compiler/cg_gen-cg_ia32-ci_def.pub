@@ -11,6 +11,7 @@ with
   cc_def.cc_lexsym,
   cx_expr,
   cx_expr.cx_def,
+  cp_os,
   cp_cpu.cp_32.cp_def,
   cp_cpu.cp_32.cp_metadata,
   cp_cpu.cp_ia32.ci_instr,
@@ -89,6 +90,8 @@ type
                                                  -- související relokabilní objekt: PEXPIMM
       irt_interface;                             -- interface třídy
                                                  -- související relokabilní objekt: P_CLASS_INTERFACE
+      irt_section;                               -- začátek sekce ve výsledném image
+                                                 -- související relokabilní objekt: T_IMAGE_SECTION
       end enum;
 
   -- blok relokačních informací
@@ -98,6 +101,7 @@ type
       rentity      : pentity;                    -- související entita
       rexpr        : cx_expr.cx_def.pexpnode;    -- související výraz
       rinterface   : p_class_interface;          -- související interface třídy
+      rsection     : t_image_section;            -- související sekce
       end record;
 
 type
@@ -138,7 +142,7 @@ type
   -- objekt s run-time metadaty (deskriptorem)
   icodegen_metadata= icodegen with record
       desc_addr    : tprg32;                     -- adresa deskriptoru
-      desc         : p_desc_entity;              -- deskriptor 
+      desc         : p_desc_entity;              -- deskriptor
       desc_qid     : pentityident;               -- kvalifikovaný identifikátor entity
       -- %%TODO(COMPATIBILITY) odstranit size
       desc_size    : t_unsigned32;               -- velikost deskriptoru
@@ -221,7 +225,7 @@ type
       end enum;
 
   -- jeden blok paměti
-  imemblock        = record
+  imemblock        = t_flex_record with record
       status       : iblockstatus;               -- aktuální stav bloku
       pvar         : pentity_var;                -- související proměnná
       ofs          : {u}t_signed32;              -- relativní offset začátku bloku
@@ -254,17 +258,17 @@ type
       disp         : t_unsigned;                 -- adresa pole
       absolute     : t_logical;                  -- T-absolutní adresa
       end record;
-  ireloarray       = string{array} of irelo;
+  ireloarray       = string of irelo;
 
   -- seznam nadřazených procedur v hierarchii vnoření
-  inestedarray     = string {!! %%X 1..$FFFFFF} of pentity_code;
+  inestedarray     = string of pentity_code;
   inestedlist      = record
    -- nlen         : t_unsigned;                 -- počet nadřazených procedur
       nlist        : ^inestedarray;              -- nadřazené procedury
       end record;
 
   -- instance podprogramu
-  icodeinst        = record
+  icodeinst        = t_flex_record with record
       next         : picodeinst;                 -- další instance v seznamu
       frame        : istackframe;                -- stack-frame
       profile      : iparprofile;                -- profil parametrů
@@ -287,8 +291,14 @@ type
 
 ----------------------------------------------------------------------------------------------------
 procedure i_prepare (
-    curr           : in out tentity_code);       -- entita obsahující kód
+    curr           : in out class tentity_code); -- entita obsahující kód
 -- Příprava entity před generováním.
+----------------------------------------------------------------------------------------------------
+procedure i_create_instance (
+    curr           : in class tentity_code;      -- entita obsahující kód
+    inst           : out picodeinst);            -- instance
+-- Vytvoření nové instance.
+-- Nedělá nic jiného než alokaci paměti a zařazení na seznam instancí.
 ----------------------------------------------------------------------------------------------------
 
 
@@ -336,28 +346,7 @@ type
     --xframe       : timm32;                     -- adresa hlavního exception-frame
       rcframe      : timm32;                     -- adresa aktuálního return-control framu
       end record;
-{
-vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
-  iexprloadkind    = enum
-      lk_data_address;
-      lk_subprogram_address;
-      lk_value;
-      end enum;
 
-  iexprloadmode    = enum
-      lm_gen;
-      lm_convert;
-      lm_reg;
-      lm_reg_all;
-      lm_imm8_cl;
-      lm_reg_eax;
-      lm_push;
-      lm_temp;
-      lm_pointer;
-      lm_pointer_reg;
-      end enum;
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-}
   -- režim zpracování (načtení) výsledku (operandu)
   iexprloadmode    = enum
       lm_gen;                                    -- pouze generovat
@@ -462,15 +451,14 @@ type
       dump_level   : t_unsigned;
       end record;
 
-
 ----------------------------------------------------------------------------------------------------
 procedure set_call_conv (
-      entity       : in out tentity;             -- entita
+      entity       : in out class tentity;       -- entita
       call_conv    : in icallconvention);        -- volaci konvence
 -- nastavi volaci konvenci entite
 ----------------------------------------------------------------------------------------------------
 procedure get_call_conv (
-      entity       : in tentity)                 -- entita
+      entity       : in class tentity)           -- entita
                      return icallconvention;     -- volaci konvence
 -- vrati volaci konvenci entity
 ----------------------------------------------------------------------------------------------------

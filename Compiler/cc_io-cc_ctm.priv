@@ -9,12 +9,22 @@ with
   standard.classes.hash_tables,
   standard.classes.lists,
   cc_def,
+  cc_def.cc_gc,
   cc_def.cc_codes,
   cc_def.cc_var,
   cc_def.cc_unitype,
   cc_def.cc_lexsym,
-  cp_cpu.cp_ia32.ci_abi,
   cd_decl.cd_create;
+
+type
+  t_ctm_version    = private t_unsigned32;
+
+const
+  -- číslo verze CTM souboru -- zvýšit při každé úpravě CTM struktur a ošetřit kompatibilitu
+  ctm_curr_version = t_ctm_version(3);
+  
+  -- minimální podporované číslo verze CTM souboru -- aktualizovat při každé nekompatibilní úpravě CTM struktur
+  ctm_min_version  = t_ctm_version(3);
 
 type
   -- identifikátor položky v metadatech
@@ -32,22 +42,22 @@ type
 const
   -- tag konce sekvence recordů
   cr_end           = t_ctm_record_tag(0);
-
-  -- tag recordu s informací o verzi
-  cr_version       = t_ctm_record_tag(1);
+  
+  -- tag záhlaví CTM souboru         
+  cr_header        = t_ctm_record_tag(1);
 
   -- tag s kontrolním součtem metadat
   cr_sha1          = t_ctm_record_tag(2);
 
   -- tag regionu
   cr_region        = t_ctm_record_tag(4);
-{
+
   -- tag tabulky RTL procedur
   cr_rtl           = t_ctm_record_tag(5);
 
   -- tag položky tabulky RTL procedur
   cr_rtl_entry     = t_ctm_record_tag(6);
-}
+
   -- tag importní tabulky
   cr_import        = t_ctm_record_tag(3);
 
@@ -181,6 +191,13 @@ var
       for t_ctm_record_tag(74) use dt_task      ];
 
 const
+  -- tag seznamu vygenerovaných instancí
+  cr_code_instances= t_ctm_record_tag(100);
+  
+  -- tag jedné vygenerované instance
+  cr_code_instance = t_ctm_record_tag(101);
+
+const
   -- prázdné CTM ID
   ci_none          = t_ctm_entity_id(0);
   
@@ -312,9 +329,23 @@ class private c_ctm_writer =
 
       -- výstupní formatter
       f            : c_ctm_binary_writer;
+    
+    ------------------------------------------------------------------------------------------------
+    static is_exportable (
+        entity     : in pentity)                 -- testovaná entita
+        return t_logical =                       -- T-byla resp. bude exportovaná
+    -- True, bude-li zadaná entita exportovaná do metadat.
+    ------------------------------------------------------------------------------------------------
+    begin
+      case detail_level
+        when ctdl_public      do result:=etc_globaly_visible in entity^.compile;
+        when ctdl_precompiled do unimplemented({UNIMP=}000288);
+        when ctdl_full        do unimplemented({UNIMP=}000289);
+        end case;
+      end is_exportable;
 
-    
-    
+
+
     ------------------------------------------------------------------------------------------------
     static get_well_known_ctm_id (
         ent        : in pentity)
@@ -410,15 +441,101 @@ class private c_ctm_writer =
     
     ------------------------------------------------------------------------------------------------
     static write_refentity (
-        r          : in refentity) =             -- reference na entitu
+        r          : in refentity;               -- reference na entitu
+        allow_invisible : in t_logical := false) = -- T-tolerovat odkazy na neviditelné entity
     -- Zapis reference na entitu.
     ------------------------------------------------------------------------------------------------
     begin
-      write_entity_ref(r.getuentity);
+      -- bude odkazovaná entita také exportována?
+      if r.getuentity<>nil and then not is_exportable(r.getuentity)
+      
+        -- ne, neviditelná entita => referenci zrušit
+        then
+          verify({VERIFY=}001387,not allow_invisible);
+          write_entity_ref(nil);
+          
+        -- ano, viditelná entita => zapsat standardní referenci  
+        else 
+          write_entity_ref(r.getuentity);
+          end if;
       end write_refentity;
 
 
 
+    ------------------------------------------------------------------------------------------------
+    static write_codegen_type (
+        codegen    : in p_flex_record) =
+    -- Zapíše informace pro generování typu.
+    ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def;
+      
+    begin
+      if codegen<>nil 
+        -- %%TODO(PORTABILITY) Zobecnit !
+        then f.write_unidata_addr(prg32_to_unidata_addr(picodegen_type(codegen)^.desc_addr));
+        else f.write_unidata_addr(uda_0);
+        end if;
+      end write_codegen_type;
+      
+      
+                                                                                             
+    ------------------------------------------------------------------------------------------------
+    static write_refinterface (
+        iface      : in p_class_interface) =
+    -- Zapíše referenci na interface.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if iface<>nil
+      
+        -- interface existuje => zapsat referenci na třídu a index interfacu
+        then
+        {
+          if iface^.refclass.getcentity^.id<>nil and iface^.refclass.getcentity^.id^='C_INPUT_STREAM' then
+            declare var x : t_unsigned;
+            begin
+              x:=x;
+              end declare;
+            end if;
+        }  
+          -- odkaz na obalující třídu
+          write_entity_ref(iface^.get_enclosing_class);
+
+          -- interface index
+          f.write_unsigned(iface^.interface_index);
+        
+        -- interface neexistuje => zapsat jen prázdnou referenci na třídu
+        else  
+          write_entity_ref(nil);
+          end if;
+      end write_refinterface;
+      
+
+
+    ------------------------------------------------------------------------------------------------
+    static write_interface_vtable (
+        iface      : in p_class_interface) =
+    -- Zapíše virtuální tabulku uvedeného interfacu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if iface^.vtable<>nil 
+        then
+          -- pocet
+          f.write_unsigned32(iface^.vtable^:length);
+          
+          -- entity
+          for i in iface^.vtable^:range loop
+            write_entity_ref(iface^.vtable^[i]);
+            end loop;
+            
+        else
+          f.write_unsigned32(0);
+          end if;
+      end write_interface_vtable;
+      
+      
+                                                                                             
     ------------------------------------------------------------------------------------------------
     static write_interface (
         iface      : in p_class_interface) =
@@ -434,42 +551,18 @@ class private c_ctm_writer =
       write_refentity(iface^.instance);
 
       -- virtuální tabulka
-      if iface^.vtable<>nil 
+      write_interface_vtable(iface);
       
-        then
-          -- pocet
-          f.write_unsigned32(iface^.vtable^:length);
-          
-          -- entity
-          for i in iface^.vtable^:range loop
-            write_entity_ref(iface^.vtable^[i]);
-            end loop;
-            
-        else
-          f.write_unsigned32(0);
-          end if;
-
       -- původní interface
+      write_refinterface(iface^.org_interface);
 
       -- interface index
       f.write_unsigned(iface^.interface_index);
+      
+      -- informace o generování
+      write_codegen_type(iface^.codegen);
       end write_interface;
 
-
-
-    ------------------------------------------------------------------------------------------------
-    static write_refinterface (
-        iface      : in p_class_interface) =
-    -- Zapíše referenci na interface.
-    ------------------------------------------------------------------------------------------------
-    begin
-      -- odkaz na třídu
-      write_refentity(iface^.refclass);
-
-      -- interface index
-      f.write_unsigned(iface^.interface_index);
-      end write_refinterface;
-      
 
 
     ------------------------------------------------------------------------------------------------
@@ -488,6 +581,10 @@ class private c_ctm_writer =
         val        : in pimm_value) =
     -- zapis okamzite hodnoty
     ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def;
+      
     begin
       -- typ prime hodnoty
       if val=nil 
@@ -607,6 +704,13 @@ class private c_ctm_writer =
             -- doplnit prepinac
             verify({VERIFY=}001107,true);
         end case;
+
+      -- adresa přímé hodnoty
+      if val^.codegen<>nil 
+        -- %%TODO(PORTABILITY) Zobecnit !
+        then f.write_unidata_addr(prg32_to_unidata_addr(picodegen_imm(val^.codegen)^.addr))
+        else f.write_unidata_addr(uda_0);
+        end if;
       end write_imm_value;
 
 
@@ -685,8 +789,10 @@ class private c_ctm_writer =
     -- filtr 
     ------------------------------------------------------------------------------------------------
     begin
+      -- %%TODO(INHERITED) doplnit volání předka
+      
       -- vynechani neexportovatelnych entit, napr. unitypu
-      result:=etc_no_cmt_export not in node^.compile;
+      result:=etc_no_cmt_export not in node^.compile and is_exportable(node);
       end filter_process_entity;
     
 
@@ -707,11 +813,13 @@ class private c_ctm_writer =
     -- Zápis entity: společný základ.
     ------------------------------------------------------------------------------------------------
     begin
-      verify({VERIFY=}001215,detail_level=ctdl_public and etc_globaly_visible not in node^.compile);
-      write_refentity(node^.ancestor);
+      verify({VERIFY=}001215,not is_exportable(node){detail_level=ctdl_public and etc_globaly_visible not in node^.compile});
+      write_refentity(node^.ancestor,for allow_invisible use true);
       f.write_visible(node^.visible);
       f.write_visible(node^.full);
       f.write_logical(node^.is_abstract);
+      f.write_security_level(node^.sec_level);
+      f.write_security_level(node^.sec_required);
     {
       ---- příznaky entity a stavové proměnné ----
  -- ? compile      : tentitycompileset;          -- režim překladu
@@ -731,12 +839,108 @@ class private c_ctm_writer =
     override process_entity_code =
     -- Zápis entity: entita obsahující kód.
     ------------------------------------------------------------------------------------------------
+    with
+      cc_binding,
+      cg_gen.cg_ia32.ci_def,
+      cp_os.cp_win32;
+      
     begin
       process_entity_base(node);
     {
     - bl           : cc_ref.refblock;            -- blok příkazů
     - nesting      : t_unsigned;                 -- úroveň vnoření podprogramu
     }
+    
+      -- zapsat informace o importu %%TODO(PORTABILITY) Zobecnit !
+      if is_imported(node)
+
+        -- je importovaná 
+        then
+          -- zapsat příznak importu
+          f.write_logical(true);
+
+          -- zapsat importní informace
+          declare var
+            import_info : pimportinfo;           -- importní informace aktuální entity
+
+          begin
+            -- získat importní informace
+            import_info:=get_import_info(node);
+
+            -- zapsat údaje
+            f.write_external_entity_ident(import_info^.extname);
+            f.write_external_entity_ident(import_info^.libname);
+            f.write_unicode_addr(import_info^.addr);
+            end declare;
+        
+        -- není importovaná
+        else
+          -- jen zapsat příznak importu
+          f.write_logical(false);
+          end if;
+    
+      -- zapsat všechny instance %%TODO(PORTABILITY) Zobecnit !
+      verify({VERIFY=}001382,node^.codegen=nil);
+      declare var
+        inst       : picodeinst;                 -- právě zpracovávaná instance
+        
+      begin
+        -- tag začátku seznamu instancí
+        f.write_cr(cr_code_instances);
+        
+        -- zpracovat všechny instance
+        inst:=picodegen_subprog(node^.codegen)^.ifirst;
+        while inst<>nil loop
+          -- tag začátku instance
+          f.write_cr(cr_code_instance);
+
+          -- volací konvence této instance
+          f.write_icallconvention(inst^.profile.call);
+          
+          -- adresa instance
+          f.write_unicode_addr(unsigned_to_unicode_addr(inst^.cstart));
+
+          -- offset THIS parametru
+          f.write_unidata_addr(signed_to_unidata_addr(inst^.profile.thisofs));
+
+          -- kolik bytů uvolnit při návratu z procedury
+          f.write_unidata_size(unsigned_to_unidata_size(inst^.profile.retfree));
+
+          -- parametry
+          if inst^.profile.par<>nil
+
+            -- nějaké máme => zapsat
+            then
+              -- zapsat počet parametrů
+              f.write_unsigned(inst^.profile.par^:length);
+
+              -- zapsat jednotlivé parametry
+              for i in inst^.profile.par^:range loop
+                -- reference na parametr
+                write_entity_ref(inst^.profile.par^[i].pparam);
+
+                -- offset na stacku
+                f.write_unidata_addr(signed_to_unidata_addr(inst^.profile.par^[i].ofs));
+
+                -- velikost
+                f.write_unidata_size(unsigned_to_unidata_size(inst^.profile.par^[i].size));
+                end loop;
+
+            -- žádné nejsou => je to jednoduché
+            else
+              f.write_unsigned(0);
+              end if;
+
+          -- tag konce
+          f.write_cr(cr_end);
+
+          -- další instance
+          inst:=inst^.next;
+          end loop;
+
+        -- tag konce
+        f.write_cr(cr_end);
+        end declare;
       end process_entity_code;
 
 
@@ -750,6 +954,14 @@ class private c_ctm_writer =
       f.write_partition_type(node^.part_type);     -- typ partition
       f.write_partition_result(node^.part_result); -- výsledný tvar přeložené partition
       f.write_external_entity_ident(node^.part_extid); -- externí identifikátor partition
+      
+      -- uložit image-base této partition
+      f.write_unicode_addr(os^.getimagebase(node^));
+      
+      -- uložit stack reserve této partition
+      if node^.part_type in parts_contains_runtime then
+        f.write_unidata_size(os^.getstackreserve(node^));
+        end if;
       end process_entity_compile;
 
 
@@ -830,6 +1042,10 @@ class private c_ctm_writer =
     override process_entity_var =
     -- Zápis entity: Proměnná
     ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def;
+      
     begin
       process_entity_value(node);
     {
@@ -845,8 +1061,21 @@ class private c_ctm_writer =
       f.write_varaccess(node^.vaccess);          -- determinace přístupu                                  
       f.write_mem_aliased(node^.valiased);       -- příznak, zda je možné získat adresu proměnné (ALIASED)
       f.write_varimplements(node^.vimplements);  -- jakou "higher-order" konstrukci proměnná implementuje 
-      write_entity_ref(node^.imp_param);         -- související parametr                                  
-      f.write_unidata_addr(node^.addr);          -- adresa promenne                                       
+      write_entity_ref(node^.imp_param);         -- související parametr
+
+      -- adresa promenne
+      if node^.mclass in mcs_offset
+
+        -- pro složky tříd a recordů je adresa přímo součástí proměnné
+        then f.write_unidata_addr(node^.addr);
+
+        -- pro normální proměnné se musíme zeptat generátoru kódu
+        else
+          verify({VERIFY=}001379,node^.codegen=nil);
+
+          -- %%TODO(PORTABILITY) Zobecnit !
+          f.write_unidata_addr(prg32_to_unidata_addr(picodegen_var(node^.codegen)^.addr));
+          end if;
       end process_entity_var;
 
 
@@ -1036,6 +1265,9 @@ class private c_ctm_writer =
     override process_entity_type =
     -- Zápis entity: Typ
     ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_ia32.ci_abi;
+    
     begin
       process_entity_init(node);
     {
@@ -1142,24 +1374,24 @@ class private c_ctm_writer =
         begin
           -- verify({VERIFY=}001122,node^.fp.sparams=nil);
 
-          f.write_unireal(node^.fp.fdelta);                   -- přesnost   
-          f.write_uniint(node^.fp.fdigits);                   -- počet míst
-          f.write_unilogical(node^.fp.rounding);              -- T-zaokrouhlování
-          f.write_unilogical(node^.fp.oflw);                  -- T-přetečení způsobí CONSTRAINT_ERROR
-          if node^.fp.sparams<>nil 
+          f.write_unireal(node^.fp^.fdelta);                   -- přesnost   
+          f.write_uniint(node^.fp^.fdigits);                   -- počet míst
+          f.write_unilogical(node^.fp^.rounding);              -- T-zaokrouhlování
+          f.write_unilogical(node^.fp^.oflw);                  -- T-přetečení způsobí CONSTRAINT_ERROR
+          if node^.fp^.sparams<>nil 
             then
               f.write_unsigned8(1);
-              f.write_unireal(node^.fp.sparams^.low);             -- nejmenší číslo
-              f.write_unireal(node^.fp.sparams^.high);            -- největší číslo
-              f.write_unireal(node^.fp.sparams^.small);           -- nejmenší číslo větší než 0
-              f.write_uniint(node^.fp.sparams^.emin);             -- nejmenší exponent
-              f.write_uniint(node^.fp.sparams^.emax);             -- největší exponent
-              f.write_unilogical(node^.fp.sparams^.signed_zeros); -- T-rozlišuje se +/- 0
-              f.write_unireal(node^.fp.sparams^.positive_inf);    -- Positive Infinity
-              f.write_unireal(node^.fp.sparams^.negative_inf);    -- Negative Infinity
-              f.write_unireal(node^.fp.sparams^.positiove_zero);  -- Positive Zero
-              f.write_unireal(node^.fp.sparams^.negative_zero);   -- Negative Zero
-              f.write_unireal(node^.fp.sparams^.not_a_number);    -- Not a Number
+              f.write_unireal(node^.fp^.sparams^.low);             -- nejmenší číslo
+              f.write_unireal(node^.fp^.sparams^.high);            -- největší číslo
+              f.write_unireal(node^.fp^.sparams^.small);           -- nejmenší číslo větší než 0
+              f.write_uniint(node^.fp^.sparams^.emin);             -- nejmenší exponent
+              f.write_uniint(node^.fp^.sparams^.emax);             -- největší exponent
+              f.write_unilogical(node^.fp^.sparams^.signed_zeros); -- T-rozlišuje se +/- 0
+              f.write_unireal(node^.fp^.sparams^.positive_inf);    -- Positive Infinity
+              f.write_unireal(node^.fp^.sparams^.negative_inf);    -- Negative Infinity
+              f.write_unireal(node^.fp^.sparams^.positiove_zero);  -- Positive Zero
+              f.write_unireal(node^.fp^.sparams^.negative_zero);   -- Negative Zero
+              f.write_unireal(node^.fp^.sparams^.not_a_number);    -- Not a Number
             else
               f.write_unsigned8(0);
               end if;
@@ -1190,7 +1422,8 @@ class private c_ctm_writer =
       if node^.stype=dt_procedure then
         f.write_procflagset(node^.rflags);       -- další parametry
         write_entity_ref(node^.result);          -- návratová hodnota funkce
-        
+
+        -- %%TODO(PORTABILITY) Zobecnit !
         declare var
           callconv : icallconvention;
 
@@ -1204,6 +1437,9 @@ class private c_ctm_writer =
       if node^.stype in dts_message then
         -- HYNEK - nejake atributy pro zpravu??
         end if;
+        
+      -- adresa deskriptoru typu
+      write_codegen_type(node^.codegen);
        
       -- trida
       if node^.stype in dts_class then
@@ -1214,9 +1450,12 @@ class private c_ctm_writer =
         begin
           verify({VERIFY=}001124,node^.interfaces=nil);
 
-          -- HYNEK - konflikt jmen s [c_class_interface.is_exposed], [get_exposed_interfaces] by mela vratit i interfejci z bazovych trid
-          -- iterator na exposovane interfejci krome nativniho
+          -- HYNEK - konflikt jmen s [c_class_interface.is_exposed], [get_exposed_interfaces] by 
+          -- mela vratit i interfejci z bazovych trid iterator na exposovane interfejci krome nativniho
 
+          -- zapsat virtuální tabulku nativního interfacu
+          write_interface_vtable(node^.interfaces^.get_native_interface);
+          
           -- zapsat počet exposeovaných interfaců
           f.write_unsigned32(node^.interfaces^.exposed_interfaces);
           
@@ -1228,8 +1467,8 @@ class private c_ctm_writer =
           end declare;
         end if;
 
-       -- HYNEK - nevynechalo se neco???
-       end process_entity_type;
+      -- HYNEK - nevynechalo se neco???
+      end process_entity_type;
 
 
     
@@ -1248,9 +1487,20 @@ class private c_ctm_writer =
     override process_entity_message =
     -- Zápis entity: Zpráva
     ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def;
+      
     begin
       process_entity_base(node);
       write_reftype(node^.typ);                  -- typ zprávy
+
+      -- adresa deskriptoru zprávy
+      if node^.codegen<>nil 
+        -- %%TODO(PORTABILITY) Zobecnit !
+        then f.write_unidata_addr(prg32_to_unidata_addr(picodegen_type(node^.codegen)^.desc_addr))
+        else f.write_unidata_addr(uda_0);
+        end if;
       end process_entity_message;
 
 
@@ -1362,34 +1612,42 @@ class private c_ctm_writer =
     override process_region =
     -- proces regionu - zapis atributu regionu
     ------------------------------------------------------------------------------------------------
-    var
-      temp_region  : pregion;
-      temp_entity  : pentity;
-      count        : t_unsigned32;
-
     begin
-      -- 1. typ regionu
+      -- typ regionu
       f.write_regiontype(region^.rtype);
 
-      -- 2. withtable - tabulka pouzitych modulu
-      -- 2.a pocet polozek
-      if region^.withtable=nil 
-        then f.write_unsigned32(0);
-        else f.write_unsigned32(region^.withtable^:length);
-        end if;
-
-      -- 2.b jednotlive polozky
-      if region^.withtable<>nil then
-        for i in region^.withtable^:range loop
-          f.write_with_mode(region^.withtable^[i].mode);    -- režim vazby
-          write_refentity(region^.withtable^[i].entity);    -- symbol
-          f.write_with_level(region^.withtable^[i].level);  -- úroveň vazby
-          f.write_logical(region^.withtable^[i].automatic); -- automaticky WITH/USE?
-          end loop;
-        end if;
-
-      -- 3. implicitni viditelnost vnorenych prvku
-      f.write_entityvisible(region^.vsect);
+      -- WITH tabulka
+      declare var
+        count      : t_unsigned32;
+        
+      begin  
+        -- spočítat exportovatelné vazby
+        if region^.withtable<>nil then
+          for i in region^.withtable^:range loop
+            if is_exportable(region^.withtable^[i].entity.getcentity) then
+              count+1;
+              end if;
+            end loop;
+          end if;
+        
+        -- zapsat počet položek WITH tabulky
+        f.write_unsigned32(count);
+        
+        -- zapsat jednotlivé položky
+        if count<>0 then
+          for i in region^.withtable^:range loop
+            if is_exportable(region^.withtable^[i].entity.getcentity) then
+              f.write_with_mode(region^.withtable^[i].mode);    -- režim vazby
+              write_refentity(region^.withtable^[i].entity);    -- symbol
+              f.write_with_level(region^.withtable^[i].level);  -- úroveň vazby
+              f.write_logical(region^.withtable^[i].automatic); -- automaticky WITH/USE?
+              end if;
+            end loop;
+          end if;
+        end declare;
+        
+      -- implicitni viditelnost vnorenych prvku
+      -- f.write_entityvisible(region^.vsect);
       end process_region;
 
     
@@ -1435,11 +1693,19 @@ class private c_ctm_writer =
 
 
     ------------------------------------------------------------------------------------------------
-    static save_ctm_header =
+    static save_ctm_header (
+        compi      : in pentity_compile) =       -- související kompilační jednotka
     -- Uloží záhlaví CTM souboru.
     ------------------------------------------------------------------------------------------------
     begin
-      -- uložit image-base této partition
+      -- tag začátku hlavičky
+      f.write_cr(cr_header);
+      
+      -- číslo verze CTM
+      f.write_ctm_version(ctm_curr_version);
+      
+      -- koncový tag
+      f.write_cr(cr_end);
       end save_ctm_header;
 
 
@@ -1498,9 +1764,7 @@ class private c_ctm_writer =
                 write_entity_cr(entity);
 
                 -- kvalifikovaný identifikátor entity
-                s:=sym_get_qid(entity);
-                new qid range s:length;
-                for i in s:range loop qid^ & tidentchar(s[i]) end loop;
+                qid:=string_to_qualified_entity_ident(sym_get_qid(entity));
                 f.write_qualified_entity_ident(qid);
 
                 -- tag konce tabulky
@@ -1523,7 +1787,7 @@ class private c_ctm_writer =
       end save_import;
 
 
-{
+
     ------------------------------------------------------------------------------------------------
     static save_rtl_table =
     -- Uloží konfiguraci RTL procedur.
@@ -1545,6 +1809,9 @@ class private c_ctm_writer =
 
         -- je-li přiřazena, exportovat
         if entity<>nil then
+          -- entita musela být vyexportována
+          check_error({CCERR=}000641,not is_exportable(entity));
+          
           -- tag začátku položky tabulky
           f.write_cr(cr_rtl_entry);
 
@@ -1563,11 +1830,11 @@ class private c_ctm_writer =
           f.write_cr(cr_end);
           end if;
         end loop;
-      
+
       -- tag konce tabulky
       f.write_cr(cr_end);
       end save_rtl_table;
-}
+
 
 
     ------------------------------------------------------------------------------------------------
@@ -1597,10 +1864,12 @@ class private c_ctm_writer =
 
       -- zpracovat strom entit a výsledek nabufferovat
       traverse_entity(root_entity);
-{
+
       -- zpracovat tabulku RTL procedur
-      save_rtl_table;
-}
+      if root_entity^.part_type in parts_contains_runtime then
+        save_rtl_table;
+        end if;
+
       -- změnit výstupní stream výstupního formatteru na skutečný soubor
       -- POZOR: toto je trik, čistší by bylo použít dva formattery (jeden nad memory bufferem a
       -- jeden nad souborem), jenže formatter bych si musel předávat do asi 50 procedur a na to
@@ -1610,11 +1879,11 @@ class private c_ctm_writer =
       f.set_lazy_buffer(true);
 
       -- uložit záhlaví souboru
-      save_ctm_header;
+      save_ctm_header(root_entity);
 
       -- uložit tabulky pro import z jiných partition
       save_import(root_entity);
-      
+
       -- případně nacachovaná data uložit, ať je možné uložit nabufferovaný strom entit
       f.flush;
 
@@ -1804,16 +2073,95 @@ class private {abstract} c_ctm_reader =
       end read_refentity;
 
 
+              
+    ------------------------------------------------------------------------------------------------
+    static read_codegen_type (
+        codegen    : out p_flex_record) =        -- informace o generování
+    -- Přečte informace o generování typu.
+    ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def;
+      
+    var
+      ud     : tunidata_addr;
+      
+    begin  
+      -- %%TODO(PORTABILITY) Zobecnit !
+      
+      -- načíst adresu 
+      f.read_unidata_addr(ud);
+      
+      -- nenilovou adresu uložit do informací o generování
+      if ud<>uda_0 then
+        -- připravit informace o generování
+        new picodegen_type(codegen);
+        c_garbage_collector.get_instance^.register_record(codegen);
 
+        -- uložit adresu do informací o generování
+        picodegen_type(codegen)^.desc_addr:=tprg32(unidata_addr_to_unsigned(ud));
+        end if;
+      end read_codegen_type;
+
+
+           
+    ------------------------------------------------------------------------------------------------
+    static read_refinterface (
+        iface      : out p_class_interface) =
+    -- Přečte odkaz na interface.
+    ------------------------------------------------------------------------------------------------
+    var
+      refclass     : pentity_type;               -- odkazovaná třída
+      iface_index  : t_unsigned;                 -- index interfacu v rámci třídy
+      
+    begin
+      -- odkaz na obalující třídu s daným interfacem
+      read_entity_ref(refclass);
+      
+      if refclass<>nil then
+        -- index interfacu
+        f.read_unsigned(iface_index);
+        
+        -- dohledat interface podle indexu
+        iface:=refclass^.interfaces^.get_interface_by_index(iface_index);
+        check_error({CCERR=}000637,iface=nil);
+        end if;
+      end read_refinterface;
+      
+
+
+    ------------------------------------------------------------------------------------------------
+    static read_interface_vtable (
+        iface      : in p_class_interface) =
+    -- Přečte virtuální tabulku uvedeného interfacu.
+    ------------------------------------------------------------------------------------------------
+    var
+      count : t_unsigned32;
+
+    begin
+      -- počet položek virtuální tabulky
+      f.read_unsigned32(count);
+      
+      if count>0 then
+        -- založit virtuální tabulku
+        new iface^.vtable range count;
+        
+        -- přečíst položky virtuální tabulky
+        for i in 1..count loop
+          succ iface^.vtable^:length;
+          read_entity_ref(iface^.vtable^[iface^.vtable^:length]);
+          end loop;
+        end if;
+      end read_interface_vtable;
+      
+      
+           
     ------------------------------------------------------------------------------------------------
     static read_interface (
         context    : in tcontext)                -- kontext        
         return p_class_interface =
     -- Přečte definici interfacu.
     ------------------------------------------------------------------------------------------------
-    var
-      count : t_unsigned32;
-
     begin
       new result;
 
@@ -1825,50 +2173,19 @@ class private {abstract} c_ctm_reader =
       read_refentity(result^.instance);
       check_error({CCERR=}000625,not result^.instance.isset);
 
-      -- počet položek virtuální tabulky
-      f.read_unsigned32(count);
-      
-      if count>0 then
-        -- založit virtuální tabulku
-        new result^.vtable range count;
-        
-        -- přečíst položky virtuální tabulky
-        for i in 1..count loop
-          succ result^.vtable^:length;
-          read_entity_ref(result^.vtable^[result^.vtable^:length]);
-          end loop;
-        end if;
+      -- virtuální tabulka
+      read_interface_vtable(result);
         
       -- původní interface
+      read_refinterface(result^.org_interface);
 
       -- interface index
       f.read_unsigned(result^.interface_index);
+      
+      -- informace o generování
+      read_codegen_type(result^.codegen);
       end read_interface;
 
-
-
-    ------------------------------------------------------------------------------------------------
-    static read_refinterface (
-        context    : in tcontext)                -- kontext        
-        return p_class_interface =
-    -- Přečte odkaz na interface.
-    ------------------------------------------------------------------------------------------------
-    var
-      refclass     : pentity_type;               -- odkazovaná třída
-      iface_index  : t_unsigned;                 -- index interfacu v rámci třídy
-      
-    begin
-      -- odkaz na třídu s daným interfacem
-      read_entity_ref_existing(refclass);
-      
-      -- index interfacu
-      f.read_unsigned(iface_index);
-      
-      -- dohledat interface podle indexu
-      result:=refclass^.interfaces^.get_interface_by_index(iface_index);
-      check_error({CCERR=}000637,result=nil);
-      end read_refinterface;
-      
 
 
     ------------------------------------------------------------------------------------------------
@@ -1903,6 +2220,10 @@ class private {abstract} c_ctm_reader =
         result     : out timm_value) =           -- přečtená přímá hodnota
     -- Přečte přímou hodnotu.
     ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def;
+      
     var
       count        : t_unsigned32;
 
@@ -1929,7 +2250,8 @@ class private {abstract} c_ctm_reader =
             -- pocet prvku [citems.items^]
             f.read_unsigned32(count);
             new result.citems.items range count;
-
+            c_garbage_collector.get_instance^.register_memblock(result.citems.items);
+            
             -- pocet prvku
             f.read_unsigned(result.citems.len);
             
@@ -1948,7 +2270,10 @@ class private {abstract} c_ctm_reader =
             
             -- instance
             new result.aitems;
+            c_garbage_collector.get_instance^.register_memblock(result.aitems);
+
             new result.aitems^.list range count;
+            c_garbage_collector.get_instance^.register_memblock(result.aitems^.list);
 
             -- slozky
             for i in 1..count loop
@@ -1980,7 +2305,10 @@ class private {abstract} c_ctm_reader =
 
             -- instance
             new result.ritems;
+            c_garbage_collector.get_instance^.register_memblock(result.ritems);
+
             new result.ritems^.list range count;
+            c_garbage_collector.get_instance^.register_memblock(result.ritems^.list);
             
             -- slozky
             for i in 1..count loop
@@ -2009,7 +2337,10 @@ class private {abstract} c_ctm_reader =
             
             -- instance
             new result.sitems;
+            c_garbage_collector.get_instance^.register_memblock(result.sitems);
+
             new result.sitems^.list range count; 
+            c_garbage_collector.get_instance^.register_memblock(result.sitems^.list);
             
             -- slozky
             for i in 1..count loop
@@ -2028,6 +2359,28 @@ class private {abstract} c_ctm_reader =
                 end declare;
               end loop;
         end case;
+
+      -- adresa přímé hodnoty
+      -- %%TODO(PORTABILITY) Zobecnit !
+      declare var
+        ud     : tunidata_addr;
+        
+      begin  
+        -- načíst adresu 
+        f.read_unidata_addr(ud);
+        
+        -- nenilovou adresu uložit do informací o generování
+        if ud<>uda_0 then
+          -- připravit informace o generování
+          new picodegen_imm(result.codegen);
+          c_garbage_collector.get_instance^.register_record(result.codegen);
+
+          -- uložit adresu do informací o generování
+          picodegen_imm(result.codegen)^.addr:=tprg32(unidata_addr_to_unsigned(ud));
+          end if;
+        end declare;
+          
+      -- HYNEK - nevynechalo se neco???
       end read_imm_value;
 
 
@@ -2059,6 +2412,7 @@ class private {abstract} c_ctm_reader =
       
       -- instance
       new paggregate range count;
+      c_garbage_collector.get_instance^.register_memblock(paggregate);
       
       -- polozky
       for i in 1..count loop
@@ -2079,6 +2433,8 @@ class private {abstract} c_ctm_reader =
     begin
       -- alokovat paměť
       new plex;
+      c_garbage_collector.get_instance^.register_record(plex);
+
       plex^._tag:=_tag_param;
       
       -- přečíst odkaz na parametr
@@ -2095,6 +2451,8 @@ class private {abstract} c_ctm_reader =
     begin
       -- instance
       new plex;
+      c_garbage_collector.get_instance^.register_record(plex);
+
       plex^._tag:=_tag_lex;
 
       -- HYNEK - neudelat case node^.xlex? kdyz tech elementu je moc a ostatnich polozek jen par
@@ -2121,10 +2479,13 @@ class private {abstract} c_ctm_reader =
       f.read_visible(node.visible);
       f.read_visible(node.full);
       f.read_logical(node.is_abstract);
-      
+      f.read_security_level(node.sec_level);
+      f.read_security_level(node.sec_required);
+
       -- vyplnit další služební údaje
       node.linked:=ls_linked;
       node.analyzed:=as_analyzed;
+      node.debugstat:=as_analyzed;
       #end process_entity_base_template;
     
 
@@ -2144,6 +2505,155 @@ class private {abstract} c_ctm_reader =
       end process_entity_base;
 
 
+                              
+    ------------------------------------------------------------------------------------------------
+    #template process_entity_code_template;
+    -- Šablona načtení základu entity vyjma zařazení do struktury.
+    ------------------------------------------------------------------------------------------------
+      -- přečíst informace o importu %%TODO(PORTABILITY) Zobecnit !
+      declare var
+        imported   : t_logical;                  -- T-entita byla importovaná
+      
+      begin  
+        -- přečíst příznak importu
+        f.read_logical(imported);
+        
+        -- přečíst případné importní informace
+        if imported then
+          declare var
+            import_info : pimportinfo;           -- importní informace
+            extname     : p_external_entity_ident; -- externí jméno
+            libname     : p_external_entity_ident; -- jméno knihovny
+            
+          begin  
+            -- přečíst importní údaje
+            f.read_external_entity_ident(extname);
+            f.read_external_entity_ident(libname);
+          
+            -- sestavit importní informace
+            os^.create_import_info(extname^,libname^,import_info);
+
+            -- adresa importního stubu
+            f.read_unicode_addr(import_info^.addr);
+            
+            -- dosadit do entity
+            set_import_info(^node,import_info);
+            end declare;
+          end if;
+        end declare;  
+
+      -- přečíst všechny instance %%TODO(PORTABILITY) Zobecnit !
+      declare var
+        cr         : t_ctm_record_tag;
+       
+      begin
+        -- tag začátku seznamu instancí
+        f.read_cr(cr);
+        check_error({CCERR=}000648,cr<>cr_code_instances);
+      
+        -- založit informace o generování
+        i_prepare(node);
+      
+        -- zpracovat všechny instance
+        loop
+          -- přečíst další tag
+          f.read_cr(cr);
+          case cr
+            -- záznam instance
+            when cr_code_instance do
+                declare var
+                  inst : picodeinst;             -- právě zpracovávaná instance
+                  
+                begin  
+                  -- vytvořit a zařadit instanci
+                  i_create_instance(node,inst);
+                  
+                  -- volací konvence této instance
+                  f.read_icallconvention(inst^.profile.call);
+                  
+                  -- adresa instance
+                  declare var
+                    uca : tunicode_addr;
+                  begin  
+                    f.read_unicode_addr(uca);
+                    inst^.cstart:=unicode_addr_to_unsigned(uca);
+                    end declare;
+          
+                  -- offset THIS parametru
+                  declare var
+                    uda  : tunidata_addr;
+                  begin  
+                    f.read_unidata_addr(uda);
+                    inst^.profile.thisofs:=unidata_addr_to_signed(uda);
+                    end declare;
+                  
+                  -- kolik bytů uvolnit při návratu z procedury
+                  declare var
+                    uds : tunidata_size;
+                  begin  
+                    f.read_unidata_size(uds);
+                    inst^.profile.retfree:=unidata_size_to_unsigned(uds);;
+                    end declare;
+                  
+                  -- parametry
+                  declare var
+                    count : t_unsigned;          -- počet parametrů
+                    
+                  begin 
+                    -- přečíst počet parametrů
+                    f.read_unsigned(count);
+                    
+                    -- alokovat paměť pro parametry
+                    new inst^.profile.par range count;
+                    c_garbage_collector.get_instance^.register_memblock(inst^.profile.par);
+                    
+                    -- zpracovat uložené parametry
+                    for i in 1..count loop
+                      declare var
+                        par : iparinfo;
+                        
+                      begin
+                        -- reference na parametr
+                        read_entity_ref(par.pparam);
+                        
+                        -- offset na stacku
+                        declare var
+                          uda  : tunidata_addr;
+                        begin  
+                          f.read_unidata_addr(uda);
+                          par.ofs:=unidata_addr_to_signed(uda);
+                          end declare;
+                          
+                        -- velikost
+                        declare var
+                          uds : tunidata_size;
+                        begin  
+                          f.read_unidata_size(uds);
+                          par.size:=unidata_size_to_unsigned(uds);
+                          end declare;
+                          
+                        -- zařadit na seznam parametrů
+                        inst^.profile.par^ & par;
+                        end declare;
+                      end loop;
+                    end declare;
+                  end declare;
+                  
+                -- tag konce
+                f.read_cr(cr);
+                check_error({CCERR=}000650,cr<>cr_end);
+            
+            -- konec tabulky instancí
+            when cr_end do break;
+            
+            -- nic jiného tu nemá co dělat
+            when others do check_error({CCERR=}000649);
+            end case;
+          end loop;
+        end declare;
+      #end process_entity_code_template;                        
+                              
+                              
                      
     ------------------------------------------------------------------------------------------------
     static process_entity_code (
@@ -2151,8 +2661,14 @@ class private {abstract} c_ctm_reader =
         node       : in out class tentity_code) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
+    with
+      supervised cc_binding,
+      cg_gen.cg_ia32.ci_def,
+      cp_os.cp_win32;
+      
     begin
       process_entity_base(context,node);
+      process_entity_code_template;
       end process_entity_code;
 
 
@@ -2163,17 +2679,43 @@ class private {abstract} c_ctm_reader =
         node       : in out tentity_compile) =
     -- Nacte [tentity_compile]
     ------------------------------------------------------------------------------------------------
+    with
+      supervised cc_binding,
+      cc_base.cc_options,
+      cg_gen.cg_ia32.ci_def,
+      cp_os.cp_win32;
+      
     begin
       -- zařadit do hierarchie - kompilační jednotka je vždy vrchol hierarchie
       context.entity:=^node;
 
-      -- načíst entitu
-    --process_entity_code(context,node);
+      -- načíst entitu (přidání entity do nadřazeného kontextu nemá pro kompilační jednotku smysl,
+      -- proto zde nemůžeme volat [process_entity_code], ale musíme to provést oklikou přímým 
+      -- rozvojem dvou testových substitucí [process_entity_(base|code)_template].
       process_entity_base_template;
+      process_entity_code_template;
       f.read_partition_type(node.part_type);     -- typ partition
       f.read_partition_result(node.part_result); -- výsledný tvar přeložené partition
       f.read_external_entity_ident(node.part_extid); -- externí identifikátor partition
       
+      -- načíst image-base této partition
+      declare var
+        uca        : tunicode_addr;
+      begin
+        f.read_unicode_addr(uca);
+        o_set_option_param_unicode_addr(opt_image_base,node,uca);
+        end declare;
+      
+      -- načíst stack reserve této partition
+      if node.part_type in parts_contains_runtime then
+        declare var
+          uds        : tunidata_size;
+        begin
+          f.read_unidata_size(uds);
+          o_set_option_param_unidata_size(opt_stack_reserve,node,uds);
+          end declare;
+        end if;
+        
       -- kompilační jednotka je vždy globálně viditelná
       node.compile+tentitycompileset:[etc_globaly_visible];
       end process_entity_compile;
@@ -2186,13 +2728,9 @@ class private {abstract} c_ctm_reader =
     -- Trigger při opouštění načtení [tentity_compile].
     ------------------------------------------------------------------------------------------------
     with
-      cc_base.cc_sym.cc_partition;
+      supervised cc_base.cc_sym.cc_partition;
 
     begin
-    {
-      -- WITHnout existující globální partition
-      part_with_partitions(sym_primary_context(node));
-    }
       -- kompilační jednotku zaregistrovat
       part_register_partition(^node);
       end leave_entity_compile;
@@ -2272,6 +2810,10 @@ class private {abstract} c_ctm_reader =
         node       : in out tentity_var) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def;
+      
     begin
       process_entity_value(context,node);
       f.read_memclass(node.mclass);              -- třída proměnné                                        
@@ -2281,7 +2823,31 @@ class private {abstract} c_ctm_reader =
       f.read_mem_aliased(node.valiased);         -- příznak, zda je možné získat adresu proměnné (ALIASED)
       f.read_varimplements(node.vimplements);    -- jakou "higher-order" konstrukci proměnná implementuje 
       read_entity_ref(node.imp_param);           -- související parametr                                  
-      f.read_unidata_addr(node.addr);            -- adresa promenne                                       
+
+      -- adresa promenne
+      if node.mclass in mcs_offset
+
+        -- pro složky tříd a recordů je adresa přímo součástí proměnné
+        then f.read_unidata_addr(node.addr);
+
+        -- pro normální proměnné se musíme zeptat generátoru kódu
+        else
+          -- %%TODO(PORTABILITY) Zobecnit !
+          declare var
+            ud     : tunidata_addr;
+            
+          begin  
+            -- připravit informace o generování
+            new picodegen_var(node.codegen);
+            c_garbage_collector.get_instance^.register_record(node.codegen);
+
+            -- načíst adresu 
+            f.read_unidata_addr(ud);
+            
+            -- uložit adresu do informací o generování
+            picodegen_var(node.codegen)^.addr:=tprg32(unidata_addr_to_unsigned(ud));
+            end declare;
+          end if;
       end process_entity_var;
 
 
@@ -2373,7 +2939,7 @@ class private {abstract} c_ctm_reader =
     begin
       process_entity_code(context,node);
       read_refentity(node.virt);                 -- související virtuální metoda
-      node.interface:=read_refinterface(context); -- související interface
+      read_refinterface(node.interface);         -- související interface
       end process_entity_override;
 
 
@@ -2434,6 +3000,7 @@ class private {abstract} c_ctm_reader =
 
       -- instance
       new node.table range count;
+      c_garbage_collector.get_instance^.register_memblock(node.table);
 
       -- tabulka přetížených procedur
       for i in 1..count loop
@@ -2502,6 +3069,12 @@ class private {abstract} c_ctm_reader =
         node       : in out tentity_type) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def,
+      cp_cpu.cp_ia32.ci_abi;
+    
+      
     begin
       process_entity_init(context,node);
 
@@ -2557,30 +3130,33 @@ class private {abstract} c_ctm_reader =
           parflag      : t_unsigned8;
         
         begin
-          -- verify({VERIFY=}001172,node^.fp.sparams=nil);
-          f.read_unireal(node.fp.fdelta);       -- přesnost   
-          f.read_uniint(node.fp.fdigits);       -- počet míst
-          f.read_unilogical(node.fp.rounding);  -- T-zaokrouhlování
-          f.read_unilogical(node.fp.oflw);      -- T-přetečení způsobí CONSTRAINT_ERROR
+          new node.fp;
+          c_garbage_collector.get_instance^.register_record(node.fp);
+
+          f.read_unireal(node.fp^.fdelta);       -- přesnost   
+          f.read_uniint(node.fp^.fdigits);       -- počet míst
+          f.read_unilogical(node.fp^.rounding);  -- T-zaokrouhlování
+          f.read_unilogical(node.fp^.oflw);      -- T-přetečení způsobí CONSTRAINT_ERROR
           
           -- je sparams ulozeno?
           f.read_unsigned8(parflag);
           if parflag=1 then
             -- ano - instance
-            new node.fp.sparams;
+            new node.fp^.sparams;
+            c_garbage_collector.get_instance^.register_record(node.fp^.sparams);
 
             -- nacti
-            f.read_unireal(node.fp.sparams^.low);             -- nejmenší číslo
-            f.read_unireal(node.fp.sparams^.high);            -- největší číslo
-            f.read_unireal(node.fp.sparams^.small);           -- nejmenší číslo větší než 0
-            f.read_uniint(node.fp.sparams^.emin);             -- nejmenší exponent
-            f.read_uniint(node.fp.sparams^.emax);             -- největší exponent
-            f.read_unilogical(node.fp.sparams^.signed_zeros); -- T-rozlišuje se +/- 0
-            f.read_unireal(node.fp.sparams^.positive_inf);    -- Positive Infinity
-            f.read_unireal(node.fp.sparams^.negative_inf);    -- Negative Infinity
-            f.read_unireal(node.fp.sparams^.positiove_zero);  -- Positive Zero
-            f.read_unireal(node.fp.sparams^.negative_zero);   -- Negative Zero
-            f.read_unireal(node.fp.sparams^.not_a_number);    -- Not a Number
+            f.read_unireal(node.fp^.sparams^.low);             -- nejmenší číslo
+            f.read_unireal(node.fp^.sparams^.high);            -- největší číslo
+            f.read_unireal(node.fp^.sparams^.small);           -- nejmenší číslo větší než 0
+            f.read_uniint(node.fp^.sparams^.emin);             -- nejmenší exponent
+            f.read_uniint(node.fp^.sparams^.emax);             -- největší exponent
+            f.read_unilogical(node.fp^.sparams^.signed_zeros); -- T-rozlišuje se +/- 0
+            f.read_unireal(node.fp^.sparams^.positive_inf);    -- Positive Infinity
+            f.read_unireal(node.fp^.sparams^.negative_inf);    -- Negative Infinity
+            f.read_unireal(node.fp^.sparams^.positiove_zero);  -- Positive Zero
+            f.read_unireal(node.fp^.sparams^.negative_zero);   -- Negative Zero
+            f.read_unireal(node.fp^.sparams^.not_a_number);    -- Not a Number
             end if;
           end declare;
         end if;
@@ -2610,6 +3186,7 @@ class private {abstract} c_ctm_reader =
         f.read_procflagset(node.rflags);         -- další parametry
         read_entity_ref(node.result);            -- návratová hodnota funkce
         
+        -- %%TODO(PORTABILITY) Zobecnit !
         declare var
           callconv : icallconvention;
 
@@ -2624,7 +3201,10 @@ class private {abstract} c_ctm_reader =
         -- HYNEK - nejake atributy pro zpravu??
         end if;
 
-      -- trida
+      -- adresa deskriptoru typu
+      read_codegen_type(node.codegen);
+
+      -- třída
       if node.stype in dts_class then
         declare var
           it        : c_list_iterator;
@@ -2638,6 +3218,12 @@ class private {abstract} c_ctm_reader =
           -- třída je sama sobě nativním interfacem
           node.interfaces^.add_interface(nil,^node);
           
+          -- nativní interface má stejné informace o generování jako typ samotný
+          node.interfaces^.get_native_interface^.codegen:=node.codegen;
+          
+          -- virtuální tabulka nativního interfacu
+          read_interface_vtable(node.interfaces^.get_native_interface);
+          
           -- přečíst počet interfaců
           f.read_unsigned32(icount);
 
@@ -2647,7 +3233,7 @@ class private {abstract} c_ctm_reader =
             end loop;
           end declare;
         end if;
-
+          
       -- HYNEK - nevynechalo se neco???
       end process_entity_type;
 
@@ -2676,12 +3262,12 @@ class private {abstract} c_ctm_reader =
           end declare;
         end if;
       end leave_entity_type;
-      
-      
-    
+
+
+
     ------------------------------------------------------------------------------------------------
     static process_entity_attribute (
-        context    : in tcontext;                -- kontext    
+        context    : in tcontext;                -- kontext
         node       : in out tentity_attribute) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
@@ -2693,20 +3279,44 @@ class private {abstract} c_ctm_reader =
 
     ------------------------------------------------------------------------------------------------
     static process_entity_message (
-        context    : in tcontext;                -- kontext    
+        context    : in tcontext;                -- kontext
         node       : in out tentity_message) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
+    with
+      cp_cpu.cp_32.cp_def,
+      cg_gen.cg_ia32.ci_def;
+      
     begin
       process_entity_base(context,node);
       node.typ:=read_reftype(context);           -- typ zprávy
+
+      -- adresa deskriptoru zprávy
+      -- %%TODO(PORTABILITY) Zobecnit !
+      declare var
+        ud     : tunidata_addr;
+
+      begin  
+        -- načíst adresu 
+        f.read_unidata_addr(ud);
+
+        -- nenilovou adresu uložit do informací o generování
+        if ud<>uda_0 then
+          -- připravit informace o generování
+          new picodegen_message(node.codegen);
+          c_garbage_collector.get_instance^.register_record(node.codegen);
+
+          -- uložit adresu do informací o generování
+          picodegen_message(node.codegen)^.desc_addr:=tprg32(unidata_addr_to_unsigned(ud));
+          end if;
+        end declare;
       end process_entity_message;
 
 
 
     ------------------------------------------------------------------------------------------------
     static process_entity_label (
-        context    : in tcontext;                -- kontext    
+        context    : in tcontext;                -- kontext
         node       : in out tentity_label) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
@@ -2823,6 +3433,7 @@ class private {abstract} c_ctm_reader =
         if count>0 then
           -- instance
           new region^.withtable range count;
+          c_garbage_collector.get_instance^.register_memblock(region^.withtable);
 
           -- nacist
           for i in 1..count loop
@@ -2835,7 +3446,7 @@ class private {abstract} c_ctm_reader =
           end if;
 
         -- implicitni viditelnost vnorenych prvku
-        f.read_entityvisible(region^.vsect);
+        -- f.read_entityvisible(region^.vsect);
    
         -- trigger po vytvoření regionu
         after_create_region;
@@ -3121,11 +3732,31 @@ class private {abstract} c_ctm_reader =
 
 
     ------------------------------------------------------------------------------------------------
-    static load_header =
+    static load_ctm_header =
     -- Načte hlavičku CTM souboru.
     ------------------------------------------------------------------------------------------------
+    var
+      cr           : t_ctm_record_tag;
+      version      : t_ctm_version;
+    
     begin
-      end load_header;
+      -- tag začátku hlavičky
+      f.read_cr(cr);
+      check_error({CCERR=}000651,cr<>cr_header);
+
+      -- číslo verze CTM
+      f.read_ctm_version(version);
+      
+      -- zkontrolovat kompatibilitu
+      if version>ctm_curr_version or version<ctm_min_version then
+        ce^.seterror({CCERR=}000653,ce_ctm_unsupported_version);
+        ce^.raiseerror;
+        end if;
+      
+      -- koncový tag
+      f.read_cr(cr);
+      check_error({CCERR=}000652,cr<>cr_end);
+      end load_ctm_header;
 
 
 
@@ -3215,6 +3846,7 @@ class private {abstract} c_ctm_reader =
                           
                         leave
                           -- uvolnit paměť
+                          c_garbage_collector.get_instance^.unregister_memblock(qid);
                           discard qid;
                           end declare;
                     
@@ -3239,7 +3871,7 @@ class private {abstract} c_ctm_reader =
       end load_import;
 
 
-{
+
     ------------------------------------------------------------------------------------------------
     static load_rtl_table =
     -- Načte konfiguraci RTL procedur.
@@ -3296,6 +3928,7 @@ class private {abstract} c_ctm_reader =
 
               leave
                 -- uvolnit paměť
+                c_garbage_collector.get_instance^.unregister_memblock(id);
                 discard id;
                 end declare;
 
@@ -3307,7 +3940,7 @@ class private {abstract} c_ctm_reader =
           end case;
         end loop;
       end load_rtl_table;
-}
+
 
 
     ------------------------------------------------------------------------------------------------
@@ -3321,17 +3954,19 @@ class private {abstract} c_ctm_reader =
       f.init_reader(input);
 
       -- načíst záhlaví souboru
-      load_header;
+      load_ctm_header;
 
       -- načíst importní tabulku
       load_import;
 
       -- načíst strom entit
       load_tree(root_entity);
-{
+
       -- načíst tabulku RTL procedur
-      load_rtl_table;
-}
+      if root_entity^.part_type in parts_contains_runtime then
+        load_rtl_table;
+        end if;
+
     catch
       when stream_read_error do
           ce^.seterror({CCERR=}000603,ce_ctm_corrupt);

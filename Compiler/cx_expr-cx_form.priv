@@ -149,14 +149,14 @@ begin
 
 
 
-------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------
 procedure check_aliased (
     curr           : in tcontext;                -- překládaný prvek
     expr           : in pexpnode;                -- obalující výraz
     sub            : in pexpnode) =              -- kontrolovaný podvýraz
 -- Kontrola, zda je povolen ALIASED přístup k podvýrazu.
 -- V případech, jako je přetypování, volá rekurzivně samo sebe.
-------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------
 begin
   case sub^.ntype
     -- komponenta
@@ -240,6 +240,7 @@ type
   tunaryaction  = enum
       una_error;                                 -- nekompatibilní operandy
       una_el;                                    -- převzít typ levého podvýrazu
+      una_el_modular;                            -- převzít typ levého podvýrazu, kontrola modularity
       end enum;
 
   -- řídící tabulka typové kontroly binárních operátorů
@@ -337,7 +338,7 @@ begin
   uset1s(unarytab,un_not           ,dts_u_logical,una_el);
 
   ---- BIT NOT ----
-  uset11(unarytab,un_bitnot        ,dt_unsigned  ,una_el);
+  uset11(unarytab,un_bitnot        ,dt_unsigned  ,una_el_modular);
   uset11(unarytab,un_bitnot        ,dt_uniint    ,una_el);
 
   ---- SET NOT ----
@@ -461,12 +462,10 @@ var
   oop              : tooperator;                 -- přetížitelný operátor
   srch             : tentitysearch;              -- hledátko
   srchparam        : tentitysearch;              -- hledátko parametrů                          
-  param            : pentity_param;              -- formální parametr                           
   pdesc            : poverloaddesc;              -- pro zjednodušení: popis přetížené procedury 
   pproc            : pentity_subprogram;         -- pro zjednodušení: přetížená procedura       
   ptyp             : pentity_type;               -- pro zjednodušení: typ procedury (operátoru) 
   ok               : t_logical;                  -- T-skutečný a formální parametr si odpovídají
-  ui               : tuniint;
 
 begin
   -- rozdělit podvýrazy 
@@ -662,7 +661,6 @@ var
   oop              : tooperator;                 -- přetížitelný operátor                       
   srch             : tentitysearch;              -- hledátko
   srchparam        : tentitysearch;              -- hledátko parametrů                          
-  param            : pentity_param;              -- formální parametr                           
   pdesc            : poverloaddesc;              -- pro zjednodušení: popis přetížené procedury 
   pproc            : pentity_subprogram;         -- pro zjednodušení: přetížená procedura       
   ptyp             : pentity_type;               -- pro zjednodušení: typ procedury (operátoru) 
@@ -700,10 +698,17 @@ begin
       -- typová kontrola 
       case unarytab[lop,elt^.stype]
         -- chyba
-        when una_error  do ;
-
+        when una_error      do ;
+                        
         -- zvolit typ levého podvýrazu
-        when una_el     do expr^.addtype(elt^,eli,0,nil);
+        when una_el         do expr^.addtype(elt^,eli,0,nil);
+
+        -- zvolit typ levého podvýrazu, kontrola modularity
+        when una_el_modular do 
+            -- lze provést pouze pro modulární typ
+            if elt^.getintaritm=tia_modular then
+              expr^.addtype(elt^,eli,0,nil);
+              end if;
 
         when others     do verify({VERIFY=}000837,true);
         end case;
@@ -1495,6 +1500,10 @@ procedure a_form_component_finalize (
 -- Dokončení formální kontroly komponenty.
 ----------------------------------------------------------------------------------------------------
 
+{with
+  standard.console,
+  standard.conversions;}
+
     ------------------------------------------------------------------------------------------------
     procedure create_this =
     -- Coby EXPR^.SUB doplní uzel reprezentující THIS.
@@ -1512,6 +1521,27 @@ var
   pproc            : pentity_subprogram;         -- procedura (pro zjednodušení)
 
 begin
+  -- zkontrolovat bezpečnostní úrovně
+  if curr.entity^.sec_level>expr^.s.psym^.sec_required then
+    {
+    write(entityident_to_string(curr.entity^.id^));
+    write(' has sec_level=');
+    write(unsigned_to_string(curr.entity^.sec_level));
+    write(', but ');
+    write(entityident_to_string(expr^.id^));
+    write(' requires ');
+    write_line(unsigned_to_string(expr^.s.psym^.sec_required));
+
+    write_line('sec_required,sec_level:');
+    write_line(unsigned_to_string(curr.entity^.sec_required));
+    write_line(unsigned_to_string(expr^.s.psym^.sec_level));
+    }
+
+    cc_var.ce^.seterror({CCERR=}000662,cc_codes.ce_forbidden_entity);
+    cc_var.ce^.setparam(entityident_to_string(expr^.id^));
+    cc_var.ce^.loadpos;
+    end if;
+
   -- zvýšit počet použití symbolu
   succ expr^.s.psym^.stat_usage;
 
@@ -2571,7 +2601,6 @@ with
   cx_phase;
   
 var
-  base             : pentity_type;               -- bázový typ
   check            : t_logical;
 
 type
@@ -2846,7 +2875,7 @@ type
     ------------------------------------------------------------------------------------------------
     begin
       expr^.ata:=out_attr;
-      expr^.aclass:=atc_static;
+      expr^.aclass:=out_aclass;
       expr^.nclass:=out_class;
       out_typ:=_out_typ;
       end set_attribute;
@@ -2864,6 +2893,19 @@ type
       result:=expr^.sub^.ntype=nt_attrib and then pexpattrib(expr^.sub)^.atf=sub_attr;
       end is_attribute;
 
+
+{
+    ------------------------------------------------------------------------------------------------
+    procedure is_var_or_value (
+        sub_attr   : in tattrformal;             -- formální atribut v podvýrazu
+        sub_aclass : in tattrclass)              -- třída atributu v podvýrazu
+        return t_logical =
+    -- Kontrola: Výraz je atribut.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=expr^.sub^.ntype=nt_attrib and then pexpattrib(expr^.sub)^.atf=sub_attr;
+      end is_attribute;
+}
 
 
     ------------------------------------------------------------------------------------------------
@@ -2955,11 +2997,12 @@ begin
         when atf_root_ancestor    do check:=cent(et_module,ata_module_root_ancestor,tt_module_root_ancestor,nc_module)
                                          or ct(dts_all-dts_internal,etd_incomplete{full},ata_type_root_ancestor,tt_root_ancestor,nc_type);
 
+{
         -- :size
         when atf_size             do check:=cd(rta_size,ata_expr_size,tt_size,nc_value)
                                          or ct(dts_all-dts_internal,etd_full,ata_type_size,tt_uniint,nc_value)
                                          or ctvx(ttypeviewset:[tview_partial],etd_full,ata_type_size,atc_static,tt_uniint,nc_value);
-
+}
         -- :bits
         when atf_bits             do check:=ct(dts_ordinal,etd_full,ata_ord_bits    ,tt_uniint,nc_value);
 
@@ -3033,8 +3076,19 @@ begin
 
         ---- ^^^^ Tady končí postaru řešené atributy ^^^^ ----
 
+{
+        -- :ancestor
+        when atf_ancestor do
+            check:= (is_
+            or else (
+        
+        do check:=cent(et_module,ata_module_ancestor,tt_module_ancestor,nc_module)
+                                         or ct(dts_all-dts_internal,etd_incomplete{full},ata_type_ancestor,tt_ancestor,nc_type);
 
-
+        -- :root_ancestor
+        when atf_root_ancestor    do check:=cent(et_module,ata_module_root_ancestor,tt_module_root_ancestor,nc_module)
+                                         or ct(dts_all-dts_internal,etd_incomplete{full},ata_type_root_ancestor,tt_root_ancestor,nc_type);
+}
         -- :designated
         when atf_designated do 
             check:= (is_attribute(atf_tag,atc_static)  and then set_attribute(ata_tag_designated,atc_dynamic,tt_none,nc_none))
@@ -3043,18 +3097,14 @@ begin
         -- :size
         when atf_size do
             check:= (has_rtattrib   (rta_size)                     and then set_attribute(ata_expr_size      ,atc_dynamic,tt_size,nc_value))
-            or else (is_of_type     (dts_all-dts_internal)         and then set_attribute(ata_expr_size      ,atc_static ,tt_size,nc_value))
-            or else (is_of_type_view(ttypeviewset:[tview_partial]) and then set_attribute(ata_expr_size      ,atc_static ,tt_size,nc_value))
+            or else (is_of_type     (dts_all-dts_internal)         and then set_attribute(ata_type_size      ,atc_static ,tt_uniint,nc_value))
+            or else (is_of_type_view(ttypeviewset:[tview_partial]) and then set_attribute(ata_type_size      ,atc_static ,tt_uniint,nc_value))
             or else (is_attribute   (atf_designated,atc_dynamic)   and then set_attribute(ata_designated_size,atc_dynamic,tt_size,nc_value));
-{
-        when atf_size             do check:=cd(rta_size,ata_expr_size,tt_size,nc_value)
-                                         or ct(dts_all-dts_internal,etd_full,ata_type_size,tt_uniint,nc_value)
-                                         or ctvx(ttypeviewset:[tview_partial],etd_full,ata_type_size,atc_static,tt_uniint,nc_value);
-}
+
         when others               do verify({VERIFY=}000114,true);
         end case;
 
-      -- jako dopadla kontrola?
+      -- jak dopadla kontrola?
       if not check then
         ce^.seterror({CCERR=}000464,ce_i_attr);
         ce^.setparam(entityident_to_string(expr^.id^));
@@ -3137,13 +3187,18 @@ begin
         when tt_unistr     do expr^.settype(curr,def_unistr); --x_unistr(curr,expr,def_unichar);
 
         -- unchecked
-        when tt_unchecked  do expr^.setunchecked(curr,expr^.sub^.t);
+        when tt_unchecked  do
+            -- bezpečnostní kontroly
+            check_security_level({CCERR=}000659,curr,sl_attr_unchecked{%%TODO(SECURITY),expr^.errpos});
+
+            -- nastavit unchecked pohled
+            expr^.setunchecked(curr,expr^.sub^.t);
 
         when others        do verify({VERIFY=}000116,true);
         end case;
       end if;
 
-  -- formální kontrola úspěšně dokončena 
+  -- formální kontrola úspěšně dokončena
   expr^.zprac:=ep_form;
   end a_form_attrib;
 

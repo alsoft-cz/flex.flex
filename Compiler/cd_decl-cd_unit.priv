@@ -7,8 +7,10 @@ module private cd_unit =
 ----------------------------------------------------------------------------------------------------
 
 with
+  cc_def.cc_gc,
   cc_def.cc_var,
   cc_def.cc_files,
+  cc_base.cc_options,
   cb_block,
   cb_block.cb_def,
   cb_block.cb_compile,
@@ -314,7 +316,7 @@ begin
       -- zvolit implicitní paměťovou třídu podle typu nadřazeného prvku
       case curr.entity^.etype
         when et_compile   do pvar^.mclass:=mc_static;
-        when et_program   do pvar^.mclass:=mc_static;
+        when et_program   do pvar^.mclass:=mc_auto;
         when et_module    do pvar^.mclass:=mc_static;
         when et_class     do pvar^.mclass:=mc_class;
         when et_special   do pvar^.mclass:=mc_auto;
@@ -875,6 +877,13 @@ var
       -- začátek deklarace
       d_create_without_name(curr,pentity(pspec),pspec_context,et_special,tspectypeid[spectype],pos);
 
+      -- trik: speciální metoda musí být nejlépe public, aby se správně vyexportovala do metadat, 
+      -- i když je de-facto v private části třídy
+      -- %%X No, zrovna čistá praktika to není... Nešlo by to nějak jinak?
+      pspec^.visible:=etv_public;
+      pspec^.full   :=etv_public;
+      sym_set_globaly_visible(pspec,for force use true);
+
       -- uložit typ speciální metody
       pspec^.spectype:=spectype;
 
@@ -906,6 +915,9 @@ var
 
       -- dokončit vyhodnocení specifikace podprogramu před překladem definice
       e_before_subprogram_body(pspec);
+
+      -- překládá se rovnou část PRIVATE
+      pspec_context.region^.vsect:=etv_private;
 
       -- přeložit deklarace
       p_body(pspec_context,--false,true,false,true);
@@ -1266,7 +1278,7 @@ begin
 
   -- začátek deklarace
   d_create_without_name(curr,pentity(poverride),poverride_context,et_override,sym_get_override_id,pos);
-
+  
   -- jméno virtuální metody
   x_vyraz(curr,expr,es_name);
   x_evaluate(curr,expr,ek_sym_virtual,nil,eu_formal,true,eval);
@@ -1290,6 +1302,13 @@ begin
 
   -- dokončit vyhodnocení specifikace podprogramu před překladem definice
   e_before_subprogram_body(poverride);
+
+  -- trik: override musí mít stejnou nebo lepší úroveň viditelnosti jako související virtuální
+  -- metoda, aby se správně vyexportoval do metadat, i když je v private části třídy
+  -- %%X No, zrovna čistá praktika to není... Nešlo by to nějak jinak?
+  poverride^.visible:=poverride^.virt.getcentity^.visible;
+  poverride^.full:=poverride^.virt.getcentity^.visible;
+  sym_set_globaly_visible(poverride,for force use true);
 
   -- překládá se rovnou část PRIVATE
   poverride_context.region^.vsect:=etv_private;
@@ -1434,6 +1453,9 @@ begin
 
     R1:
       until not checklex(poverload_context,lex_comma);
+    
+    -- registruj do globalniho gc
+    c_garbage_collector.get_instance^.register_memblock(poverload^.table);
 
     -- středník
     if followlex(poverload_context,lex_scol) then
@@ -2090,12 +2112,12 @@ begin
 procedure p_setup_compilation_environment =
 -- Připraví prostředí pro kompilaci v zadané kompilační jednotce.
 -- WITHne existující globální partition, podle potřeby deklaruje univerzální typy a přeloží run-time
--- podporu (modul Flex). 
--- Pozor: Standardně se volá v rámci [p_create_compilation_unit]. Samostatně určeno pouze pro 
+-- podporu (modul Flex).
+-- Pozor: Standardně se volá v rámci [p_create_compilation_unit]. Samostatně určeno pouze pro
 -- vytváření kompilačních jednotek z metadat a podobně.
 ----------------------------------------------------------------------------------------------------
 with
-  cc_base.cc_sym.cc_partition;
+  supervised cc_base.cc_sym.cc_partition;
 
 var
   compi_context    : tcontext;                   -- kontext kompilační jednotky
@@ -2137,7 +2159,7 @@ procedure p_create_compilation_unit =
 ----------------------------------------------------------------------------------------------------
 use
   cc_base.cc_sym.cc_advanced;
-  
+
 var
   compi_context    : tcontext;                   -- kontext kompilační jednotky
 
@@ -2150,10 +2172,17 @@ begin
   cc_base.cc_sym.cc_advanced.sym_new_region(rt_primary,compi^.regions[rc_primary]);
   compi_context:=sym_primary_context(compi^);
 
-  -- zapamatovat si typ, výsledný tvar a externí identifikátor partition
+  -- nastavit počáteční bezpečnostní úroveň této partition
+  compi^.sec_level:=sec_level;
+  compi^.sec_required:=sec_required;
+  o_set_option_param_uniint(opt_required_security,compi^,unsigned_to_uniint(t_unsigned(sec_required)));
+  o_set_option_param_uniint(opt_security_level,compi^,unsigned_to_uniint(t_unsigned(sec_level)));
+
+  -- zapamatovat si typ, výsledný tvar, externí identifikátor a uživatele partition
   compi^.part_type  :=part_type;
   compi^.part_result:=part_result;
   compi^.part_extid :=part_extid;
+  compi^.part_userid:=part_userid;
 
   -- partition je vždy globálně viditelná
   compi^.compile+tentitycompileset:[etc_globaly_visible];
@@ -2161,6 +2190,7 @@ begin
   -- přiřadit identifikátor (je to výjimka jen pro kompilační jednotku, ta jsem to udělal přímo 
   -- takhle místo jako proceduru do [cc_base.cc_sym])
   new compi^.id range id_compilation:length;
+  c_garbage_collector.get_instance^.register_memblock(compi^.id);  
   compi^.id^:=id_compilation;
 
   -- připravit prostředí pro kompilaci
@@ -2187,7 +2217,7 @@ begin
   p_declare(compi_context);
 
   -- deklarace programu nebo knihovny
-  if compi^.part_type in parts_contains_program and then checklex(compi_context,lex_program) 
+  if compi^.part_type in parts_contains_program and then checklex(compi_context,lex_program)
     
     -- přeložit program
     then 
@@ -2222,7 +2252,8 @@ procedure p_finalize_compilation_unit =
 -- Finalizuje kompilační jednotku.
 ----------------------------------------------------------------------------------------------------
 with
-  cc_base.cc_sym.cc_partition;
+  supervised cc_base.cc_sym.cc_partition,
+  cc_binding;
 
 begin
   -- označit deklaraci jako ukončenou
@@ -2231,10 +2262,27 @@ begin
   -- vyhodnotit deklaraci
   e_symbol(compi,nil,etd_full,true);
 
+  -- vyexportovat partition, aby bylo možné se na ní staticky linkovat
+  if compi^.part_type<>part_standalone and compi^.part_result=tpr_library then
+    -- vyexportovat kompilační jednotku
+    export_entity(compi,for traverse use false);
+    
+    -- vyexportovat program, je-li k dispozici
+    declare var
+      srch         : tentitysearch;  
+      
+    begin
+      srch.find_et_first(compi,rc_primary,et_program,[]);
+      if srch.psym<>nil then
+        export_entity(srch.psym,for external_name use entityident_to_external_entity_ident(id_program)^,for traverse use false);
+        end if;
+      end declare;  
+    end if;
+  
   -- registrovat partition
   part_register_partition(compi);
   end p_finalize_compilation_unit;
 
 
-  
+
 end cd_unit;

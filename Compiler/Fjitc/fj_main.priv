@@ -54,15 +54,13 @@ with
   standard.characters,
   standard.strings,
   standard.program_control,
-  cc_def.cc_entity,
+  cc_def,
   ff_lib,
   ff_lib.ff_cmd_line,
   fj_engine;
 
 var
   jit_engine       : c_flex_jit_engine;          -- vlastní JIT engine
-
-  {!!} part_first       : static t_logical := true;
 
 ----------------------------------------------------------------------------------------------------
 procedure process_load (
@@ -73,26 +71,19 @@ procedure process_load (
 ----------------------------------------------------------------------------------------------------
 var
   config           : c_compilation_config;       -- konfigurace překladu
-  part_type        : t_partition_type;           -- typ partition
 
 begin
   -- zpracovat dodaný příkaz
   parse_command_line(^cmd,cmd_output,config,ignore_first);
 
-  -- !!
-  if part_first
-    then part_type:=part_runtime; part_first:=false;
-    else part_type:=part_global;
-    end if;
-
   -- není-li k dispozici jméno souboru, není ani co překládat
-  if part_type<>part_runtime and then config.src_name=nil then return end if;
+  if config.src_name=nil then return end if;
 
   -- připravit všechna jména souborů
   config.prepare_names;
 
   -- spustit překlad
-  jit_engine.jit_load(cmd_output,config,part_type);
+  jit_engine.jit_load(cmd_output,config);
 
 catch
   -- nepustit dál chyby v parametrech
@@ -105,32 +96,33 @@ catch
 procedure process_compile (
     cmd            : in t_char32ustr;            -- příkaz
     cmd_output     : in c_text_writer;           -- výstup pro zobrazení výstupu příkazu
---  part_type      : in t_partition_type := part_temporary; -- typ partition
     ignore_first   : in t_logical := false) =    -- T-ignore the first "parameter"
 -- Zpracuje dodaný příkaz pro překlad partition.
 ----------------------------------------------------------------------------------------------------
 var
   config           : c_compilation_config;       -- konfigurace překladu
-  part_type        : t_partition_type;           -- typ partition
+  part_result      : t_partition_result;         -- požadovaný výstupní tvar partition
 
 begin
   -- zpracovat dodaný příkaz
   parse_command_line(^cmd,cmd_output,config,ignore_first);
 
-  -- !!
-  if part_first
-    then part_type:=part_runtime; part_first:=false;
-    else part_type:=part_global;
-    end if;
-
   -- není-li k dispozici jméno souboru, není ani co překládat
-  if part_type<>part_runtime and then config.src_name=nil then return end if;
+  if config.src_name=nil then return end if;
 
   -- připravit všechna jména souborů
   config.prepare_names;
 
+  -- podle typu partition zvolit výstupní tvar partition
+  if config.partition_type=part_temporary
+    then part_result:=tpr_auto_select;
+    else part_result:=tpr_library;
+    end if;
+  
   -- spustit překlad
-  jit_engine.jit_execute(cmd_output,config,part_type);
+  if jit_engine.jit_compile(cmd_output,config,part_result) then
+    -- není třeba řešit, jestli se to podařilo nebo ne
+    end if;
 
 catch
   -- nepustit dál chyby v parametrech
@@ -147,13 +139,16 @@ procedure fjitc_process_loop (
     exit_jit       : out t_logical := false) =   -- T-přišel příkaz na ukončení celého JITátoru
 -- Smyčka zpracování příkazů pro JIT kompilátor.
 ----------------------------------------------------------------------------------------------------
+with
+  standard.console;
+
 var
   eod              : t_logical;
 
 begin
   loop
     declare var
-      cmd          : aliased t_char32str;        -- příkazový řádek
+      cmd          : aliased t_char32lstr;       -- příkazový řádek
       cmd_line     : p_command_line_parameters;  -- rozparsovaný příkazový řádek
 
     begin
@@ -164,6 +159,11 @@ begin
 
       -- načíst příkaz
       input^.read_line(cmd,eod);
+
+      -- echo
+      if prompt=nil then
+        write_line(cmd);
+        end if;
 
       -- rozložit na jednotlivé parametry
       parse_command_line_parameters(^cmd,cmd_line);
@@ -183,6 +183,11 @@ begin
         elsif str_to_upper(cmd_line^[1]^)='COMPILE' then
           process_compile(cmd,cmd_output,for ignore_first use true);
 
+{ %%TODO(FJITC) Dodělat [standard.program_control.run_external_command] a zprovoznit.
+        -- provést příkaz shellu
+        elsif str_to_upper(cmd_line^[1]^)='EXEC' then
+          process_compile(cmd,cmd_output,for ignore_first use true);
+}
         -- zobrazit help
         elsif str_to_upper(cmd_line^[1]^)='HELP' then
           if prompt<>nil then
@@ -190,7 +195,7 @@ begin
             end if;
 
         -- komentář
-        elsif cmd_line^[1]^='--' then
+        elsif cmd_line^[1]^:length>=2 and then cmd_line^[1]^[1]="-" and then cmd_line^[1]^[2]="-" then
           -- ignorovat
 
         -- jiným příkazům nerozumíme
@@ -239,21 +244,54 @@ begin
   -- inicializovat JIT engine
   jit_engine.jit_initialize(console_writer^);
 
-  declare var  
-    prolog_reader  : c_text_file_reader;         -- soubor s JIT prologem
-    prolog_decoder : aliased c_character_decoder_utf8; -- dekodér konfiguračního souboru
+  -- zpracovat úvodní příkazy a nastavení
+  declare var
+    config         : c_compilation_config;       -- konfigurace překladu
 
   begin
-    -- otevřít JIT prolog
-    prolog_reader.open('fjitc_prolog.txt',^prolog_decoder,for always use false);
+    -- zpracovat globální příkazovou řádku
+    declare var
+      full_cmd_line: p_char32ustr;               -- příkazový řádek
 
-    -- zpracovat JIT prolog
-    fjitc_process_loop(^c_text_reader:(prolog_reader),console_writer^,nil,exit_jit);
-    if exit_jit then return; end if;
+    begin
+      -- získat příkazový řádek
+      get_command_line(full_cmd_line);
 
-  leave
-    -- zavřít JIT prolog
-    prolog_reader.close;
+      -- zpracovat řádkové parametry
+      parse_command_line(full_cmd_line,console_writer^,config,for pars_required use false);
+
+    leave
+      -- uvolnit paměť
+      discard full_cmd_line;
+      end declare;
+
+    -- zpracovat prolog skript
+    declare var  
+      prolog_reader  : c_text_file_reader;         -- soubor s JIT prologem
+      prolog_decoder : aliased c_character_decoder_utf8; -- dekodér konfiguračního souboru
+
+    begin
+      -- otevřít JIT prolog
+      if config.src_name<>nil
+        then prolog_reader.open(config.src_name^,^prolog_decoder,for always use false);
+        else prolog_reader.open('fjitc_prolog.txt',^prolog_decoder,for always use false);
+        end if;
+
+      -- zpracovat JIT prolog
+      fjitc_process_loop(^c_text_reader:(prolog_reader),console_writer^,nil,exit_jit);
+      if exit_jit then return; end if;
+
+    catch
+      -- odchytit případnou vyjímku [file_error] --- není prolog file
+      when file_error do 
+        if config.src_name<>nil then
+          write('Cannot open or read '); write_line(config.src_name^);
+          end if;
+
+    leave
+      -- zavřít JIT prolog
+      prolog_reader.close;
+      end declare;
     end declare;
 
   -- zpracovávat příkazy od uživatele

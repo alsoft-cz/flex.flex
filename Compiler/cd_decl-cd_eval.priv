@@ -7,6 +7,7 @@ module private cd_eval =
 ----------------------------------------------------------------------------------------------------
 
 with
+  cc_def.cc_gc,
   cc_def.cc_entity.cc_ref,
   cx_expr,cx_expr.cx_def,cx_expr.cx_compile,
   cd_create,
@@ -794,7 +795,10 @@ begin
     end case;
 }
   -- parametry typu
-  cpu^.getrealparams(uniint_to_unidata_bitsize(ui){curr.dtype},size{curr.size},curr.fp);
+  new curr.fp;
+  c_garbage_collector.get_instance^.register_record(curr.fp);
+
+  cpu^.getrealparams(uniint_to_unidata_bitsize(ui),size,curr.fp^);
 
   -- doplnit velikost
   type_setsize(curr,size);
@@ -1174,6 +1178,14 @@ begin
   -- doplnit velikost
   type_setsize(curr,size);
 
+  -- bezpečnostní kontroly
+  if curr.pbase=pb_unchecked then
+    check_security_level({CCERR=}000660,curr_context,sl_unchecked_pointer{%%TODO(SECURITY),ce^.setpos(curr.pos[etp_spec])});
+    end if;
+  if pf_machine in curr.pflags then  
+    check_security_level({CCERR=}000657,curr_context,sl_machine_pointer{%%TODO(SECURITY),ce^.setpos(curr.pos[etp_spec])});
+    end if;
+  
   -- vyhodnoceno
   curr.seval:=ete_evaluated;
   end e_spec_pointer;
@@ -2587,6 +2599,9 @@ begin
         -- založit tabulku interfaců
         new curr.interfaces;
 
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_collectable(^c_collectable:(curr.interfaces^));
+        
         -- třída je sama sobě nativním interfacem
         curr.interfaces^.add_interface(nil,^curr);
 
@@ -2802,8 +2817,13 @@ begin
           -- vyhodnotit hodnotu
           e_refimm(curr_context,curr.init,ek_const,curr.typ.getutype,final);
           if e_part(curr.eval,curr.init.geteval) then return; end if;
-          end if
+          end if;
 
+        -- bezpečnostní kontroly
+        if curr.pass=pp_unchecked then
+          check_security_level({CCERR=}000661,curr_context,sl_unchecked_param{%%TODO(SECURITY),ce^.setpos(curr.pos[etp_spec])});
+          end if;
+        
     when others do verify({VERIFY=}000168,true);
     end case;
   end e_param;
@@ -2920,6 +2940,88 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure eval_seclevel (
+    curr           : in out tentity;
+    pos            : in lexposblock) =           -- referenční pozice
+-- Vyhodnotí security_level a required_security dané entity.
+----------------------------------------------------------------------------------------------------
+{with
+  standard.console,
+  standard.conversions;}
+
+var
+  ui               : tuniint;
+
+begin
+  {
+  -- převzít z výrazu hodnotu
+  %%X pomocí atributů
+  x_const_int(pexpnode(curr.attr_sec_required.getcexpr),ui);
+  }
+
+  -- zjistit required_security
+  o_get_option_param_uniint(opt_required_security,curr,ui);
+
+  -- musí být nezáporná
+  if ui<ui_0 then
+    ce^.seterror({CCERR=}000665,ce_i_attr_required_security);
+    ce^.setpos(pos);
+    --curr.attr_sec_required.errpos;
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+
+  -- dosadit
+  curr.sec_required:=t_security_level(uniint_to_unsigned(ui));
+
+  -- zjistit security_level
+  o_get_option_param_uniint(opt_security_level,curr,ui);
+
+  -- musí být nezáporná
+  if ui<ui_0 then
+    ce^.seterror({CCERR=}000668,ce_i_attr_security_level);
+    ce^.setpos(pos);
+    --curr.attr_sec_required.errpos;
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+
+  -- zkontrolovat, jestli se nesnažíme security_level zvýšit, což samozřejmě není dovoleno
+  if uniint_to_unsigned(ui)<curr.sec_level then
+    ce^.seterror({CCERR=}000669,ce_i_attr_security_level);
+    ce^.setpos(pos);
+    --curr.attr_sec_required.errpos;
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+
+  -- dosadit
+  curr.sec_level:=t_security_level(uniint_to_unsigned(ui));
+
+  {
+  if curr.id<>nil
+    then write(entityident_to_string(curr.id^));
+    else write('<unknown id>');
+    end if;
+  write(' has sec_level/sec_required=');
+  write(unsigned_to_string(t_unsigned(curr.sec_level)));
+  write('/');
+  write_line(unsigned_to_string(t_unsigned(curr.sec_required)));
+  }
+
+  -- nemá entita přísnější required_security než vlastní security_level?
+  if curr.sec_required<curr.sec_level then
+    ce^.seterror({CCERR=}000666,ce_i_attr_required_security);
+    ce^.setpos(pos);
+    --curr.errpos;
+    {%%RESUME ce^.raiseerror;}
+    return;
+    end if;
+  end eval_seclevel;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure check_unused_with (
     context        : in tcontext)=
 -- Nahlasi nepouzite moduly, uvedene ve WITH tabulce entity
@@ -2966,24 +3068,31 @@ begin
     p:=curr.region^.entities.first;
     while p<>nil loop
       declare var 
-        ommit        : t_logical;                  -- T-nehlásit pro tuto entitu
+        omit       : t_logical;                  -- T-nehlásit pro tuto entitu
 
       begin
-        if p^.stat_usage=0 and p^.id<>nil and etc_generated not in p^.compile then
+        if p^.stat_usage=0 and p^.id<>nil then
 
-          -- parametr virtualni metody ci overridu?
-          if p^.etype=et_var and then pentity_var(p)^.vimplements=vi_parameter {and then pentity_var(p)^.imp_param<>nil} then
-            ommit or curr.entity^.etype in tentitytypeset:[et_virtual,et_override];
-            end if;
+          -- nehlásit pro kompilátorem generované entity
+          omit or etc_generated in p^.compile;
+          
+          -- nehlásit pro speciální metody
+          omit or p^.etype=et_special;
+          
+          -- nehlásit pro overridy virtuálních metod
+          omit or p^.etype=et_override;
+          
+          -- nehlásit pro dočasné typy
+          omit or (p^.etype in ets_type and then tf_temp in pentity_type(p)^.tflags);
 
-          -- ne-private slozka tridy ci modulu?
-          ommit or (p^.visible<>etv_private and then curr.entity^.etype in ets_modular);
+          -- nehlásit pro parametry virtualních metod nebo overridů
+          omit or (p^.etype=et_var and then pentity_var(p)^.vimplements=vi_parameter and then curr.entity^.etype in tentitytypeset:[et_virtual,et_override]);
 
-          -- nehlasit kompilatorem generovane entity
-          ommit or etc_generated in p^.compile;
+          -- nehlásit pro ne-private složky tříd a modulů
+          omit or (p^.visible<>etv_private and then curr.entity^.etype in ets_modular);
 
           -- nastav HINT
-          if not ommit then
+          if not omit then
             ce^.sethint(curr,000000,ch_unused_entity);
             ce^.setparam(entityident_to_string(p^.id^));
             ce^.setpos(p^.pos[etp_header]);
@@ -3054,6 +3163,9 @@ begin
 
     -- vypočítat kontext symbolu
     sym_context:=sym_primary_context(psym^);
+
+    -- vyhodnotit security level
+    eval_seclevel(psym^,pos);
 
     -- vyhodnotit podle typu symbolu
     case psym^.etype

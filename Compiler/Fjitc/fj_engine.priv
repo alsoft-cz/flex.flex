@@ -5,6 +5,9 @@ module private fj_engine =
 -- Ondra : 15.12.2003 : Created.
 ----------------------------------------------------------------------------------------------------
 
+with
+  cc_def.cc_gc;
+
 ----------------------------------------------------------------------------------------------------
 class private c_flex_jit_engine = 
 -- Flex Just-in-Time Engine.
@@ -39,27 +42,31 @@ class private c_flex_jit_engine =
 
       -- inicializovat kompilátor
       init(flex_version_string);
-      
-      -- přeložit modul Flex
-      {...}
       end jit_initialize;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static jit_execute =
-    -- Spustí zadanou kompilační jednotku. Pokud nenajde přeložený modul, JIT-zkompiluje ho.
+    static jit_compile =
+    -- Přeloží kompilační jednotku.
     ------------------------------------------------------------------------------------------------
     with
       standard.names,
       standard.strings,
       cc_def,
+      cc_def.cc_var,
       ff_lib.ff_text_output;
 
     var
       part_extid   : p_external_entity_ident;    -- externí identifikátor entity
 
     begin
+      -- prekladame docasnou partition?
+      if config.partition_type=part_temporary then
+        -- ano - vytvor pro ni docasnou alokacni zonu
+        c_garbage_collector.get_instance^.push_create_alloc_zone^.set_name('part_temporary');
+        end if;
+
       -- připravit externí identifikátor partition (je identický se základem jména DLL)
       declare var
         name1      : c_file_name;                -- dekomponované jméno DLL (1)
@@ -67,14 +74,17 @@ class private c_flex_jit_engine =
         base_name  : p_text_name;                -- bázové jméno DLL
 
       begin
-        -- z jména DLL převzít bázové jméno
+        -- ze jména DLL převzít bázové jméno
         name1.decompose_name(config.lib_name^);
         name1.get_name_without_path(name2);
-        name2^.remove_last_extension;
+      --name2^.remove_last_extension;
         name2^.compose_name(base_name);
 
         -- sestavit z něj externí identifikátor
         part_extid:=string_to_external_entity_ident(str_to_upper(base_name^));
+
+        -- zaregistruj do globalniho gc
+        c_garbage_collector.get_instance^.register_memblock(part_extid);
 
       leave
         -- uvolnit již nepotřebnou paměť
@@ -83,35 +93,48 @@ class private c_flex_jit_engine =
         end declare;
       
       -- přeložit
-      compile(os,config.src_name^,config.exe_name^,config.lib_name^,config.lst_name^,config.ctm_name^,config.exe_directory^,part_type,tpr_library,part_extid);
+      compile(os,config.src_name^,config.exe_name^,config.lib_name^,config.lst_name^,config.ctm_name^,config.exe_directory^,config.sec_level,config.sec_required,config.partition_type,part_result,part_extid,config.userid);
 
       -- vypsat seznam chyb na obrazovku a do listingu
       print_errors(os);
       print_errors(get_listing_writer^);
 
-      -- zavrit soubor listingu
-      finalize;
-      end jit_execute;
+      -- podařilo se zkompilovat?
+      result:=not ce^.testerror;
+    leave
+      -- prekladame docasnou partition?
+      if config.partition_type=part_temporary then
+        -- kolektuj
+        c_garbage_collector.get_instance^.collect;
+        
+        -- zrus zonu
+        c_garbage_collector.get_instance^.pop_discard_alloc_zone;
+        end if;
+
+      -- finalizovat partition
+      finalize_partition;
+      end jit_compile;
 
 
 
     ------------------------------------------------------------------------------------------------
     static jit_load =
-    -- Spustí zadanou kompilační jednotku. Pokud nenajde přeložený modul, JIT-zkompiluje ho.
+    -- Načte compile-time metadat kompilační jednotky.
     ------------------------------------------------------------------------------------------------
     with
       ff_lib.ff_text_output;
 
     begin
       -- přeložit
-      load(os,config.lst_name^,config.ctm_name^,part_type);
+      load(os,config.lst_name^,config.ctm_name^);
 
       -- vypsat seznam chyb na obrazovku a do listingu
       print_errors(os);
       print_errors(get_listing_writer^);
-
-      -- zavrit soubor listingu
-      finalize;
+      
+    leave
+      -- finalizovat partition
+      finalize_partition;
       end jit_load;
 
 
@@ -121,6 +144,8 @@ class private c_flex_jit_engine =
     -- Ukončí JIT stroj.
     ------------------------------------------------------------------------------------------------
     begin
+      -- vynest smeti
+      c_garbage_collector.get_instance^.collect;
       end jit_finalize;
 
     end c_flex_jit_engine;

@@ -6,6 +6,9 @@ module private ci_def =
 -- Ondra : 29.03.2002 : Vytvořil
 ----------------------------------------------------------------------------------------------------
 
+with
+  cc_def.cc_gc;
+
 ----------------------------------------------------------------------------------------------------
 procedure i_get_entity_instance_address =
 -- Vrátí adresu instance entity. Pokud má entita více instancí, hlásí interní chybu.
@@ -46,17 +49,35 @@ begin
   -- vytvořit řídící strukturu
   if curr.codegen=nil then
     new picodegen_subprog(curr.codegen);
+    c_garbage_collector.get_instance^.register_record(curr.codegen);
     end if;
   end i_prepare;
 
 
 
-type
-  t_proctype_call_conv   =  t_flex_record with record
-    conv           : icallconvention;
-    end record;
+----------------------------------------------------------------------------------------------------
+procedure i_create_instance =
+-- Vytvoření nové instance.
+-- Nedělá nic jiného než alokaci paměti a zařazení na seznam instancí.
+----------------------------------------------------------------------------------------------------
+begin
+  new inst;
+  c_garbage_collector.get_instance^.register_record(inst);
+  if picodegen_subprog(curr.codegen)^.ifirst=nil
+    then picodegen_subprog(curr.codegen)^.ifirst:=inst;
+    else picodegen_subprog(curr.codegen)^.ilast^.next:=inst;
+    end if;
+  picodegen_subprog(curr.codegen)^.ilast:=inst;
+  end i_create_instance;
+  
+  
 
-  p_proctype_call_conv   = ^t_proctype_call_conv;
+type
+  t_proctype_call_conv =  t_flex_record with record
+      conv         : icallconvention;
+      end record;
+  p_proctype_call_conv = ^class t_proctype_call_conv;
+
 
 
 ----------------------------------------------------------------------------------------------------
@@ -65,13 +86,10 @@ procedure set_conv_on_type (
     call           : in icallconvention) =
 -- pomocna procedura
 ----------------------------------------------------------------------------------------------------
-var
-  temp      : p_proctype_call_conv;
-
 begin
   if ent.call_conv=nil then
-    new temp;
-    ent.call_conv:=temp;  
+    new p_proctype_call_conv(ent.call_conv);
+    c_garbage_collector.get_instance^.register_record(ent.call_conv);
     end if;
   p_proctype_call_conv(ent.call_conv)^.conv:=call;
   end set_conv_on_type;
@@ -100,51 +118,53 @@ var
   pent             : pentity;
 
 begin
-
   pent:=^entity;
 
   case entity.etype
+  
     -- proceduralni typ
     when et_type do
-      -- musi byt proceduralni
-      verify({VERIFY=}000927, pentity_type(pent)^.stype<>dt_procedure);
+        -- musi byt proceduralni
+        verify({VERIFY=}000927, pentity_type(pent)^.stype<>dt_procedure);
 
-      set_conv_on_type(pentity_type(pent)^, call_conv);
+        -- nastavit
+        set_conv_on_type(pentity_type(pent)^,call_conv);
       
     -- override
     when et_override do
-      set_call_conv(pentity_override(pent)^.virt.getcentity^,call_conv);
+        -- nastavit
+        set_call_conv(pentity_override(pent)^.virt.getcentity^,call_conv);
 
     -- podprogram
-    when et_special,et_procedure,et_static,et_virtual,et_task,et_override do --ets_subprogram do
-      -- ma prirazeny typ?
-      if pentity_subprogram(pent)^.typ.getutype<>nil 
-      then
-        -- ano - nastavit na typu
+    when et_special,et_procedure,et_static,et_virtual,et_task{,et_override} do --ets_subprogram do
+        -- ma prirazeny typ?
+        if pentity_subprogram(pent)^.typ.getutype<>nil 
+        
+          -- ano - nastavit na typu
+          then
+            -- volaci konvence smi byt exklusivne nastavena bud na typu nebo primo na procedure
+            verify({VERIFY=}000956,entity.codegen<>nil and then picodegen_subprog(entity.codegen)^.def_call<>icc_default);
 
-        -- volaci konvence smi byt exklusivne nastavena bud na typu nebo primo na procedure
-        verify({VERIFY=}000956,entity.codegen<>nil and then picodegen_subprog(entity.codegen)^.def_call<>icc_default);
-
-        -- nastavit
-        set_conv_on_type(pentity_type(pentity_subprogram(pent)^.typ.getctype)^, call_conv);
+            -- nastavit
+            set_conv_on_type(pentity_type(pentity_subprogram(pent)^.typ.getctype)^,call_conv);
       
-      else
-        -- ne - jedna se o specialni metodu, nastavit na metode
-        verify({VERIFY=}000950, entity.codegen=nil);
-        picodegen_subprog(entity.codegen)^.def_call:=call_conv;
-        end if;
+          else
+            -- ne - jedna se o specialni metodu, nastavit na metode
+            verify({VERIFY=}000950,entity.codegen=nil);
+            picodegen_subprog(entity.codegen)^.def_call:=call_conv;
+            end if;
 
     -- ostatni kod
     when et_program,et_compile do
         verify({VERIFY=}000952, entity.codegen=nil);
+        
+        -- nastavit
         picodegen_subprog(entity.codegen)^.def_call:=call_conv;
 
     -- nic jineho neumime
     when others do verify({VERIFY=}000953,true);
-
     end case;
-  
-  end  set_call_conv;
+  end set_call_conv;
 
 
 
@@ -161,41 +181,44 @@ begin
   case entity.etype
     -- proceduralni typ
     when et_type do
-      -- musi byt proceduralni
-      verify({VERIFY=}000928, pentity_type(pent)^.stype<>dt_procedure);
+        -- musi byt proceduralni
+        verify({VERIFY=}000928, pentity_type(pent)^.stype<>dt_procedure);
 
-      -- vratit
-      result:=get_conv_on_type(pentity_type(pent)^);
+        -- vratit
+        result:=get_conv_on_type(pentity_type(pent)^);
      
     -- override
     when et_override do
-      result:=get_call_conv(pentity_override(pent)^.virt.getcentity^);
-    
+        -- vratit
+        result:=get_call_conv(pentity_override(pent)^.virt.getcentity^);
+      
     -- podprogram
-    when et_special,et_procedure,et_static,et_virtual,et_task,et_override do -- ets_subprogram do
-      -- ma prirazeny typ?
-      if pentity_subprogram(pent)^.typ.getutype<>nil
-      then
-        -- ano - vrat volaci konvenci typu procedury
-        result:=get_conv_on_type(pentity_type(pentity_subprogram(pent)^.typ.getctype)^);
-      else
-        -- ne - vrat volaci konvenci procedury
-        verify({VERIFY=}000951, entity.codegen=nil);
-        result:=picodegen_subprog(entity.codegen)^.def_call;
-        end if;
+    when et_special,et_procedure,et_static,et_virtual,et_task{,et_override} do -- ets_subprogram do
+        -- ma prirazeny typ?
+        if pentity_subprogram(pent)^.typ.getutype<>nil
+        
+          -- ano - vrat volaci konvenci typu procedury
+          then
+            result:=get_conv_on_type(pentity_type(pentity_subprogram(pent)^.typ.getctype)^);
+            
+          -- ne - vrat volaci konvenci procedury
+          else
+            verify({VERIFY=}000951, entity.codegen=nil);
+            result:=picodegen_subprog(entity.codegen)^.def_call;
+            end if;
 
     -- ostatni kod
     when et_program,et_compile do
         verify({VERIFY=}000955, entity.codegen=nil);
+
+        -- vratit
         result:=picodegen_subprog(entity.codegen)^.def_call;
 
     -- nic jineho neumime
     when others do verify({VERIFY=}000954, true);
-
     end case;
-  
-  
   end get_call_conv;
+
 
 
 end ci_def;

@@ -11,29 +11,20 @@ with
   standard.files,
   standard.streams,
   cc_def.cc_unitype,
-  cc_def.cc_entity.cc_list;
+  cc_def.cc_entity.cc_list,
+  cc_base.cc_util,
+  cp_os;
 
 -- dopředné deklarace
-class abstract linkresolver; type p_linkresolver = ^class linkresolver;
+class abstract c_link_resolver;                type p_link_resolver                = ^class c_link_resolver;
+class abstract c_link_resolver_image_specific; type p_link_resolver_image_specific = ^class c_link_resolver_image_specific;
 
 type
-  -- typ segmentu
-  tsegment         = enum
-      tseg_code;                                 -- kód
-      tseg_const;                                -- const data
-      tseg_init;                                 -- inicializovaná data
-      tseg_data;                                 -- neinicializovaná data
-      tseg_import;                               -- importy
-      tseg_metadata;                             -- metadata (deskriptory entit)
-      tseg_export;                               -- exporty
-      end enum;
-
-type 
   -- dispozice relokace
   t_relo_disposition = enum
-     trd_absolute;                               -- absolutní relokace
-     trd_relative;                               -- relativní relokace
-     end enum;
+      trd_absolute;                              -- absolutní relokace
+      trd_relative;                              -- relativní relokace
+      end enum;
 
   -- seznam relokabilních odkazů
   t_relocations    = string of record
@@ -41,16 +32,15 @@ type
       address      : t_unsigned;                 -- absolutní adresa relokabilního pole
       end record;
   p_relocations    = ^t_relocations;
-
-
+  
 ----------------------------------------------------------------------------------------------------
-class public abstract linkresolver = 
+class public abstract c_link_resolver =
 -- Vyhodnocovač cross-referencí a adres.
 ----------------------------------------------------------------------------------------------------
 
     with
-      cc_base,
-      cc_base.cc_util;
+      standard.classes.hash_tables,
+      cc_binding;
 
     extend 
       c_flex_class;
@@ -65,86 +55,125 @@ class public abstract linkresolver =
       import       : protected tentitystring;    -- externí symboly
       metadata     : protected tentitystring;    -- seznam entit, pro které se generují deskriptory
 
+      -- přídavné registry importních informací
+      aux_registry : aliased c_import_info_registry;
+
     ------------------------------------------------------------------------------------------------
     static mark_all (
         curr       : in pentity);                -- symbol
     -- Fáze 1: Označení všech entit pro linkování.
     ------------------------------------------------------------------------------------------------
-    virtual abstract link;
+    virtual abstract link (
+        image_specific : in c_link_resolver_image_specific); -- vyhodnocovač image-specifických sekcí
     -- Fáze 2: Vlastní sestavení.
-    ----------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
     virtual abstract info;
     -- Výpis souhrnných informací do listingu.
-    ----------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
     virtual abstract getaddrbase return tunicode_addr;
     -- Bázová adresa, ke které se vztahují relokace.
-    ----------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
     virtual abstract getentrypoint return tunicode_addr;
     -- Entrypoint programu.
-    ----------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
     virtual abstract checkseg (
-        _seg       : in tsegment)                -- segment
+        _seg       : in t_image_section)         -- sekce v image souboru
         return t_logical;                        -- T-zahrnout do EXE
     -- True, pokud se má zadaný segment zahrnout do EXE.
-    ----------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
     virtual abstract getsegbase (
-        _seg       : in tsegment)                -- segment
+        _seg       : in t_image_section)         -- sekce v image souboru
         return tunicode_addr;                    -- bázová adresa segmentu
     -- Bázová adresa segmentu.
-    ----------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
     virtual abstract getsegtotal (
-        _seg       : in tsegment)                -- segment
+        _seg       : in t_image_section)         -- sekce v image souboru
         return tunidata_size;                    -- velikost segmentu
     -- Celková velikost segmentu.
-    ----------------------------------------------------------------------------------------------
-    virtual abstract writesegment (
-        _seg       : in tsegment;                -- segment
-        os         : in p_stream_binary_writer);        -- výstupní soubor
+    ------------------------------------------------------------------------------------------------
+    virtual abstract write_section (
+        _seg       : in t_image_section;         -- sekce v image souboru
+        os         : in p_stream_binary_writer); -- výstupní soubor
     -- Do výstupního souboru zapíše zadaný segment.
-    ----------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    class public c_relocations_iterator = extend c_hash_table_iterator;
+    -- Iterátor setříděných seznamů relokabilních adres z cizích partition (tedy s výjimkou aktuální
+    -- partition).
+    ------------------------------------------------------------------------------------------------
+
+        --------------------------------------------------------------------------------------------
+        static get (
+            relocations : out p_relocations;     -- setříděný seznam relokací
+            compi       : out pentity_compile)   -- související partition
+            return t_logical;
+        -- Vrátí True, je-li k dispozici další seznam a pointer na něj předá v [relocations].
+        --------------------------------------------------------------------------------------------
+
+        end c_relocations_iterator;
+
+    type
+      p_relocations_iterator = ^class c_relocations_iterator;
+   
+    ------------------------------------------------------------------------------------------------
     static get_sorted_relocations_by_partition_id (
         partition  : in t_partition_id;          -- ID cílové partition
         relocations: out p_relocations);         -- seznam relokabilních adres
     -- Vrátí seznam relokabilních adres, které směřují do uvedené cílové partition
+    ------------------------------------------------------------------------------------------------
+    static iterate_relocations (
+        it         : in out c_relocations_iterator); -- vytvořený iterátor seznamů relokací
+    -- Vytvoří iterátor seznamů relokací.
     ------------------------------------------------------------------------------------------------
 
   protected
 
     type
       -- procedura pro sestavení jednoho segmentu
-      t_link_segment = procedure (
-          _address   : in out c_address_aligner_32); -- přidělovač adres
-      p_link_segment = ^t_link_segment;
+      t_link_section = procedure (
+          _address       : in out c_address_aligner_32;        -- přidělovač adres
+          image_specific : in c_link_resolver_image_specific); -- vyhodnocovač image-specifických sekcí
+      p_link_section = ^t_link_section;
 
     ------------------------------------------------------------------------------------------------
-    virtual abstract link_segment_code : t_link_segment;
+    virtual abstract link_section_code : t_link_section;
     -- Linkování segmentu: kód.
     ------------------------------------------------------------------------------------------------
-    virtual abstract link_segment_metadata : t_link_segment;
-    -- Linkování segmentu: metadata.          
+    virtual abstract link_section_flex_metadata : t_link_section;
+    -- Linkování segmentu: flex metadata.          
     ------------------------------------------------------------------------------------------------
-    virtual abstract link_segment_const : t_link_segment;
+    virtual abstract link_section_flex_relocations : t_link_section;
+    -- Linkování segmentu: flex relokace. 
+    ------------------------------------------------------------------------------------------------
+    virtual abstract link_section_constants : t_link_section;
     -- Linkování segmentu: konstanty.
     ------------------------------------------------------------------------------------------------
-    virtual abstract link_segment_init_var : t_link_segment;
+    virtual abstract link_section_initialized_data : t_link_section;
     -- Linkování segmentu: inicializované proměnné.
     ------------------------------------------------------------------------------------------------
-    virtual abstract link_segment_uninit_var : t_link_segment;
+    virtual abstract link_section_uninitialized_data : t_link_section;
     -- Linkování segmentu: neinicializované proměnné.
     ------------------------------------------------------------------------------------------------
-    virtual abstract link_segment_import : t_link_segment;
-    -- Linkování segmentu: importované entity.
+    virtual abstract link_section_import_table : t_link_section;
+    -- Linkování segmentu: importované entity - tabulka.
     ------------------------------------------------------------------------------------------------
-    virtual abstract link_segment_export : t_link_segment;
-    -- Linkování segmentu: exportované entity.
+    virtual abstract link_section_import_metadata : t_link_section;
+    -- Linkování segmentu: importované entity - systémová metadata.
+    ------------------------------------------------------------------------------------------------
+    virtual abstract link_section_export_metadata : t_link_section;
+    -- Linkování segmentu: exportované entity - systémová metadata.
     ------------------------------------------------------------------------------------------------
     virtual abstract trace (
         curr       : in pentity);                -- vyhodnocovaná entita
     -- Projde tabulku relokací symbolu CURR a pro každý symbol zavolí MARK.
     ------------------------------------------------------------------------------------------------
     static mark_single (
-        curr       : in pentity);                -- entita
+        curr       : in pentity;                 -- entita
+        deferred_import : in t_logical := false);-- T-odložený import
     -- Fáze 1: Označení jedné entity pro linkování.
+    -- Pokud je entita importovaná z jiné DLL a [deferred_import] je True, nezařadí se do importního
+    -- seznamu a rozhodnutí o případném fyzickém importu se ponechá na někom jiném resp. na jindy.
     ------------------------------------------------------------------------------------------------
     static add_relocation (
         partition  : in t_partition_id;          -- ID cílové partition, do které směřuje relokace
@@ -153,9 +182,42 @@ class public abstract linkresolver =
     -- Zařadí adresu a dispozici relokabilního pole do seznamu relokací do cílové parition.
     ------------------------------------------------------------------------------------------------
 
-    end linkresolver;
+    end c_link_resolver;
 
 
+
+----------------------------------------------------------------------------------------------------
+class abstract c_link_resolver_image_specific = extend c_flex_class;
+-- Vyhodnocovač sekcí specifických pro různé druhy image souborů.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    virtual abstract build_import_table_and_metadata (
+        section_table    : in out c_stream_binary_writer; -- zapisovač data sekce importní tabulky
+        section_metadata : in out c_stream_binary_writer; -- zapisovač data sekce importních metadat
+        base_table       : in tunicode_addr;     -- bázová adresa importní tabulky
+        base_metadata    : in tunicode_addr;     -- bázová adresa importních systémových metadat
+        resolver   : in c_link_resolver;         -- vyhodnocovač
+        import     : in tentitystring);          -- seznam importovaných entit
+    -- Sestaví importní tabulky a metadata.
+    ------------------------------------------------------------------------------------------------
+    virtual abstract build_export_metadata (
+        section    : in out c_stream_binary_writer; -- zapisovač data sekce
+        base_addr  : in tunicode_addr;           -- bázová adresa sekce
+        export     : in tentitystring);          -- seznam exportovaných entit
+    -- Sestaví exportní tabulky.
+    ------------------------------------------------------------------------------------------------
+    virtual abstract build_flex_relocations (
+        section    : in out c_stream_binary_writer; -- zapisovač data sekce
+        base_addr  : in tunicode_addr;           -- bázová adresa sekce
+        resolver   : in c_link_resolver;         -- vyhodnocovač
+        relo_it    : in c_link_resolver.c_relocations_iterator); -- iterátor setříděných seznamů relokabilních adres
+    -- Sestaví relokační tabulku.
+    ------------------------------------------------------------------------------------------------
+    
+    end c_link_resolver_image_specific;
+    
+    
 
 ----------------------------------------------------------------------------------------------------
 #separate public cl_ia32;

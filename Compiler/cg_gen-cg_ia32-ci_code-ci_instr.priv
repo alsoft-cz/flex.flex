@@ -7,6 +7,7 @@ module private ci_instr =
 ----------------------------------------------------------------------------------------------------
 
 with
+  cc_def.cc_gc,
   cc_def.cc_codes,
   cc_def.cc_var,
   cc_base,
@@ -30,10 +31,22 @@ var
 begin
   if inst.c=nil then 
     new inst.c range icodeinit;
+
+    -- zaregistruj do globalniho gc
+    c_garbage_collector.get_instance^.register_memblock(inst.c);
+
   elsif inst.c^:length+iimaxsize>inst.c^:last then
     --%%TODO(ADJUST) adjust inst.c range inst.c^:last+icodedelta;
     new c range inst.c^:last*2{+icodedelta};
+
+    -- zaregistruj do globalniho gc
+    c_garbage_collector.get_instance^.register_memblock(c);
+
     c^:=inst.c^;
+
+    -- odregistruj z globalniho gc
+    c_garbage_collector.get_instance^.unregister_memblock(inst.c);
+    
     discard inst.c;
     inst.c:=c;
     end if;
@@ -176,14 +189,21 @@ leave
 procedure addcall =
 -- Přidá volání podprogramu.
 ----------------------------------------------------------------------------------------------------
+with
+  ci_fragment; -- %%TODO To není zrovna ukázka dobře strukturovaného kódu. [addcall], [addcallrtl],
+               -- [addraise] atd. patří spíš do [ci_fragment] než do [ci_instr]. Dělal to hodně na 
+               -- rychlo.
+  
 var
   op1              : c_operand;                  -- operand
 
 begin
   -- připravit operand
+  i_gen_subprogram_address(inst,info,context,psym,true,op1);
+{  
   op1.create_relative_address(4);
   op1.set_relo_entity(psym);
-
+}
   -- přidat instrukci
   addii(inst,info,ii_call,op1,op0,op0);
 
@@ -336,6 +356,7 @@ leave
   -- uvolnit operand
   opvalue.free(info,context);
   end addopimmex;
+
 
 
 ----------------------------------------------------------------------------------------------------
@@ -584,6 +605,7 @@ begin
                 end if;
           when irt_imm       do s:='(imm) ' & s;
           when irt_interface do s:='(fake tag) ' & s;
+          when irt_section   do s:='(section) ' & s;
           when others do verify({VERIFY=}000200,true);
           end case;
         result:="<" & unsigned_to_string(op.size) & '> ' & s;
@@ -601,6 +623,7 @@ begin
                     end if;
               when irt_imm       do result:='offset imm ' & signed_to_string(imm32_to_signed(op.rel),[for sign use tsm_plus, for radix use 10]);
               when irt_interface do result:='(fake tag)';
+              when irt_section   do s:='(section)';
               when others do verify({VERIFY=}000201,true);
               end case;
             end if;
