@@ -1,0 +1,963 @@
+----------------------------------------------------------------------------------------------------
+class private c_operand =
+-- P©eklada‡ Flexu.
+-- Operand strojov‚ instrukce.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 14.04.2003 : Vytvo©il.
+----------------------------------------------------------------------------------------------------
+
+with
+  cp_cpu.cp_ia32.ci_abi,
+  cg_gen.cg_ia32.ci_reg,
+  cg_gen.cg_ia32.ci_reg.ci_alloc,
+  cg_gen.cg_ia32.ci_code.ci_stack;
+
+var
+  -- re‘im alokace registru v z vislosti na datov‚m typu
+  alloc_mode       : static const array t_elementary_data_type of iregallocmode := [
+    for edt_address use irm_addr,
+    for edt_offset  use irm_addr,
+    for edt_pointer use irm_addr,
+    for others      use irm_int];
+
+var
+  dirty            : t_logical;                  -- operand byl ji‘ alespo¤ jednou pou‘it
+  low_level        : t_logical;                  -- operand byl vytvo©en low level operac¡
+
+----------------------------------------------------------------------------------------------------
+static init (
+    _optype        : in t_operand_type;          -- typ operandu 
+    _edtype        : in t_elementary_data_type;  -- element rn¡ datov˜ typ operandu
+    _size          : in t_unsigned) =            -- po‘adovan  velikost registru
+-- Po‡ te‡n¡ inicializace nov‚ho operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(639,optype<>io_none or dirty);
+
+  -- nastavit z kladn¡ parametry operandu
+  this.optype:=_optype;
+  this.edtype:=_edtype;
+  this.size  :=_size;
+
+  -- operand je od teƒka pou‘it˜
+  dirty:=true;
+  end init;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_imm =
+-- Vytvo©¡ nov˜ operand typu [io_imm].
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_imm,_edtype,_size);
+
+  -- poznamenat si p©¡mou hodnotu
+  this.imm:=_imm;
+  end create_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_new_register =
+-- Vytvo©¡ nov˜ operand typu [io_reg] a alokuje pro nˆj nov˜ registr.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_reg,_edtype,_size);
+
+  -- alokovat registr
+  i_reg_alloc(inst,info,context,reg,size,alloc_mode[edtype]);
+  end create_new_register;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_new_register_from_operand =
+-- Vytvo©¡ nov˜ operand typu [io_reg]. P©ednostnˆ pou‘ije registr z dodan‚ho dal¨¡ho operandu.
+-- Pokud ‘ dn˜ vhodn˜ nenajde, alokuje nov˜.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_reg,_edtype,_size);
+
+  -- zkusit pou‘¡t registr z dodan‚ho operandu
+  if _old_operand.optype=io_reg and i_reg_resize(_old_operand.reg.reg,size)<>ir_none then
+    i_reg_use(inst,info,context,_old_operand.reg.reg,reg,size);
+  elsif _old_operand.optype=io_mem and _old_operand.base.reg<>ir_none and i_reg_resize(_old_operand.base.reg,size)<>ir_none then
+    i_reg_use(inst,info,context,_old_operand.base.reg,reg,size);
+  elsif _old_operand.optype=io_mem and _old_operand.index.reg<>ir_none and i_reg_resize(_old_operand.index.reg,size)<>ir_none then
+    i_reg_use(inst,info,context,_old_operand.index.reg,reg,size);
+
+  -- ned  se nic nˆlat, alokovat nov˜ registr
+  else 
+    i_reg_alloc(inst,info,context,reg,size,alloc_mode[edtype]);
+    end if;  
+  end create_new_register_from_operand;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_use_register =
+-- Vytvo©¡ nov˜ operand typu [io_reg] a pou‘ije dodan˜ registr.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_reg,_edtype,iregsize[_reg]);
+
+  -- pou‘¡t dodan˜ registr
+  i_reg_use(inst,info,context,_reg,reg,size);
+  end create_use_register;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_memory_address =
+-- Vytvo©¡ operand typu [io_mem].
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_mem,_edtype,_size);
+  
+  -- naplnit b zi a posunut¡
+  if _base<>ir_none then
+    i_reg_use(inst,info,context,_base,base,idefregsize);
+    end if;
+  this.disp:=_disp;
+  end create_memory_address;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_memory_address_on_stack =
+-- Vytvo©¡ operand typu [io_mem] b zovan˜ k frame pointeru.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_mem,_edtype,_size);
+
+  -- naplnit b zi a posunut¡
+  this.base.reg:=istackframereg[inst.frame];
+  this.disp:=_disp;
+  end create_memory_address_on_stack;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_memory_address_from_operand =
+-- Vytvo©¡ operand typu [io_mem] podle dodan‚ho p–vodn¡ho operandu typu [io_reg].
+----------------------------------------------------------------------------------------------------
+begin
+  verify(646,_old_operand.optype<>io_reg);
+
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_mem,_edtype,_size);
+
+  -- naplnit b zi
+  i_reg_use(inst,info,context,_old_operand.reg.reg,this.base,idefregsize);
+  end create_memory_address_from_operand;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_temporary =
+-- Vytvo©¡ operand typu [io_mem] a alokuje pro nˆj pracovn¡ prostor na stacku.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_mem,_edtype,_size);
+
+  -- ur‡it b zov˜ registr
+  base.reg:=istackframereg[inst.frame];
+
+  -- alokovat prostor
+  alloctemp(inst,info,size,disp);
+  end create_temporary;
+
+         
+
+----------------------------------------------------------------------------------------------------
+static create_relative_address =
+-- Vytvo©¡ operand typu [io_rel]. Typ operandu automaticky nastav¡ na [edt_offset].
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_rel,edt_offset,_size);
+  end create_relative_address;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_condition =
+-- Vytvo©¡ operand typu [io_cc]. Typ operandu automaticky nastav¡ na [edt_none].
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_cc,edt_none,0);
+
+  -- poznamenat si p©¡mou hodnotu
+  this.cc:=_cc;
+  end create_condition;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_on_stack =
+-- Vytvo©¡ operand typu [io_stack] reprezentuj¡c¡ hodnotu ulo‘enou na vrcholu stacku.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_stack,_edtype,_size);
+  end create_on_stack;
+
+
+
+----------------------------------------------------------------------------------------------------
+static copy_from (
+    _old_operand   : in c_operand) =             -- p–vodn¡ operand, ze kter‚ho se kop¡ruj¡ £daje
+-- Zkop¡ruje £daje z dodan‚ho [_old_operand] do tohoto operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%TODO(ASSIGN) vzhledem k tomu, ‘e zat¡m neexistuje p©i©azen¡ t©¡d spolu s ADJUST, tak se to ©e¨¡ po polo‘k ch
+
+  -- z kladn¡ £daje
+  optype  :=_old_operand.optype;
+  edtype  :=_old_operand.edtype;
+  size    :=_old_operand.size;
+
+  -- relokace
+  rtype   :=_old_operand.rtype;
+  rentity :=_old_operand.rentity;
+  rexpr   :=_old_operand.rexpr;
+
+  -- zp–sob v˜po‡tu run-time atribut–
+  rta_info:=_old_operand.rta_info;
+
+  case optype
+    -- p©¡m  hodnota
+    when io_imm do
+        imm  :=_old_operand.imm;
+
+    -- informace o pou‘it‚m registru
+    when io_reg do
+        reg  :=_old_operand.reg;
+
+    -- informace o adrese [base+index*scale+displacement]
+    when io_mem do
+        base :=_old_operand.base;
+        index:=_old_operand.index;
+        scale:=_old_operand.scale;
+        disp :=_old_operand.disp;
+
+    -- relativn¡ adresa
+    when io_rel do
+        rel  :=_old_operand.rel;
+
+    -- podm¡nka
+    when io_cc do 
+        cc   :=_old_operand.cc;
+    end case;
+
+  -- c¡l 
+  target     :=_old_operand.target;
+  disp_target:=_old_operand.disp_target;
+
+  -- p©¡davn‚ £daje inline assembleru
+  spos   :=_old_operand.spos;
+  end copy_from;
+
+
+
+----------------------------------------------------------------------------------------------------
+static empty =
+-- Zneplatn¡ obsah tohoto operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  case optype
+    -- p©¡m  hodnota
+    when io_imm do
+        imm  :=nil;
+
+    -- informace o pou‘it‚m registru
+    when io_reg do
+        reg  :=nil;
+
+    -- informace o adrese [base+index*scale+displacement]
+    when io_mem do
+        base :=nil;
+        index:=nil;
+        scale:=nil;
+        disp :=nil;
+
+    -- relativn¡ adresa
+    when io_rel do
+        rel  :=nil;
+
+    -- podm¡nka
+    when io_cc do 
+        cc   :=nil;
+    end case;
+  -- z kladn¡ £daje
+  optype  :=nil;
+  edtype  :=nil;
+  size    :=nil;
+
+  -- relokace
+  rtype   :=nil;
+  rentity :=nil;
+  rexpr   :=nil;
+
+  -- zp–sob v˜po‡tu run-time atribut–
+  rta_info:=nil;
+
+  -- c¡l 
+  target     :=nil;
+  disp_target:=nil;
+
+  -- p©¡davn‚ £daje inline assembleru
+  spos   :=nil;
+  end empty;
+
+
+
+----------------------------------------------------------------------------------------------------
+static clone =
+-- Naklonuje operand.
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%X Tohle je mo‘n  trochu moc natvrdo. Nemˆlo by se to dˆlat sp¡¨ cestou vytvo©en¡
+  -- operandu podle vzoru, m¡sto surov‚ho zkop¡rov n¡ a znovupou‘it¡ registr–?
+
+  -- zkop¡rovat operand
+  -- %%TODO(ASSIGN) this:=_old_operand;
+  copy_from(_old_operand);
+
+  -- znovupou‘¡t v¨echny registry
+  if optype=io_reg then
+    i_reg_use(inst,info,context,reg.reg,reg,size);
+  elsif optype=io_mem then
+    if base.reg<>ir_none then i_reg_use(inst,info,context,base.reg,base,idefregsize); end if;
+    if index.reg<>ir_none then i_reg_use(inst,info,context,index.reg,index,idefregsize); end if;
+    end if;
+  end clone;
+
+
+
+----------------------------------------------------------------------------------------------------
+static transfer =
+-- P©evede p–vodn¡ operand [old_operand] do tohoto operandu. P–vodn¡ operand pot‚ zneplatn¡, 
+-- neuvoln¡ v¨ak dr‘en‚ registry a dal¨¡ zdroje, proto‘e ty p©ech zej¡ do vlastnictv¡ tohoto 
+-- operandu. P–vodn¡ operand tedy ji‘ nen¡ t©eba uvol¤ovat.
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%FLEX
+  verify(653,dirty);
+
+  -- zkop¡rovat
+  copy_from(_old_operand);
+
+  -- zneplatnit obsah operandu
+  _old_operand.empty; 
+  end transfer;
+
+
+
+----------------------------------------------------------------------------------------------------
+static replace =
+-- Zru¨¡ p–vodn¡ operand a nahrad¡ ho dodan˜m operandem [old_operand]. Funguje jako kombinace [free]
+-- a [transfer] s t¡m rozd¡lem, ‘e je povoleno stejn˜ operand pou‘¡t dvakr t.
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%FLEX
+  -- uvolnit tento operand
+  free(info,context);
+
+  -- dovolit opakovan‚ pou‘it¡
+  dirty:=false;
+
+  -- p©ev‚st £daje z p–vodn¡ho operandu
+  transfer(_old_operand);
+  end replace;
+
+
+
+----------------------------------------------------------------------------------------------------
+static free =
+-- Zru¨¡ operand. Pokud pou‘¡val nˆjak‚ registry, uvoln¡ je.
+-- Jestli‘e nen¡ [free] explicitnˆ zavol no, zavol  se automaticky p©i proveden‚ [exit] operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%FLEX
+
+  -- uvolnit zdroje
+  if not low_level then
+    case optype 
+      -- registr
+      when io_reg do
+          i_reg_free(info,context,reg);
+
+      -- adresa sestaven  z a‘ dvou registr– [base+index*scale+displacement]
+      when io_mem do
+          if base.reg<>ir_none then i_reg_free(info,context,base) end if;
+          if index.reg<>ir_none then i_reg_free(info,context,index) end if;
+      end case;
+    end if;
+
+  -- zneplatnit obsah operandu
+  empty;
+  end free;
+
+
+
+----------------------------------------------------------------------------------------------------
+static retrieve =
+-- P©evede operand z pod©¡zen‚ho kontextu do nad©azen‚ho.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%FLEX
+  --  i_reg_retrieve: reg, base, index
+
+  -- p©ev‚st registry z pod©¡zen‚ho kontextu do nad©azen‚ho
+  if optype=io_reg then
+    declare var
+      no_register  : static ioperreg := nil;
+    begin
+      i_reg_retrieve(inst,info,subcontext,context,reg,no_register);
+      end declare;
+  elsif optype=io_mem then
+    i_reg_retrieve(inst,info,subcontext,context,base,index);
+  else
+    declare var
+      no_register  : static ioperreg := nil;
+    begin
+      i_reg_retrieve(inst,info,subcontext,context,no_register,no_register);
+      end declare;
+    end if;
+  end retrieve;
+
+
+
+----------------------------------------------------------------------------------------------------
+static refresh =
+-- Aktualizuje jm‚na registr– v operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%FLEX
+  --  i_reg_refresh: reg, base, index
+
+  -- aktualizovat jm‚na registr– v operandu
+  if optype=io_reg then
+    i_reg_refresh(inst,info,context,reg);
+  elsif optype=io_mem then
+    if base.reg<>ir_none then i_reg_refresh(inst,info,context,base); end if;
+    if index.reg<>ir_none then i_reg_refresh(inst,info,context,index); end if;
+    end if;
+  end refresh;
+
+
+
+----------------------------------------------------------------------------------------------------
+static adjust_size =
+-- Uprav¡ velikost operandu. Je-li operand typu [io_reg], tak vybere i p©¡slu¨nou velikost registru.
+-- Pokud registr nem  tak velkou sub‡ st, zp–sob¡ intern¡ chybu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- zmˆnit velikost operandu
+  size:=_size;
+
+  -- pro [io_reg] zmˆnit velikost registru
+  if optype=io_reg then
+    reg.reg:=i_reg_resize(reg.reg,size);
+    end if;
+  end adjust_size;
+
+
+
+----------------------------------------------------------------------------------------------------
+static adjust_edtype =
+-- Uprav¡ element rn¡ datov˜ typ operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- zmˆnit element rn¡ datov˜ typ operandu
+  edtype:=_edtype;
+  end adjust_edtype;
+
+
+
+----------------------------------------------------------------------------------------------------
+static get_register =
+-- Z operandu typu [io_reg] nebo [io_mem] p©ed  ven registr. Pro [io_mem] vrac¡ p©ednostˆ b zi.
+----------------------------------------------------------------------------------------------------
+begin
+  case optype
+    -- registr
+    when io_reg do result:=reg.reg;
+
+    -- adresa - a‘ dva registry na v˜bˆr
+    when io_mem do
+        -- p©ednostnˆ vr tit b zi; nen¡-li k dispozici ‘ dn˜ registr, nic se nedˆje
+        if base.reg<>ir_none 
+          then result:=base.reg
+          else result:=index.reg
+          end if;
+    
+    when others do verify(647,true);
+    end case;
+  end get_register;
+
+
+
+----------------------------------------------------------------------------------------------------
+static get_all_uni_registers =
+-- Vr t¡ mno‘inu univerz ln¡ch registr– pou‘it˜ch operandem.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+begin
+  -- %%FLEX
+  case optype
+    -- registr
+    when io_reg do 
+        --%%TODO(SET) result:=[iregtouni[reg.reg]];
+        bit_set(result,t_bit_index(iregtouni[reg.reg]:ord));
+
+    -- adresa - a‘ dva registry na v˜bˆr
+    when io_mem do
+        --%%TODO(SET) if base.reg<>ir_none then result+iuniregset:[iregtouni[base.reg]] end if;
+        --%%TODO(SET) if index.reg<>ir_none then result+iuniregset:[iregtouni[index.reg]] end if;
+        if base.reg<>ir_none then bit_set(result,t_bit_index(iregtouni[base.reg]:ord)) end if;
+        if index.reg<>ir_none then bit_set(result,t_bit_index(iregtouni[index.reg]:ord)) end if;
+
+    -- ‘ dn˜ jin˜ operand v sobˆ registr nem 
+    end case;
+  end get_all_uni_registers;
+
+
+
+----------------------------------------------------------------------------------------------------
+static transform_imm_to_rel =
+-- Transformuje operand typu [io_imm] na operand typu [io_rel].
+----------------------------------------------------------------------------------------------------
+begin
+  --%%FLEX
+  --      vysl.optype:=io_rel;
+  --      vysl.rel:=vysl.imm;
+
+  -- zmˆnit typ operandu
+  optype:=io_rel;
+
+  -- p©evz¡t hodnoty
+  rel:=imm;
+
+  -- vypucovat p–vodn¡ hodnoty
+  imm:=nil;
+  end transform_imm_to_rel;
+
+
+
+----------------------------------------------------------------------------------------------------
+static transform_imm_to_mem =
+-- Transformuje operand typu [io_imm] na operand typu [io_mem].
+----------------------------------------------------------------------------------------------------
+begin
+  verify(654,optype<>io_imm);
+
+  -- zmˆnit typ operandu
+  optype:=io_mem;
+  edtype:=_edtype;
+  size:=_size;
+
+  -- z registru sestavit b zi
+  disp:=imm;
+
+  -- a p©¡mou hodnotu pro jistotu poslat do h je
+  imm:=nil;
+  end transform_imm_to_mem;
+
+
+
+----------------------------------------------------------------------------------------------------
+static transform_reg_to_mem =
+-- Transformuje operand typu [io_reg] na operand typu [io_mem]. Registr pou‘ije jako b zi.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(648,optype<>io_reg);
+
+  -- zmˆnit typ operandu
+  optype:=io_mem;
+  edtype:=_edtype;
+  size:=_size;
+
+  -- z registru sestavit b zi
+  base:=reg;
+
+  -- a registr pro jistotu poslat do h je
+  reg:=nil;
+  end transform_reg_to_mem;
+
+
+
+----------------------------------------------------------------------------------------------------
+static transform_imm_or_reg_to_mem =
+-- Transformuje operand typu [io_reg] na operand typu [io_mem]. Registr pou‘ije jako b zi.
+----------------------------------------------------------------------------------------------------
+begin
+  if optype=io_reg
+    then transform_reg_to_mem(_edtype,_size)
+    else transform_imm_to_mem(_edtype,_size)
+    end if;
+  end transform_imm_or_reg_to_mem;
+
+
+
+----------------------------------------------------------------------------------------------------
+static transform_mem_to_imm =
+-- Transformuje operand typu [io_mem], kter˜ obsahuje pouze displacement a ‘ dn‚ registry, na 
+-- operand typu [io_imm]. Velikost v˜sledn‚ho operandu je 4 a typ edt_address, m -li p©i©azen 
+-- relokabiln¡ objekt, nebo edt_offset v ostatn¡ch p©¡padech. Z toho plyne, ‘e p©¡padn‚ relokace 
+-- z–stanou zachov ny.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%FLEX
+  verify(651,optype<>io_mem or else base.reg<>ir_none or else index.reg<>ir_none);
+
+  -- zm2nit typ operandu
+  optype:=io_imm;
+  size:=4;
+  if rtype<>irt_none
+    then edtype:=edt_address
+    else edtype:=edt_offset
+    end if;
+
+  -- p©evz¡t p©¡mou hodnotu
+  imm:=disp;
+
+  -- a vypucovat £daje p–vodn¡ho operandu
+  disp:=nil;
+  end transform_mem_to_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+static set_imm =
+-- Nastav¡ p©¡mou hodnotu operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(649,optype<>io_imm);
+  imm:=_imm;
+  end set_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+static set_cc =
+-- Nastav¡ hotnodu podm¡nky operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(650,optype<>io_imm);
+  cc:=_cc;
+  end set_cc;
+
+
+
+----------------------------------------------------------------------------------------------------
+static set_target =
+-- Operandu typu [io_rel] p©i©ad¡ n vˆ¨t¡ c¡le.
+----------------------------------------------------------------------------------------------------
+begin 
+  this.disp_target:=_target;
+  end set_target;
+
+
+
+----------------------------------------------------------------------------------------------------
+static adjust_relative_address_size = 
+-- Pro operand typu [io_rel] uprav¡ velikost adresn¡ho pole podle vzd lenosti k c¡li.
+----------------------------------------------------------------------------------------------------
+with
+  cg_gen.cg_ia32.ci_code.ci_relo;
+
+var
+  addr             : t_unsigned32;               -- c¡lov  adresa
+
+begin
+  -- c¡lov  adresa (pro zjednodu¨en¡)
+  gettarget(info,disp_target,addr);
+
+  -- m me adresu ?
+  if addr<>iunknownaddr
+
+    -- adresa je ji‘ zn ma => zpˆtn˜ skok
+    then
+      -- %%X zde se p©¡mo po‡¡t  s d‚lkou instrukce, kterou budu teprve p©id vat.
+      -- nemohlo by to v budoucnu p©in‚st probl‚my ?
+
+      -- lze to zapakovat na short jump ?
+      if addr+127>=inst.c^:length+2
+
+        -- ano
+        then
+          size:=1;
+          rel:=signed_to_imm32(t_signed32(addr)-t_signed32(inst.c^:length+2));
+
+        -- ne, mus¡ to b˜t near jump
+        else
+          size:=4;
+          rel:=signed_to_imm32(t_signed32(addr)-t_signed32(inst.c^:length+5+(_cc<>ic_ucond):ord));
+          end if;
+
+      -- c¡l skoku ji‘ nepot©ebujeme
+      target:=iunknowntarget;
+
+    -- adresa je¨tˆ nen¡ zn ma => dop©edn˜ skok
+    else
+      -- operand
+      target:=disp_target;
+
+      -- velikost
+      if _cc in icondset:[ic_cxz,ic_ecxz]
+        -- v˜jimka pro (E)CXZ: v‘dy je to jen short jump
+        then size:=1
+        -- v ostatn¡ch p©¡padech zvol¡me implicitnˆ near jump
+        else size:=4;
+        end if;
+      end if;
+  end adjust_relative_address_size;
+
+
+
+----------------------------------------------------------------------------------------------------
+static shift_displacement =
+-- P©i‡te k operandu zadan˜ posuv [disp].
+----------------------------------------------------------------------------------------------------
+begin
+  verify(482,optype<>io_mem);
+
+  -- p©i‡¡st posuv
+  this.disp+signed_to_imm32(_disp); 
+  end shift_displacement;
+
+
+
+----------------------------------------------------------------------------------------------------
+static unshift_displacement =
+-- Ode‡te od operandu zadan˜ posuv [disp].
+----------------------------------------------------------------------------------------------------
+begin
+  verify(497,optype<>io_mem);
+
+  -- ode‡¡st posuv
+  this.disp-signed_to_imm32(_disp);
+  end unshift_displacement;
+
+
+
+----------------------------------------------------------------------------------------------------
+static shift_by_index =
+-- P©i‡te k adresn¡mu operandu zadan˜ posuv [reg]*[scale].
+----------------------------------------------------------------------------------------------------
+begin
+  verify(525,optype<>io_mem or else index.reg<>ir_none or else _index not in ir_r32);
+  
+  -- doplnit indexn¡ registr
+  i_reg_use(inst,info,context,_index{iunitoreg[_index,4]},index,4);
+
+  -- doplnit mˆ©¡tko
+  this.scale:=_scale;
+  end shift_by_index;
+
+
+
+----------------------------------------------------------------------------------------------------
+static shift_by_base =
+-- Nastav¡ b zi operandu na registr [_base].
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%FLEX
+  verify(652,optype<>io_mem or else base.reg<>ir_none or else _base not in ir_r32);
+  
+  -- doplnit b zov˜ registr
+  i_reg_use(inst,info,context,_base{iunitoreg[_base,4]},base,4);
+  end shift_by_base;
+
+
+
+----------------------------------------------------------------------------------------------------
+static shift_by_base_or_index =
+-- P©i‡te k adresn¡mu operandu zadan˜ posuv [_index], a to ve formˆ indexn¡ho nebo b zov‚ho registru
+-- podle toho, kter˜ je voln˜. Preferuje b zov˜ registr.
+----------------------------------------------------------------------------------------------------
+begin
+  if base.reg=ir_none
+    then shift_by_base(inst,info,context,_index)
+    else shift_by_index(inst,info,context,_index,1)
+    end if;
+  end shift_by_base_or_index;
+
+
+
+----------------------------------------------------------------------------------------------------
+static set_relo_entity =
+-- P©i©ad¡ k operandu relokabiln¡ entitu.
+----------------------------------------------------------------------------------------------------
+begin
+  this.rtype:=irt_entity;
+  this.rentity:=_entity;
+  end set_relo_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
+static set_relo_imm =
+-- P©i©ad¡ k operandu relokabiln¡ p©¡mou hodnotu (v podobˆ odpov¡daj¡c¡ho uzlu stromu).
+----------------------------------------------------------------------------------------------------
+begin
+  this.rtype:=irt_imm;
+  this.rexpr:=_expr;
+  end set_relo_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+static copy_relo =
+-- Zkop¡ruje informace o relokabiln¡m objektu z dodan‚ho operandu [_old_operand].
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%FLEX
+  rtype:=_old_operand.rtype;
+  rexpr:=_old_operand.rexpr;
+  rentity:=_old_operand.rentity;
+  end copy_relo;
+
+
+
+----------------------------------------------------------------------------------------------------
+static set_rta_mode =
+-- Nastav¡ zp–sob zji¨tˆn¡ zadan‚ho run-time atributu tohoto operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  --%%FLEX
+  end set_rta_mode;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_imm_low_level =
+-- Vytvo©¡ nov˜ operand typu [io_imm].
+----------------------------------------------------------------------------------------------------
+begin
+  -- vytvo©it operand
+  create_imm(_edtype,_size,_imm);
+
+  -- operand byl vytvo©en low-level operac¡
+  low_level:=true;
+  end create_imm_low_level;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_use_register_low_level =
+-- Vytvo©¡ nov˜ operand typu [io_reg] a pou‘ije dodan˜ registr, ale nezv˜¨¡ mu po‡et pou‘it¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_reg,_edtype,iregsize[_reg]);
+
+  -- naplnit registr
+  reg.reg:=_reg;
+
+  -- operand byl vytvo©en low-level operac¡
+  low_level:=true;
+  end create_use_register_low_level;
+
+
+
+----------------------------------------------------------------------------------------------------
+static create_memory_address_low_level =
+-- Vytvo©¡ nov˜ operand typu [io_mem] s pr zdnou b z¡, indexem i posunut¡m.
+----------------------------------------------------------------------------------------------------
+begin
+  -- po‡ te‡n¡ inicializace nov‚ho operandu
+  init(io_mem,_edtype,_size);
+
+  -- operand byl vytvo©en low-level operac¡
+  low_level:=true;
+  end create_memory_address_low_level;
+
+
+
+----------------------------------------------------------------------------------------------------
+static shift_by_base_low_level =
+-- P©i‡te k adresn¡mu operandu zadanou b zi [_base].
+----------------------------------------------------------------------------------------------------
+begin
+  verify(525,optype<>io_mem or else base.reg<>ir_none);
+  
+  -- doplnit b zov˜ registr
+  this.base.reg:=_base;
+
+  -- operand byl vytvo©en low-level operac¡
+  low_level:=true;
+  end shift_by_base_low_level;
+
+
+
+----------------------------------------------------------------------------------------------------
+static shift_by_index_low_level =
+-- P©i‡te k adresn¡mu operandu zadan˜ posuv [_index]*[_scale].
+----------------------------------------------------------------------------------------------------
+begin
+  verify(525,optype<>io_mem or else index.reg<>ir_none);
+  
+  -- doplnit indexn¡ registr
+  this.index.reg:=_index;
+
+  -- doplnit mˆ©¡tko
+  this.scale:=_scale;
+
+  -- operand byl vytvo©en low-level operac¡
+  low_level:=true;
+  end shift_by_index_low_level;
+
+
+
+----------------------------------------------------------------------------------------------------
+static base_on_stack_low_level =
+-- B zuje operand vzhledem k frame pointeru.
+----------------------------------------------------------------------------------------------------
+begin
+  -- sou‡asnou b zi vypucovat a nastavit na frame pointer
+  base:=nil;
+  base.reg:=istackframereg[inst.frame];
+
+  -- operand byl vytvo©en low-level operac¡
+  low_level:=true;
+  end base_on_stack_low_level;
+
+
+
+----------------------------------------------------------------------------------------------------
+static clear_relo_low_level =
+-- Zru¨¡ relokaci.
+----------------------------------------------------------------------------------------------------
+begin
+  rtype:=irt_none;
+  rentity:=nil;
+  rexpr:=nil;
+  end clear_relo_low_level;
+
+
+
+----------------------------------------------------------------------------------------------------
+exit =
+-- Finalizace.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(645,optype<>io_none and not low_level);
+  end exit;
+
+end c_operand;

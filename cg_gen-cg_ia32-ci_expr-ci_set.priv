@@ -1,0 +1,290 @@
+----------------------------------------------------------------------------------------------------
+module private ci_set =
+-- P©eklada‡ Flexu.
+-- Mno‘inov‚ operace.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 23.04.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_compare_set =
+-- Porovn v n¡ pol¡ (= <>).
+----------------------------------------------------------------------------------------------------
+begin
+  -- mno‘iny lze v‘dy porovn vat jako bin rn¡ bloky
+  i_gen_op_compare_binary(inst,info,context,expr,vysl);
+  end i_gen_op_compare_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_set =
+-- Mno‘inov‚ operace.
+----------------------------------------------------------------------------------------------------
+with
+  ci_integer;
+
+var
+  size             : t_unsigned32;               -- velikost operand–
+
+begin
+  -- zjistit velikost operand–
+  size:=unidata_size_to_unsigned(expr^.t.getsize);
+
+  if size=1 or size=2 or size=4{%%TODO(SET) size in [1,2,4]}
+
+    -- p©¡zniv  velikost => optimalizovan  verze celo‡¡selnou aritmetikou
+    then begin
+      -- prov‚st coby integerovou operaci
+      i_gen_op_integer(inst,info,context,expr,vysl);
+      verify(625,vysl.optype not in t_operand_type_set:[io_reg,io_mem]);
+
+      -- mno‘ina je agreg tn¡ typ, tak‘e se od n s o‡ek v  adresa a ne rovnou hodnota
+      -- %%FLEX Tohle se ©e¨¡ pomoc¡ EDT_BINARY, p©edˆlat.
+      if vysl.optype=io_reg then
+        -- ulo‘it do temporary promˆnn‚
+        i_gen_loadtemp(inst,info,context,vysl);
+        end if;
+      end
+
+    -- nep©¡zniv  velikost => slo‘itˆ
+    else
+      unimplementedx(132,expr^.pos);
+      end if;
+  end i_gen_op_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_in_set =
+-- Test n le‘en¡ do mno‘iny.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  op1              : c_operand;                  -- operand 1
+  op2              : c_operand;                  -- operand 2
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+  pbase            : pentity_type;               -- typ b ze mno‘iny
+  lval             : timm32;                     -- doln¡ mez b ze mno‘iny
+
+begin
+  -- podv˜razy
+  expr^.get(el,er);
+
+  -- bude pot©eba typ b ze mno‘iny
+  pbase:=er^.t.getctype^.base.getctype;
+
+  -- doln¡ mez b ze mno‘iny
+  lval:=uniint_to_imm32(pbase^.lval);
+
+  -- na‡¡st testovanou hodnotu do registru
+  -- %%X Zde jsem z mˆrnˆ nep©edal o‡ek van˜ typ v˜razu i kdy‘ je re‘im
+  -- generov n¡ LM_REG. Nikde jinde se to takhle nedˆl , ale j  pot©ebuji,
+  -- aby byl v˜sledek 32-bitov˜ (aby spr vnˆ fungovalo BT). Nemˆlo by se
+  -- to dˆlat nˆjak jinak (nap©¡klad dodate‡nˆ registr roz¨¡©it) ?
+  i_newcontext(context,newcontext,lm_reg,nil{pbase});
+  i_load(inst,info,newcontext,context,el,op1);
+
+  -- na‡¡st mno‘inu (prav˜ operand)
+  i_newcontext(context,newcontext,lm_gen,er^.t.getctype);
+  i_load(inst,info,newcontext,context,er,op2);
+
+  -- obnovit registry
+  op1.refresh(inst,info,context);
+  op2.refresh(inst,info,context);
+
+  -- co je prav˜ operand za‡
+  case op2.optype
+
+    -- registr
+    when io_reg do
+       -- rozhodnˆ ho p©ev‚st na 32 bit–
+       op2.adjust_size(4);
+
+       -- a co lev˜ operand ?
+       case op1.optype
+
+         -- p©¡m  hodnota
+         when io_imm do
+             -- ode‡¡st doln¡ mez b ze mno‘iny
+             op1.set_imm(op1.imm-lval);
+
+             -- hodnota je jistˆ 8-mi bitov  v rozsahu 0..31
+             verify(434,op1.imm>31);
+             op1.adjust_size(1);
+
+             -- BT <registr>,<p©¡m  hodnota>
+             addii(inst,info,ii_bt,op2,op1,op0);
+
+         -- registr
+         when io_reg do
+             -- p©ev‚st i druh˜ operand na 32 bit–
+             op1.adjust_size(4);
+
+             -- ode‡¡st doln¡ mez
+             if lval<>timm32(0) then
+               declare var
+                 optemp : c_operand;
+               begin
+                 optemp.create_imm(edt_unsigned,0,lval);
+                 addii(inst,info,ii_sub,op1,optemp,op0);
+               leave
+                 optemp.free(info,context);
+                 end declare;
+               end if;
+
+             -- BT <registr>,<registr>
+             addii(inst,info,ii_bt,op2,op1,op0);
+
+         when others do verify(431,true);
+         end case;
+
+    -- pamˆŸ
+    when io_mem do
+       declare var
+         size      : t_unsigned;                 -- velikost mno‘iny pro zjednodu¨en¡
+       begin
+         size:=unidata_size_to_unsigned(er^.t.getsize);
+
+         -- a co lev˜ operand ?
+         case op1.optype
+           -- p©¡m  hodnota
+           when io_imm do
+               declare var
+                 bitsize : t_unsigned;           -- velikost mno‘iny v bitech smˆrem dol– zarovnan  na 32 bit–
+               begin  
+                 -- ode‡¡st doln¡ mez b ze mno‘iny
+                 op1.set_imm(op1.imm-lval);
+
+                 -- vypo‡¡tat velikost mno‘iny v bitech smˆrem dol– zarovnanou na 32 bit–
+                 bitsize:=(op2.size div 4)*32;
+
+                 -- mno‘ina m  1, 2 nebo 3 byty
+                 if op2.size<4 then
+                   declare var
+                     optemp : c_operand;
+                   begin
+                     -- pot©ebujeme pracovn¡ registr
+                     optemp.create_new_register(inst,info,context,edt_binary,4);
+
+                     -- 3 byty
+                     if op2.size=3 then
+                       -- na‡¡st horn¡ byte
+                       op2.shift_displacement(2);
+                       op2.adjust_size(1);
+                       addii(inst,info,ii_movzx,optemp,op2,op0);
+                       addii(inst,info,ii_shl,optemp,op_16,op0);
+
+                       -- na‡¡st doln¡ dva byty
+                       op2.unshift_displacement(2);
+                       op2.adjust_size(2);
+                       optemp.adjust_size(2);
+                       addii(inst,info,ii_mov,optemp,op2,op0);
+                       optemp.adjust_size(4);
+
+                     -- 1 nebo 2 byty
+                     else
+                       -- na‡¡st doln¡ dva byty
+                       addii(inst,info,ii_movzx,optemp,op2,op0);
+                       end if;
+
+                     -- uvolnit p–vodn¡ operand a nahradit ho pracovn¡m operandem
+                     op2.replace(info,context,optemp);
+
+                   leave
+                     -- uvolnit pracovn¡ operand
+                     optemp.free(info,context);
+                     end declare;
+
+                 -- index spad  pod hranici 32bitovˆ zaokrouhlen‚ velikosti mno‘iny
+                 elsif op1.imm<bitsize then
+                   -- vypo‡¡tat offset do mno‘iny
+                   op2.shift_displacement(imm32_to_signed(op1.imm shr timm32(5)));
+                                          --%%X Ta konverze na SIGNED je dost divn . DISP je p©eci
+                                          -- taky TIMM32, tak pro‡ nejde shiftnout o jinou TIMM32?
+                   -- z ‡¡sla bitu n s od teƒ zaj¡m  jen spodn¡ch 5 bit–
+                   op1.set_imm(op1.imm and timm32(2$1_1111));
+
+                   -- z cel‚ mno‘iny n s nyn¡ zaj¡maj¡ jen ‡ty©i byty
+                   op2.adjust_size(4);
+
+                 -- index spad  nad hranici 32bitovˆ zaokrouhlen‚ velikosti mno‘iny
+                 elsif op1.imm>=bitsize then
+                   verify(495,op2.size<4);
+
+                   -- vypo‡¡tat ‡¡slo bitu v r mci posledn¡ch ‡ty© byt–
+                   op1.set_imm(op1.imm-unsigned_to_imm32(op2.size-4)*timm32(8));
+
+                   -- vypo‡¡tat offset na posledn¡ ‡ty©i byty mno‘iny
+                   op2.shift_displacement(t_signed(op2.size-4));
+
+                   -- z cel‚ mno‘iny n s nyn¡ zaj¡maj¡ jen ‡ty©i byty
+                   op2.adjust_size(4);
+
+                 -- jin˜ p©¡pad by nemˆl nastat
+                 else
+                   verify(496,true);
+                   end if;
+
+                 -- ‡¡slo bitu je teƒ 8-mi bitov‚ mezi 0..31
+                 op1.adjust_size(1);
+
+                 -- BT <pamˆŸ>,<p©¡m  hodnota>
+                 addii(inst,info,ii_bt,op2,op1,op0);
+                 end declare;
+
+           -- registr
+           when io_reg do
+               -- procesor p©istupuje k pamˆti po 32bitov˜ch slovech,
+               -- tak‘e mus¡me opravit velikost operandu
+               -- if op2.size mod 4<>0 then u_nimplemented(134);
+
+               -- p©ev‚st i druh˜ operand na 32 bit–
+               op1.adjust_size(4);
+
+               -- ode‡¡st doln¡ mez
+               if lval<>timm32(0) then
+                 declare var
+                   optemp : c_operand;
+                 begin
+                   optemp.create_imm(edt_unsigned,0,lval);
+                   addii(inst,info,ii_sub,op1,optemp,op0);
+                 leave
+                   optemp.free(info,context);
+                   end declare;
+                 end if;
+
+               -- instrukce BT akceptuje jen 32bitov‚ operandy, i kdy‘ pracuje s libovolnˆ dlouh˜mi
+               op2.adjust_size(4);
+
+               -- %%X N sleduj¡c¡ instrukce m–‘e obecnˆ zp–sobit Access Violation, pokud
+               -- bude konec mno‘iny, jej¡‘ velikost nebude n sobkech 4, le‘et na hranici
+               -- str nky. Spr vnˆ by mˆla zavolat nˆjak  RTL funkce, kter  provede stejn˜
+               -- rozhodovac¡ proces jako v p©edchoz¡ variantˆ OP1.OPTYPE=IO_IMM.
+
+               -- BT <pamˆŸ>,<registr>
+               addii(inst,info,ii_bt,op2,op1,op0);
+
+           when others do verify(433,true);
+           end case;
+        end declare;
+
+    when others do verify(430,true);
+    end case;
+
+  -- v˜sledek
+  if expr^.oper=op_notin
+    then vysl.create_condition(ic_nc);
+    else vysl.create_condition(ic_c);
+    end if;
+
+leave
+  -- uvolnit operandy
+  op1.free(info,context);
+  op2.free(info,context);
+  end i_gen_op_in_set;
+
+
+
+end ci_set;

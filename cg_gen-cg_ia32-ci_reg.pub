@@ -1,163 +1,80 @@
 ----------------------------------------------------------------------------------------------------
 module public ci_reg =
 -- P©eklada‡ Flexu.
--- Alok tor registr–.
+-- Pr ce s registry.
 ----------------------------------------------------------------------------------------------------
 -- Ondra : 05.04.2002 : Vytvo©il
 ----------------------------------------------------------------------------------------------------
 
------ %%TECH Princip p©idˆlov n¡ registr– ----------------------------------------------------------
--- Registry se p©idˆluj¡ dvˆma metodami:
---   -- dynamicky (I_ALLOC),
---   -- staticky (I_USE), pokud pou‘it  instrukce vy‘aduje konkr‚tn¡ registr.
--- Informace o pou‘it¡ registr– je ulo‘ena v CONTEXT. V typick‚ situaci se
--- pou‘¡v  jedna struktura CONTEXT lok ln¡ pro generovan˜ podstrom (resp.
--- jednu jeho £rove¤ - uzel), p©i‡em‘ volaj¡c¡ procedura (nad©azen  £rove¤
--- stormu) m  vlastn¡ strukturu CONTEXT a pro ka‘d˜ generovan˜ podstrom se
--- odvozuje nov  struktura CONTEXT.
---   V CONTEXT jsou ulo‘eny ‡ty©i druhy informac¡ o registrech:
---   -- mapov n¡ registr–: p©i alokaci je registru p©idˆleno ‡¡slo, kter‚ se
---      pou‘¡v  jako indentifik tor registru p©i p©emapov n¡,
---   -- stavov˜ p©¡znak registru:
---         irs_local  -- registr je volnˆ k dispozici pro tento uzel,
---         irs_used   -- registr obsahuje platnou hodnotu, kter  m  v˜znam v
---                       nad©azen‚m kontextu - bude-li ho pot©eba pou‘¡t,
---                       mus¡ se ulo‘it na stack,
---         irs_pushed -- registr, kter˜ byl p–vodnˆ ve stavu IRS_USED, byl
---                       odswapov n na stack a pou‘it jako lok ln¡,
---   -- po‡et pou‘it¡ registru v aktu ln¡m kontextu - jeden registr lze
---      pou‘¡t v¡cekr t, proto‘e jednou je nap©¡klad pot©eba v operandu
---      IO_MEM a sou‡asnˆ v operandu IO_REG, aby se s n¡m dalo manipulovat
---      p©¡mo,
---   -- historie ulo‘en¡ registr– na stack,
---
--- Algoritmus statick‚ho p©idˆlov n¡:
---   1. Je-li STATUS vybran‚ho registru IRS_USED, ulo‘¡ se na stack, zap¡¨e
---      do historie PUSHORDER a zmˆn¡ se na IRS_PUSHED
---   2. Je-li STATUS IRS_LOCAL, zmˆn¡ se na IRS_USED.
---   3. Inkrementuje se USED.
---
--- Algoritmus dynamick‚ho p©idˆlov n¡:
---   1. Existuje-li registr ve stavu IRS_LOCAL, pou‘ije se p©ednostnˆ.
---   2. Jinak se pou‘ije registr ve stavu IRS_USED.
---   3. Pokud jsou v¨echny registry ve stavu IRS_PUSHED, nastala intern¡
---      chyba.
---   4. D le se postupuje jako p©i statick‚m p©idˆlov n¡.
---
--- Typick‚ pou‘it¡:
---   1. P©i vstupu do procedury je v CONTEXT nastaveno:
---        -- nejsou mapov ny ‘ dn‚ registry,
---        -- STATUS ka‘d‚ho registru na IRS_LOCAL nebo IRS_USED,
---        -- USED v¨ech registr– na nulu,
---        -- PUSHORDER je pr zdn‚.
---
---   2. Generov n¡ podv˜raz–:
---        -- vygeneruje se nov˜ kontext pomoc¡ I_NEWCONTEXT.
---        -- zavol  se I_LOAD s nov˜m kontextem,
---        -- provede se I_RETRIEVE, kter‚ za©ad¡ registry pou‘it‚ ve v˜sledku
---           v˜po‡tu mezi pou‘it‚ registry a podle historie PUSHORDER
---           v kontextu podv˜razu p©iprav¡ informace o p©emapov n¡ registr–
---           nebo aktualizuje vlastn¡ PUSHORDER.
---
---   3. Pomoc¡ I_REFRESH se pro ka‘d˜ operand obnov¡ registry ze stacku
---      a aktualizuje mapov n¡.
---
---   4. Provede se vlastn¡ v˜po‡et. Zde lze pomoc¡ I_ALLOC a I_FREE alokovat
---      pracovn¡ registry a uvol¤ovat ji‘ nepot©ebn‚ registry.
---
--- Ka‘d˜ registr by mˆl b˜t p©idˆlen buƒ pomoc¡ I_ALLOC nebo pomoc¡ I_USE
--- a pokud ji‘ nen¡ pro dal¨¡ v˜po‡ty pot©eba, uvolnˆn pomoc¡ I_FREE (a to
--- i kdy‘ je pou‘¡v n v¡cekr t). Opu¨tˆn¡m oblasti platnosti dan‚ho kontextu
--- se informace o pou‘it¡ registr– ztr cej¡ a mus¡ se zavolat I_RETREIVE, aby
--- ¨lo v˜sledek pou‘¡vat i v nad©azen‚m kontextu.
-----------------------------------------------------------------------------------------------------
-
 with
   standard,
-  cp_cpu.cp_ia32.ci_instr,
-  ci_def;
+  cp_cpu.cp_32.cp_def,
+  cg_gen.cg_ia32.ci_def,
+  cg_gen.cg_ia32.ci_context;
+
+extend
+  cp_cpu.cp_ia32.ci_instr;
 
 ----------------------------------------------------------------------------------------------------
-procedure i_alloc (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
-    context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
-    opreg          : in out ioperreg;            -- registr, tak jak je v operandu
-    size           : in t_unsigned;              -- po‘adovan  velikost registru
-    mode           : in iregallocmode);          -- re‘im alokace registru
--- Alokace registru (libovoln‚ho).
-----------------------------------------------------------------------------------------------------
-procedure i_use (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
-    context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
-    reg            : in ireg;                    -- po‘adovan˜ registr
-    opreg          : in out ioperreg;            -- registr, tak jak je v operandu
-    size           : in t_unsigned);             -- po‘adovan  velikost registru
--- Alokace konkr‚tn¡ho registru.
-----------------------------------------------------------------------------------------------------
-procedure i_free (
-    info           : in igeninfo;                -- informace o p©ekladu
-    context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
-    op             : in out ioper);              -- registr, tak jak je v operandu
--- Uvolnˆn¡ registr– pou‘it˜ch operandem.
-----------------------------------------------------------------------------------------------------
-procedure i_retrieve (
-    inst           : in out icodeinst;           -- instance
-    info           : in igeninfo;                -- informace o p©ekladu
-    subcontext     : in iexprcontext;            -- kontext podv˜razu
-    context        : in out iexprcontext;        -- aktu ln¡ kontext v˜razu
-    op             : in out ioper);              -- v˜sledek podv˜razu
--- P©evede operand z pod©¡zen‚ho kontextu do nad©azen‚ho.
-----------------------------------------------------------------------------------------------------
-procedure i_refresh (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
-    context        : in out iexprcontext;        -- aktu ln¡ kontext v˜razu
-    op             : in out ioper);              -- v˜sledek podv˜razu
--- Aktualizuje jm‚na registr– v operandu.
-----------------------------------------------------------------------------------------------------
-
-
-
-----------------------------------------------------------------------------------------------------
--- Primitiva.
-----------------------------------------------------------------------------------------------------
-procedure i_newmapping (
-    context        : in out iexprcontext;        -- aktu ln¡ kontext v˜razu
-    uni            : in iunireg;                 -- registr
-    mapping        : out iregnum);               -- jemu odpov¡daj¡c¡ mapov n¡
--- Pro zadan˜ registr najde vhodn‚ mapov n¡.
-----------------------------------------------------------------------------------------------------
-procedure i_setmapping (
-    context        : in out iexprcontext;        -- aktu ln¡ kontext v˜razu
-    mapping        : in iregnum;                 -- mapov n¡
-    uni            : in iunireg);                -- jemu odpov¡daj¡c¡ registr
--- P©i©ad¡ mapov n¡ zadan˜ registr.
-----------------------------------------------------------------------------------------------------
-procedure i_useuni (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
-    context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
-    uni            : in iunireg;                 -- po‘adovan˜ registr
-    mapping        : out iregnum);               -- mapov n¡ registru
--- Alokace konkr‚tn¡ho univerz ln¡ho registru.
--- V OPREG nastav¡ pouze virtu ln¡ ‡¡slo registru.
-----------------------------------------------------------------------------------------------------
-procedure i_finduni (
+procedure i_reg_get_available (
     context        : in iexprcontext;            -- kontext generov n¡ v˜razu
-    unireg         : out iunireg;                -- alokovan˜ registr
-    size           : in t_unsigned;              -- po‘adovan  velikost registru
-    mode           : in iregallocmode;           -- re‘im alokace registru
-    freeonly       : in t_logical;               -- pouze voln‚ registry
-    exclusion      : in iuniregset);             -- vynechan‚ registry
--- Nalezne voln˜ registr.
+    availregs      : out iuniregset);            -- mno‘ina voln˜ch registr–
+-- Vr t¡ mno‘inu v¨ech voln˜ch registr–.
 ----------------------------------------------------------------------------------------------------
-procedure i_freeuni (
+procedure i_reg_reserve_available (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
+    context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
+    exclusion      : in iuniregset;              -- vynech van‚ registry
+    availregs      : out iuniregset;             -- mno‘ina voln˜ch registr–
+    minregs        : in t_unsigned;              -- minim ln¡ po‡et registr–
+    _bit8          : in t_logical);              -- T-bude pot©eba 8-mi bitov˜ reg.
+-- Vr t¡ mno‘inu v¨ech voln˜ch registr–, kromˆ registr– z EXCLUSION.
+-- Pokud nen¡ k dispozici alespo¤ MINREGS registr–, alokuje nˆjak‚ pou‘it‚.
+-- Je-li BIT8=True, zajist¡, aby byl k dispozici je¨tˆ nˆjak˜ jin˜ registr
+-- ne‘ ESI a EDI.
+----------------------------------------------------------------------------------------------------
+procedure i_reg_free_available (
     info           : in igeninfo;                -- informace o p©ekladu
     context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
-    uni            : in iunireg);                -- registr, tak jak je v operandu
--- Uvolnˆn¡ registru.
+    availregs      : in out iuniregset);         -- mno‘ina voln˜ch registr–
+-- Uvoln¡ mno‘inu voln˜ch registr–.
+----------------------------------------------------------------------------------------------------
+procedure i_reg_are_available (
+    context        : in iexprcontext;            -- kontext generov n¡ v˜razu
+    n              : in t_unsigned)              -- velikost registru v bytech
+    return t_logical;
+-- True, je-li k dispozici alespo¤ jeden N-bytov˜ registr.
+----------------------------------------------------------------------------------------------------
+procedure i_reg_get_count (
+    regs           : in iuniregset;              -- mno‘ina registr–
+    n              : in t_unsigned)              -- velikost registru v bytech
+    return t_unsigned;                           -- kolik registr– m me
+-- Spo‡¡t , kolik je n-bytov˜ch registr– v REGS.
+----------------------------------------------------------------------------------------------------
+procedure i_reg_resize (
+    reg            : in ireg;                    -- p–vodn¡ registr
+    size           : in t_unsigned)              -- po‘adovan  velikost registru
+    return ireg;                                 -- v˜sledn˜ registr
+-- P©evede registr na zadanou velikost.
+----------------------------------------------------------------------------------------------------
+procedure i_reg_save_used (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
+    context        : in out iexprcontext);       -- kontext generov n¡ v˜razu
+-- Ulo‘¡ na stack v¨echny pou‘it‚ registry.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+#separate public ci_alloc;
+-- Alok tor registr–.
+----------------------------------------------------------------------------------------------------
+
+protected
+
+----------------------------------------------------------------------------------------------------
+#separate public ci_uni;
+-- Primitiva pro pr ci s univerz ln¡mi registry.
 ----------------------------------------------------------------------------------------------------
 
 end ci_reg;

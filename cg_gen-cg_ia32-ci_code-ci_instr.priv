@@ -12,8 +12,8 @@ with
   cc_base,
   cc_base.cc_debug,
   cc_base.cc_rtl,
-  ci_oper,
-  ci_relo;
+  cg_gen.cg_ia32.ci_code.ci_operand,
+  cg_gen.cg_ia32.ci_code.ci_relo;
 
 const
   -- adresy ukl dan‚ do pole Displacement
@@ -65,18 +65,22 @@ procedure addjump =
 -- P©id  (ne)podm¡nˆn˜ relativn¡ skok dan˜ absolutn¡ c¡lovou adresou.
 ----------------------------------------------------------------------------------------------------
 var
-  op1              : ioper;                      -- operand
+  op1              : c_operand;                  -- operand
 
 begin
   -- p©ipravit operand
-  nullop(op1,io_rel);
-  op1.disptarget:=target;
+  op1.create_relative_address(0);
+  op1.set_target(target);
 
   -- upravit velikost operandu
-  adjustoprel(inst,info,cond,op1);
+  op1.adjust_relative_address_size(inst,info,cond);
 
   -- p©idat instrukci
   addii(inst,info,icondinstr[cond,iic_jmp],op1,op0,op0);
+
+leave
+  -- uvolnit operand
+  op1.free(info,context);
   end addjump;
 
 
@@ -100,18 +104,22 @@ procedure addloop =
 -- P©id  LOOP na danou absolutn¡ c¡lovou adresou.
 ----------------------------------------------------------------------------------------------------
 var
-  op1              : ioper;                      -- operand
+  op1              : c_operand;                  -- operand
 
 begin
   -- p©ipravit operand
-  nullop(op1,io_rel);
-  op1.disptarget:=target;
+  op1.create_relative_address(0);
+  op1.set_target(target);
 
   -- upravit velikost operandu
-  adjustoprel(inst,info,ic_ucond,op1);
+  op1.adjust_relative_address_size(inst,info,ic_ucond);
 
   -- p©idat instrukci
   addii(inst,info,ii_loop,op1,op0,op0);
+
+leave
+  -- uvolnit operand
+  op1.free(info,context);
   end addloop;
 
 
@@ -121,17 +129,19 @@ procedure addcall =
 -- P©id  vol n¡ podprogramu.
 ----------------------------------------------------------------------------------------------------
 var
-  op1              : ioper;                      -- operand
+  op1              : c_operand;                  -- operand
 
 begin
   -- p©ipravit operand
-  nullop(op1,io_rel);
-  op1.size:=lprg32;
-  op1.rtype:=irt_symbol;
-  op1.psym:=psym;
+  op1.create_relative_address(4);
+  op1.set_relo_entity(psym);
 
   -- p©idat instrukci
   addii(inst,info,ii_call,op1,op0,op0);
+
+leave
+  -- uvolnit operand
+  op1.free(info,context);
   end addcall;
 
 
@@ -152,7 +162,7 @@ begin
     ce^.setparam(entityident_to_string(pid^));
     ce^.raiseerror;
     end if;
-  addcall(inst,info,pproc);
+  addcall(inst,info,context,pproc);
   end addcallrtl;
 
 
@@ -178,30 +188,29 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure addpushofs =
--- P©id  LEA EAX,[EBP+ofs]; PUSH EAX.
+-- P©id  LEA registr,[frameptr+ofs]; PUSH registr.
 ----------------------------------------------------------------------------------------------------
 var
-  op1              : ioper;                      -- operandy
-  op2              : ioper;                      -- operandy
+  op1              : c_operand;                  -- operand
+  op2              : c_operand;                  -- operand
 
 begin
-  -- p©ipravit lev˜ operand
-  newopreg(inst,info,context,op1,4,irm_addr,op0);
+  -- p©ipravit lev˜ operand: registr
+  op1.create_new_register(inst,info,context,edt_address,4);
 
-  -- p©ipravit prav˜ operand
-  nullop(op2,io_mem);
-  op2.base.reg:=ir_ebp;
-  op2.disp:=ofs;
-  op2.size:=4;
+  -- p©ipravit prav˜ operand: [frameptr+ofs]
+  op2.create_memory_address_on_stack(inst,edt_binary,0,ofs);
 
-  -- LEA EAX,[EBP+ofs]
+  -- LEA registr,[frameptr+ofs]
   addii(inst,info,ii_lea,op1,op2,op0);
 
-  -- PUSH EAX
+  -- PUSH registr
   addii(inst,info,ii_push,op1,op0,op0);
 
-  -- uvolnit prvn¡ operand
-  --%%OLD freeop(info,op1);
+leave
+  -- uvolnit operandy
+  op1.free(info,context);
+  op2.free(info,context);
   end addpushofs;
 
 
@@ -211,25 +220,26 @@ procedure addmovaddr =
 -- P©id  MOV [EBP+ofs],<adresa n vˆ¨t¡ address>
 ----------------------------------------------------------------------------------------------------
 var
-  op1              : ioper;                      -- operandy
-  op2              : ioper;                      -- operandy
+  op1              : c_operand;                  -- operandy
+  op2              : c_operand;                  -- operandy
 
 begin
   -- p©ipravit lev˜ operand
-  nullop(op1,io_mem);
-  op1.base.reg:=ir_ebp;
-  op1.disp:=ofs;
-  op1.size:=4;
+  op1.create_memory_address_on_stack(inst,edt_address,4,ofs);
 
   -- p©ipravit prav˜ operand
-  nullop(op2,io_imm);
-  op2.size:=4;
+  op2.create_imm(edt_address,4,timm32(0));
 
   -- p©idat instrukci
   addii(inst,info,ii_mov,op1,op2,op0);
 
   -- lok ln¡ relokace: absolutn¡ adresa n vˆ¨t¡
   addunres(info,target,inst.c^:length,getfieldaddr(info,iif_imm1),4,true);
+
+leave
+  -- uvolnit operandy
+  op1.free(info,context);
+  op2.free(info,context);
   end addmovaddr;
 
 
@@ -239,15 +249,18 @@ procedure addopimm =
 -- P©id  <ii> <op>,<value>.
 ----------------------------------------------------------------------------------------------------
 var
-  opvalue          : ioper;
+  opvalue          : c_operand;
 
 begin
   -- p©ipravit operand
-  nullop(opvalue,io_imm);
-  opvalue.imm:=unsigned_to_imm32(value);
+  opvalue.create_imm(edt_unsigned,0,unsigned_to_imm32(value));
 
   -- p©idat instrukci
   addii(inst,info,ii,op,opvalue,op0);
+
+leave
+  -- uvolnit operand
+  opvalue.free(info,context);
   end addopimm;
 
 
@@ -264,7 +277,7 @@ begin
     then addii(inst,info,ii_dec,op,op0,op0)
 
     -- ne¨la, mus¡me SUB
-    else addopimm(inst,info,ii_sub,op,value);
+    else addopimm(inst,info,context,ii_sub,op,value);
     end if;
   end addsubimm;
 
@@ -283,7 +296,7 @@ begin
     then addii(inst,info,ii_inc,op,op0,op0)
 
     -- ne¨la, mus¡me SUB
-    else addopimm(inst,info,ii_add,op,value);
+    else addopimm(inst,info,context,ii_add,op,value);
     end if;
   end addaddimm;
 
@@ -294,16 +307,18 @@ procedure addopreg =
 -- P©id  <ii> <reg>,<op>.
 ----------------------------------------------------------------------------------------------------
 var
-  opreg            : ioper;
+  opreg            : c_operand;
 
 begin
   -- p©ipravit operand
-  nullop(opreg,io_reg);
-  opreg.reg.reg:=reg;
-  opreg.size:=iregsize[reg];
+  opreg.create_use_register(inst,info,context,op.edtype,reg);
 
   -- p©idat instrukci
   addii(inst,info,ii,opreg,op,op0);
+
+leave
+  -- uvolnit operand
+  opreg.free(info,context);
   end addopreg;
 
 
@@ -313,18 +328,24 @@ procedure addset =
 -- SETcc se spr vnou specifikac¡ reprezentace p©¡padn˜m roz¨¡©en¡m v˜sledku.
 ----------------------------------------------------------------------------------------------------
 var
-  op2              : ioper;
+  op2              : c_operand;
 
 begin
   -- p©ipravit operand pro SETcc
-  op2:=op1;
-  op2.size:=1;
+  op2.clone(inst,info,context,op1);
+  op2.adjust_size(1);
 
   -- SETcc
   addii(inst,info,icondinstr[cc,iic_set],op2,op0,op0);
 
   -- v p©¡padˆ pot©eby roz¨¡©it na 16/32 bit–
-  if op1.size>1 then addii(inst,info,ii_and,op1,op_1,op0); end if;
+  if op1.size>1 then 
+    addii(inst,info,ii_and,op1,op_1,op0); 
+    end if;
+
+leave
+  -- uvolnit operand
+  op2.free(info,context);
   end addset;
 
 
@@ -338,7 +359,9 @@ var
 
 begin
   -- CMOVcc funguje jen pro 16 a 32bitov‚ argumenty
-  if (op1.size=2 or op1.size=4 {%%TODO(SET) in [2,4]}) and (op2.size=2 or op2.size=4 {%%TODO(SET) in [2,4]})
+  if (op1.size=2 or op1.size=4 {%%TODO(SET) in [2,4]}) 
+  and (op2.size=2 or op2.size=4 {%%TODO(SET) in [2,4]})
+  and op2.optype in t_operand_type_set:[io_reg,io_mem]
                                                                                              
     -- Kamil, Ondra 15.5.2002 : Doplnˆno CMOV
     then addii(inst,info,icondinstr[icondneg[cc],iic_cmov],op1,op2,op0)
@@ -349,7 +372,7 @@ begin
       newtarget(info,tg_temp);
 
       -- podm¡nka
-      addjump(inst,info,cc,tg_temp);
+      addjump(inst,info,context,cc,tg_temp);
 
       -- p©i©azen¡
       addii(inst,info,ii_mov,op1,op2,op0);
@@ -364,7 +387,7 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure shoda (
     mode           : iopmode; 
-    op             : in ioper) 
+    op             : in c_operand) 
     return t_logical =
 -- Porovn  m¢d s operandem.
 ----------------------------------------------------------------------------------------------------
@@ -385,10 +408,10 @@ begin
                          and (op.rtype=irt_none){(op.psym=nil)})) 
                          and imm32_signed_ge(op.imm,-128) and imm32_signed_le(op.imm,127);
                        --and (op.psym=nil))) and (op.imm>=-128) and (op.imm<=127);
-    when op_rm8      do result:=(op.optype in ioptypeset:[io_reg,io_mem]) and (op.size=1);
-    when op_rm16     do result:=(op.optype in ioptypeset:[io_reg,io_mem]) and (op.size=2);
-    when op_rm32     do result:=(op.optype in ioptypeset:[io_reg,io_mem]) and (op.size=4);
-    when op_rm64     do result:=(op.optype in ioptypeset:[io_reg,io_mem]) and (op.size=8);
+    when op_rm8      do result:=(op.optype in t_operand_type_set:[io_reg,io_mem]) and (op.size=1);
+    when op_rm16     do result:=(op.optype in t_operand_type_set:[io_reg,io_mem]) and (op.size=2);
+    when op_rm32     do result:=(op.optype in t_operand_type_set:[io_reg,io_mem]) and (op.size=4);
+    when op_rm64     do result:=(op.optype in t_operand_type_set:[io_reg,io_mem]) and (op.size=8);
     when op_m        do result:=(op.optype=io_mem);
     when op_m2byte   do result:=(op.optype=io_mem) and (op.size=2);
     when op_m8       do result:=(op.optype=io_mem) and (op.size=1);
@@ -414,15 +437,15 @@ begin
     when op_m16a32   do result:=(op.optype=io_mem) and (op.size=6);
     when op_m16a16   do result:=(op.optype=io_mem) and (op.size=4);
     when op_m32a32   do result:=(op.optype=io_mem) and (op.size=8);
-    when op_sreg     do result:=(op.optype=io_seg);
-    when op_CRi      do result:=(op.optype=io_cri);
-    when op_DRi      do result:=(op.optype=io_dri);
-    when op_CS       do result:=(op.optype=io_seg) and (op.reg.reg=ir_cs);
-    when op_DS       do result:=(op.optype=io_seg) and (op.reg.reg=ir_ds);
-    when op_ES       do result:=(op.optype=io_seg) and (op.reg.reg=ir_es);
-    when op_SS       do result:=(op.optype=io_seg) and (op.reg.reg=ir_ss);
-    when op_FS       do result:=(op.optype=io_seg) and (op.reg.reg=ir_fs);
-    when op_GS       do result:=(op.optype=io_seg) and (op.reg.reg=ir_gs);
+    when op_sreg     do result:=(op.optype=io_reg) and (op.reg.reg in ir_seg);
+    when op_CRi      do result:=(op.optype=io_reg) and (op.reg.reg in ir_cri);
+    when op_DRi      do result:=(op.optype=io_reg) and (op.reg.reg in ir_dri);
+    when op_CS       do result:=(op.optype=io_reg) and (op.reg.reg=ir_cs);
+    when op_DS       do result:=(op.optype=io_reg) and (op.reg.reg=ir_ds);
+    when op_ES       do result:=(op.optype=io_reg) and (op.reg.reg=ir_es);
+    when op_SS       do result:=(op.optype=io_reg) and (op.reg.reg=ir_ss);
+    when op_FS       do result:=(op.optype=io_reg) and (op.reg.reg=ir_fs);
+    when op_GS       do result:=(op.optype=io_reg) and (op.reg.reg=ir_gs);
     when op_m32fp    do result:=(op.optype=io_mem) and (op.size=4);  --%%X Dodˆlat kontrolu na FP (?)
     when op_m64fp    do result:=(op.optype=io_mem) and (op.size=8);  --%%X Dodˆlat kontrolu na FP (?)
     when op_m80fp    do result:=(op.optype=io_mem) and (op.size=10); --%%X Dodˆlat kontrolu na FP (?)
@@ -438,7 +461,7 @@ begin
 #if dump then;{%OFF}
 ----------------------------------------------------------------------------------------------------
 procedure optostr (
-    op             : in ioper)
+    op             : in c_operand)
     return t_char32str =
 ----------------------------------------------------------------------------------------------------
 with
@@ -455,7 +478,7 @@ begin
     when io_none do result:='';
     when io_imm do result:=unsigned_to_radix_string(imm32_to_unsigned(op.imm),16) 
                            & ' (' & unsigned_to_string(imm32_to_unsigned(op.imm)) & ")";
-    when io_reg,io_seg,io_cri,io_dri do result:=str_to_lower(entityident_to_string(iregtxt[op.reg.reg]));
+    when io_reg{,io_seg,io_cri,io_dri} do result:=str_to_lower(entityident_to_string(iregtxt[op.reg.reg]));
     when io_mem do
         if op.base.reg<>ir_none
           then s:=str_to_lower(entityident_to_string(iregtxt[op.base.reg]));
@@ -478,10 +501,10 @@ begin
         if s<>'' then s:="[" & s & "]"; end if;
         case op.rtype
           when irt_none   do ;
-          when irt_symbol do
-              if pentity(op.psym)^.etype=et_type
+          when irt_entity do
+              if pentity(op.rentity)^.etype=et_type
                 then s:='(tag) ' & s;
-                else s:="[" & entityident_to_string(pentity(op.psym)^.id^) & "]" & s;
+                else s:="[" & entityident_to_string(pentity(op.rentity)^.id^) & "]" & s;
                 end if;
           when irt_imm    do s:='(imm) ' & s;
           when others do verify(200,true);
@@ -489,15 +512,15 @@ begin
         result:="<" & unsigned_to_string(op.size) & '> ' & s;
 
     when io_rel do
-        if op.disptarget<>iunknowntarget
-          then result:='label ' & unsigned_to_string(op.disptarget)
+        if op.disp_target<>iunknowntarget
+          then result:='label ' & unsigned_to_string(op.disp_target)
           else
             case op.rtype
               when irt_none   do result:='offset ' & signed_to_string(imm32_to_signed(op.rel),true);
-              when irt_symbol do
-                  if pentity(op.psym)^.etype=et_type
-                    then result:='offset tag ' & sym_get_qid(pentity(op.psym));
-                    else result:='offset ' & sym_get_qid(pentity(op.psym));
+              when irt_entity do
+                  if pentity(op.rentity)^.etype=et_type
+                    then result:='offset tag ' & sym_get_qid(pentity(op.rentity));
+                    else result:='offset ' & sym_get_qid(pentity(op.rentity));
                     end if;
               when irt_imm    do result:='offset imm ' & signed_to_string(imm32_to_signed(op.rel),true);
               when others do verify(201,true);
@@ -541,7 +564,7 @@ var
 
     ------------------------------------------------------------------------------------------------
     procedure genop (
-        op         : in ioper;
+        op         : in c_operand;
         mode       : in iopmode;
         ex         : in iocext;
         imm        : out timm32;
@@ -567,7 +590,7 @@ var
               end if;
 
         -- registr
-        when io_reg,io_seg,io_cri,io_dri do
+        when io_reg{,io_seg,io_cri,io_dri} do
             -- do pol¡ Mode a R/M
             if mode in iopmodeset:[op_rm8,op_rm16,op_rm32] then
               modrm or $C0 or iregcode[op.reg.reg];
@@ -662,7 +685,6 @@ var
               when others do verify(365,true);
               end case;
 
-
         when others do verify(364,true);
         end case;
       end genop;
@@ -738,6 +760,7 @@ begin
 
   -- pot©ebn‚ prefixy
   {%%X}
+
   -- zmˆna velikosti operandu
   if (iopcodemap[kod].p and $01)<>0 then
     inst.c^ & iprefixcode[ip_data];
@@ -804,23 +827,23 @@ begin
 
   -- doplnit p©¡padnou glob ln¡ relokaci
   if op1.rtype<>irt_none{op1.psym<>nil} then
-    if ((op1.rtype=irt_symbol) and (pentity(op1.psym)^.etype in ets_disp) and (op1.optype<>io_imm))
+    if ((op1.rtype=irt_entity) and (pentity(op1.rentity)^.etype in ets_disp) and (op1.optype<>io_imm))
     or ((op1.rtype=irt_imm) and (op1.optype<>io_imm))
-      then addrelo(inst,op1.rtype,op1.psym,op1.pexpr,inst.c^:length{-1},info.iip+info.idisp,op1.optype<>io_rel{op1.rtype=irt_imm})
-      else addrelo(inst,op1.rtype,op1.psym,op1.pexpr,inst.c^:length{-1},info.iip+info.iimm1,op1.optype<>io_rel{op1.rtype=irt_imm});
+      then addrelo(inst,op1.rtype,op1.rentity,op1.rexpr,inst.c^:length{-1},info.iip+info.idisp,op1.optype<>io_rel{op1.rtype=irt_imm})
+      else addrelo(inst,op1.rtype,op1.rentity,op1.rexpr,inst.c^:length{-1},info.iip+info.iimm1,op1.optype<>io_rel{op1.rtype=irt_imm});
       end if;
   else
     -- Ondra 1.7.2003 : Tato kontrola nen¡ opr vnˆn , absolutn¡ adresa je naprosto leg ln¡
     --verify(631,op1.optype=io_mem and op1.base.reg=ir_none and op1.index.reg=ir_none);
     end if;
   if op2.rtype<>irt_none{op2.psym<>nil} then
-    if ((op2.rtype=irt_symbol) and (pentity(op2.psym)^.etype in ets_disp) and (op2.optype<>io_imm))
+    if ((op2.rtype=irt_entity) and (pentity(op2.rentity)^.etype in ets_disp) and (op2.optype<>io_imm))
     or ((op2.rtype=irt_imm) and (op2.optype<>io_imm))
-      then addrelo(inst,op2.rtype,op2.psym,op2.pexpr,inst.c^:length{-1},info.iip+info.idisp,op2.optype<>io_rel{op2.rtype=irt_imm})
+      then addrelo(inst,op2.rtype,op2.rentity,op2.rexpr,inst.c^:length{-1},info.iip+info.idisp,op2.optype<>io_rel{op2.rtype=irt_imm})
       else
         if useimm2>0
-          then addrelo(inst,op2.rtype,op2.psym,op2.pexpr,inst.c^:length{-1},info.iip+info.iimm2,op2.optype<>io_rel{op2.rtype=irt_imm});
-          else addrelo(inst,op2.rtype,op2.psym,op2.pexpr,inst.c^:length{-1},info.iip+info.iimm1,op2.optype<>io_rel{op2.rtype=irt_imm});
+          then addrelo(inst,op2.rtype,op2.rentity,op2.rexpr,inst.c^:length{-1},info.iip+info.iimm2,op2.optype<>io_rel{op2.rtype=irt_imm});
+          else addrelo(inst,op2.rtype,op2.rentity,op2.rexpr,inst.c^:length{-1},info.iip+info.iimm1,op2.optype<>io_rel{op2.rtype=irt_imm});
           end if;
         end if;
   else
@@ -831,20 +854,20 @@ begin
   -- doplnit p©¡padnou lok ln¡ relokaci
   if (op1.optype=io_rel) and (op1.target<>iunknowntarget) then
     addunres(info,op1.target,inst.c^:length{-1},info.iip+info.idisp,usedisp{op1.size},false);
-  elsif op1.optype=io_imm and op1.abstarget<>iunknowntarget then 
-    addunres(info,op1.abstarget,inst.c^:length,info.iip+info.iimm1,useimm1{op1.size},true);
+  elsif op1.optype=io_imm and op1.disp_target<>iunknowntarget then 
+    addunres(info,op1.disp_target,inst.c^:length,info.iip+info.iimm1,useimm1{op1.size},true);
   else
-    verify(633,op1.optype=io_rel and op1.rtype=irt_none and op1.target=iunknowntarget and op1.disptarget=iunknowntarget and op1.rel=timm32(0));
+    verify(633,op1.optype=io_rel and op1.rtype=irt_none and op1.target=iunknowntarget and op1.disp_target=iunknowntarget and op1.rel=timm32(0));
     end if;
   if (op2.optype=io_rel) and (op2.target<>iunknowntarget) then
     addunres(info,op2.target,inst.c^:length{-1},info.iip+info.idisp,usedisp{op2.size},false);
-  elsif (op2.optype=io_imm) and (op2.abstarget<>iunknowntarget) then
+  elsif (op2.optype=io_imm) and (op2.disp_target<>iunknowntarget) then
     if useimm2>0
-      then addunres(info,op2.abstarget,inst.c^:length,info.iip+info.iimm2,useimm2{op2.size},true)
-      else addunres(info,op2.abstarget,inst.c^:length,info.iip+info.iimm1,useimm1{op2.size},true);
+      then addunres(info,op2.disp_target,inst.c^:length,info.iip+info.iimm2,useimm2{op2.size},true)
+      else addunres(info,op2.disp_target,inst.c^:length,info.iip+info.iimm1,useimm1{op2.size},true);
       end if;
   else
-    verify(634,op2.optype=io_rel and op2.rtype=irt_none and op2.target=iunknowntarget and op2.disptarget=iunknowntarget and op2.rel=timm32(0));
+    verify(634,op2.optype=io_rel and op2.rtype=irt_none and op2.target=iunknowntarget and op2.disp_target=iunknowntarget and op2.rel=timm32(0));
     end if;
   end addii;
 

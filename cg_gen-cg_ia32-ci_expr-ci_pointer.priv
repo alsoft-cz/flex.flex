@@ -1,0 +1,297 @@
+----------------------------------------------------------------------------------------------------
+module private ci_pointer =
+-- P©eklada‡ Flexu.
+-- Operace s pointery.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 18.04.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_compare_pointer =
+-- Porovn v n¡ pointer–.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+--op1              : c_operand;                  -- operand 1
+--op2              : c_operand;                  -- operand 2
+--optmp            : c_operand;                  -- operand s porovn vanou hodnotou
+  tgend            : itarget;                    -- n vˆ¨t¡ pro skok na konec porovn v n¡
+  cc               : icond;                      -- k¢d podm¡nky
+  rest             : typeview;                   -- spole‡n˜ typ operand–
+  newcontext       : iexprcontext;               -- kontext generov n¡ podv˜razu
+  size             : t_unsigned;
+  i                : t_unsigned;
+
+begin
+  verify(325,(expr^.arity<>eoa_2) or expr^.assign);
+
+  -- podv˜razy
+  expr^.get(el,er);
+
+  -- vypo‡¡tat spole‡n˜ typ operand–
+  x_resolve(el^.t,er^.t,false,rest);
+
+  -- podm¡nka
+  cc:=op2cc[expr^.oper,false];
+
+  ----- porovn n¡ na NIL -----
+  if x_is_nil(er) then
+    declare var
+      op1          : c_operand;                  -- operand 1
+    begin
+      -- vygenerovat a na‡¡st lev˜ podv˜raz
+      i_newcontext(context,newcontext,lm_pointer_reg,rest.getutype);
+      i_load(inst,info,newcontext,context,el,op1);
+
+      -- z pointeru n s zaj¡m  jen adresa
+      -- %%X Opravdu ? viz flex@alsoft.cz
+      op1.adjust_size(4);
+
+      -- porovnat
+      addii(inst,info,ii_cmp,op1,op_0,op0);
+
+    leave
+      -- uvolnit operand
+      op1.free(info,context);
+      end declare;
+
+  ---- porovn n¡ dvou pointer– -----
+  else
+    -- r–zn‚ typy pointer– se porovn vaj¡ obecnˆ jinak
+    case rest.getpclass
+      -- p©¡stup k dat–m
+      when pc_data do
+          -- zvolit zp–sob porovn n¡ podle velikosti pointeru
+          size:=unidata_size_to_unsigned(rest.getsize);
+          case size
+            -- pouze adresa
+            when 4 do
+                declare var
+                  op1 : c_operand;               -- operand 1
+                  op2 : c_operand;               -- operand 2
+                begin
+                  -- vygenerovat a na‡¡st operandy
+                  i_load_binary_pointer(inst,info,context,expr,rest.getutype,el,er,op1,op2);
+
+                  -- porovnat
+                  addii(inst,info,ii_cmp,op1,op2,op0);
+
+                leave
+                  -- uvolnit operandy
+                  op1.free(info,context);
+                  op2.free(info,context);
+                  end declare;
+
+            -- pointer s nˆjak˜mi atributy
+            when 8,12,16 do
+                declare var
+                  op1   : c_operand;             -- operand 1
+                  op2   : c_operand;             -- operand 2
+                  optmp : c_operand;             -- pracovn¡ operand pro ‡ st porovn van‚ hodnoty
+                begin
+                  -- vygenerovat a na‡¡st adresu lev‚ho operandu
+                  i_newcontext(context,newcontext,lm_gen,rest.getutype);
+                  i_load(inst,info,newcontext,context,el,op1);
+
+                  -- na‡¡st adresu prav‚ho operandu
+                  i_newcontext(context,newcontext,lm_gen,rest.getutype);
+                  i_load(inst,info,newcontext,context,er,op2);
+
+                  -- obnovit registr
+                  verify(494,op1.optype<>io_mem or op2.optype<>io_mem);
+                  op1.refresh(inst,info,context);
+                  op2.refresh(inst,info,context);
+
+                  -- pokud u‘ nem me voln‚ registry, tak zkusit redukovat po‡et registr– v operandech
+                  if not i_reg_are_available(context,4) then
+                    i_gen_reduceop(inst,info,context,op1);
+                    i_gen_reduceop(inst,info,context,op2);
+                    end if;
+
+                  -- budeme pot©ebovat jeden registr
+                  optmp.create_new_register(inst,info,context,edt_unsigned,4);
+
+                { %%TODO(CODEGEN) Tento £sek k¢du zase obnovit, a‘ bude spr vnˆ fungovat
+                   ve¨ker  manipulace s tagy v‡etnˆ modifik toru CLASS v deklaraci parametru.
+                  -- alokovat n vˆ¨t¡ pro skok na konec
+                  newtarget(info,tgend);
+                }
+                  -- operandy budeme zpracov vat po 4bytov˜ch kroc¡ch
+                  op1.adjust_size(4);
+                  op2.adjust_size(4);
+
+                { %%TODO(CODEGEN) Tento £sek k¢du zase obnovit, a‘ bude spr vnˆ fungovat
+                   ve¨ker  manipulace s tagy v‡etnˆ modifik toru CLASS v deklaraci parametru.
+
+                  -- porovnat
+                  for i in 1..size div 4-1 loop
+                    -- na‡¡st a porovnat hodnotu
+                    addii(inst,info,ii_mov,optmp,op1,op0);
+                    addii(inst,info,ii_cmp,optmp,op2,op0);
+
+                    -- podm¡nˆn˜ skok na konec
+                    addjump(inst,info,ic_ne{icondneg[cc]},tgend);
+
+                    -- posunout adresy obou operand–
+                    shiftop(op1,4);
+                    shiftop(op2,4);
+                    end loop;
+                }
+                  -- porovnat posledn¡ dvojici
+                  addii(inst,info,ii_mov,optmp,op1,op0);
+                  addii(inst,info,ii_cmp,optmp,op2,op0);
+
+                { %%TODO(CODEGEN) Tento £sek k¢du zase obnovit, a‘ bude spr vnˆ fungovat
+                   ve¨ker  manipulace s tagy v‡etnˆ modifik toru CLASS v deklaraci parametru.
+                  -- adresa skoku na toto m¡sto
+                  settarget(info,tgend,getaddr(inst));
+                }
+                leave
+                  -- uvolnit operandy
+                  optmp.free(info,context);
+                  op1.free(info,context);
+                  op2.free(info,context);
+                  end declare;
+ 
+            when others do verify(492,true);
+            end case;
+
+      -- p©¡stup k podprogramu
+      when pc_subprogram do
+          unimplemented(167);
+
+      -- p©¡stup k tasku
+      when pc_task do
+          unimplemented(168);
+
+      -- p©¡stup ke zpr vˆ
+      when pc_message do
+          unimplemented(169);
+
+      when others do verify(493,true);
+      end case;
+    end if;
+
+  -- v˜sledek
+  vysl.create_condition(cc);
+  end i_gen_op_compare_pointer;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_assign_pointer =
+-- P©i©azen¡ pointer–.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newcontext       : iexprcontext;               -- kontext generov n¡ podv˜razu
+  size             : t_unsigned32;               -- velikost pointeru
+
+begin
+  verify(502,expr^.arity<>eoa_2);
+
+  -- podv˜razy
+  expr^.get(el,er);
+
+  -- velikost pointeru
+  size:=unidata_size_to_unsigned(el^.t.getsize);
+
+  --- p©i©azen¡ NIL ---
+  if x_is_nil(er) then
+    declare var
+      op1          : c_operand;                  -- operand 1
+    begin
+      -- vygenerovat lev˜ podv˜raz
+      i_newcontext(context,newcontext,lm_gen,el^.t.getctype);
+      i_load(inst,info,newcontext,context,el,op1);
+
+      -- vynulovat
+      i_gen_fillz_static(inst,info,context,op1,size);
+
+    leave
+      -- uvolnit operand
+      op1.free(info,context);
+      end declare;
+
+  --- p©i©azen¡ jin‚ho pointeru ---
+  else
+    declare var
+      op1 : c_operand;               -- operand 1
+      op2 : c_operand;               -- operand 2
+    begin
+      -- vygenerovat a na‡¡st oba operandy
+      i_load_binary_pointer(inst,info,context,expr,el^.t.getctype,el,er,op1,op2);
+
+      -- p©i©adit
+      case size
+        -- p–jde to mo‘n  jednodu¨e
+        when 4 do
+            if op2.optype in t_operand_type_set:[io_imm,io_reg]
+
+              -- hodnota je v registru nebo je to konstanta
+              then addii(inst,info,ii_mov,op1,op2,op0)
+
+              -- mus¡me p©es pomocn˜ registr
+              else
+                declare var
+                  optemp : c_operand;            -- pracovn¡ operand pro ‡ st p©i©azovan‚ hodnoty
+                begin
+                  -- alokovat registr
+                  optemp.create_new_register(inst,info,context,edt_unsigned,4);
+
+                  -- p©esunout
+                  addii(inst,info,ii_mov,optemp,op2,op0);
+                  addii(inst,info,ii_mov,op1,optemp,op0);
+
+                leave
+                  -- uvolnit operand
+                  optemp.free(info,context);
+                  end declare;
+                end if;
+
+        -- rozhodnˆ mus¡me p©es registry
+        when 8,12,16 do
+            declare var
+              optemp : c_operand;            -- pracovn¡ operand pro ‡ st p©i©azovan‚ hodnoty
+            begin
+              -- alokovat registr
+              optemp.create_new_register(inst,info,context,edt_unsigned,4);
+
+              -- operandy budeme zpracov vat po 4bytov˜ch kousc¡ch
+              op1.adjust_size(4);
+              op2.adjust_size(4);
+
+              -- p©esunout
+              for i in 1..size div 4 loop
+                -- p©esunout jednu ‡tve©ici
+                addii(inst,info,ii_mov,optemp,op2,op0);
+                addii(inst,info,ii_mov,op1,optemp,op0);
+
+                -- posunout adresy obou operand–
+                op1.shift_displacement(4);
+                op2.shift_displacement(4);
+                end loop;
+
+            leave
+              -- uvolnit operand
+              optemp.free(info,context);
+              end declare;
+
+        when others do verify(503,true);
+        end case;
+    leave
+      -- uvolnit operandy
+      op1.free(info,context);
+      op2.free(info,context);
+      end declare;
+    end if;
+
+  -- v˜sledek: nic
+  --nullop(vysl,io_none);  
+  end i_gen_op_assign_pointer;
+
+
+
+end ci_pointer;

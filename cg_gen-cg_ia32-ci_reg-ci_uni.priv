@@ -1,0 +1,212 @@
+----------------------------------------------------------------------------------------------------
+module private ci_uni =
+-- P©eklada‡ Flexu.
+-- Primitiva pro pr ci s univerz ln¡mi registry.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 15.04.2003 : Oddˆlil z [cg_gen.cg_ia32.ci_reg.ci_alloc].
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_uni_new_mapping =
+-- Pro zadan˜ registr najde vhodn‚ mapov n¡.
+----------------------------------------------------------------------------------------------------
+var
+  i                : iregnum;
+
+begin
+  if context.mapcount<mapping:last
+
+    -- p©idˆlit dal¨¡ ‡¡slo
+    then
+      succ context.mapcount;
+      mapping:=context.mapcount;
+
+    -- do¨ly ‡¡sla, mus¡ tedy b˜t nˆjak‚ p©edchoz¡ voln‚
+    else
+      i:=i:first;
+      while i<i:last and then context.mapping[i]<>in_none loop
+        succ i;
+        end loop;
+      verify(357,context.mapping[i]<>in_none);
+      mapping:=i;
+      end if;
+
+  -- p©i©adit mapov n¡
+  context.mapping[mapping]:=uni;
+  end i_uni_new_mapping;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_uni_set_mapping =
+-- P©i©ad¡ mapov n¡ zadan˜ registr.
+----------------------------------------------------------------------------------------------------
+begin
+  context.mapping[mapping]:=uni;
+  end i_uni_set_mapping;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_uni_use =
+-- Alokace konkr‚tn¡ho univerz ln¡ho registru.
+-- V OPREG nastav¡ pouze virtu ln¡ ‡¡slo registru.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations,
+  cg_gen.cg_ia32.ci_code,
+  cg_gen.cg_ia32.ci_code.ci_stack,
+  cg_gen.cg_ia32.ci_code.ci_operand,
+  cg_gen.cg_ia32.ci_code.ci_instr;
+
+var
+  op1              : c_operand;
+  op2              : c_operand;
+
+begin
+  if uni=in_none then return; end if;
+
+  -- registr je ji‘ pou‘it ? => ulo‘it na stack
+  if (context.reginfo[uni].status=irs_used) and (context.reginfo[uni].used=0) then
+    -- alokovat temporary prostor
+    alloctemp(inst,info,idefregsize,context.reginfo[uni].temp);
+
+    {%%TODO(DECLARE)}
+    begin
+      -- ulo‘it
+      op1.create_memory_address_on_stack(inst,edt_unsigned,idefregsize,context.reginfo[uni].temp);
+      op2.create_use_register_low_level(edt_unsigned,iunitoreg[uni,idefregsize]);
+      addii(inst,info,ii_mov,op1,op2,op0);
+
+    leave
+      -- uvolnit operandy
+      op1.free(info,context);
+      op2.free(info,context);
+      end;
+
+    -- poznamenat, ‘e je registr ulo‘en
+    context.reginfo[uni].status:=irs_pushed;
+
+    -- mapov n¡
+    i_uni_new_mapping(context,uni,context.reginfo[uni].mapping);
+
+  -- registr je¨tˆ nebyl pou‘it ? => zmˆnit status
+  elsif context.reginfo[uni].status=irs_local then
+    -- poznamenat, ‘e registr je pou‘it
+    context.reginfo[uni].status:=irs_used;
+
+    -- mapov n¡
+    i_uni_new_mapping(context,uni,context.reginfo[uni].mapping);
+    end if;
+
+  -- zahrnout mezi pou‘it‚ registry
+  --%%TODO(UNION)context.active+iuniregset:[uni];
+  bit_set(context.active,t_bit_index(uni:ord));
+
+  -- inkrementovat po‡et pou‘it¡
+  succ context.reginfo[uni].used;
+
+  -- vr tit mapov n¡ registru
+  mapping:=context.reginfo[uni].mapping;
+
+#if dump_reg then;
+  if opt_dump_regs in info.compv.opts then debug_dump_reg(context,'i_uni_use '); end if;
+#end if;
+  end i_uni_use;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_uni_find =
+-- Nalezne voln˜ registr.
+----------------------------------------------------------------------------------------------------
+var
+  min              : t_unsigned;
+  unimin           : iunireg;
+
+begin
+ verify(629,size<>1 and size<>2 and size<>4 {%%TODO(SET) not (size in [1,2,4])});
+  
+  -- nal‚zt voln˜ registr
+  unireg:=in_none;
+  case mode
+    when irm_int  do
+        for uni in in_first..in_last loop
+          if uni not in context.active and iunitoreg[uni,size]<>ir_none
+          and context.reginfo[uni].status=irs_local and uni not in exclusion then
+            unireg:=uni;
+            break;
+            end if;
+          end loop;
+
+    when irm_addr do
+        for uni in reverse in_first..in_last loop
+          if uni not in context.active and iunitoreg[uni,size]<>ir_none
+          and context.reginfo[uni].status=irs_local and uni not in exclusion then
+            unireg:=uni;
+            break;
+            end if;
+          end loop;
+
+    end case;
+
+  -- st le nenalezeno, zkusit ji‘ jednou pou‘it˜ registr
+  if unireg=in_none{reg=ir_none} then
+    verify(354,freeonly);
+
+    for uni in in_first..in_last loop
+      if uni not in context.active and iunitoreg[uni,size]<>ir_none
+      and context.reginfo[uni].status=irs_used and uni not in exclusion then
+        unireg:=uni;
+        break;
+        end if;
+      end loop;
+
+    -- je¨tˆ se nena¨lo ? to je ale chyba v p©eklada‡i
+    verify(348,unireg=in_none);
+    end if;
+  end i_uni_find;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_uni_free =
+-- Uvolnˆn¡ registru.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+begin
+  if uni=in_none then return; end if;
+
+  verify(349,context.reginfo[uni].used=0);
+
+  -- sn¡‘it po‡et pou‘it¡
+  pred context.reginfo[uni].used;
+
+  -- nebylo to posledn¡ pou‘it¡ lok ln¡ho registru ?
+  if (context.reginfo[uni].used=0) then
+    -- a je to lok ln¡ registr ? pak zmˆnit i status
+    if (context.reginfo[uni].status=irs_used) then
+      -- zmˆnit status zpˆt na IRS_LOCAL
+      context.reginfo[uni].status:=irs_local;
+      end if;
+
+    -- zru¨it mapov n¡
+    context.mapping[context.reginfo[uni].mapping]:=in_none;
+
+    -- rozhodnˆ vymlasknout z mno‘iny aktivn¡ch registr–
+    --%%TODO(UNION)context.active-iuniregset:[uni];
+    bit_reset(context.active,t_bit_index(uni:ord));
+    end if;
+
+#if dump_reg then;
+  if opt_dump_regs in info.compv.opts then debug_dump_reg(context,'i_uni_free'); end if;
+#end if;
+  end i_uni_free;
+
+end ci_uni;

@@ -8,24 +8,10 @@ module private cc_lex =
 
 with
   cc_var,cc_def.cc_codes;
-{
-use
-  -- %%TODO(getlex) !!!!! odstranit spolu s __todo_context
-  cc_def.cc_entity;
-}
-type
-  -- popis chov n¡ lexik ln¡ho analyz toru
-  lexbehavior;
-  plexbehavior     = ^lexbehavior;
-  lexbehavior      = record
-      extproc      : plexextproc;
-      eol          : t_logical;
-      next         : plexbehavior;
-      end record;
 
 var
   -- aktu ln¡ roz¨¡©en¡ lexik ln¡ anal˜zy
-  behaviorlist     : {%%TODO(TASK)} plexbehavior;
+  behavior         : {%%TODO(TASK)} p_lex_behavior;
 
 -- dop©edn‚ deklarace
 class c_lexer; type p_lexer = ^class c_lexer;
@@ -528,39 +514,6 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure lex_set_behavior =
--- Nastav¡ chov n¡ lexik ln¡ho analyz toru.
-----------------------------------------------------------------------------------------------------
-var
-  behavior           : plexbehavior;
-
-begin
-  new behavior;
-  --%%TODO(AGGREAGTE)
-  behavior^.extproc:=extproc;
-  behavior^.eol:=eol;
-  behavior^.next:=behaviorlist;
-  behaviorlist:=behavior;
-  end lex_set_behavior;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure lex_clear_behavior =
--- Zru¨¡ posledn¡ zmˆnu chov n¡ lexik ln¡ho analyz toru.
-----------------------------------------------------------------------------------------------------
-var
-  behavior           : plexbehavior;
-
-begin
-  behavior:=behaviorlist;
-  behaviorlist:=behaviorlist^.next;
-  discard behavior;
-  end lex_clear_behavior;
-
-
-
-----------------------------------------------------------------------------------------------------
 procedure lex_set_lexer =
 -- Nastav¡ aktu ln¡ lexik ln¡ analyz tor na zadan˜ [lexer].
 ----------------------------------------------------------------------------------------------------
@@ -605,8 +558,25 @@ begin
 
     -- je to konec toku element– a m me v z sobˆ je¨tˆ dal¨¡ analyz tor ? => p©ej¡t k nˆmu
     if lex=lex_eof and then lexer^.next<>nil then lex_pop_lexer;
+
+    -- konec © dku
+    elsif lex=lex_eoln then
+      -- hl sit jen je-li to po‘adov no
+      if behavior<>nil and then behavior^.report_eol then
+        break;
+        end if;
+
+    -- identifik tor
+    elsif lex=lex_id then
+      -- zkusit vyhledat v tabulce kl¡‡ov˜ch slov
+      if behavior<>nil then
+        behavior^.search_keyword(val.id^,lex,val);
+        end if;
+      break;
+
     -- je to nˆjak˜ konkr‚tn¡ element ? => vr tit ho
     elsif lex<>lex_nul then break;
+
     -- je-li to [lex_nul], pak opakujeme
     end if;  
     end loop;
@@ -626,5 +596,127 @@ begin
   new x;
   lexer:=x;
   end lex_set_default_lexer;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private c_lex_behavior = 
+-- Policy t©¡da implementuj¡c¡ modifikaci chov n¡ lexik ln¡ho analyz toru.
+----------------------------------------------------------------------------------------------------
+
+    var
+      -- p–vodn¡ nastaven  modifikace chov n¡
+      saved_behavior : p_lex_behavior;
+
+    ------------------------------------------------------------------------------------------------
+    virtual search_keyword =
+    -- Vyhled n¡ kl¡‡ov‚ho slova podle jeho textov‚ reprezentace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      raise program_error;
+      end search_keyword;
+    
+
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- Inicializace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- za©adit se na stack modifikac¡ chov n¡
+      saved_behavior:=behavior;
+      behavior:=^this;
+      end entry;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    -- Finalizace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vy©adit se ze stacku modifikac¡ chov n¡
+      behavior:=saved_behavior;
+      end exit;
+
+    end c_lex_behavior;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private c_lex_behavior_flex =
+-- Modifikace chov n¡ lexik ln¡ho analyz toru: Flex - nehl s¡ konce © dk–, p©ekl d  kl¡‡ov  slova.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override search_keyword =
+    -- Vyhled n¡ kl¡‡ov‚ho slova podle jeho textov‚ reprezentace.
+    ------------------------------------------------------------------------------------------------
+    var
+      zac          : lexkeywords:range;
+      stred        : lexkeywords:range;
+      kon          : lexkeywords:range;
+
+    begin
+      -- kl¡‡ov  slova neobsahuj¡ znaky _ a 0..9
+      if not val.can_be_kw then 
+        return;
+        end if;
+
+      -- zkusit naj¡t kl¡‡ov‚ slovo
+      zac:=lexkeywords_index[txt[1]:ord].first;
+      if zac<>nil then
+        kon:=lexkeywords_index[txt[1]:ord].last;
+        loop
+          stred:=(zac+kon) div 2;
+          if txt>lexkeywords[stred].txt
+            then zac:=stred+1
+            else kon:=stred
+            end if;
+          until zac>=kon;
+        if txt=lexkeywords[zac].txt
+          -- nalezeno
+          then lex:=lexkeywords[zac].lex
+          -- nenalezeno
+          -- else lex:=lex_nul
+          end if;
+        end if;
+      end search_keyword;
+
+    end c_lex_behavior_flex;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private c_lex_behavior_plain =
+-- Modifikace chov n¡ lexik ln¡ho analyz toru: Nic - nehl s¡ konce © dk–, nep©ekl d  kl¡‡ov  slova.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override search_keyword =
+    -- Vyhled n¡ kl¡‡ov‚ho slova podle jeho textov‚ reprezentace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nic nedˆlat
+      end search_keyword;
+
+    
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- Inicializace
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- povolit hl ¨en¡ konc– © dk–
+      report_eol:=true;
+      end entry;
+    
+    end c_lex_behavior_plain;
+
+
+          
+var
+  -- %%TECH instanciovat implicitn¡ modifikaci chov n¡ lexik ln¡ho analyz toru
+  default_behavior : c_lex_behavior_flex;
 
 end cc_lex;

@@ -1,0 +1,804 @@
+----------------------------------------------------------------------------------------------------
+module private ci_integer =
+-- P©eklada‡ Flexu.
+-- Celo‡¡seln  aritmetika.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 18.04.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_integer_mul =
+-- Celo‡¡seln‚ n soben¡.
+----------------------------------------------------------------------------------------------------
+
+----- %%TECH N soben¡ ----------------------------------------------------
+-- N soben¡ o‡ek v  na vstupu v˜raz tvaru A1 * ... * Ak [ *C ], kde Ai jsou
+-- v˜razy a C konstanta. Je-li n soben¡ p©i©azovac¡, je A1 promˆnn  V.
+-- Pro £‡ely optimalizace v˜po‡tu se v˜razy transformuj¡ takto:
+--
+-- Obecn‚ sch‚ma pro n soben¡:
+--        A1 * ... * Ak      -->     A1 * ... * Ak
+--    V * A2 * ... * Ak      -->     A2 * ... * Ak * V
+--        A1 * ... * Ak * C  --> C * A1 * ... * Ak
+--    V * A2 * ... * Ak * C  --> C * A1 * ... * Ak * V
+-- Pro po‘adovanou velikost v˜sledku 8 bit– se pou‘ije jednooperandov  verze
+-- instrukce MUL/IMUL, pro 16 a 32 bit– se pou‘ije dvouoperandov  verze.
+--
+-- Nˆkter‚ speci ln¡ p©¡pady n soben¡ lze d le optimalizovat:
+--   -- n soben¡ konstantou 3, 5, 9 pou‘it¡m instrukce LEA (bez ohledu na
+--      po‘adovanou velikost v˜sledku v‘dy 32-bitov‚; pro zkr cen‚ p©i©azen¡
+--      je jednodu¨¨¡ pou‘¡t dvouoperandov˜ IMUL s konstantou v registru),
+--   -- p©i n soben¡ s p©esnost¡ na 16/32 bit– lze pou‘¡t IMUL i pro
+--      unsigned operandy,
+--   -- dvouoperandov‚ n soben¡ konstantou
+--        imul eax,A1,C
+--      pro zkr cen‚ p©i©azen¡:
+--        imul eax,A1,C
+--        mov  A1,eax
+--   -- n soben¡ s konstantou:
+--        mov  eax,A1
+--        imul eax,A2
+--        ...
+--        imul eax,Ak
+--        imul eax,C
+--      pro zkr cen‚ p©i©azen¡ nav¡c:
+--        mov  eax,A2
+--        imul eax,A3
+--        ...
+--        imul eax,Ak
+--        imul eax,C
+--        imul eax,A1
+--        mov  A1,eax
+--   -- n soben¡ na 16/32 bit– s operandy Ai a Aj ¨¡©ky 8 bit–:
+--        mov  al,Ai
+--        mul  Aj
+--        [ and eax,$0000FFFF -- konverze 16 --> 32 bit– ]
+--        imul [e]ax,A1
+--        ...
+--        imul [e]ax,Ak
+--        imul [e]ax,C
+--      (se stejnou optimalizac¡ zkr cen‚ho p©i©azen¡ jako v p©edchoz¡m
+--      p©¡padˆ)
+--------------------------------------------------------------------------
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  x1               : pexpnode;                   -- dva 8-mi bitov‚ operandy
+  x2               : pexpnode;                   -- dva 8-mi bitov‚ operandy
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+  opcnt            : t_unsigned;                 -- po‡et operand– (kromˆ konstanty)
+  rsize            : t_unsigned32;               -- po‘adovan  velikost v˜sledku
+  c                : pexpnode;                   -- konstantn¡ operand
+  ii               : iinstr;                     -- n sob¡c¡ instrukce
+
+    ------------------------------------------------------------------------------------------------
+    #template perform_mul (ii_and_operands);     -- po‘adovan  n sob¡c¡ instrukce a 2 operandy
+    -- Provede n soben¡ meziv˜sledku [vysl] prav˜m operandem [er].
+    ------------------------------------------------------------------------------------------------
+      declare var
+        op2          : c_operand;                  -- prav˜ operand
+
+      begin
+        -- na‡¡st v˜raz
+        i_newcontext(context,newcontext,lm_conv,expr^.t.getctype);
+        i_load(inst,info,newcontext,context{lm_convgen,expr^.t.getutype},er,op2);
+
+        -- obnovit registry
+        vysl.refresh(inst,info,context);
+        op2.refresh(inst,info,context);
+
+        -- vyn sobit
+        addii(inst,info,ii_and_operands,op0);
+
+      leave
+        -- uvolnit operand
+        op2.free(info,context);
+        end declare;
+      #end perform_mul;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    #template perform_assign (ii_and_operands);  -- po‘adovan  n sob¡c¡ instrukce a 2 operandy
+    -- Provede z vˆre‡n‚ p©i©azen¡.
+    ------------------------------------------------------------------------------------------------
+      declare var
+        op2        : c_operand;                  -- prav˜ operand
+      begin
+        -- vygenerovat
+        i_newcontext(context,newcontext,lm_gen,nil{expr^.t.getctype});
+        i_load(inst,info,newcontext,context{lm_gen,expr^.t.getutype},el,op2);
+
+        -- obnovit registry
+        vysl.refresh(inst,info,context);
+        op2.refresh(inst,info,context);
+
+        -- vyn sobit
+        addii(inst,info,ii_and_operands,op0);
+
+        -- p©i©adit
+        addii(inst,info,ii_mov,op2,vysl,op0);
+
+      leave
+        -- uvolnit operand
+        op2.free(info,context);
+        end declare;
+      #end perform_assign;
+
+begin
+  verify(136,expr^.arity<>eoa_n);
+
+  -- po‘adovan  velikost v˜sledku
+  rsize:=unidata_size_to_unsigned(expr^.t.getsize);
+
+  -- spo‡¡tat operandy a naj¡t konstantu (bude na konci)
+  c:=expr^.sub;
+  opcnt:=0;
+  x1:=nil; x2:=nil;
+  loop
+    -- zapo‡¡tat operand
+    succ opcnt;
+
+    -- nen¡ to n hodou 8-mi bitov˜ operand ?
+    if c^.t.getsize=uds_1 and then (x1=nil or x2=nil) and then c^.ntype<>nt_imm then
+      if x1=nil
+        then x1:=c;
+        else x2:=c;
+        end if;
+      end if;
+
+    -- na¨el se posledn¡ operand
+    if c^.next=nil then break; end if;
+
+    -- dal¨¡ operand
+    c:=c^.next;
+    end loop;
+
+  -- na¨la se nˆjak  konstanta ?
+  if c^.ntype=nt_imm
+
+    -- na¨la
+    then
+      pred opcnt;
+
+    -- nena¨la
+    else
+      c:=nil
+      end if;
+
+  -- prvn¡ operand
+  el:=expr^.sub;
+  er:=el;
+
+  -- je-li to p©i©azen¡, tak se na prvn¡ operand zat¡m vyka¨leme
+  if expr^.assign then er:=er^.next; end if;
+
+  ----- n soben¡ konstantou -----
+  if opcnt=1 {and (rsize in [2,3])} {and (k in [3,5,9])} and not expr^.assign then
+    -- vygenerovat a na‡¡st lev˜ podv˜raz
+    i_newcontext(context,newcontext,lm_reg,expr^.t.getctype);
+    i_load(inst,info,newcontext,context{lm_reg,expr^.t.getctype},el,vysl);
+
+    -- obnovit registry
+    vysl.refresh(inst,info,context);
+
+    -- vyn sobit
+    i_gen_mul_reg(inst,info,context,vysl,uniint_to_imm32(pexpimm(c)^.imm.ui));
+
+  ----- 8-mi bitov˜ v˜sledek, nen¡ co ©e¨it -----
+  elsif rsize=1 then
+    -- n sob¡c¡ instrukce
+    if expr^.t.stype=dt_signed
+      then ii:=ii_imul;
+      else ii:=ii_mul;
+      end if;
+
+    -- m me konstantu ?
+    if c<>nil
+      -- ano, zpracujeme ji p©ednostnˆ
+      then
+        i_newcontext(context,newcontext,lm_reg_eax,expr^.t.getctype);
+        i_load(inst,info,newcontext,context{lm_reg_eax,expr^.t.getutype},c,vysl)
+
+      -- ne, vezmeme prvn¡ operand
+      else
+        i_newcontext(context,newcontext,lm_reg_eax,expr^.t.getctype);
+        i_load(inst,info,newcontext,context{lm_reg_eax,expr^.t.getutype},er,vysl);
+        er:=er^.next;
+        end if;
+
+    -- zpracovat v¨echny operandy (a‘ na konstantu)
+    while er<>c loop
+      -- vyn sobit meziv˜sledek aktu ln¡m operandem
+      #expand perform_mul;
+        #for ii_and_operands use; ii,op2,op0
+        #end perform_mul;
+
+      -- dal¨¡ operand
+      er:=er^.next;
+      end loop;
+
+    -- nen¡ to zkr cen‚ p©i©azen¡ ?
+    if expr^.assign then
+      #expand perform_assign;
+        #for ii_and_operands use; ii,op2,op0
+        #end perform_assign;
+      end if;
+
+  ----- 16-ti nebo 32-ti bitov˜ v˜sledek -----
+  else
+    -- Tvrzen¡: RSIZE in [2,4] and X1<>nil => el<>X1 or not expr^.assign
+    -- D–kaz: Sporem. NechŸ el=X1 and expr^.assign
+    --        => expr^.t=el^.t => RSIZE=1 SPOR. C.B.D.
+
+    -- n sob¡c¡ instrukce: cel‚ to sjedeme IMULem
+
+    ---- zvolit prvn¡ operand ---
+    if x2<>nil -- Z©ejmˆ plat¡: X2<>NIl => X1<>NIL
+
+      -- m me dva 8-mi bitov‚ operandy, mal  finta
+      then
+        declare var
+          op2        : c_operand;                  -- prav˜ operand
+        begin
+          -- na‡¡st prvn¡ operand
+          i_newcontext(context,newcontext,lm_reg_eax,x1^.t.getctype);
+          i_load(inst,info,newcontext,context{lm_reg_eax,x1^.t.getutype},x1,vysl);
+
+          -- na‡¡st druh˜ operand
+          i_newcontext(context,newcontext,lm_conv,x2^.t.getctype);
+          i_load(inst,info,newcontext,context{lm_conv,x2^.t.getutype},x2,op2);
+
+          -- obnovit registry
+          vysl.refresh(inst,info,context);
+          op2.refresh(inst,info,context);
+
+          -- vyn sobit
+          if expr^.t.stype=dt_signed
+            then addii(inst,info,ii_imul,op2,op0,op0);
+            else addii(inst,info,ii_mul,op2,op0,op0);
+            end if;
+          end declare;
+
+        -- v˜sledek
+        vysl.adjust_size(rsize);
+
+        -- z AX udˆlat EAX
+        if rsize=4 then
+          if expr^.t.stype=dt_signed
+            then addii(inst,info,ii_cwde,op0,op0,op0);
+            else addii(inst,info,ii_and,vysl,op_0000FFFF,op0);
+            end if;
+          end if;
+
+        -- konstanta se bude zpracov vat jako ka‘d˜ jin˜ operand
+        c:=nil;
+
+      -- na‡¡st prvn¡ operand
+      else
+        -- zbavit se alespo¤ toho jednoho
+        x1:=nil;
+
+        -- m me konstantu ?
+        if c<>nil
+
+          -- na‡¡st p©ednostnˆ
+          then
+            -- na‡¡st
+            i_newcontext(context,newcontext,lm_reg_all,expr^.t.getctype);
+            i_load(inst,info,newcontext,context{lm_reg_all,expr^.t.getutype},c,vysl);
+
+          -- na‡¡st prvn¡ operand
+          else
+            -- na‡¡st
+            i_newcontext(context,newcontext,lm_reg_all,expr^.t.getctype);
+            i_load(inst,info,newcontext,context{lm_reg_all,expr^.t.getutype},er,vysl);
+
+            -- dal¨¡ operand
+            er:=er^.next;
+            end if;
+        end if;
+
+    ---- zpracovat zbyl‚ operandy ----
+
+    -- zpracovat
+    while er<>c loop
+      -- zpracov vat jen operandy, kter‚ jsem nevy©¡dil p©ednostnˆ
+      if (er<>x1) and (er<>x2) then
+        -- vyn sobit meziv˜sledek aktu ln¡m operandem
+        #expand perform_mul;
+          #for ii_and_operands use; ii_imul,vysl,op2
+          #end perform_mul;
+        end if;
+
+      -- dal¨¡ operand
+      er:=er^.next;
+      end loop;
+
+    ---- nen¡ to zkr cen‚ p©i©azen¡ ? ----
+    if expr^.assign then
+      #expand perform_assign;
+        #for ii_and_operands use; ii_imul,vysl,op2
+        #end perform_assign;
+      end if;
+    end if;
+  end i_gen_op_integer_mul;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_integer_div_mod =
+-- Celo‡¡seln‚ dˆlen¡ a zbytek po dˆlen¡.
+----------------------------------------------------------------------------------------------------
+var
+  rsize            : t_unsigned32;               -- velikost v˜sledku (1, 2, 4 B)
+  op1              : c_operand;                  -- operand 1 (EAX/AX/AL)
+  op_edx           : c_operand;                  -- registr EDX pro 64bitov‚ roz¨¡©en¡
+  op_dx            : c_operand;                  -- registr DX pro 32bitov‚ roz¨¡©en¡
+  op_ah            : c_operand;                  -- registr AH pro 8bitov‚ roz¨¡©en¡
+
+    ------------------------------------------------------------------------------------------------
+    procedure adjust_high =
+    -- P©¡prava horn¡ poloviny operandu.
+    -- O‡ek v , ‘e [op1] podle velikosti operandu reprezentuje EAX/AX/AL.
+    ------------------------------------------------------------------------------------------------
+    begin
+      case rsize
+        -- roz¨¡©en¡ 32 -> 64 bit– do EDX:EAX
+        when 4 do
+            if expr^.t.stype=dt_signed
+              -- znam‚nkovˆ roz¨¡©it EAX --> EDX:EAX
+              then
+                -- CDQ nebo MOV EDX,EAX; SAR EDX,31 - rychlej¨¡ na dek¢dov n¡
+                addii(inst,info,ii_mov,op_edx,op1,op0);
+                addii(inst,info,ii_sar,op_edx,op_31,op0);
+              -- vynulovat EDX
+              else
+                addii(inst,info,ii_mov,op_edx,op_0,op0)
+                end if;
+
+        -- roz¨¡©en¡ 16 -> 32 bit– do DX:AX
+        when 2 do
+            if expr^.t.stype=dt_signed
+              -- znam‚nkovˆ roz¨¡©it AX --> DX:AX
+              then
+                -- CWD nebo MOV DX,AX; SAR DX,15 - rychlej¨¡ na dek¢dov n¡
+                addii(inst,info,ii_mov,op_dx,op1,op0);
+                addii(inst,info,ii_sar,op_dx,op_15,op0);
+              -- vynulovat DX
+              else
+                addii(inst,info,ii_mov,op_dx,op_0,op0)
+                end if;
+
+        -- roz¨¡‡en¡ 8 -> 16 bit– do AH:AL
+        when 1 do
+            if expr^.t.stype=dt_signed
+              -- znam‚nkovˆ roz¨¡©it AL --> AX
+              then addii(inst,info,ii_cbw,op0,op0,op0)
+              -- vynulovat AH
+              else addii(inst,info,ii_mov,op_ah,op_0,op0);
+              end if;
+        end case;
+      end adjust_high;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure refresh_high_part =
+    -- Provede refresh registru reprezentuj¡c¡ho vy¨¨¡ polovinu slova dˆlence.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nˆco dˆlat jen pro 16 a 32bitov‚ operandy, pro 8bitov˜ se refresh AH provede v r mci
+      -- refreshe AL (tj. EAX)
+      case rsize 
+        when 4 do op_edx.refresh(inst,info,context);
+        when 2 do op_dx.refresh(inst,info,context);
+        end case;
+      end refresh_high_part;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+--op2              : c_operand;                  -- operand 2
+--op3              : c_operand;                  -- operand 3
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  -- prvn¡ dva operandy
+  expr^.get(el,er);
+
+  -- velikost v˜sledku
+  rsize:=unidata_size_to_unsigned(expr^.t.getsize);
+
+  -- prvn¡ operand na‡¡st do EAX
+  i_newcontext(context,newcontext,lm_reg_eax,expr^.t.getctype);
+  i_load(inst,info,newcontext,context{lm_reg_eax,expr^.t.getutype},el,op1);
+
+  -- rezervovat dal¨¡ registry pot©ebn‚ p©i dˆlen¡ (EDX/DX/AH)
+  case rsize
+    when 4 do op_edx.create_use_register(inst,info,context,op1.edtype,ir_edx);
+    when 2 do op_dx.create_use_register(inst,info,context,op1.edtype,ir_dx);
+    when 1 do op_ah.create_use_register(inst,info,context,op1.edtype,ir_ah);
+    end case;
+
+  -- p©ipravit horn¡ polovinu operandu
+  adjust_high;
+
+  -- zpracovat zb˜vaj¡c¡ operandy
+  while er<>nil loop
+    declare var
+      op2          : c_operand;
+    begin
+      -- na‡¡st operand
+      i_newcontext(context,newcontext,lm_reg_all,expr^.t.getctype);
+      i_load(inst,info,newcontext,context{lm_reg_all,expr^.t.getutype},er,op2);
+
+      -- obnovit registry
+      op1.refresh(inst,info,context);
+      op2.refresh(inst,info,context);
+      refresh_high_part;
+
+      -- vydˆlit
+      if expr^.t.stype=dt_signed
+        then addii(inst,info,ii_idiv,op2,op0,op0);
+        else addii(inst,info,ii_div,op2,op0,op0);
+        end if;
+
+    leave
+      -- uvolnit operand
+      op2.free(info,context);
+      end declare;
+
+    -- dal¨¡ operand
+    er:=er^.next;
+
+    -- korekce dal¨¡ho operandu
+    if er<>nil then
+      -- p©ipravit obˆ poloviny operandu sou‡asnˆ (znam‚nkov‚ modulo)
+      if expr^.oper=op_imod and expr^.t.stype=dt_signed then
+        case rsize
+          -- EAX := EDX; SAR EDX,31
+          when 4 do
+              addii(inst,info,ii_mov,op1,op_edx,op0);
+              addii(inst,info,ii_sar,op_edx,op_31,op0);
+
+          -- AX := DX; SAR DX,15
+          when 2 do
+              addii(inst,info,ii_mov,op1,op_dx,op0);
+              addii(inst,info,ii_sar,op_dx,op_15,op0);
+
+          -- AL := AH; SAR AH,7 => SAR AX,8
+          when 1 do
+              declare var
+                op_ax : c_operand;
+              begin
+                op_ax.create_use_register(inst,info,context,op1.edtype,ir_ax);
+                addii(inst,info,ii_sar,op_ax,op_8,op0)
+              leave
+                op_ax.free(info,context);
+                end declare;
+          end case;
+
+      -- p©ipravit obˆ poloviny zvl ¨Ÿ (neznam‚nkov‚ modulo)
+      elsif expr^.oper=op_imod then
+        case rsize
+          -- EAX := EDX; SAR EDX,31
+          when 4 do
+              addii(inst,info,ii_mov,op1,op_edx,op0);
+              addii(inst,info,ii_mov,op_edx,op_0,op0);
+
+          -- AX := DX; SAR DX,15
+          when 2 do
+              addii(inst,info,ii_mov,op1,op_dx,op0);
+              addii(inst,info,ii_mov,op_dx,op_0,op0);
+
+          -- AL := AH; MOV AH,0
+          when 1 do
+              addii(inst,info,ii_mov,op1,op_ah,op0);
+              addii(inst,info,ii_mov,op_ah,op_0,op0);
+          end case;
+
+      -- p©ipravit jen horn¡ polovinu operandu (norm ln¡ dˆlen¡)
+      else
+        adjust_high;
+        end if;
+      end if;
+    end loop;
+
+  -- zkr cen‚ p©i©azen¡
+  if expr^.assign then
+    declare var
+      op2          : c_operand;
+    begin
+      -- vygenerovat lev˜ operand
+      i_newcontext(context,newcontext,lm_gen,nil{expr^.t.getctype});
+      i_load(inst,info,newcontext,context{lm_gen,el^.t.getutype},el,op2);
+
+      -- obnovit registry
+      op1.refresh(inst,info,context);
+      op2.refresh(inst,info,context);
+      refresh_high_part;
+
+      -- p©i©adit
+      if expr^.oper=op_imod
+        -- modulo
+        then
+          -- zbytek je v EDX/DX/AH => p©esunout do lev‚ho operandu
+          case rsize
+            when 4 do addii(inst,info,ii_mov,op2,op_edx,op0)
+            when 2 do addii(inst,info,ii_mov,op2,op_dx,op0)
+            when 1 do addii(inst,info,ii_mov,op2,op_ah,op0)
+            end case;
+
+        -- dˆlen¡
+        else
+          -- pod¡l je v EAX/AX/AL => p©esunout do lev‚ho operandu
+          addii(inst,info,ii_mov,op2,op1,op0)
+          end if;
+
+    leave
+      -- uvolnit operand
+      op2.free(info,context);
+      end declare;
+    end if;
+
+  -- uvolnit nepot©ebn‚ operandy a p©edat v˜sledek
+  if expr^.oper=op_imod
+
+    -- modulo
+    then
+      case rsize
+        -- module je v EDX, EAX ([op1]) u‘ nebude pot©eba
+        when 4 do vysl.transfer(op_edx);
+  
+        -- modulo je v DX, AX ([op1]) u‘ nebude pot©eba
+        when 2 do vysl.transfer(op_dx);
+
+        -- modulo je v AH, dostat ho do AL (s AH standardnˆ neum¡me pracovat) a to vr tit
+        when 1 do 
+            declare var
+              op_ax : c_operand;
+            begin
+              op_ax.create_use_register(inst,info,context,op1.edtype,ir_ax);
+              addii(inst,info,ii_shr,op_ax,op_8,op0)
+            leave
+              op_ax.free(info,context);
+              end declare;
+            vysl.transfer(op1);
+        end case;
+
+    -- dˆlen¡
+    else
+      -- v˜sledek je v EAX/AX/AL
+      vysl.transfer(op1);
+      end if;
+
+leave
+  -- uvolnit operandy
+  op1.free(info,context);
+  case rsize 
+    when 4 do op_edx.free(info,context);
+    when 2 do op_dx.free(info,context);
+    when 1 do op_ah.free(info,context);
+    end case;
+  end i_gen_op_integer_div_mod;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_integer =
+-- Celo‡¡seln‚ operace (s‡¡t n¡, od‡¡t n¡, bitov‚ operace).
+-- Tato procedura se pou‘¡v  i na implementaci principi lnˆ ekvivalentn¡ch
+-- operac¡ nad jin˜mi datov˜mi typy p©¡zniv‚ velikosti. Nap©¡klad pro mno‘iny
+-- velikosti 1, 2 nebo 4 byty ‡i logick‚ XOR.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  er_mode          : iexprloadmode;              -- re‘im generov n¡ v˜razu napravo
+  er_typ           : pentity_type;               -- po‘adovan˜ typ v˜razu napravo
+
+    ------------------------------------------------------------------------------------------------
+    procedure genop (
+        op1        : c_operand;
+        op2        : c_operand) =
+    -- Generov n¡ vlastn¡ operace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- instrukce
+      case expr^.oper
+        -- s‡¡t n¡
+        when op_add     do addii(inst,info,ii_add,op1,op2,op0);
+
+        -- od‡¡t n¡
+        when op_sub     do addii(inst,info,ii_sub,op1,op2,op0);
+
+        -- bitov‚ AND
+        when op_bitand  do addii(inst,info,ii_and,op1,op2,op0);
+
+        -- bitov‚ OR
+        when op_bitor   do addii(inst,info,ii_or ,op1,op2,op0);
+
+        -- bitov‚ XOR
+        when op_bitxor  do addii(inst,info,ii_xor,op1,op2,op0);
+
+        -- logick‚ XOR
+        when op_xor     do addii(inst,info,ii_xor,op1,op2,op0);
+
+        -- SHL
+        when op_shl     do
+            if expr^.t.stype=dt_signed
+              then addii(inst,info,ii_sal,op1,op2,op0);
+              else addii(inst,info,ii_shl,op1,op2,op0);
+              end if;
+
+
+        -- SHR
+        when op_shr     do
+            if expr^.t.stype=dt_signed
+              then addii(inst,info,ii_sar,op1,op2,op0);
+              else addii(inst,info,ii_shr,op1,op2,op0);
+              end if;
+
+
+        -- mno‘inov‚ + --> OR
+        when op_union   do addii(inst,info,ii_or,op1,op2,op0);
+
+        -- mno‘inov‚ - --> NOT AND
+        when op_diff    do
+            addii(inst,info,ii_not,op2,op0,op0);
+            addii(inst,info,ii_and,op1,op2,op0);
+
+
+        -- mno‘inov‚ * --> AND
+        when op_isect   do addii(inst,info,ii_and,op1,op2,op0);
+
+        when others do verify(48,true);
+        end case;
+      end genop;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure genops (
+        op1       : in out c_operand) =
+    -- Generov n¡ vlastn¡ operace pro n operand–.
+    ------------------------------------------------------------------------------------------------
+    var
+      newcontext   : iexprcontext;               -- kontext podv˜raz–
+
+    begin
+      -- zpracovat prav‚ podv˜razy
+      loop
+        declare var
+          op2      : c_operand;                  -- druh˜ operand
+        begin
+          -- vygenerovat a na‡¡st prav˜ podv˜raz
+          i_newcontext(context,newcontext,er_mode,er_typ{lm_conv,expr^.t.getctype});
+          i_load(inst,info,newcontext,context{lm_conv,expr^.t.getctype},er,op2);
+
+          -- obnovit registry
+          op1.refresh(inst,info,context);
+          op2.refresh(inst,info,context);
+
+          -- vygenerovat operaci
+          genop(op1,op2);
+
+        leave
+          -- uvolnit prav˜ operand
+          op2.free(info,context);
+          end declare;
+
+        -- dal¨¡ operand
+        er:=er^.next;
+        until er=nil;
+      end genops;
+
+var
+  op1              : c_operand;                  -- operand 1
+--op2              : c_operand;                  -- operand 2
+--optemp           : c_operand;                  -- meziv˜sledek
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  verify(138,expr^.arity<>eoa_n);
+
+  -- podv˜razy
+  expr^.get(el,er);
+
+  -- p©ipravit typ a re‘im generov n¡ v˜razu napravo
+  case expr^.oper
+    -- SHL, SHR
+    when op_shl, op_shr do
+        er_mode:=lm_imm8_cl;
+        er_typ:=nil;
+
+    -- mno‘inov‚ -
+    when op_diff do
+        er_mode:=lm_reg_all;
+        er_typ:=expr^.t.getctype;
+
+    -- logick‚ XOR
+    when op_xor do
+        er_mode:=lm_reg_all;
+        er_typ:=expr^.t.getctype;
+
+    -- ostatn¡ oper tory
+    when others do
+        er_mode:=lm_conv;
+        er_typ:=expr^.t.getctype;
+    end case;
+
+  -- zkr cen‚ p©i©azen¡ se dvˆma operandy jin‚ ne‘ logick‚ XOR
+  if expr^.assign and (expr^.oper<>op_xor) and (er^.next=nil) then
+    declare var
+      op2          : c_operand;                  -- operand 2
+    begin
+      -- vygenerovat a na‡¡st prav˜ podv˜raz
+      if er_mode=lm_conv then er_mode:=lm_reg; end if;
+      i_newcontext(context,newcontext,er_mode,er_typ{lm_reg,typ}{expr^.t.getctype});
+      i_load(inst,info,newcontext,context{lm_reg,typ}{expr^.t.getctype},er,op2);
+
+      -- vygenerovat lev˜ podv˜raz
+      i_newcontext(context,newcontext,lm_gen,nil{expr^.t.getctype});
+      i_load(inst,info,newcontext,context{lm_gen,typ}{expr^.t.getctype},el,op1);
+
+      -- obnovit registry
+      op1.refresh(inst,info,context);
+      op2.refresh(inst,info,context);
+
+      -- vygenerovat operanci
+      genop(op1,op2);
+
+    leave
+      -- uvolnit prav˜ operand
+      op2.free(info,context);
+      end declare;
+
+  -- zkr cen‚ p©i©azen¡ s N operandy (nebo logick‚ XOR se dvˆma operandy)
+  elsif expr^.assign then
+    -- vygenerovat lev˜ podv˜raz
+    i_newcontext(context,newcontext,lm_gen,nil);
+    i_load(inst,info,newcontext,context,el,op1);
+
+    declare var
+      optemp       : c_operand;                  -- meziv˜sledek
+    begin
+      -- registr na meziv˜sledek
+      optemp.create_new_register(inst,info,context,op1.edtype,op1.size);
+
+      -- po‡ te‡n¡ hodnota
+      addii(inst,info,ii_mov,optemp,op1,op0);
+
+      -- prov‚st operaci
+      genops(optemp);
+
+      -- obnovit registry
+      op1.refresh(inst,info,context);
+
+      -- p©i©adit
+      addii(inst,info,ii_mov,op1,optemp,op0);
+
+    leave
+      -- uvolnit meziv˜sledek
+      optemp.free(info,context);
+      end declare;
+
+  -- norm ln¡ oper tor
+  else
+    -- vygenerovat lev˜ podv˜raz
+    i_newcontext(context,newcontext,lm_reg_all,expr^.t.getctype);
+    i_load(inst,info,newcontext,context{lm_reg_all,expr^.t.getctype},el,op1);
+
+    -- prov‚st operaci
+    genops(op1);
+    end if;
+
+  -- v˜sledek
+  vysl.transfer(op1);
+  end i_gen_op_integer;
+
+
+
+end ci_integer;

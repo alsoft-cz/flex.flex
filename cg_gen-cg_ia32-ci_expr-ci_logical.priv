@@ -1,0 +1,353 @@
+----------------------------------------------------------------------------------------------------
+module private ci_logical =
+-- P©eklada‡ Flexu.
+-- Logick‚ operace.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 18.04.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_logical_chain =
+-- Generov n¡ ©etˆzu konjunkc¡/disjunkc¡.
+----------------------------------------------------------------------------------------------------
+var
+  sub              : pexpnode;                   -- podv˜raz
+--op1              : c_operand;                  -- operand
+  opassign         : c_operand;                  -- lev  strana p©i©azen¡
+  fallthru         : itarget;                    -- c¡l skoku fall-thru
+  innerjmp         : itarget;                    -- c¡l vnit©n¡ho skoku
+  ttarget          : itarget;                    -- c¡l skoku p©i True
+  ftarget          : itarget;                    -- c¡l skoku p©i False
+  cc               : icond;                      -- k¢d podm¡nky skoku
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  verify(135,expr^.arity<>eoa_n);
+
+  ----- %%TECH Strategie generov n¡ ©etˆzu konjunkc¡/disjunkc¡ -----------
+  --
+  --   AND THEN             OR ELSE
+  --   -----------------    -----------------
+  --   CMP <v˜raz 1>,1      CMP <v˜raz 1>,1
+  --   JNE ftarget          JE  ttarget
+  --   CMP <v˜raz 2>,1      CMP <v˜raz 2>,1
+  --   JNE ftarget          JE  ttarget
+  --   ...
+  --   CMP <v˜raz n>,1      CMP <v˜raz n>,1
+  --   JNE ftarget          JE  ttarget
+  --   JMP ttarget          JMP ftarget
+  --
+  --   AND                  OR
+  --   -----------------    -----------------
+  --   MOV reg,<v˜raz 1>    MOV reg,<v˜raz 1>
+  --   AND reg,<v˜raz 2>    OR  reg,<v˜raz 2>
+  --   ...                  ...
+  --   AND reg,<v˜raz n>    OR  reg,<v˜raz n>
+  --   JZ  ftarget          JZ  ftarget
+  --   JMP ttarget          JMP ttarget
+  --
+  -- P©i vyhodnocov n¡ AND/OR se nav¡c zji¨Ÿuje slo‘itost podv˜razu a je-li
+  -- p©¡li¨ vysok  (obsahuje nap©. vol n¡ procedury), pou‘ije se strategie
+  -- pro sekven‡n¡ formu (AND THEN/OR ELSE). Zbytek v˜razu (jednoduch˜) se
+  -- pak dojede standardn¡ formou. T‚‘ pokud je v˜raz hodnˆ dlouh˜ (des¡tky
+  -- instrukc¡), vlo‘¡ se na vhodn  m¡sta testy na meziv˜sledek.
+  -- -------------------------------------------------------------------------
+  -- %%X ---------------------- ^^^^^ dodˆlat ^^^^^ --------------------------
+
+  --- zvolit n vˆ¨t¡ pro skok p©i True resp. False ---
+  -- oba skoky fall-thru => vytvo©it dva c¡le skoku
+  if (ttarget_ext=tgfallthru) and (ftarget_ext=tgfallthru) then
+    newtarget(info,ttarget);
+    newtarget(info,ftarget);
+
+  -- aspo¤ jeden skok fall-thru => alokovat n vˆ¨t¡ pro skok fall-thru
+  elsif (ttarget_ext=tgfallthru) or (ftarget_ext=tgfallthru) then
+    ttarget:=ttarget_ext;
+    ftarget:=ftarget_ext;
+    newtarget(info,fallthru);
+
+  -- ‘ dn˜ fall-thru => jen p©evz¡t n vˆ¨t¡
+  else
+    ttarget:=ttarget_ext;
+    ftarget:=ftarget_ext;
+    end if;
+
+  -- Pozn mka: Nyn¡ je jist‚, ‘e nikdy nenastane p©¡pad, ‘e by skoky p©i True i p©i False
+  -- byly oba typu fall-thru. Situace, kdy obˆ z venku dodan  n vˆ¨t¡ jsou fall-thru, se
+  -- o¨et©uje a‘ p©i sestavov n¡ kone‡n‚ho v˜sledku.
+
+  --- vygenerovat v˜raz ---
+  if expr^.oper in expopertypeset:[op_and_then,op_or_else{%%X},op_and,op_or]
+
+    -- sekven‡n¡ forma
+    then
+      --- zvolit c¡l vnit©n¡ho skoku ---
+      -- z le‘¡ na oper toru
+      if expr^.oper in expopertypeset:[op_and_then{%%X},op_and]
+        -- AND [ THEN ] => skok p©i prvn¡m nepravdiv‚m operandu
+        then innerjmp:=ftarget
+        -- OR [ ELSE ] => skok p©i prvn¡m pravdiv‚m operandu
+        else innerjmp:=ttarget
+        end if;
+
+      -- nevy¨el n hodou fall-thru skok => korekce hodnoty n vˆ¨t¡
+      if innerjmp=tgfallthru then
+        innerjmp:=fallthru;
+        end if;
+
+      --- zpracovat v¨echny podv˜razy ---
+      sub:=expr^.sub;
+      while sub<>nil loop
+      { Ondra 1.7.2002 : Oprava byla chybn . Zru¨eno.
+
+        -- Ondra 28.6.2002 : Posledn¡ operand v ©adˆ, kter˜ je opˆt ©etˆzec konjunkc¡/disjunkc¡ se
+        -- mus¡ zpracov vat standardnˆ bez ohledu na tuto skute‡nost, proto‘e nap©¡klad u v˜razu:
+        --     (c>="a" and c<="z") or (c>="A" and c<="Z") or c="_" or (c>="0" and c<="9")
+        -- je v˜sledek posledn¡ho v˜razu chybnˆ interpretov n. Jedin  mo‘nost, jak tento p©¡pad
+        -- optimalizovat, je p©ed vat do I_GEN_LOGICAL_CHAIN informaci, ‘e se jedn  o posledn¡
+        -- podv˜raz nad©azen‚ho ©etˆzu konjunkc¡/disjunkc¡ (ovˆ©it!).
+      }
+        if sub^.ntype=nt_operator and pexpoper(sub)^.oper in expopertypeset:[op_and_then,op_or_else,op_and,op_or] -- (* and (sub^.next<>nil) *)
+
+          -- podv˜raz je opˆt ©etˆz konjunkc¡/disjunkc¡
+          then
+          -- (*
+            if sub^.next=nil
+
+              -- posledn¡ v˜raz, sou‡asnˆ provede z vˆre‡n˜ skok
+              then i_gen_logical_chain(inst,info,context,pexpoper(sub),ttarget,ftarget,vysl)
+
+              -- mezilehl˜ v˜raz
+              else
+          -- *) 
+                declare var
+                  op1 : c_operand;
+                begin
+                  if expr^.oper in expopertypeset:[op_and_then{%%X},op_and]
+
+                    -- A and then (B and/or C)
+                    then i_gen_logical_chain(inst,info,context,pexpoper(sub),tgfallthru,innerjmp,op1)
+
+                    -- A or else (B and/or C)
+                    else i_gen_logical_chain(inst,info,context,pexpoper(sub),innerjmp,tgfallthru,op1)
+                    end if;
+
+                leave
+                  -- uvolnit operand
+                  op1.free(info,context);
+                  end declare;
+          -- (*
+                end if;
+          -- *)
+
+          -- ostatn¡ p©¡pady
+          else
+            declare var
+              op1 : c_operand;
+            begin
+              -- vygenerovat v˜raz (rozhoduj¡c¡ je typ podv˜razu, proto‘e typ
+              -- nad©azen‚ho v˜razu je t‚mˆ© v‘dy univerz ln¡ logical a stejnˆ
+              -- v˜sledek podv˜razu ihned porovn m na nulu a zahod¡m)
+              i_newcontext(context,newcontext,lm_gen,nil{sub^.t.getctype});
+              i_load(inst,info,newcontext,context{lm_gen,expr^.t.getutype},sub,op1);
+              -- %% Nemˆlo by zde b˜t expr^.nattyp ?
+              -- Ona mi ho ale asi optimalizace zni‡¡...
+
+              -- obnovit registry
+              op1.refresh(inst,info,context);
+
+              -- vygenerovat porovn n¡
+              case op1.optype
+                -- p©¡mo k¢d podm¡nky
+                when io_cc do
+                    -- podm¡nka skoku
+                    if expr^.oper in expopertypeset:[op_and_then{%%X},op_and]
+                      then cc:=icondneg[op1.cc];
+                      else cc:=op1.cc;
+                      end if;
+
+                -- pamˆŸ/registr
+                when io_mem,io_reg do
+                    -- test na nulu
+                    addii(inst,info,ii_cmp,op1,op_0,op0);
+
+                    -- podm¡nka skoku
+                    if expr^.oper in expopertypeset:[op_and_then,{%%X}op_and]
+                      then cc:=ic_z;
+                      else cc:=ic_nz;
+                      end if;
+
+                when others do verify(96,true);
+                end case;
+
+              if sub^.next<>nil
+                -- vnit©n¡ skok
+                then addjump(inst,info,context,cc,innerjmp)
+                -- z vˆre‡n˜ skok
+                else i_gen_logical_jump(inst,info,context,expr^.oper in expopertypeset:[op_and_then{%%X},op_and],cc,ttarget,ftarget,vysl)
+                end if;
+
+              -- nen¡ to prvn¡ operand zkr cen‚ho p©i©azen¡ ?
+              if expr^.assign and then sub=expr^.sub then
+                -- schovat si operand
+                opassign.transfer(op1);
+                end if;
+
+            leave
+              -- uvolnit operand
+              op1.free(info,context);
+              end declare;
+            end if;
+
+        -- dal¨¡ podv˜raz
+        sub:=sub^.next;
+        end loop;
+
+      -- Ondra 1.7.2002 : Kompletnˆ p©edˆl no zpracov n¡ v˜sledku. P–vodn¡ ©e¨en¡ nefungovalo.
+
+      --- nebyly n hodou oba extern¡ c¡le skoku fall-thru ? ---
+      if (ttarget_ext=tgfallthru) and (ftarget_ext=tgfallthru)
+
+        -- ano => vygenerovat p©i©azen¡ v˜sledku
+        then
+          -- budeme pot©ebovat fall-thru n vˆ¨t¡
+          newtarget(info,fallthru);
+
+          -- nebylo to zkr cen‚ p©i©azen¡ ?
+          if expr^.assign
+
+            -- ano => rovnou p©i©adit do v˜sledku
+            then
+              -- p©¡pad True: dosadit adresu n vˆ¨t¡ pro skok na toto m¡sto
+              settarget(info,ttarget,getaddr(inst));
+
+              -- p©i©adit True
+              addii(inst,info,ii_mov,opassign,op_1,op0);
+
+              -- skok na konec
+              addjump(inst,info,context,ic_ucond,fallthru);
+
+              -- p©¡pad False: dosadit adresu n vˆ¨t¡ pro skok na toto m¡sto
+              settarget(info,ftarget,getaddr(inst));
+
+              -- p©i©adit False
+              addii(inst,info,ii_mov,opassign,op_0,op0);
+
+              -- v˜sledek je nezaj¡mav˜, p©i©azen¡ nem  hodnotu
+
+            -- ne => podle v˜sledku nastavit Carry Flag
+            else
+              -- p©¡pad True: dosadit adresu n vˆ¨t¡ pro skok na toto m¡sto
+              settarget(info,ttarget,getaddr(inst));
+
+              -- nastavit Carry Flag
+              addii(inst,info,ii_stc,op0,op0,op0);
+
+              -- skok na konec
+              addjump(inst,info,context,ic_ucond,fallthru);
+
+              -- p©¡pad False: dosadit adresu n vˆ¨t¡ pro skok na toto m¡sto
+              settarget(info,ftarget,getaddr(inst));
+
+              -- shodit Carry Flag
+              addii(inst,info,ii_clc,op0,op0,op0);
+
+              -- v˜sledek
+              vysl.create_condition(ic_c);
+              end if;
+
+          -- v˜sledn˜ fall-thru: dosadit adresu n vˆ¨t¡ pro skok na toto m¡sto
+          settarget(info,fallthru,getaddr(inst));
+
+        -- ne => v˜sledek je celkem nezaj¡mav˜, proto‘e je obsa‘en v proveden˜ch skoc¡ch
+        else
+          verify(602,expr^.assign);
+
+          -- dosadit c¡l skoku fall-thru
+          if ttarget=tgfallthru or ftarget=tgfallthru then
+            settarget(info,fallthru,getaddr(inst));
+            end if;
+
+          -- v˜sledek ve¨ker˜ ‘ dn˜, to za n s za©¡dily ji‘ ty skoky
+          end if;
+
+    -- standardn¡ forma
+    else
+      unimplemented(30);
+      end if;
+
+leave
+  -- uvolnit operand
+  opassign.free(info,context);
+  end i_gen_logical_chain;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_assign_logical =
+-- P©i©azen¡ logick‚ hodnoty.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  op1              : c_operand;                  -- operand 1
+  op2              : c_operand;                  -- operand 2
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  verify(133,expr^.arity<>eoa_2);
+
+  -- podv˜razy
+  expr^.get(el,er);
+
+  -- vygenerovat a na‡¡st podv˜razy
+  i_load_binary(inst,info,context,iop_cc,expr,expr^.t.getctype,el,er,op1,op2);
+
+  -- ulo‘it
+  if op2.optype=io_cc
+
+    -- podle podm¡nky
+    then addset(inst,info,context,op2.cc,op1)
+
+    -- p©¡mo hodnota
+    else addii(inst,info,ii_mov,op1,op2,op0)
+    end if;
+
+  -- p©edat v˜sledek
+  vysl.transfer(op1);
+
+leave
+  -- uvolnit operandy
+  op1.free(info,context);
+  op2.free(info,context);
+  end i_gen_op_assign_logical;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_logical_and_or =
+-- Logick‚ operace AND, OR, AND THER a OR ELSE.
+----------------------------------------------------------------------------------------------------
+begin
+  -- generovat ©etˆz konjunkc¡/disjunkc¡
+  i_gen_logical_chain(inst,info,context,pexpoper(expr),tgfallthru,tgfallthru,vysl);
+  end i_gen_op_logical_and_or;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_logical_xor =
+-- Logick  operace XOR.
+----------------------------------------------------------------------------------------------------
+with
+  ci_integer;
+
+begin
+  -- algoritmus je toto‘n˜ s bitov˜m XOR, proto je implementov n
+  -- v r mci celo‡¡seln˜ch operac¡
+  i_gen_op_integer(inst,info,context,expr,vysl);
+  end i_gen_op_logical_xor;
+
+
+
+end ci_logical;

@@ -1,0 +1,927 @@
+----------------------------------------------------------------------------------------------------
+module private ci_string =
+-- P©eklada‡ Flexu.
+-- žetˆzcov‚ operace.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 22.04.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_order_string =
+-- Porovn v n¡ ©etˆzc– (< <= > >=).
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  rest             : typeview;                   -- spole‡n˜ typ operand–
+  base             : pentity_type;               -- typ b ze
+  basesize         : t_unsigned32;               -- velikost b ze ©ˆtˆzc–
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  verify(466,expr^.arity<>eoa_2);
+
+  -- podv˜razy
+  expr^.get(el,er);
+
+  -- vypo‡¡tat spole‡n˜ typ operand–
+  x_resolve(el^.t,er^.t,false,rest);
+
+  -- zjistit velikost b ze
+  base:=rest.getctype^.base.getctype;
+  basesize:=unidata_size_to_unsigned(base^.size);
+
+  ----- diskr‚tn¡ b ze -----
+  if base^.stype in dts_ordinal then
+    if basesize=1 or basesize=2 or basesize=4{%%TODO(SET) basesize in [1,2,4]}
+
+      -- p©¡zniv  velikost b ze => p©es REPE CMPS
+      then
+        declare var
+          el_uniarray : t_logical;               -- true, je-li lev˜ operand konstanta typu univerz ln¡ pole
+          er_uniarray : t_logical;               -- true, je-li prav˜ operand konstanta typu univerz ln¡ pole
+          op1         : c_operand;               -- adresa lev‚ho ©etˆzce v ESI
+          op1mem      : c_operand;               -- [ESI]
+          op1length   : c_operand;               -- po‡et prvk– lev‚ho ©etˆzce v registru
+          op2         : c_operand;               -- adresa prav‚ho ©etˆzce v EDI
+          op2mem      : c_operand;               -- [EDI]
+          op2length   : c_operand;               -- po‡et prvk– prav‚ho ©etˆzce v registru
+          opecx       : c_operand;               -- min(op1length,op2length) v ECX`
+
+        begin
+          -- nen¡ n hodou nˆkter˜ operand konstanta typu univerz ln¡ pole ?
+          el_uniarray:=(el^.ntype=nt_imm) and t_is_stype(el^.t,dt_uniarray);
+          er_uniarray:=(er^.ntype=nt_imm) and t_is_stype(er^.t,dt_uniarray);
+
+          if el_uniarray or er_uniarray then
+            -- %%X Pozor, sou‡ st¡ konstanty typu univerz ln¡ pole nen¡ informace o d‚lce,
+            -- co‘ se mus¡ zohlednit p©i zji¨Ÿov n¡ a porovn v n¡ velikost¡ n¡‘e.
+            -- Srovnej s procedurou I_GEN_OP_COMPARE_STRING.
+            unimplemented(197);
+            end if;
+
+          -- na‡¡st lev˜ operand do ESI
+          i_newcontext(context,newcontext,lm_addr,nil);
+          i_setrpref(newcontext,in_esi,irm_addr);
+          i_load(inst,info,newcontext,context,el,op1);
+
+          -- na‡¡st prav˜ operand do EDI
+          i_newcontext(context,newcontext,lm_addr,nil);
+          i_setrpref(newcontext,in_edi,irm_addr);
+          i_load(inst,info,newcontext,context,er,op2);
+
+          -- obnovit registry
+          op1.refresh(inst,info,context);
+          op2.refresh(inst,info,context);
+
+          -- kromˆ ESI pot©ebujeme i [ESI]
+          op1mem.create_memory_address_from_operand(inst,info,context,edt_unsigned,0,op1);
+
+          -- kromˆ EDI pot©ebujeme i [EDI]
+          op2mem.create_memory_address_from_operand(inst,info,context,edt_unsigned,0,op2);
+
+          -- rezervovat ECX
+          opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
+
+          -- registr na velikost ©etˆzce vlevo
+          op1length.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
+
+          -- registr na velikost ©etˆzce vpravo
+          op2length.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
+
+          -- na‡¡st velikost ©etˆzce vlevo
+          op1mem.adjust_size(lstrisize32);
+          addii(inst,info,ii_mov,op1length,op1mem,op0);
+
+          -- na‡¡st velikost ©etˆzce vpravo
+          op2mem.adjust_size(lstrisize32);
+          addii(inst,info,ii_mov,op2length,op2mem,op0);
+
+          -- do ECX d t p©ednostnˆ velikost ©etˆzce vlevo
+          addii(inst,info,ii_mov,opecx,op1length,op0);
+
+          -- posunout ESI a EDI o LSTRISIZE32
+          addopimm(inst,info,context,ii_add,op1,lstrisize32);
+          addopimm(inst,info,context,ii_add,op2,lstrisize32);
+
+          -- porovnat velikosti ©etˆzc–
+          addii(inst,info,ii_cmp,op1length,op2length,op0);
+
+          -- el:length>er:length => ECX:=er:length
+          addcmov(inst,info,context,ic_be,opecx,op2length);
+
+          declare var
+            tg_cmplength : itarget;              -- n vˆ¨t¡ pro skok na porovn n¡ d‚lek
+            tg_end       : itarget;              -- n vˆ¨t¡ pro skok na konec porovn n¡
+          begin
+            -- alokovat n vˆ¨t¡
+            newtarget(info,tg_cmplength);
+            newtarget(info,tg_end);
+
+            -- ECX=0 => porovn n¡ se redukuje na porovn n¡ d‚lek
+            -- %%X neum¡m JECXZ
+            addii(inst,info,ii_cmp,opecx,op_0,op0);
+            addjump(inst,info,context,ic_e,tg_cmplength);
+
+            -- shodit Direction Flag - porovn v  se zdola nahoru
+            addii(inst,info,ii_cld,op0,op0,op0);
+
+            -- REPE CMPS
+            addip(inst,info,ip_repe);
+            case basesize
+              when 1 do addii(inst,info,ii_cmpsb,op0,op0,op0);
+              when 2 do addii(inst,info,ii_cmpsw,op0,op0,op0);
+              when 4 do addii(inst,info,ii_cmpsd,op0,op0,op0);
+              when others do verify(468,true);
+              end case;
+
+            -- je jednozna‡nˆ zn m v˜sledek ? => skok na konec porovn n¡
+            addjump(inst,info,context,ic_ne,tg_end);
+
+            -- c¡l skoku na toto m¡sto
+            settarget(info,tg_cmplength,getaddr(inst));
+
+            -- porovn n¡ se redukuje na porovn n¡ d‚lek ©etˆzc–
+            addii(inst,info,ii_cmp,op1length,op2length,op0);
+
+            -- c¡l skoku na toto m¡sto
+            settarget(info,tg_end,getaddr(inst));
+            end declare;
+
+        leave
+          -- uvolnit operandy
+          op1.free(info,context);
+          op1mem.free(info,context);
+          op1length.free(info,context);
+          op2.free(info,context);
+          op2mem.free(info,context);
+          op2length.free(info,context);
+          opecx.free(info,context);
+          end declare;
+
+        -- v˜sledek
+        vysl.create_condition(op2cc[expr^.oper,base^.stype=dt_signed]);
+
+      -- nˆjak  nestandardn¡ velikost b ze
+      else
+        unimplemented(148);
+        end if;
+
+  ----- re ln  b ze -----
+  elsif base^.stype in dts_real then
+    unimplemented(149);
+
+  -- jin‚ typy b ze nelze porovn vat
+  else 
+    verify(467,true);
+    end if;
+  end i_gen_op_order_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_compare_string =
+-- Porovn v n¡ ©etˆzc– (= <>).
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure cmpnil (
+        x          : in pexpnode) =
+    -- Porovn  zadan˜ uzel na NIL.
+    ------------------------------------------------------------------------------------------------
+    var
+      op1       : c_operand;                     -- po‡et prvk– ©ˆtˆzce
+      newcontext: iexprcontext;                  -- kontext podv˜raz–
+
+    begin
+      -- na‡¡st po‡et prvk– ©ˆtˆzce
+      i_newcontext(context,newcontext,lm_reg,x^.t.getctype^.srange.getctype);
+      i_load(inst,info,newcontext,context,x,op1);
+
+      -- obnovit registry
+      op1.refresh(inst,info,context);
+
+      -- porovnat na nulu
+      addii(inst,info,ii_cmp,op1,op_0,op0);
+
+      -- v˜sledek
+      vysl.create_condition(op2cc[expr^.oper,false]);
+
+    leave
+      -- uvolnit operand
+      op1.free(info,context);
+      end cmpnil;
+
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  rest             : typeview;                   -- spole‡n˜ typ operand–
+  base             : pentity_type;               -- typ b ze
+  basesize         : t_unsigned32;               -- velikost b ze ©ˆtˆzc–
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  verify(466,(expr^.arity<>eoa_2) or not (expr^.oper in expopertypeset:[op_eq,op_ne]));
+
+  -- podv˜razy
+  expr^.get(el,er);
+
+  -- vypo‡¡tat spole‡n˜ typ operand–
+  x_resolve(el^.t,er^.t,false,rest);
+
+  -- zjistit velikost b ze
+  base:=rest.getctype^.base.getctype;
+  basesize:=unidata_size_to_unsigned(base^.size);
+
+  ----- (non)ekvivalence s pr zdn˜m ©etˆzcem zleva -----
+  if x_is_nil(el) then
+    cmpnil(er);
+
+  ----- (non)ekvivalence s pr zdn˜m ©ˆtˆzcem zprava -----
+  elsif x_is_nil(er) then
+    cmpnil(el);
+
+  ----- (non)ekvivalence obecn˜ch ©etˆzc– -----
+  else
+    verify(624,el^.ntype=nt_imm);
+
+    declare var
+      er_uniarray  : t_logical;                  -- true, je-li prav˜ operand konstanta typu univerz ln¡ pole
+      op1          : c_operand;                  -- adresa lev‚ho ©etˆzce v ESI
+      op1mem       : c_operand;                  -- [ESI]
+      op2          : c_operand;                  -- adresa prav‚ho ©etˆzce v EDI
+      op2mem       : c_operand;                  -- [EDI]
+      opecx        : c_operand;                  -- min(op1length,op2length) v ECX
+
+    begin
+      -- %%X Optimalizace: Kdy‘ je velikost b ze rovna LSTRISIZE32, tak nemus¡m
+      -- zvl ¨Ÿ testovat shodnost d‚lek - sta‡¡ udˆlat INC ECX a REPE CMPS
+
+      -- %%X Pozor ! Pro nˆkter‚ typy b ze ©etˆzce se to mus¡ dˆlat jinak
+      if base^.stype not in dts_ordinal then
+        unimplemented(166);
+        end if;
+
+      -- nen¡ n hodou prav˜ operand konstant typu univerz ln¡ pole ?
+      er_uniarray:=(er^.ntype=nt_imm) and t_is_stype(er^.t,dt_uniarray);
+
+      -- na‡¡st lev˜ operand do ESI
+      i_newcontext(context,newcontext,lm_addr,nil);
+      i_setrpref(newcontext,in_esi,irm_addr);
+      i_load(inst,info,newcontext,context,el,op1);
+
+      -- na‡¡st prav˜ operand do EDI
+      i_newcontext(context,newcontext,lm_addr,nil);
+      i_setrpref(newcontext,in_edi,irm_addr);
+      i_load(inst,info,newcontext,context,er,op2);
+
+      -- obnovit registry
+      op1.refresh(inst,info,context);
+      op2.refresh(inst,info,context);
+
+      -- kromˆ ESI pot©ebujeme i [ESI]
+      op1mem.create_memory_address_from_operand(inst,info,context,edt_unsigned,0,op1);
+
+      -- kromˆ EDI pot©ebujeme i [EDI]
+      op2mem.create_memory_address_from_operand(inst,info,context,edt_unsigned,0,op2);
+
+      -- rezervovat ECX
+      opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
+
+      -- do ECX na‡¡st velikost lev‚ho operandu
+      op1mem.adjust_size(lstrisize32);
+      addii(inst,info,ii_mov,opecx,op1mem,op0);
+
+      -- porovnat s velikost¡ ©etˆzce vlevo
+      if er_uniarray
+
+        -- vpravo je konstanta typu univerz ln¡ pole => informace o d‚lce nen¡ jej¡ sou‡ st¡
+        then
+          declare var
+            op2len : c_operand;                  -- kosntantn¡ velikost prav‚ho operandu
+            ui     : tuniint;
+
+          begin
+            -- p©ipravit konstantn¡ operand d‚lky
+            imm_get_length(pexpimm(er)^.imm,ui);
+            op2len.create_imm(edt_unsigned,lstrisize32,uniint_to_imm32(ui));
+
+            -- porovnat
+            addii(inst,info,ii_cmp,opecx,op2len,op0);
+
+          leave
+            op2len.free(info,context);
+            end declare;
+
+        -- vpravo je nˆco jin‚ho => informace o d‚lce je jej¡ sou‡ st¡
+        else
+          op2mem.adjust_size(lstrisize32);
+          addii(inst,info,ii_cmp,opecx,op2mem,op0);
+          end if;
+
+      declare var
+        tg_end     : itarget;                    -- n vˆ¨t¡ pro skok na konec porovn n¡
+
+      begin
+        -- alokovat n vˆ¨t¡
+        newtarget(info,tg_end);
+
+        -- jsou rozd¡ln‚ ? => pak je porovn n¡ hotov‚
+        addjump(inst,info,context,ic_ne,tg_end);
+
+        -- Nyn¡ jsou jistˆ d‚lky ©etˆzc– shodn‚ (Zero Flag=0). P–vodnˆ jsem toho
+        -- chtˆl vyu‘¡t, abych nemusel je¨tˆ testovat ECX na nulu, jen‘e po‡et
+        -- prvk– ©etˆzce se za chv¡li bude n sobit velikost¡ b ze a tato operace
+        -- m–‘e ZF zmˆnit.
+
+        -- porovnat ECX na nulu
+        addii(inst,info,ii_cmp,opecx,op_0,op0);
+        addjump(inst,info,context,ic_e,tg_end);
+
+        -- posunout ESI a EDI o LSTRISIZE32
+        addopimm(inst,info,context,ii_add,op1,lstrisize32);
+        if not er_uniarray then
+          addopimm(inst,info,context,ii_add,op2,lstrisize32);
+          end if;
+
+        declare var
+          ii         : iinstr;                     -- zvolen  porovn vac¡ instrukce
+          imm        : timm32;                     -- d‚lka operandu ve slovech
+
+        begin
+          -- zvolit, jak budeme porovn vat (podle velikosti b ze)
+          -- dˆliteln‚ 4 ? => po ‡tve©ic¡ch
+          if basesize mod 4=0 then
+            ii:=ii_cmpsd;
+            imm:=unsigned_to_imm32(basesize div 4);
+          -- dˆliteln‚ 2 ? => po dvojic¡ch
+          elsif basesize mod 2=0 then
+            ii:=ii_cmpsw;
+            imm:=unsigned_to_imm32(basesize div 2);
+          -- mus¡me po bytech
+          else
+            ii:=ii_cmpsb;
+            imm:=unsigned_to_imm32(basesize);
+            end if;
+
+          -- vyn sobit po‡et prvk– ©etˆzce reziduem velikosti b ze
+          i_gen_mul_reg(inst,info,context,op1,imm);
+
+          -- shodit Direction Flag - porovn v  se zdola nahoru
+          addii(inst,info,ii_cld,op0,op0,op0);
+
+          -- REPE CMPS
+          addip(inst,info,ip_repe);
+          addii(inst,info,ii,op0,op0,op0);
+          end declare;
+
+        -- a t¡m by to mˆlo b˜t hotovo
+
+        -- c¡l skoku na toto m¡sto
+        settarget(info,tg_end,getaddr(inst));
+        end declare;
+
+    leave
+      -- uvolnit operandy
+      op1.free(info,context);
+      op1mem.free(info,context);
+      op2.free(info,context);
+      op2mem.free(info,context);
+      opecx.free(info,context);
+      end declare;
+
+    -- v˜sledek
+    vysl.create_condition(op2cc[expr^.oper,false]);
+    end if;
+  end i_gen_op_compare_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_string_and_last =
+-- Na‡te adresu ©etˆzce do EDI a zjist¡ jeho :last.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  if expr^.t.stype=dt_ustring
+
+    -- unconstrained string s dynamickou d‚lkou
+    then
+      -- pak mus¡ m¡t dynamick˜ :last nebo :size
+      verify(344,not x_has_dynamic_size(expr));
+
+      declare var
+        op1        : c_operand;                  -- operand reprezentuj¡c¡ ©etˆzec
+        opedi      : c_operand;                  -- registr EDI
+
+      begin
+        -- vygenerovat lev˜ operand
+        i_newcontext(context,newcontext,lm_addr_attr,nil);
+        i_load(inst,info,newcontext,context,expr,op1);
+
+        -- obnovit registry
+        op1.refresh(inst,info,context);
+
+        -- pro atribut bude pot©eba registr
+        oplast.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
+
+        -- je k dispozici p©¡mo :last
+        if rta_last in expr^.rta_used{%%ATTR} then
+          -- na‡¡st :last
+          i_gen_load_rtattrib_value(inst,info,context,expr^.rta_used{%%ATTR},op1,rta_last,oplast);
+
+        -- je k dispozici jen :size
+        elsif rta_size in expr^.rta_used{%%ATTR} then
+          -- na‡¡st :size
+          i_gen_load_rtattrib_value(inst,info,context,expr^.rta_used{%%ATTR},op1,rta_size,oplast);
+
+          -- ode‡¡st velikost intern¡ ‡ sti ©etˆzce
+          addii(inst,info,ii_sub,oplast,op_lstrisize32,op0);
+
+          -- vydˆlit velikost¡ prvku
+          i_gen_div_reg(inst,info,context,oplast,unidata_size_to_imm32(expr^.t.getctype^.base.getctype^.size));
+
+        -- co si m me po‡¡t bez dynamick‚ho atributu ?
+        else
+          verify(516,true)
+          end if;
+
+        -- registr EDI
+        opedi.create_use_register(inst,info,context,edt_address,ir_edi);
+
+        -- na‡¡st adresu ©etˆzce do EDI
+        op1.adjust_size(lpointer32);
+        addii(inst,info,ii_mov,opedi,op1,op0);
+
+        -- p©edat v˜sledek
+        op.transfer(opedi);
+
+      leave 
+        -- uvolnit operandy
+        op1.free(info,context);
+        opedi.free(info,context);
+        end declare;
+
+    -- ©etˆzec se statickou d‚lkou
+    else
+      -- p©ipravit konstantn¡ atribut :last
+      oplast.create_imm(edt_unsigned,lstrisize32,uniint_to_imm32(expr^.t.getctype^.srange.getctype^.hval));
+
+      -- na‡¡st adresu lev‚ho operandu do EDI
+      i_newcontext(context,newcontext,lm_addr,nil);
+      i_setrpref(newcontext,in_edi,irm_addr);
+      i_load(inst,info,newcontext,context,expr,op);
+      end if;
+  end i_gen_load_string_and_last;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_concat_string =
+-- Spojov n¡ ©etˆzc–.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+
+    ------------------------------------------------------------------------------------------------
+    procedure appendall (
+        op1        : in c_operand;               -- lev˜ operand: EDI
+        op1mem     : in c_operand;               -- lev˜ operand: [EDI]
+        op1length  : in c_operand;               -- :length lev‚ho operandu
+        op1last    : in c_operand;               -- :last lev‚ho operandu
+        opbasesize : in c_operand) =             -- konstantn¡ velikost b ze ©etˆzce
+    -- P©ikop¡rov n¡ v¨ech operand– po‡¡naje ER k OP1.
+    ------------------------------------------------------------------------------------------------
+    var
+      newcontext   : iexprcontext;               -- kontext podv˜raz–
+      tg_end       : itarget;                    -- n vˆ¨t¡ pro skok na konec z©etˆzen¡
+      basesize     : t_unsigned32;
+
+    begin
+      -- n vˆ¨t¡ pro skok na konec z©etˆzen¡
+      newtarget(info,tg_end);
+
+      -- shodit Direction Flag - kop¡ruje se zdola nahoru
+      addii(inst,info,ii_cld,op0,op0,op0);
+
+      -- velikost b ze
+      basesize:=imm32_to_unsigned(opbasesize.imm);
+
+      loop
+        -- vygenerovat z©etˆzen¡
+        case er^.concatkind
+          -- pod©etˆzec
+          when nck_substring do
+              declare var
+                op2       : c_operand;                  -- prav˜ operand: ESI
+                op2mem    : c_operand;                  -- prav˜ operand: [ESI]
+                op2length : c_operand;                  -- :length prav‚ho operandu
+
+              begin
+                -- na‡¡st prav˜ operand do ESI
+                i_newcontext(context,newcontext,lm_addr,nil);
+                i_setrpref(newcontext,in_esi,irm_addr);
+                i_load(inst,info,newcontext,context,er,op2);
+
+                -- obnovit registry
+                op1.refresh(inst,info,context);
+                op1mem.refresh(inst,info,context);
+                op1length.refresh(inst,info,context);
+                op2.refresh(inst,info,context);
+
+                -- kromˆ ESI pot©ebujeme i [ESI]
+                op2mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op2);
+
+                -- po‡et prvk– ©etˆzce do ECX
+                op2length.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
+                op2mem.adjust_size(lstrisize32);
+                addii(inst,info,ii_mov,op2length,op2mem,op0);
+
+                -- posunout pointer na za‡ tek datov‚ ‡ sti
+                addii(inst,info,ii_add,op2,op_lstrisize32,op0);
+
+                -- nen¡ to moc ? (op2length:=min(op2length,op1last-op1length)
+                declare var
+                  optemp : c_operand;              -- pomocn˜ operand
+
+                begin
+                  optemp.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
+                  addii(inst,info,ii_mov,optemp,op1last,op0);
+                  addii(inst,info,ii_sub,optemp,op1length,op0);
+                  addii(inst,info,ii_cmp,op2length,optemp,op0);
+                  addcmov(inst,info,context,ic_be,op2length,optemp);
+                leave
+                  optemp.free(info,context);
+                  end declare;
+
+                -- aktualizovat :length lev‚ho operandu (v registru)
+                addii(inst,info,ii_add,op1length,op2length,op0);
+
+                -- vlastn¡ p©esun dat
+                i_gen_movsd_array(inst,info,context,op2,op1,op2length,basesize);
+
+              leave
+                -- uvolnit operandy vztahuj¡c¡ se k prav‚mu operandu
+                op2.free(info,context);
+                op2mem.free(info,context);
+                op2length.free(info,context);
+                end declare;
+
+          -- podpole
+          when nck_subarray do
+              unimplemented(121);
+
+          -- komponenta
+          when nck_component do
+              -- vejde se je¨tˆ komponenta do ©etˆzce ?
+              addii(inst,info,ii_cmp,op1length,op1last,op0);
+              addjump(inst,info,context,ic_ae,tg_end);
+
+              -- inkrementovat :length
+              addii(inst,info,ii_inc,op1length,op0,op0);
+
+              -- nem  b ze p©¡znivou velikost ?
+              if basesize=1 or basesize=2 or basesize=4{%%TODO(SET) basesize in [1,2,4]}
+
+                -- m  => pou‘¡t registr
+                then
+                  declare var
+                    op2 : c_operand;             -- prav˜ operand: ESI
+
+                  begin
+                    -- na‡¡st prav˜ operand do registru
+                    i_newcontext(context,newcontext,lm_reg,expr^.t.getctype^.base.getctype{nil});
+                    i_load(inst,info,newcontext,context,er,op2);
+
+                    -- obnovit registry
+                    op1.refresh(inst,info,context);
+                    op1mem.refresh(inst,info,context);
+                    op1length.refresh(inst,info,context);
+                    op2.refresh(inst,info,context);
+
+                    -- p©i©adit
+                    op1mem.adjust_size(basesize);
+                    addii(inst,info,ii_mov,op1mem,op2,op0);
+
+                    -- posunout EDI (je-li to t©eba)
+                    if er^.next<>nil then addii(inst,info,ii_add,op1,opbasesize,op0); end if;
+
+                  leave
+                    -- uvolnit operand
+                    op2.free(info,context);
+                    end declare;
+
+                -- nem  => standardn¡ p©esun
+                else
+                  declare var
+                    op2 : c_operand;             -- prav˜ operand: ESI
+
+                  begin
+                    -- na‡¡st prav˜ operand do ESI
+                    i_newcontext(context,newcontext,lm_addr,nil);
+                    i_setrpref(newcontext,in_esi,irm_addr);
+                    i_load(inst,info,newcontext,context,er,op2);
+
+                    -- obnovit registry
+                    op1.refresh(inst,info,context);
+                    op1mem.refresh(inst,info,context);
+                    op1length.refresh(inst,info,context);
+                    op2.refresh(inst,info,context);
+
+                    -- p©esun
+                    i_gen_movsd_static(inst,info,context,op2,op1,basesize);
+
+                  leave
+                    -- uvolnit operand
+                    op2.free(info,context);
+                    end declare;
+                  end if;
+
+          when others do verify(376,true);
+          end case;
+
+        -- dal¨¡ operand
+        er:=er^.next;
+        until er=nil;
+
+      -- c¡l skoku na toto m¡sto
+      settarget(info,tg_end,getaddr(inst));
+      end appendall;
+
+var
+  opbasesize       : c_operand;                  -- konstantn¡ velikost b ze ©etˆzce
+  op1org           : c_operand;                  -- p–vodn¡ adresa lev‚ho operandu
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  -- p©ipravit operand s velikost¡ b ze ©etˆzce
+  opbasesize.create_imm(edt_unsigned,0,unidata_size_to_imm32(expr^.t.getctype^.base.getctype^.size));
+
+  -- podv˜razy
+  expr^.get(el,er);
+
+  if expr^.assign
+
+    -- zkr cen‚ p©i©azen¡
+    then
+      declare var
+        op1        : c_operand;                  -- lev˜ operand: EDI
+        op1mem     : c_operand;                  -- lev˜ operand: [EDI]
+        op1length  : c_operand;                  -- :length lev‚ho operandu
+        op1last    : c_operand;                  -- :last lev‚ho operandu
+
+      begin
+        -- na‡¡st adresu lev‚ho operandu do EDI
+        i_gen_load_string_and_last(inst,info,context,el,op1,op1last);
+
+        -- obnovit registry
+        op1.refresh(inst,info,context);
+        op1last.refresh(inst,info,context);
+
+        -- schovat si p–vodn¡ adresu lev‚ho operandu
+        -- %%X Nˆkdy mohu m¡t k dispozici voln˜ registr, kter˜ by ¨el vyu‘¡t
+        op1org.create_temporary(inst,info,edt_address,idefregsize);
+        addii(inst,info,ii_mov,op1org,op1,op0);
+
+        -- kromˆ EDI pot©ebujeme i [EDI]
+        op1mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op1);
+
+        -- :length ©etˆzce vlevo um¡stit do registru
+        op1mem.adjust_size(lstrisize32);
+        op1length.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
+        addii(inst,info,ii_mov,op1length,op1mem,op0);
+        op1mem.adjust_size(0);
+
+        declare var
+          optemp   : c_operand;                  -- pomocn˜ operand
+
+        begin
+          -- vypo‡¡tat :length*:base:size (index -> offset)
+          optemp.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
+          addii(inst,info,ii_imul,optemp,op1length,opbasesize);
+
+          -- posunout pointer na za‡ tek voln‚ho m¡sta
+          addii(inst,info,ii_add,op1,op_lstrisize32,op0);
+          addii(inst,info,ii_add,op1,optemp,op0);
+
+        leave
+          -- uvolnit pracovn¡ registr
+          optemp.free(info,context);
+          end declare;
+
+        -- p©ikop¡rovat v¨e po‡¡naje ER
+        appendall(op1,op1mem,op1length,op1last,opbasesize);
+
+        -- aktualizovat fyzick‚ :length lev‚ho operandu
+        op1.adjust_size(idefregsize);
+        op1mem.adjust_size(lstrisize32);
+        addii(inst,info,ii_mov,op1,op1org,op0);
+        addii(inst,info,ii_mov,op1mem,op1length,op0);
+
+        -- uvolnit temporary prostor
+        --%%FLEX Tohle se snad udˆl  samo,ne?
+        -- freetemp(inst,info,op1org.disp);
+
+      leave
+        -- uvolnit operandy
+        op1.free(info,context);
+        op1org.free(info,context);
+        op1mem.free(info,context);
+        op1length.free(info,context);
+        op1last.free(info,context);
+        end declare;
+
+    -- norm ln¡ &
+    else
+      -- alokovat pracovn¡ prostor pro meziv˜sledek
+      if expr^.t.stype=dt_ustring
+
+        -- v˜sledek m  dynamickou velikost
+        then
+          unimplemented(115);
+
+        -- v˜sledek m  statickou velikost
+        else
+          declare var
+            op1        : c_operand;                  -- lev˜ operand: EDI
+            op1mem     : c_operand;                  -- lev˜ operand: [EDI]
+            op1length  : c_operand;                  -- :length lev‚ho operandu
+            op1last    : c_operand;                  -- :last lev‚ho operandu
+
+          begin
+            -- %%X Nem–‘e se st t, ‘e bude meziv˜sledek p©¡li¨ velk˜ na to,
+            -- aby se neve¨el na stack ? Mysl¡m, ‘e klidnˆ m–‘e ...
+
+            -- alokovat pracovn¡ prostor na stacku
+            op1org.create_temporary(inst,info,edt_binary,unidata_size_to_unsigned(expr^.t.getsize));
+
+            -- p©ipravit konstantn¡ atribut :last
+            op1last.create_imm(edt_unsigned,0,uniint_to_imm32(expr^.t.getctype^.srange.getctype^.hval));
+
+            -- po‡ te‡n¡ nulov‚ :length meziv˜sledku
+            op1length.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
+            addii(inst,info,ii_mov,op1length,op_0,op0);
+
+            -- adresu za‡ tku datov‚ ‡ sti um¡stit do EDI
+            op1.clone(inst,info,context,op1org);
+            op1.shift_displacement(lstrisize32);
+            i_gen_lea(inst,info,context,op1,in_edi);
+
+            -- kromˆ EDI pot©ebujeme i [EDI]
+            op1mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op1);
+
+            -- p©ikop¡rovat v¨echny operandy
+            er:=el;
+            appendall(op1,op1mem,op1length,op1last,opbasesize);
+
+            -- obnovit registry
+            op1org.refresh(inst,info,context);
+
+            -- aktualizovat :length
+            op1org.adjust_size(lstrisize32);
+            addii(inst,info,ii_mov,op1org,op1length,op0);
+
+            -- v˜sledek
+            vysl.transfer(op1org);
+            vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
+
+          leave
+            -- uvolnit operandy
+            op1.free(info,context);
+            op1org.free(info,context);
+            op1mem.free(info,context);
+            op1last.free(info,context);
+            op1length.free(info,context);
+            end declare;
+          end if;
+      end if;
+
+leave
+  -- uvolnit operandy
+  opbasesize.free(info,context);
+  end i_gen_op_concat_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_assign_string =
+-- P©i©azen¡ ©etˆzc–.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- lev˜ podv˜raz
+  er               : pexpnode;                   -- prav˜ podv˜raz
+  newcontext       : iexprcontext;               -- kontext podv˜raz–
+
+begin
+  verify(199,expr^.arity<>eoa_2);
+
+  -- podv˜razy
+  expr^.get(el,er);
+
+  if x_is_nil(er) {er^.t.stype=dt_uninil}
+
+    -- p©i©azen¡ pr zdn‚ho ©etˆzce
+    then
+      declare var
+        op1        : c_operand;                  -- lev˜ operand: EDI
+
+      begin
+        -- adresa lev‚ho operandu
+        i_newcontext(context,newcontext,lm_gen,nil);
+        i_load(inst,info,newcontext,context,el,op1);
+
+        -- obnovit registry
+        op1.refresh(inst,info,context);
+
+        -- lev˜ operand teƒ ukazuje na intern¡ ‡ st ©etˆzce
+        -- %%FLEX Xakru nemˆl by se tady NILovat cel˜ ©etˆzˆc v‡etnˆ nepou‘it˜ch byt–?
+        -- Minim lnˆ pro ©etˆzec spl¤uj¡c¡ S:secure=true ano.
+        op1.adjust_size(4);
+
+        -- p©i©adit nulu do :length
+        addii(inst,info,ii_mov,op1,op_0,op0);
+
+      leave
+        -- uvolnit lev˜ operand
+        op1.free(info,context);
+        end declare;
+
+    -- ostatn¡ p©¡pady
+    else
+      -- %%X Kdy‘ je na prav‚ stranˆ konstanta a el:last je t‚‘   
+      -- konstantn¡, lze to cel‚ zjednodu¨it:
+      --   -- do ECX se ¨oupne konstanta,
+      --   -- do [EDI] se ¨oupne konstanta,
+      --   -- nemus¡ se testovat o©¡znut¡.
+      -- Kdy‘ je nav¡c konstanta vpravo dostate‡nˆ mal ,
+      -- nemus¡m se obtˆ‘ovat s REP MOVSD ale mohu to rozvinout.
+
+      declare var
+        op1              : c_operand;                  -- lev˜ operand: EDI
+        op1mem           : c_operand;                  -- lev˜ operand: [EDI]
+        op1last          : c_operand;                  -- :last lev‚ho operandu
+        op2              : c_operand;                  -- prav˜ operand: ESI
+        op2mem           : c_operand;                  -- prav˜ operand: [ESI]
+        op2length        : c_operand;                  -- :length prav‚ho operandu
+
+      begin
+        -- na‡¡st adresu prav‚ho operandu do ESI
+        i_newcontext(context,newcontext,lm_addr,nil);
+        i_setrpref(newcontext,in_esi,irm_addr);
+        i_load(inst,info,newcontext,context,er,op2);
+
+        -- na‡¡st adresu lev‚ho operandu do EDI
+        i_gen_load_string_and_last(inst,info,context,el,op1,op1last);
+
+        -- obnovit registry
+        op1.refresh(inst,info,context);
+        op1last.refresh(inst,info,context);
+        op2.refresh(inst,info,context);
+
+        -- kromˆ EDI pot©ebujeme i [EDI]
+        op1mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op1);
+
+        -- kromˆ ESI pot©ebujeme i [ESI]
+        op2mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op2);
+
+        -- shodit Direction Flag - kop¡ruje se zdola nahoru
+        addii(inst,info,ii_cld,op0,op0,op0);
+
+        -- po‡et prvk– ©etˆzce vpravo do ECX
+        op2length.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
+        op2mem.adjust_size(lstrisize32);
+        addii(inst,info,ii_mov,op2length,op2mem,op0);
+
+        -- nen¡ to moc ? (op2length:=min(op2length,op1last)
+        addii(inst,info,ii_cmp,op2length,op1last,op0);
+        addcmov(inst,info,context,ic_be,op2length,op1last);
+
+        -- ulo‘it :length do lev‚ho operandu
+        op1mem.adjust_size(lstrisize32);
+        addii(inst,info,ii_mov,op1mem,op2length,op0);
+
+        -- posunout pointer na za‡ tek datov‚ ‡ sti
+        addii(inst,info,ii_add,op1,op_lstrisize32,op0);
+        addii(inst,info,ii_add,op2,op_lstrisize32,op0);
+
+        -- vlastn¡ p©esun dat
+        i_gen_movsd_array(inst,info,context,op2,op1,op2length,unidata_size_to_unsigned(expr^.t.getctype^.base.getctype^.size));
+
+      leave
+        -- uvolnit operandy
+        op1.free(info,context);
+        op1mem.free(info,context);
+        op1last.free(info,context);
+        op2.free(info,context);
+        op2mem.free(info,context);
+        op2length.free(info,context);
+        end declare;
+      end if;
+  end i_gen_op_assign_string;
+
+
+
+end ci_string;

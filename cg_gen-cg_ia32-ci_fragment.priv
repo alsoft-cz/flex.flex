@@ -8,7 +8,7 @@ module private ci_fragment =
 
 with
   ci_code,
-  ci_code.ci_oper,
+  ci_code.ci_operand,
   ci_code.ci_instr,
   ci_code.ci_stack,
   ci_code.ci_relo,
@@ -21,61 +21,57 @@ procedure i_gen_loadreg =
 -- Na‡te operand do registru.
 ----------------------------------------------------------------------------------------------------
 var
-  vysl             : ioper;                      -- v˜sledek
-  opx              : ioper;                      -- pomocn˜ operand
+  vysl             : c_operand;                  -- v˜sledek
 
 begin
   verify(323,context.rsize=0);
 
   -- na‡¡st do registru
-  if (op.optype=io_mem) or (all and (op.optype=io_imm)) then
+  if op.optype=io_mem or (all and op.optype=io_imm) then
     -- operand
-    newopreg(inst,info,context,vysl,context.rsize,mode{irm_int},op);
+    vysl.create_new_register_from_operand(inst,info,context,edt_unsigned,context.rsize,op);
 
     -- konstanty se konvertujou samy
-    if op.optype=io_imm then op.size:=0; end if;
+    if op.optype=io_imm then op.adjust_size(0); end if;
 
     -- p©i©adit
     -- bez konverze velikosti operandu
-    if (context.rsize=op.size) or (op.size=0) then
-      vysl.size:=context.rsize;
+    if context.rsize=op.size or op.size=0 then
+      vysl.adjust_size(context.rsize);  -- %%FLEX Pro‡, kdy‘ se v t‚to velikosti ji‘ vytv ©¡?
       addii(inst,info,ii_mov,vysl,op,op0)
 
     -- roz¨¡©en¡ operandu
     elsif context.rsize>op.size then
-      if {%%CONTEXT ptyp^.stype=dt_signed} context.rsign and (orgtyp^.stype=dt_signed)
+      if {%%CONTEXT ptyp^.stype=dt_signed} context.rsign and then orgtyp^.stype=dt_signed
         -- znam‚nkovˆ
         then addii(inst,info,ii_movsx,vysl,op,op0)
         -- neznam‚nkovˆ
-        else
-          addii(inst,info,ii_movzx,vysl,op,op0)
-          end if;
+        else addii(inst,info,ii_movzx,vysl,op,op0)
+        end if;
 
     -- z£‘en¡ operandu
     else
-      -- %X generovat Overflow-check
+      -- %%X generovat Overflow-check
       -- %%X nahradit dvojic¡ XOR MOV
       -- co‘e ? ^^^^^^^
-      op.size:=vysl.size;
+      op.adjust_size(vysl.size);
       addii(inst,info,ii_mov{zx},vysl,op,op0);
       -- %%X Tady bylo II_MOVZX, co to mˆlo znamenat ?
       end if;
 
-    -- uvolnit p–vodn¡ registry
-    i_free(info,context,op);
-
     -- p©edat v˜sledek
-    op:=vysl;
+    op.replace(info,context,vysl);
 
   -- operand u‘ je v registru
   elsif op.optype=io_reg then
     -- roz¨¡©en¡ operandu
     if context.rsize>op.size then
       -- v˜sledek
-      newopuse(inst,info,context,vysl,context.rsize,resizereg(op.reg.reg,context.rsize));
+      vysl.create_use_register(inst,info,context,edt_unsigned,op.reg.reg);
+      vysl.adjust_size(context.rsize);
 
       -- roz¨¡©it
-      if context.rsign and (orgtyp^.stype=dt_signed)
+      if context.rsign and then orgtyp^.stype=dt_signed
         -- znam‚nkovˆ
         then addii(inst,info,ii_movsx,vysl,op,op0)
         -- neznam‚nkovˆ
@@ -83,65 +79,58 @@ begin
         end if;
       -- %%X ¨lo by pou‘¡t CBW/CWD ?
 
-      -- uvolnit p–vodn¡ registry
-      i_free(info,context,op);
-
       -- p©edat v˜sledek
-      op:=vysl;
+      op.replace(info,context,vysl);
 
     -- z£‘en¡ operandu
     elsif context.rsize<op.size then
       -- ESI/EDI se mus¡ ©e¨it zvl ¨Ÿ
-      if (context.rsize=1) and (op.reg.reg in iregset:[ir_si,ir_di,ir_esi,ir_edi]) then
+      if context.rsize=1 and op.reg.reg in iregset:[ir_si,ir_di,ir_esi,ir_edi] then
         -- alokovat registr
-        newopreg(inst,info,context,vysl,context.rsize,mode{irm_int},op);
+        vysl.create_new_register(inst,info,context,edt_unsigned,context.rsize);
 
-        -- SI --> ESI, DI --> EDI
-        op.size:=idefregsize;
-        op.reg.reg:=resizereg(op.reg.reg,idefregsize);
-
-        -- operand
-        newopuse(inst,info,context,opx,idefregsize,resizereg(vysl.reg.reg,idefregsize));
+        -- pro £‡ely p©i©azen¡ se budou oba operandy ch pat jako 32bitov‚ (SI --> ESI, DI --> EDI)
+        vysl.adjust_size(idefregsize);
+        op.adjust_size(idefregsize);
 
         -- movenout
-        addii(inst,info,ii_mov,opx,op,op0);
+        addii(inst,info,ii_mov,vysl,op,op0);
 
-        -- uvolnit p–vodn¡ registry
-        i_free(info,context,opx);
-        i_free(info,context,op);
+        -- zmˆnit velikost v˜sledku zpˆt na po‘adovanou
+        vysl.adjust_size(context.rsize);
 
         -- p©edat v˜sledek
-        op:=vysl;
+        op.replace(info,context,vysl);
 
       -- pro ostatn¡ registry je to trivi ln¡
       else
-        op.size:=context.rsize;
-        op.reg.reg:=resizereg(op.reg.reg,context.rsize);
+        op.adjust_size(context.rsize);
         end if;
       end if;
 
   -- konstanta, aspo¤ upravit velikost
   elsif op.optype=io_imm then
-    op.size:=context.rsize;
+    op.adjust_size(context.rsize);
 
   -- podm¡nka
-  elsif (op.optype=io_cc) and all then
+  elsif op.optype=io_cc and all then
     -- operand
-    newopreg(inst,info,context,vysl,context.rsize,mode{irm_int},op);
+    vysl.create_new_register(inst,info,context,edt_unsigned,context.rsize);
 
     -- nastavit hodnotu
-    addset(inst,info,op.cc,vysl);
-
-    -- uvolnit p–vodn¡ operand
-    i_free(info,context,op);
+    addset(inst,info,context,op.cc,vysl);
 
     -- p©edat v˜sledek
-    op:=vysl;
+    op.replace(info,context,vysl);
 
   -- v¨echno kromˆ OP_IMM a OP_CC, kter‚ se ponech vaj¡ v p–vodn¡m tvaru, neum¡me zpracovat
   else
-    verify(523,not (op.optype in ioptypeset:[io_imm,io_cc]));
+    verify(523,op.optype not in t_operand_type_set:[io_imm,io_cc]);
     end if;
+
+leave
+  -- uvolnit meziv˜sledek
+  vysl.free(info,context);
   end i_gen_loadreg;
 
 
@@ -151,20 +140,19 @@ procedure i_gen_compute_rtattrib =
 -- Vypo‡te chybˆj¡c¡ run-time atribut a ulo‘¡ ho do c¡lov‚ho pointeru.
 ----------------------------------------------------------------------------------------------------
 var
-  oppart           : ioper;
+  oppart           : c_operand;
 
 begin
   -- p©iravit operand
-  nullop(oppart,io_imm);
-  oppart.size:=4;
+  oppart.create_imm(edt_unsigned,4,0);
 
   -- ur‡it jeho hodnotu
   case rta
     -- vymyslet :size
     when rta_size do
         if oldbase=nil
-          then oppart.imm:=timm32(0);
-          else oppart.imm:=unidata_size_to_imm32(oldbase^.size);
+          then oppart.set_imm(timm32(0));
+          else oppart.set_imm(unidata_size_to_imm32(oldbase^.size));
           end if;
       {%%TODO(CODEGEN) Tohle zase obnovit, a‘ nˆkdo p©edˆl  I_GEN_REF (viz Chyba [20030226115311])
         verify(505,oldbase=nil);
@@ -174,12 +162,12 @@ begin
     -- vymyslet do :last
     when rta_last do
         -- pointery na pole/stringy s b zemi stejn‚ velikosti
-        if (oldbase<>nil) and (outbase<>nil)
+        if oldbase<>nil and outbase<>nil
         and (((oldbase^.stype=dt_string) and (outbase^.stype in dts_string))
         or ((oldbase^.stype=dt_array) and (outbase^.stype in dts_array)))
         and oldbase^.base.getctype^.size=outbase^.base.getctype^.size
         then
-          oppart.imm:=uniint_to_imm32(uniint_length(oldbase^.lval,oldbase^.hval));
+          oppart.set_imm(uniint_to_imm32(uniint_length(oldbase^.lval,oldbase^.hval)));
 
         -- jin‚ varianty zat¡m o¨et©it neum¡me
         else
@@ -189,14 +177,17 @@ begin
     -- atribut :tag
     when rta_tag do
         -- tagy se vyhodnocuj¡ a‘ p©i linkov n¡
-        oppart.rtype:=irt_symbol;
-        oppart.psym:=oldbase;
+        oppart.set_relo_entity(oldbase);
 
     when others do verify(504,true);
     end case;
 
   -- p©i©adit
   addii(inst,info,ii_mov,optemppart,oppart,op0);
+
+leave
+  -- uvolnit operand
+  oppart.free(info,context);
   end i_gen_compute_rtattrib;
 
 
@@ -209,15 +200,6 @@ procedure i_gen_loadpointer =
 --   -- ponech  v p–vodn¡m tvaru, pokud ho nen¡ t©eba mˆnit,
 --   -- na‡te do pracovn¡ promˆnn‚.
 ----------------------------------------------------------------------------------------------------
-var
-  outsize          : t_unsigned;                 -- velikost v˜sledn‚ho pointeru
-  outbase          : pentity_type;               -- b ze v˜sledn‚ho pointeru
-  oldbase          : pentity_type;               -- b ze p–vodn¡ho pointeru
-  optemp           : ioper;                      -- pracovn¡ promˆnn 
-  oppart           : ioper;                      -- ‡ st p–vodn¡ho operandu
-  optemppart       : ioper;                      -- ‡ st pracovn¡ promˆnn‚
-  opreg            : ioper;                      -- pracovn¡ registr
-
 begin
   verify(486,(context.outtyp{^}.stype<>dt_pointer) or (oldtyp^.stype<>dt_pointer));
 
@@ -225,7 +207,7 @@ begin
   if reg and context.outtyp{^}.size=uds_4 then
     -- normalizovat velikost pointeru
     if op.optype=io_mem then
-      op.size:=4;
+      op.adjust_size(4);
       end if;
 
     -- na‡¡st do registru
@@ -237,7 +219,7 @@ begin
     if context.outtyp{^}.pattrib=rtattribset:[] then
       -- normalizovat velikost pointeru
       if op.optype=io_mem then
-        op.size:=4;
+        op.adjust_size(4);
         end if;
 
       -- na‡¡st do registru
@@ -245,99 +227,119 @@ begin
 
     -- v˜sledek m  obsahovat i nˆjak‚ atributy
     else
-      -- velikost v˜sledn‚ho pointeru
-      outsize:=unidata_size_to_unsigned(context.outtyp{^}.size);
+      declare var
+        outsize    : t_unsigned;                 -- velikost v˜sledn‚ho pointeru
+        outbase    : pentity_type;               -- b ze v˜sledn‚ho pointeru
+        oldbase    : pentity_type;               -- b ze p–vodn¡ho pointeru
+        optemp     : c_operand;                  -- pracovn¡ promˆnn 
 
-      -- b ze obou pointer–
-      oldbase:=oldtyp^.base.getutype;
-      outbase:=context.outtyp{^}.base{.getutype};
+      begin
+        -- velikost v˜sledn‚ho pointeru
+        outsize:=unidata_size_to_unsigned(context.outtyp{^}.size);
 
-      -- alokovat pracovn¡ promˆnnou
-      newoptemp(inst,info,context,optemp,outsize);
+        -- b ze obou pointer–
+        oldbase:=oldtyp^.base.getutype;
+        outbase:=context.outtyp{^}.base{.getutype};
 
-      -- kde m me zdrojov˜ pointer ?
-      case op.optype
-        -- v pamˆti
-        when io_mem     do
-            -- budeme pot©ebovat pracovn¡ registr
-            newopreg(inst,info,context,opreg,4,irm_int,op0);
+        -- alokovat pracovn¡ promˆnnou
+        optemp.create_temporary(inst,info,edt_binary,outsize);
 
-            -- zkop¡rovat adresu
-            oppart:=op;
-            oppart.size:=4;
-            optemppart:=optemp;
-            optemppart.size:=4;
-            addii(inst,info,ii_mov,opreg,oppart,op0);
-            addii(inst,info,ii_mov,optemppart,opreg,op0);
+        -- kde m me zdrojov˜ pointer ?
+        case op.optype
+          -- v pamˆti
+          when io_mem     do
+              declare var
+                opreg      : c_operand;          -- pracovn¡ registr
+                oppart     : c_operand;          -- ‡ st p–vodn¡ho operandu
+                optemppart : c_operand;          -- ‡ st pracovn¡ promˆnn‚
 
-            -- zkop¡rovat jednotliv‚ atributy
-            for rta in rtattrib loop
-              if rta in context.outtyp{^}.pattrib then
-                -- vypo‡¡tat um¡stˆn¡ atributu v c¡lov‚m pointeru
-                i_gen_load_rtattrib_addr({inst,info,context,}context.outtyp{^}.pattrib,optemp,rta,optemppart);
+              begin
+                -- budeme pot©ebovat pracovn¡ registr
+                opreg.create_new_register(inst,info,context,edt_unsigned,4);
 
-                -- je k dispozici v p–vodn¡m pointeru ?
-                if rta in oldtyp^.pattrib
+                -- zkop¡rovat adresu
+                oppart.clone(inst,info,context,op);
+                oppart.adjust_size(4);
+                optemppart.clone(inst,info,context,optemp);
+                optemppart.adjust_size(4);
+                addii(inst,info,ii_mov,opreg,oppart,op0);
+                addii(inst,info,ii_mov,optemppart,opreg,op0);
 
-                  -- ano => zkop¡rovat
-                  then
-                    -- na‡¡st do registru
-                    i_gen_load_rtattrib_value(inst,info,context,oldtyp^.pattrib,op,rta,opreg);
+                -- zkop¡rovat jednotliv‚ atributy
+                for rta in rtattrib loop
+                  if rta in context.outtyp{^}.pattrib then
+                    -- vypo‡¡tat um¡stˆn¡ atributu v c¡lov‚m pointeru
+                    i_gen_load_rtattrib_addr(inst,info,context,context.outtyp{^}.pattrib,optemp,rta,optemppart);
 
-                    -- je-li to :last, tak je mo‘n  nutn˜ je¨tˆ nˆjak˜ p©epo‡et
-                    if rta=rta_last then
-                      -- maj¡-li r–zn‚ b ze, tak zkoumat d l
-                      if context.outtyp.base<>oldtyp^.base.getutype then
-                        unimplemented(175);
+                    -- je k dispozici v p–vodn¡m pointeru ?
+                    if rta in oldtyp^.pattrib
+
+                      -- ano => zkop¡rovat
+                      then
+                        -- na‡¡st do registru
+                        i_gen_load_rtattrib_value(inst,info,context,oldtyp^.pattrib,op,rta,opreg);
+
+                        -- je-li to :last, tak je mo‘n  nutn˜ je¨tˆ nˆjak˜ p©epo‡et
+                        if rta=rta_last then
+                          -- maj¡-li r–zn‚ b ze, tak zkoumat d l
+                          if context.outtyp.base<>oldtyp^.base.getutype then
+                            unimplemented(175);
+                            end if;
+                          end if;
+
+                        -- p©esunout
+                        addii(inst,info,ii_mov,optemppart,opreg,op0);
+
+                      -- nen¡ => vymyslet
+                      else
+                        i_gen_compute_rtattrib(inst,info,context,optemppart,rta,oldbase,outbase);
                         end if;
-                      end if;
-
-                    -- p©esunout
-                    addii(inst,info,ii_mov,optemppart,opreg,op0);
-
-                  -- nen¡ => vymyslet
-                  else
-                    i_gen_compute_rtattrib(inst,info,context,optemppart,rta,oldbase,outbase);
                     end if;
-                end if;
-              end loop;
+                  end loop;
 
+              leave
+                -- uvolnit pracovn¡ operandy
+                opreg.free(info,context);
+                oppart.free(info,context);
+                optemppart.free(info,context);
+                end declare;
 
-        -- v registru ‡i p©¡m  hodnota
-        when io_reg, io_imm do
-            i_gen_compose_pointer(inst,info,context,op,oldbase,outbase,context.outtyp{^}.pattrib,optemp);
-        {
-            -- %%X oldtyp^.pattrib<>[] nast v  u reference, ale nikde jinde by
-            -- pokud v¡m nemˆlo, tak‘e by se to mˆlo v podm¡nce ovˆ©ovat.
-            --verify(506,(op.optype=io_reg) and (oldtyp^.pattrib<>[]));
-            verify(507,(op.optype=io_imm) and (op.size<>4));
+          -- v registru ‡i p©¡m  hodnota
+          when io_reg, io_imm do
+              i_gen_compose_pointer(inst,info,context,op,oldbase,outbase,context.outtyp{^}.pattrib,optemp);
+          {
+              -- %%X oldtyp^.pattrib<>[] nast v  u reference, ale nikde jinde by
+              -- pokud v¡m nemˆlo, tak‘e by se to mˆlo v podm¡nce ovˆ©ovat.
+              --verify(506,(op.optype=io_reg) and (oldtyp^.pattrib<>[]));
+              verify(507,(op.optype=io_imm) and (op.size<>4));
 
-            -- zkop¡rovat adresu
-            optemppart:=optemp;
-            optemppart.size:=4;
-            addii(inst,info,ii_mov,optemppart,op,op0);
+              -- zkop¡rovat adresu
+              optemppart:=optemp;
+              optemppart.size:=4;
+              addii(inst,info,ii_mov,optemppart,op,op0);
 
-            -- vymyslet v¨echny atributy
-            for rta in rta:first..rta:last loop
-              if rta in context.outtyp^.pattrib then
-                -- vypo‡¡tat um¡stˆn¡ atributu v c¡lov‚m pointeru
-                i_gen_load_rtattrib_addr(inst,info,context,context.outtyp^.pattrib,optemp,rta,optemppart);
+              -- vymyslet v¨echny atributy
+              for rta in rta:first..rta:last loop
+                if rta in context.outtyp^.pattrib then
+                  -- vypo‡¡tat um¡stˆn¡ atributu v c¡lov‚m pointeru
+                  i_gen_load_rtattrib_addr(inst,info,context,context.outtyp^.pattrib,optemp,rta,optemppart);
 
-                -- vymyslet atribut
-                computertattrib(rta);
-                end if;
-              end loop;
-        }
+                  -- vymyslet atribut
+                  computertattrib(rta);
+                  end if;
+                end loop;
+          }
 
+          when others do unimplemented(164);
+          end case;
 
-        when others do unimplemented(164);
-        end case;
+        -- p©evz¡t v˜sledek
+        op.replace(info,context,optemp);
 
-      -- uvolnit p–vodn¡ operand
-      i_free(info,context,op);
-
-      -- p©evz¡t v˜sledek
-      op:=optemp;
+      leave
+        -- uvolnit operandy
+        optemp.free(info,context);
+        end declare;
       end if;
 
   ----- ponechat v p–vodn¡m stavu -----
@@ -356,30 +358,34 @@ procedure i_gen_compose_pointer =
 -- ulo‘en do pracovn¡ promˆnn‚.
 ----------------------------------------------------------------------------------------------------
 var
-  opoutpart        : ioper;                      -- ‡ st pracovn¡ promˆnn‚
+  opoutpart        : c_operand;                  -- ‡ st pracovn¡ promˆnn‚
 
 begin
   -- %%X oldtyp^.pattrib<>[] nast v  u reference, ale nikde jinde by
   -- pokud v¡m nemˆlo, tak‘e by se to mˆlo v podm¡nce ovˆ©ovat.
   --verify(506,(op.optype=io_reg) and (oldtyp^.pattrib<>[]));
-  verify(508,not (op.optype in ioptypeset:[io_reg,io_imm]) or (opout.optype<>io_mem));
-  verify(507,(op.optype=io_imm) and (op.size<>4));
+  verify(508,op.optype not in t_operand_type_set:[io_reg,io_imm] or opout.optype<>io_mem);
+  verify(507,op.optype=io_imm and op.size<>4);
 
   -- zkop¡rovat adresu
-  opoutpart:=opout;
-  opoutpart.size:=4;
+  opoutpart.clone(inst,info,context,opout);
+  opoutpart.adjust_size(4);
   addii(inst,info,ii_mov,opoutpart,op,op0);
 
   -- vymyslet v¨echny atributy
   for rta in rtattrib loop
     if rta in outrta then
       -- vypo‡¡tat um¡stˆn¡ atributu v c¡lov‚m pointeru
-      i_gen_load_rtattrib_addr({inst,info,context,}outrta,opout,rta,opoutpart);
+      i_gen_load_rtattrib_addr(inst,info,context,outrta,opout,rta,opoutpart);
 
       -- vymyslet atribut
       i_gen_compute_rtattrib(inst,info,context,opoutpart,rta,oldbase,outbase);
       end if;
     end loop;
+
+leave
+  -- uvoltit operandy
+  opoutpart.free(info,context);
   end i_gen_compose_pointer;
 
 
@@ -388,29 +394,29 @@ begin
 procedure i_gen_lea =
 -- Na‡te adresu danou operandem do registru.
 ----------------------------------------------------------------------------------------------------
-var
-  vysl             : ioper;                      -- v˜sledek
-  optemp           : ioper;                      -- pomocn˜ operand
 
     ------------------------------------------------------------------------------------------------
     procedure movreg (
+        vysl       : in c_operand;
         reg        : in ireg) =
     ------------------------------------------------------------------------------------------------
-    var
-      optemp       : ioper;                      -- pomocn˜ operand
-
     begin
       -- nen¡ to n hodou ten sam˜ registr ?
       if iregtouni[reg]<>rpref then
-        -- p©ipravit operand
-        nullop(optemp,io_reg);
-        i_use(inst,info,context,reg,optemp.reg,idefregsize);
+        declare var
+          optemp   : c_operand;                  -- pomocn˜ operand
 
-        -- zkop¡rovat
-        addii(inst,info,ii_mov,vysl,optemp,op0);
+        begin
+          -- p©ipravit operand
+          optemp.create_use_register(inst,info,context,edt_unsigned,reg);
 
-        -- uvolnit pomocn˜ operand
-        i_free(info,context,optemp);
+          -- zkop¡rovat
+          addii(inst,info,ii_mov,vysl,optemp,op0);
+
+        leave
+          -- uvolnit pomocn˜ operand
+          optemp.free(info,context);
+          end declare;
         end if;
       end movreg;
 
@@ -419,62 +425,68 @@ begin
 
     -- je ur‡en preferovan˜ registr => na‡¡st do nˆj
     then
-      -- vytvo©it operand
-      newopuse(inst,info,context,vysl,idefregsize,iunitoreg[rpref,idefregsize]);
+      declare var
+        vysl       : c_operand;                  -- v˜sledek
 
-      case op.optype
-        -- registr
-        when io_reg     do movreg(op.reg.reg);
+      begin
+        -- vytvo©it operand
+        vysl.create_use_register(inst,info,context,edt_unsigned,iunitoreg[rpref,idefregsize]{%%FLEX rpref});
 
-        -- adresa v pamˆti
-        when io_mem     do
-            -- jen displacement, pou‘¡t MOV
-            if (op.base.reg=ir_none) and (op.index.reg=ir_none) then
-              -- p©ipravit operand
-              nullop(optemp,io_imm);
-              optemp.size:=idefregsize;
-              optemp.imm:=op.disp;
-              optemp.rtype:=op.rtype;
-              optemp.psym:=op.psym;
-              optemp.pexpr:=op.pexpr;--%%X Je to nutn‚?
+        case op.optype
+          -- registr
+          when io_reg     do movreg(vysl,op.reg.reg);
 
-              -- p©i©adit
-              addii(inst,info,ii_mov,vysl,optemp,op0);
+          -- adresa v pamˆti
+          when io_mem     do
+              -- jen displacement, pou‘¡t MOV
+              if op.base.reg=ir_none and op.index.reg=ir_none then
+                declare var
+                  optemp : c_operand;              -- pomocn˜ operand
 
-              -- uvolnit pomocn˜ operand
-              i_free(info,context,optemp);
+                begin
+                  -- p©ipravit operand
+                  optemp.create_imm(edt_unsigned,idefregsize,0);
+                  optemp.copy_relo(op);
 
-            -- jen b ze, pou‘¡t MOV
-            elsif (op.base.reg<>ir_none) and (op.index.reg=ir_none) and op.disp=timm32(0) then
-              movreg(op.base.reg);
+                  -- p©i©adit
+                  addii(inst,info,ii_mov,vysl,optemp,op0);
 
-            -- jen index*1, pou‘¡t MOV
-            elsif (op.base.reg=ir_none) and (op.index.reg<>ir_none) and op.disp=timm32(0) and (op.rtype=irt_none) and (op.scale=1) then
-              movreg(op.index.reg);
+                leave
+                  -- uvolnit pomocn˜ operand
+                  optemp.free(info,context);
+                  end declare;
 
-            -- %%X a co p©¡pad RPREF+10 ? => p©es ADD
+              -- jen b ze, pou‘¡t MOV
+              elsif (op.base.reg<>ir_none) and (op.index.reg=ir_none) and op.disp=timm32(0) then
+                movreg(vysl,op.base.reg);
 
-            -- slo‘itˆj¨¡, pou‘¡t LEA
-            else
-              addii(inst,info,ii_lea,vysl,op,op0);
-              end if;
+              -- jen index*1, pou‘¡t MOV
+              elsif (op.base.reg=ir_none) and (op.index.reg<>ir_none) and op.disp=timm32(0) and (op.rtype=irt_none) and (op.scale=1) then
+                movreg(vysl,op.index.reg);
 
+              -- %%X a co p©¡pad RPREF+10 ? => p©es ADD
 
-        -- data na stacku
-        when io_stack do
-            -- data jsou p©¡mo na vrcholu stacku a m me jistotu, ‘e nikdo neudˆlal nˆjak˜
-            -- PUSH, kter˜ by s nimi pohnul (ani NEWOPUSE - viz CI_CODE.I_USEUNI)
-            addii(inst,info,ii_mov,vysl,op_esp,op0);
+              -- slo‘itˆj¨¡, pou‘¡t LEA
+              else
+                addii(inst,info,ii_lea,vysl,op,op0);
+                end if;
 
+          -- data na stacku
+          when io_stack do
+              -- data jsou p©¡mo na vrcholu stacku a m me jistotu, ‘e nikdo neudˆlal nˆjak˜
+              -- PUSH, kter˜ by s nimi pohnul (ani NEWOPUSE - viz CI_CODE.I_USEUNI)
+              addii(inst,info,ii_mov,vysl,op_esp,op0);
 
-        when others do verify(361,true);
-        end case;
+          when others do verify(361,true);
+          end case;
 
-      -- uvolnit p–vodn¡ operand
-      i_free(info,context,op);
+        -- p©edat v˜sledek
+        op.replace(info,context,vysl);
 
-      -- p©edat v˜sledek
-      op:=vysl;
+      leave
+        -- uvolnit meziv˜sledek
+        vysl.free(info,context);
+        end declare
 
     -- nen¡ ur‡en preferovan˜ registr => na‡¡st do libovoln‚ho
     else
@@ -482,8 +494,7 @@ begin
         -- p©¡m  hodnota
         when io_imm     do
             -- normalizovat velikost
-            op.size:=4;
-
+            op.adjust_size(4);
 
         -- registr
         when io_reg     do -- nic nedˆlat
@@ -491,10 +502,8 @@ begin
         -- odkaz na pamˆŸ
         when io_mem     do
             -- jen displacement, p©edat jako p©¡mou hodnotu
-            if (op.base.reg=ir_none) and (op.index.reg=ir_none) then
-              op.optype:=io_imm;
-              op.size:=4;
-              op.imm:=op.disp;
+            if op.base.reg=ir_none and op.index.reg=ir_none then
+              op.transform_mem_to_imm;
 
             -- jen b zov˜ registr
             elsif (((op.base.reg<>ir_none) and (op.index.reg=ir_none))
@@ -502,51 +511,70 @@ begin
             or ((op.base.reg=ir_none) and (op.index.reg<>ir_none) and (op.scale=1)))
             -- a nulov‚ posunut¡
             and op.disp=timm32(0) and (op.rtype=irt_none) then
-              -- jen alokovat operand
-              newopreg(inst,info,context,vysl,4,irm_addr,op);
+              declare var
+                vysl : c_operand;                -- v˜sledek
 
-              -- jistˆ se vybere ten spr vn˜ registr
-              verify(326,not (((op.base.reg<>ir_none) and (vysl.reg.reg=op.base.reg)) or ((op.index.reg<>ir_none) and (vysl.reg.reg=op.index.reg))));
+              begin
+                -- jen alokovat operand
+                vysl.create_new_register_from_operand(inst,info,context,edt_address,4,op);
 
-              -- uvolnit p–vodn¡ registry
-              i_free(info,context,op);
+                -- jistˆ se vybere ten spr vn˜ registr
+                verify(326,not (((op.base.reg<>ir_none) and (vysl.reg.reg=op.base.reg)) or ((op.index.reg<>ir_none) and (vysl.reg.reg=op.index.reg))));
 
-              -- p©edat v˜sledek
-              op:=vysl;
+                -- p©edat v˜sledek
+                op.replace(info,context,vysl);
+
+              leave
+                -- uvolnit meziv˜sledek
+                vysl.free(info,context);
+                end declare;
 
             -- %%X P©¡pad "EAX+10" dˆlat p©es ADD a ne pomoc¡ LEA
 
             -- v ostatn¡ch p©¡padech je opravdu nutn‚ LEA
             else
-              -- operand
-              newopreg(inst,info,context,vysl,4,irm_addr,op);
+              declare var
+                vysl : c_operand;                -- v˜sledek
 
-              -- na‡¡st adresu
-              addii(inst,info,ii_lea,vysl,op,op0);
+              begin
+                -- operand
+                vysl.create_new_register(inst,info,context,edt_address,4);
 
-              -- uvolnit p–vodn¡ registry
-              i_free(info,context,op);
+                -- na‡¡st adresu
+                addii(inst,info,ii_lea,vysl,op,op0);
 
-              -- p©edat v˜sledek
-              op:=vysl;
+                -- p©edat v˜sledek
+                op.replace(info,context,vysl);
+
+              leave
+                -- uvolnit meziv˜sledek
+                vysl.free(info,context);
+                end declare;
               end if;
-
 
         -- relativn¡ adresa
         when io_rel     do -- %%X co s t¡m ?
 
         -- data na stacku
         when io_stack   do
-            -- uvolnit operand
-            i_free(info,context,op);
+            declare var
+              vysl : c_operand;                -- v˜sledek
 
-            -- alokovat registr
-            newopreg(inst,info,context,op,4,irm_addr,op0);
+            begin
+              -- operand
+              vysl.create_new_register(inst,info,context,edt_address,4);
 
-            -- data jsou p©¡mo na vrcholu stacku a m me jistotu, ‘e nikdo neudˆlal nˆjak˜
-            -- PUSH, kter˜ by s nimi pohnul (ani NEWOPUSE - viz CI_CODE.I_USEUNI)
-            addii(inst,info,ii_mov,op,op_esp,op0);
+              -- data jsou p©¡mo na vrcholu stacku a m me jistotu, ‘e nikdo neudˆlal nˆjak˜
+              -- PUSH, kter˜ by s nimi pohnul (ani NEWOPUSE - viz CI_CODE.I_USEUNI)
+              addii(inst,info,ii_mov,vysl,op_esp,op0);
 
+              -- p©edat v˜sledek
+              op.replace(info,context,vysl);
+
+            leave
+              -- uvolnit meziv˜sledek
+              vysl.free(info,context);
+              end declare;
 
         when others do verify(74,true);
         end case;
@@ -560,13 +588,13 @@ procedure i_gen_loadeax =
 -- Na‡te operand do EAX.
 ----------------------------------------------------------------------------------------------------
 var
-  vysl             : ioper;                      -- v˜sledek
+  vysl             : c_operand;                  -- v˜sledek
   eax              : ireg;                       -- zvolen˜ registr
   i                : t_unsigned;
 
 begin
   -- kromˆ p©¡padu hodnoty ji‘ v AL, AX, EAX; (AH se mus¡ kop¡rovat do AL)
-  if (op.optype=io_reg) and (op.reg.reg in iregset:[ir_al,ir_ax,ir_eax]) then
+  if op.optype=io_reg and then op.reg.reg in iregset:[ir_al,ir_ax,ir_eax] then
     return;
     end if;
 
@@ -590,7 +618,7 @@ begin
     end case;
 
   -- operand
-  newopuse(inst,info,context,vysl,i,eax);
+  vysl.create_use_register(inst,info,context,op.edtype,eax);
 
   -- %%X Pro p©¡pad MOV AL,AH pou‘¡t SHR EAX,8
   -- (Pentiu se to bude ur‡itˆ l¡bit v¡c)
@@ -598,11 +626,12 @@ begin
   -- p©i©adit
   addii(inst,info,ii_mov,vysl,op,op0);
 
-  -- uvolnit p–vodn¡ registry
-  i_free(info,context,op);
-
   -- p©edat v˜sledek
-  op:=vysl;
+  op.replace(info,context,vysl);
+
+leave
+  -- uvolnit meziv˜sledek
+  vysl.free(info,context);
   end i_gen_loadeax;
 
 
@@ -611,72 +640,89 @@ begin
 procedure i_gen_loadimm8cl =
 -- Na‡te operand do CL nebo ho ponech  const.
 ----------------------------------------------------------------------------------------------------
-var
-  vysl             : ioper;                      -- v˜sledek
-  i                : t_unsigned;
-
 begin
   -- kromˆ p©¡padu hodnoty ji‘ v CL, CX, ECX; (CH se mus¡ kop¡rovat do CL)
   if (op.optype=io_reg) and (op.reg.reg in iregset:[ir_cl,ir_cx,ir_ecx]) then
     -- zmˆnit na CL (a p©¡padnˆ z£‘it)
-    op.reg.reg:=ir_cl;
-    op.size:=1;
+    op.adjust_size(1);
 
   -- je v registru, ale nˆjak‚m jin‚m
   elsif op.optype=io_reg then
-    -- v˜sledek
-    newopuse(inst,info,context,vysl,1,ir_cl);
+    declare var
+      vysl         : c_operand;                  -- v˜sledek
 
-    -- %%TECH Kdyby mˆlo ESI a EDI 8-bitov‚ ‡ sti, tak by
-    -- ¨lo v¨e movat 8-bitovˆ... (a kdyby SHL/SHR nebylo
-    -- tak debilnˆ vymy¨len˜, tak to tu nemuselo bejt v–bec)
+    begin
+      -- v˜sledek
+      vysl.create_use_register(inst,info,context,op.edtype,ir_cl);
 
-    -- je to v CH, udˆlat SHR
-    if op.reg.reg=ir_ch then
-      addii(inst,info,ii_shr,op_ecx,op_8,op0);
+      -- %%TECH Kdyby mˆlo ESI a EDI 8-bitov‚ ‡ sti, tak by
+      -- ¨lo v¨e movat 8-bitovˆ... (a kdyby SHL/SHR nebylo
+      -- tak debilnˆ vymy¨len˜, tak to tu nemuselo bejt v–bec)
 
-    -- ji‘ m  spr vnou velikost
-    elsif op.size=1 then
-      -- sta‡¡ movenout
-      addii(inst,info,ii_mov,vysl,op,op0);
+      -- je to v CH, udˆlat SHR
+      if op.reg.reg=ir_ch then
+        -- zmˆnit CL na ECX 
+        vysl.adjust_size(4);
 
-    -- 2 nebo 4 byty, prov‚st 32-bitovˆ
-    else
-      -- udˆlat z nˆj 32 bit–
-      op.reg.reg:=resizereg(op.reg.reg,4);
-      op.size:=4;
+        -- shiftnout
+        addii(inst,info,ii_shr,vysl,op_8,op0);
 
-      -- movenout
-      addii(inst,info,ii_mov,op_ecx,op,op0);
-      end if;
+        -- a zase zpˆt na CL
+        vysl.adjust_size(1);
 
-    -- uvolnit p–vodn¡ registry
-    i_free(info,context,op);
+      -- ji‘ m  spr vnou velikost
+      elsif op.size=1 then
+        -- sta‡¡ movenout
+        addii(inst,info,ii_mov,vysl,op,op0);
+
+      -- 2 nebo 4 byty, prov‚st 32-bitovˆ (co kdyby to bylo (E)SI nebo (E)DI)
+      else
+        -- udˆlat z obou operand– 32 bit–
+        op.adjust_size(4);
+        vysl.adjust_size(4);
+
+        -- movenout
+        addii(inst,info,ii_mov,vysl,op,op0);
+
+        -- a v˜sledek opˆt z£‘it na 8 bit–
+        vysl.adjust_size(1);
+        end if;
 
     -- p©edat v˜sledek
-    op:=vysl;
+    op.replace(info,context,vysl);
+
+  leave
+    -- uvolnit meziv˜sledek
+    vysl.free(info,context);
+    end declare;
 
   -- konstanta
   elsif op.optype=io_imm then
     -- z£‘it na 8 bit–
-    op.size:=1;
+    op.adjust_size(1);
 
   -- je v pamˆti
   else {if op.optype<>io_imm then}
-    -- v˜sledek
-    newopuse(inst,info,context,vysl,1,ir_cl);
+    declare var
+      vysl         : c_operand;                  -- v˜sledek
 
-    -- udˆlat z toho 8 bit–
-    op.size:=1;
+    begin
+      -- v˜sledek
+      vysl.create_use_register(inst,info,context,op.edtype,ir_cl);
 
-    -- movenout
-    addii(inst,info,ii_mov,vysl,op,op0);
+      -- udˆlat z toho 8 bit–
+      op.adjust_size(1);
 
-    -- uvolnit p–vodn¡ registry
-    i_free(info,context,op);
+      -- movenout
+      addii(inst,info,ii_mov,vysl,op,op0);
 
-    -- p©edat v˜sledek
-    op:=vysl;
+      -- p©edat v˜sledek
+      op.replace(info,context,vysl);
+
+    leave
+      -- uvolnit meziv˜sledek
+      vysl.free(info,context);
+      end declare;
     end if;
   end i_gen_loadimm8cl;
 
@@ -686,10 +732,6 @@ begin
 procedure i_gen_loadtemp =
 -- Na‡te operand do temporary promˆnn‚ nebo ho ponech  const.
 ----------------------------------------------------------------------------------------------------
-var
-  optemp           : ioper;                      -- temporary promˆnn 
-  opreg            : ioper;                      -- pomocn˜ registr
-
 begin
   verify(417,op.size<>1 and op.size<>2 and op.size<>4);
 
@@ -699,44 +741,49 @@ begin
 
     -- registr
     when io_reg do
-        -- alokovat temporary promˆnnou
-        nullop(optemp,io_mem);
-        optemp.base.reg:=istackframereg[inst.frame];
-        optemp.size:=op.size;
-        alloctemp(inst,info,op.size,optemp.disp);
+        declare var
+          optemp   : c_operand;                  -- temporary promˆnn 
 
-        -- p©esunout
-        addii(inst,info,ii_mov,optemp,op,op0);
+        begin
+          -- alokovat temporary promˆnnou
+          optemp.create_temporary(inst,info,op.edtype,op.size);
 
-        -- uvolnit p–vodn¡ operand
-        i_free(info,context,op);
+          -- p©esunout
+          addii(inst,info,ii_mov,optemp,op,op0);
 
-        -- v˜sledek
-        op:=optemp;
+          -- p©edat v˜sledek
+          op.replace(info,context,optemp);
 
+        leave
+          -- uvolnit meziv˜sledek
+          optemp.free(info,context);
+          end declare;
 
     -- pamˆŸ
     when io_mem do
-        -- alokovat temporary promˆnnou
-        nullop(optemp,io_mem);
-        optemp.base.reg:=istackframereg[inst.frame];
-        optemp.size:=op.size;
-        alloctemp(inst,info,op.size,optemp.disp);
+        declare var
+          optemp   : c_operand;                  -- temporary promˆnn 
+          opreg    : c_operand;                  -- pomocn˜ registr
 
-        -- pomocn˜ registr
-        newopreg(inst,info,context,opreg,op.size,irm_int,op0);
+        begin
+          -- alokovat temporary promˆnnou
+          optemp.create_temporary(inst,info,op.edtype,op.size);
 
-        -- p©esunout
-        addii(inst,info,ii_mov,opreg,op,op0);
-        addii(inst,info,ii_mov,optemp,opreg,op0);
+          -- pomocn˜ registr
+          opreg.create_new_register(inst,info,context,op.edtype,op.size);
 
-        -- uvolnit p–vodn¡ operand a pomocn˜ registr
-        i_free(info,context,opreg);
-        i_free(info,context,op);
+          -- p©esunout
+          addii(inst,info,ii_mov,opreg,op,op0);
+          addii(inst,info,ii_mov,optemp,opreg,op0);
 
-        -- v˜sledek
-        op:=optemp;
+          -- p©edat v˜sledek
+          op.replace(info,context,optemp);
 
+        leave
+          -- uvolnit meziv˜sledek
+          optemp.free(info,context);
+          opreg.free(info,context);
+          end declare;
 
     when others do verify(416,true);
     end case;
@@ -769,16 +816,18 @@ var
 
 begin
   verify(551,op.optype<>io_mem);
-  -- %%TECH Nepou‘¡v  se CLONEOP, mˆn¡ se jen DISP
 
-  -- udˆlat z operandu atribut :"rta"
-  oprta:=op;
-  oprta.disp+imm32_lpointer32;
+  -- z klad operandu se shodn˜ s p–vodn¡m operandem
+  oprta.clone(inst,info,context,op);
+
+  -- upravit velikost
+  oprta.adjust_size(unidata_size_to_unsigned(cpu32_rtattribsize[rta]));
+
+  -- offset run-time atributu v r mci p–vodn¡ho operandu
   if rta>rta:first then
     getrtattribsetsize(get_set{%%TODO(SET)rtaset*rtattribset:[rta:first..pred rta]},x);
-    oprta.disp+x;
     end if;
-  oprta.size:=unidata_size_to_unsigned(cpu32_rtattribsize[rta]);
+  oprta.shift_displacement(imm32_to_signed{%%X}(imm32_lpointer32+x));
   end i_gen_load_rtattrib_addr;
 
 
@@ -788,14 +837,18 @@ procedure i_gen_load_rtattrib_value =
 -- Podle EXPR/OP na‡te dynamick˜ atribut RTA.
 ----------------------------------------------------------------------------------------------------
 var
-  oprta            : ioper;
+  oprta            : c_operand;
 
 begin
   -- na‡¡st adresu dynamick‚ho atributu
-  i_gen_load_rtattrib_addr({inst,info,context,}rtaset,op,rta,oprta);
+  i_gen_load_rtattrib_addr(inst,info,context,rtaset,op,rta,oprta);
 
   -- na‡¡st hodnotu do registru
   addii(inst,info,ii_mov,opreg,oprta,op0);
+
+leave
+  -- uvolnit operand
+  oprta.free(info,context);
   end i_gen_load_rtattrib_value;
 
 
@@ -804,29 +857,16 @@ begin
 procedure i_gen_this_addr =
 -- Adresa THIS pointeru na instanci t©¡dy resp. slo‘ky v r mci t©¡dy.
 ----------------------------------------------------------------------------------------------------
-var
-  optemp           : ioper;                      -- pomocn˜ operand
-
 begin
   -- na‡¡st pointer na t©¡du
-  nullop(optemp,io_mem);
-  optemp.base.reg:=istackframereg[inst.frame];
-  optemp.disp:=signed_to_imm32(inst.profile.thisofs);
-  optemp.size:=lpointer32;
-  i_gen_loadreg(inst,info,context,nil,optemp,true,irm_addr);
+  op.create_memory_address_on_stack(inst,edt_address,lpointer32,signed_to_imm32(inst.profile.thisofs));
+  i_gen_loadreg(inst,info,context,nil,op,true,irm_addr);
 
   -- udˆlat z registru adresu
-  nullop(op,io_mem);
-  i_use(inst,info,context,optemp.reg.reg,op.base,idefregsize);
-
-  -- velikost operandu
-  op.size:=unidata_size_to_imm32(size);
+  op.transform_reg_to_mem(edt_binary,unidata_size_to_imm32(size));
 
   -- p©i‡¡st offset slo‘ky
-  op.disp:=unidata_addr_to_imm32(ofs);
-
-  -- uvolnit pomocn˜ operand
-  i_free(info,context,optemp);
+  op.shift_displacement(imm32_to_signed{%%X}(unidata_addr_to_imm32(ofs)));
   end i_gen_this_addr;
 
 
@@ -835,9 +875,6 @@ begin
 procedure i_gen_pushstack =
 -- Ulo‘¡ operand na stack.
 ----------------------------------------------------------------------------------------------------
-var
-  op1              : ioper;
-
 begin
   case op.optype
     -- nˆkdo u‘ ho pro n s na stack ulo‘il
@@ -847,30 +884,37 @@ begin
     when io_imm do
         verify(557,op.size<>0 and op.size<>1 and op.size<>2 and op.size<>4);
 
-        -- normalizovat na 32 bit–
-        cloneop(inst,info,context,op,op1);
-        op1.size:=4;
+        declare var
+          old_size : t_unsigned;                 -- p–vodn¡ velikost operandu
 
-        -- pushnout
-        addii(inst,info,ii_push,op1,op0,op0);
+        begin
+          -- normalizovat na 32 bit–
+          old_size:=op.size;
+          op.adjust_size(4);
 
-        -- uvolnit pracovn¡ operand
-        i_free(info,context,op1);
+          -- pushnout
+          addii(inst,info,ii_push,op,op0,op0);
 
+          -- vr tit zpˆt p–vodn¡ velikost
+          op.adjust_size(old_size);
+          end declare;
 
     -- registr
     when io_reg do
-        -- normalizovat na 32 bit–
-        cloneop(inst,info,context,op,op1);
-        op1.reg.reg:=resizereg(op.reg.reg,4);
-        op1.size:=4;
+        declare var
+          old_size : t_unsigned;                 -- p–vodn¡ velikost operandu
 
-        -- pushnout
-        addii(inst,info,ii_push,op1,op0,op0);
+        begin
+          -- normalizovat na 32 bit–
+          old_size:=op.size;
+          op.adjust_size(4);
 
-        -- uvolnit pracovn¡ operand
-        i_free(info,context,op1);
+          -- pushnout
+          addii(inst,info,ii_push,op,op0,op0);
 
+          -- vr tit zpˆt p–vodn¡ velikost
+          op.adjust_size(old_size);
+          end declare;
 
     -- operand v pamˆti
     when io_mem do
@@ -880,61 +924,75 @@ begin
 
           -- p©¡zniv  velikost
           when 1,2 do
-              -- naklonovat operand
-              cloneop(inst,info,context,op,op1);
+              declare var
+                op1 : c_operand;                 -- pracovn¡ kopie operandu
 
-              -- na‡¡st do registru
-              i_gen_loadreg(inst,info,context,nil,{%%CONTEXT nil,}op1,true,irm_int);
+              begin
+                -- naklonovat operand
+                op1.clone(inst,info,context,op);
 
-              -- normalizovat na 32 bit–
-              op1.reg.reg:=resizereg(op1.reg.reg,4);
-              op1.size:=4;
+                -- na‡¡st do registru
+                i_gen_loadreg(inst,info,context,nil,{%%CONTEXT nil,}op1,true,irm_int);
 
-              -- pushnout
-              addii(inst,info,ii_push,op1,op0,op0);
+                -- normalizovat na 32 bit–
+                op1.adjust_size(4);
 
-              -- uvolnit pracovn¡ operand
-              i_free(info,context,op1);
+                -- pushnout
+                addii(inst,info,ii_push,op1,op0,op0);
 
+              leave
+                -- uvolnit pracovn¡ operand
+                op1.free(info,context);
+                end declare;
 
           -- slabˆ p©¡zniv  velikost
           when 8,12,16 do
-              -- naklonovat operand
-              cloneop(inst,info,context,op,op1);
+              declare var
+                op1 : c_operand;                 -- pracovn¡ kopie operandu
 
-              -- normalizovat na 32 bit–
-              op1.size:=4;
+              begin
+                -- naklonovat operand
+                op1.clone(inst,info,context,op);
 
-              -- posunout operand na konec
-              shiftop(op1,t_signed(op.size-4));
+                -- normalizovat na 32 bit–
+                op1.adjust_size(4);
 
-              -- n-kr t pushnout
-              for i in reverse 1..op.size div 4 loop
-                addii(inst,info,ii_push,op1,op0,op0);
-                unshiftop(op1,4);
-                end loop;
+                -- posunout operand na konec
+                op1.shift_displacement(t_signed(op.size-4));
 
-              -- uvolnit pracovn¡ operand
-              i_free(info,context,op1);
+                -- n-kr t pushnout
+                for i in reverse 1..op.size div 4 loop
+                  addii(inst,info,ii_push,op1,op0,op0);
+                  op1.unshift_displacement(4);
+                  end loop;
+
+              leave
+                -- uvolnit pracovn¡ operand
+                op1.free(info,context);
+                end declare;
 
           when others do unimplemented(60);
           end case;
 
-
     -- v˜sledek porovn n¡
     when io_cc do
-        -- budeme pot©ebovat registr
-        newopreg(inst,info,context,op1,4,irm_int,op0);
+        declare var
+          op1      : c_operand;                  -- pracovn¡ kopie operandu
 
-        -- nastavit
-        addset(inst,info,op.cc,op1);
+        begin
+          -- budeme pot©ebovat registr
+          op1.create_new_register(inst,info,context,edt_unsigned,4);
 
-        -- ulo‘it na stack
-        addii(inst,info,ii_push,op1,op0,op0);
+          -- nastavit
+          addset(inst,info,context,op.cc,op1);
 
-        -- uvolnit operand
-        i_free(info,context,op1);
+          -- ulo‘it na stack
+          addii(inst,info,ii_push,op1,op0,op0);
 
+        leave
+          -- uvolnit pracovn¡ operand
+          op1.free(info,context);
+          end declare;
 
     when others do verify(150,true);
     end case;
@@ -951,8 +1009,7 @@ var
 
 begin
   -- normalizovat velikost na n sobek 4
-  nsize:=unidata_size_to_imm32(size);
-  nsize:=(nsize+3) div 4;
+  nsize:=(unidata_size_to_imm32(size)+3) div 4;
 
   -- kolic moc nul budeme pushovat ?
   if nsize<=8
@@ -981,35 +1038,34 @@ begin
   -- definov ny oba skoky
   if (ttarget<>tgfallthru) and (ftarget<>tgfallthru) then
     if and_then
-      then addjump(inst,info,icondneg[cc],ttarget);
-      else addjump(inst,info,cc,ttarget);
+      then addjump(inst,info,context,icondneg[cc],ttarget);
+      else addjump(inst,info,context,cc,ttarget);
       end if;
     {addjump(inst,info,cc,ttarget);}
-    addjump(inst,info,ic_ucond,ftarget);
-    nullop(vysl,io_none);
+    addjump(inst,info,context,ic_ucond,ftarget);
+    --nullop(vysl,io_none);
 
   -- skok pouze p©i True
   elsif ttarget<>tgfallthru then
     if and_then
-      then addjump(inst,info,icondneg[cc],ttarget);
-      else addjump(inst,info,cc,ttarget);
+      then addjump(inst,info,context,icondneg[cc],ttarget);
+      else addjump(inst,info,context,cc,ttarget);
       end if;
-    nullop(vysl,io_none);
+    --nullop(vysl,io_none);
 
   -- skok pouze p©i False
   elsif ftarget<>tgfallthru then
     if and_then
-      then addjump(inst,info,cc,ftarget);
-      else addjump(inst,info,icondneg[cc],ftarget);
+      then addjump(inst,info,context,cc,ftarget);
+      else addjump(inst,info,context,icondneg[cc],ftarget);
       end if;
-    nullop(vysl,io_none);
+    --nullop(vysl,io_none);
 
   -- ‘ dn˜ skok
   else
-    nullop(vysl,io_cc);
     if and_then
-      then vysl.cc:=icondneg[cc];
-      else vysl.cc:=cc;
+      then vysl.create_condition(icondneg[cc]);
+      else vysl.create_condition(cc);
       end if;
     end if;
   end i_gen_logical_jump;
@@ -1022,8 +1078,8 @@ procedure i_gen_mul_reg =
 -- Tato procedura nem  vliv na Zero Flag.
 ----------------------------------------------------------------------------------------------------
 var
-  op2              : ioper;                      -- operandy
   n                : t_unsigned32;               -- shift
+  op2              : c_operand;                  -- pracovn¡ operand
 
 begin
   verify(341,imm=timm32(0) or op1.optype<>io_reg or op1.reg.reg not in ir_r32);
@@ -1034,45 +1090,34 @@ begin
   -- n soben¡ 2^n
   if imm32_is_power_of_2(imm,n) then
     -- p©ipravit druh˜ operand
-    nullop(op2,io_imm);
-    op2.imm:=unsigned_to_imm32(n);
-    op2.size:=1;
+    op2.create_imm(edt_unsigned,1,unsigned_to_imm32(n));
 
     -- p©idat instrukci
     addii(inst,info,ii_shl,op1,op2,op0);
 
-    -- uvolnit druh˜ operand
-    i_free(info,context,op2);
-
   -- n soben¡ 3,5,9
   elsif imm=timm32(3) or imm=timm32(5) or imm=timm32(9) then
     -- p©ipravit druh˜ operand
-    nullop(op2,io_mem);
-    i_use(inst,info,context,op1.reg.reg,op2.base,idefregsize);
-    i_use(inst,info,context,op1.reg.reg,op2.index,idefregsize);
-    op2.scale:=imm32_to_unsigned(imm)-1;
+    op2.create_memory_address(inst,info,context,edt_binary,0,op1.reg.reg,0);
+    op2.shift_by_index(inst,info,context,op1.reg.reg,imm32_to_unsigned(imm)-1);
 
     -- p©idat instrukci
     addii(inst,info,ii_lea,op1,op2,op0);
 
-    -- uvolnit pracovn¡ operand
-    i_free(info,context,op2);
-
   -- norm ln¡ n soben¡
   else
     -- p©ipravit druh˜ operand
-    nullop(op2,io_imm);
-    op2.imm:=imm;
-    op2.size:=4;
+    op2.create_imm(edt_unsigned,4,imm);
 
     -- p©idat instrukci
     addii(inst,info,ii_imul,op1,op2,op0);
-
-    -- uvolnit druh˜ operand
-    i_free(info,context,op2);
     end if;
 
   -- prvn¡ operand neuvol¤ovat (registr se pou‘¡v  d l ve volaj¡c¡ rutinˆ)
+
+leave
+  -- uvolnit operand
+  op2.free(info,context);
   end i_gen_mul_reg;
 
 
@@ -1083,9 +1128,7 @@ procedure i_gen_div_reg =
 -- OP1 mus¡ b˜t 32-bitov˜ registr.
 ----------------------------------------------------------------------------------------------------
 var
-  op2              : ioper;                      -- operandy
   n                : t_unsigned32;               -- shift
-  opedx            : ioper;
 
 begin
   verify(346,imm=timm32(0) or (op1.optype<>io_reg) or not (op1.reg.reg in ir_r32));
@@ -1095,16 +1138,20 @@ begin
 
   -- dˆlen¡ 2^n
   if imm32_is_power_of_2(imm,n) then
-    -- p©ipravit druh˜ operand
-    nullop(op2,io_imm);
-    op2.imm:=unsigned_to_imm32(n);
-    op2.size:=1;
+    declare var
+      op2          : c_operand;                  -- operandy
 
-    -- p©idat instrukci
-    addii(inst,info,ii_shr,op1,op2,op0);
+    begin
+      -- p©ipravit druh˜ operand
+      op2.create_imm(edt_unsigned,1,unsigned_to_imm32(n));
 
-    -- uvolnit druh˜ operand
-    i_free(info,context,op2);
+      -- p©idat instrukci
+      addii(inst,info,ii_shr,op1,op2,op0);
+
+    leave
+      -- uvolnit druh˜ operand
+      op2.free(info,context);
+      end declare;
 
   -- norm ln¡ dˆlen¡
   else
@@ -1151,16 +1198,24 @@ begin
     -- operand v pamˆti
     when io_mem   do
         -- jsou pou‘ity dva registry ?
-        if (op.base.reg<>ir_none) and (op.index.reg<>ir_none) then
-          -- na‡¡st v˜slednou adresu
-          i_gen_lea(inst,info,context,op,in_none);
-          verify(491,op.optype<>io_reg);
+        if op.base.reg<>ir_none and op.index.reg<>ir_none then
+          declare var
+            org_edtype : t_elementary_data_type;
+            org_size   : t_unsigned;
+            
+          begin
+            -- shovat si element rn¡ datov˜ typ a velikost operandu
+            org_edtype:=op.edtype;
+            org_size:=op.size;
 
-          -- zmˆnit zpˆt z registru na pamˆŸ
-          op.optype:=io_mem;
-          op.base:=op.reg;
+            -- na‡¡st v˜slednou adresu
+            i_gen_lea(inst,info,context,op,in_none);
+            verify(491,op.optype<>io_reg);
+
+            -- zmˆnit zpˆt z registru na pamˆŸ
+            op.transform_reg_to_mem(org_edtype,org_size);
+            end declare;
           end if;
-
 
     when others do verify(338,true{op.optype<>io_mem});
     end case;
@@ -1173,8 +1228,8 @@ procedure copyblock (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
     context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
-    opdst0         : in ioper;                   -- c¡lov˜ operand
-    opsrc0         : in ioper;                   -- zdrojov˜ operand
+    opdst0         : in c_operand;               -- c¡lov˜ operand
+    opsrc0         : in c_operand;               -- zdrojov˜ operand
     availregs      : in iuniregset;              -- voln‚ registry
     bytes          : in t_unsigned) =            -- kolic byt–
 -- Zkop¡ruje jeden blok dat d‚lky BYTES z adresy OPDST na adresu OPSRC.
@@ -1184,8 +1239,8 @@ with
   standard.console;
 
 var
-  opsrc            : ioper;            -- c¡lov˜ operand
-  opdst            : ioper;            -- zdrojov˜ operand
+  opsrc            : c_operand;                  -- c¡lov˜ operand
+  opdst            : c_operand;                  -- zdrojov˜ operand
 
     ------------------------------------------------------------------------------------------------
     procedure copysubblock (
@@ -1203,7 +1258,7 @@ var
         --------------------------------------------------------------------------------------------
         begin
           uni:=in_first;
-          while not (uni in availregs) or (iunitoreg[uni,n]=ir_none) loop succ uni; end loop;
+          while uni not in availregs or iunitoreg[uni,n]=ir_none loop succ uni; end loop;
           reg:=iunitoreg[uni,n];
           end firstreg;
 
@@ -1219,32 +1274,32 @@ var
               then uni:=in_first;
               else succ uni;
               end if;
-            until (uni in availregs) and (iunitoreg[uni,n]<>ir_none);
+            until uni in availregs and iunitoreg[uni,n]<>ir_none;
           reg:=iunitoreg[uni,n];
           end nextreg;
 
-    var
-      optemp       : ioper;            -- pomocn˜ operand
-
     begin
-
-      -- %%TECH I kdy‘ se zde manipuluje s registry, nepou‘¡vaj¡ se standardn¡
-      -- I_USE/I_FREE, proto‘e se p©edpokl d , ‘e pracovn¡ registry byly ji‘
+      -- %%TECH I kdy‘ se zde manipuluje s registry, nepou‘¡v  se standardn¡ CREATE_NEW_REGISTER, 
+      -- ale CREATE_NEW_REGISTER_LOW_LEVEL, proto‘e se p©edpokl d , ‘e pracovn¡ registry byly ji‘
       -- d©¡ve rezervov ny.
 
-      -- p©ipravit operand
-      nullop(optemp,io_reg);
-      optemp.size:=n;
+      -- %%FLEX Ne¨lo by to nˆjak ‡istˆji?
 
       -- nacpat z pamˆti do registr–
       firstreg;
       for i in 1..count loop
-        -- nacpat do registru
-        optemp.reg.reg:=reg;
-        addii(inst,info,ii_mov,optemp,opsrc,op0);
+        declare var
+          optemp   : c_operand;
+
+        begin
+          -- nacpat do registru
+          optemp.create_use_register_low_level(edt_unsigned,reg);
+          optemp.adjust_size(n);
+          addii(inst,info,ii_mov,optemp,opsrc,op0);
+          end declare;
 
         -- dal¨¡ slovo
-        opsrc.disp+timm32(n);
+        opsrc.shift_displacement(imm32_to_signed{%%X}(timm32(n)));
 
         -- dal¨¡ registr
         nextreg;
@@ -1253,12 +1308,18 @@ var
       -- nacpat z registr– do pamˆti
       firstreg;
       for i in 1..count loop
-        -- nacpat do pamˆti
-        optemp.reg.reg:=reg;
-        addii(inst,info,ii_mov,opdst,optemp,op0);
+        declare var
+          optemp   : c_operand;
+
+        begin
+          -- nacpat do pamˆti
+          optemp.create_use_register_low_level(edt_unsigned,reg);
+          optemp.adjust_size(n);
+          addii(inst,info,ii_mov,opdst,optemp,op0);
+          end declare;
 
         -- dal¨¡ slovo
-        opdst.disp+timm32(n);
+        opdst.shift_displacement(imm32_to_signed{%%X}(timm32(n)));
 
         -- dal¨¡ registr
         nextreg;
@@ -1284,11 +1345,11 @@ var
 
     begin
       -- velikost operand–
-      opsrc.size:=n;
-      opdst.size:=n;
+      opsrc.adjust_size(n);
+      opdst.adjust_size(n);
 
       -- kolik m me n-bytov˜ch registr– ?
-      regs:=regcount(availregs,n);
+      regs:=i_reg_get_count(availregs,n);
 
       -- zkop¡rovat
       copy_words:=total_words;
@@ -1305,11 +1366,9 @@ var
       end copywords;
 
 begin
-  -- %%TECH Nepou‘¡v  se CLONEOP, proto‘e se manipuluje jen s DISP
-
   -- p©ipravit operandy
-  opsrc:=opsrc0;
-  opdst:=opdst0;
+  opsrc.clone(inst,info,context,opsrc0);
+  opdst.clone(inst,info,context,opdst0);
 
   -- zkop¡rovat ‡ty©bytov  slova
   copywords(bytes div 4,4);
@@ -1325,6 +1384,10 @@ begin
   -- zkop¡rovat jednobytov  slova
   copywords((bytes mod 4) mod 2,1);
 }
+leave
+  -- uvolnit pracovn¡ operandy
+  opsrc.free(info,context);
+  opdst.free(info,context);
   end copyblock;
 
 
@@ -1337,36 +1400,10 @@ procedure i_gen_move_static =
 -- OPSRC a OPDST mus¡ b˜t typu IO_MEM s redukovan˜m po‡tem registr– (= <=1).
 ----------------------------------------------------------------------------------------------------
 with
-  standard.numerics,
-  standard.console;
+  standard.numerics;
 
 var
   availregs        : iuniregset;                 -- voln‚ registry pou‘iteln‚ pro movan¡
-  incr             : t_unsigned;                 -- inkrement offsetu po jedn‚ iteraci cyklu
-  opindex          : ioper;                      -- ‡¡ta‡ pr–chod– cyklem
-  optemp           : ioper;                      -- pracovn¡ operand
-  opsrcl           : ioper;                      -- operandy bˆhem iterace cyklu
-  opdstl           : ioper;                      -- operandy bˆhem iterace cyklu
-  tg_start         : itarget;                    -- n vˆ¨t¡ za‡ tku cyklu
-  wcount           : t_unsigned;                 -- po‡et slov kop¡rovan˜ch bˆhem jedn‚ iterace
-  i                : t_unsigned;
-  x                : timm32;
-
-    ------------------------------------------------------------------------------------------------
-    procedure get_set return iuniregset =
-    ------------------------------------------------------------------------------------------------
-    with
-      advanced,
-      advanced.low_level,
-      advanced.low_level.bit_operations;
-
-    begin
-      for xuni in iunireg loop
-        if xuni in getopregs(opsrc) or xuni in getopregs(opdst) or xuni=iregtouni[opindex.reg.reg] then
-          bit_set(result,t_bit_index(xuni:ord));
-          end if;
-        end loop;
-      end get_set;
 
 begin
   verify(489,(opsrc.optype<>io_mem) or (opdst.optype<>io_mem));
@@ -1402,85 +1439,140 @@ begin
   --------------------------------------------------------------------------------------------------
 
   -- kolik je asi tak voln˜ch registr– ?
-  getavailregs(context,availregs);
+  i_reg_get_available(context,availregs);
 
   -- algoritmus se vol¡ podle po‡tu (skute‡nˆ) voln˜ch registr–
-  if size<=min_unsigned(ismallobject,max_unsigned(1,regcount(availregs,4))*4*2-1)
+  if size<=min_unsigned(ismallobject,max_unsigned(1,i_reg_get_count(availregs,4))*4*2-1)
 
     -- pokud m me dost registr–, nemus¡me se zatˆ‘ovat s cyklem
     then
       -- rezervovat voln‚ registry (nebo aspo¤ jeden)
-      reserveavailregs(inst,info,context,getopregs(opsrc)+getopregs(opdst),availregs,1,size mod 4>0);
+      i_reg_reserve_available(inst,info,context,opsrc.get_all_uni_registers+opdst.get_all_uni_registers,availregs,1,size mod 4>0);
 
       -- zkop¡rovat blok
       copyblock(inst,info,context,opdst,opsrc,availregs,size);
 
       -- uvolnit pou‘it‚ registry
-      freeavailregs(info,context,availregs);
+      i_reg_free_available(info,context,availregs);
 
     -- jinak cyklit
     else
-      -- alokovat indexn¡ registr
-      newopreg(inst,info,context,opindex,4,irm_addr,op0);
+      declare var
+        opindex    : c_operand;                  -- ‡¡ta‡ pr–chod– cyklem
+        incr       : t_unsigned;                 -- inkrement offsetu po jedn‚ iteraci cyklu
+        wcount     : t_unsigned;                 -- po‡et slov kop¡rovan˜ch bˆhem jedn‚ iterace
 
-      -- rezervovat voln‚ registry (nebo aspo¤ jeden)
-      reserveavailregs(inst,info,context,get_set{%%TODO(SET)getopregs(opsrc)+getopregs(opdst)+iuniregset:[iregtouni[opindex.reg.reg]]},availregs,1,size mod 4>0);
+      begin
+        -- alokovat indexn¡ registr
+        opindex.create_new_register(inst,info,context,edt_unsigned,4);
 
-      -- spo‡¡tat inkrement v jednom pr–chodu
-      i:=regcount(availregs,4);
-      if (i=1) or (size div {incr=}(3*4)<2)
-        -- jen jeden registr nebo mal˜ blok => dvˆ slova za iteraci
-        then wcount:=2
-        -- v¡ce registr– => nejv˜¨e 3 slova za iteraci
-        else wcount:=min_unsigned(i,3);
-        end if;
-      incr:=wcount*4;
+        -- rezervovat voln‚ registry (nebo aspo¤ jeden)
+        declare
 
-      -- hodnota indexn¡ho registru
-      verify(339,size div incr<2);
-      addopimm(inst,info,ii_mov,opindex,incr*((size div incr)-1));
+          ------------------------------------------------------------------------------------------
+          procedure get_set return iuniregset =
+          -- Ondra 28.04.2003 20:38 : Historicky prvn¡ procedura ve Flexu vno©en  v DECLARE bloku.
+          ------------------------------------------------------------------------------------------
+          with
+            advanced,
+            advanced.low_level,
+            advanced.low_level.bit_operations;
 
-      -- do operand– p©idat indexn¡ registr
-      composeop(inst,info,context,opsrc,opindex,opsrcl);
-      composeop(inst,info,context,opdst,opindex,opdstl);
+          begin
+            for xuni in iunireg loop
+              if xuni in opsrc.get_all_uni_registers 
+              or xuni in opdst.get_all_uni_registers 
+              or xuni=iregtouni[opindex.reg.reg] then
+                bit_set(result,t_bit_index(xuni:ord));
+                end if;
+              end loop;
+            end get_set;
 
-      -- za‡ tek cyklu
-      newtarget(info,tg_start);
-      settarget(info,tg_start,getaddr(inst));
+        begin
+          i_reg_reserve_available(inst,info,context,get_set{%%TODO(SET)getopregs(opsrc)+getopregs(opdst)+iuniregset:[iregtouni[opindex.reg.reg]]},availregs,1,size mod 4>0);
+          end declare;
 
-      -- zkop¡rovat WCOUNT slov
-      copyblock(inst,info,context,opdstl,opsrcl,availregs,incr);
+        -- spo‡¡tat inkrement v jednom pr–chodu
+        declare var
+          i        : t_unsigned;
+        begin
+          i:=i_reg_get_count(availregs,4);
+          if (i=1) or (size div {incr=}(3*4)<2)
+            -- jen jeden registr nebo mal˜ blok => dvˆ slova za iteraci
+            then wcount:=2
+            -- v¡ce registr– => nejv˜¨e 3 slova za iteraci
+            else wcount:=min_unsigned(i,3);
+            end if;
+          incr:=wcount*4;
+          end declare;
 
-      -- posunout index
-      addopimm(inst,info,ii_sub,opindex,incr);
+        -- hodnota indexn¡ho registru
+        verify(339,size div incr<2);
+        addopimm(inst,info,context,ii_mov,opindex,incr*((size div incr)-1));
 
-      -- skok na za‡ tek
-      addjump(inst,info,ic_ns,tg_start);
+        declare var
+          opsrcl   : c_operand;                  -- operandy bˆhem iterace cyklu
+          opdstl   : c_operand;                  -- operandy bˆhem iterace cyklu
+          tg_start : itarget;                    -- n vˆ¨t¡ za‡ tku cyklu
 
-      -- uvolnit pozmˆnˆn‚ operandy
-      i_free(info,context,opsrcl);
-      i_free(info,context,opdstl);
+        begin
+          -- do operand– p©idat indexn¡ registr
+          opsrcl.clone(inst,info,context,opsrc);
+          opsrcl.shift_by_base_or_index(inst,info,context,opindex.reg.reg);
+          opdstl.clone(inst,info,context,opdst);
+          opdstl.shift_by_base_or_index(inst,info,context,opindex.reg.reg);
 
-      -- pointer na zbytek
-      -- %%TECH Nedˆl  se CLONEOP, manipuluje se jen s DISP
-      opsrcl:=opsrc;
-      opdstl:=opdst;
-      x:=unsigned_to_imm32(incr*(size div incr));
-      opsrcl.disp+x;
-      opdstl.disp+x;
+          -- za‡ tek cyklu
+          newtarget(info,tg_start);
+          settarget(info,tg_start,getaddr(inst));
 
-      -- %%X Zde bych u‘ mohl pou‘¡vat registr z OPINDEX - co kdy‘ m 
-      -- 8bitovou ‡ st a v AVAILREGS takov˜ch moc ? Musel bych ale
-      -- ru‡nˆ p©idat OPINDEX.REG.REG do AVAILREGS a nedˆlat pak FREEOP
+          -- zkop¡rovat WCOUNT slov
+          copyblock(inst,info,context,opdstl,opsrcl,availregs,incr);
 
-      -- dojet zbytek
-      copyblock(inst,info,context,opdstl,opsrcl,availregs,size mod incr);
+          -- posunout index
+          addopimm(inst,info,context,ii_sub,opindex,incr);
 
-      -- uvolnit pou‘it‚ registry
-      freeavailregs(info,context,availregs);
+          -- skok na za‡ tek
+          addjump(inst,info,context,ic_ns,tg_start);
 
-      -- uvolnit ‡¡ta‡
-      i_free(info,context,opindex);
+        leave
+          -- uvolnit pozmˆnˆn‚ operandy
+          opsrcl.free(info,context);
+          opdstl.free(info,context);
+          end declare;
+
+        declare var
+          opsrcl   : c_operand;                  -- operandy bˆhem iterace cyklu
+          opdstl   : c_operand;                  -- operandy bˆhem iterace cyklu
+
+        begin
+          -- pointer na zbytek
+          -- %%TECH Nedˆl  se CLONEOP, manipuluje se jen s DISP
+          opsrcl.clone(inst,info,context,opsrc);
+          opsrcl.shift_displacement(imm32_to_signed{%%X}(unsigned_to_imm32(incr*(size div incr))));
+          opdstl.clone(inst,info,context,opdst);
+          opdstl.shift_displacement(imm32_to_signed{%%X}(unsigned_to_imm32(incr*(size div incr))));
+
+          -- %%X Zde bych u‘ mohl pou‘¡vat registr z OPINDEX - co kdy‘ m 
+          -- 8bitovou ‡ st a v AVAILREGS takov˜ch moc ? Musel bych ale
+          -- ru‡nˆ p©idat OPINDEX.REG.REG do AVAILREGS a nedˆlat pak FREEOP
+
+          -- dojet zbytek
+          copyblock(inst,info,context,opdstl,opsrcl,availregs,size mod incr);
+
+        leave
+          -- uvolnit pozmˆnˆn‚ operandy
+          opsrcl.free(info,context);
+          opdstl.free(info,context);
+          end declare;
+
+        -- uvolnit pou‘it‚ registry
+        i_reg_free_available(info,context,availregs);
+
+      leave
+        -- uvolnit ‡¡ta‡
+        opindex.free(info,context);
+        end declare;
       end if;
   end i_gen_move_static;
 
@@ -1494,30 +1586,41 @@ procedure i_gen_pop_static =
 with
   cc_base,cc_base.cc_util;
 
-var
-  opesi            : ioper;                      -- zdrojov˜ operand
-  opedi            : ioper;                      -- c¡lov˜ operand
-  aligned_size     : t_unsigned32;               -- zarovnan  velikost b ze
-
 begin
-  -- vytvo©it si zdrojov˜ operand
-  newopstack(inst,info,context,opesi,size);
+  declare var
+    opesi            : c_operand;                  -- zdrojov˜ operand
+    opedi            : c_operand;                  -- c¡lov˜ operand
 
-  -- odvodit nov˜ c¡lov˜ operand
-  cloneop(inst,info,context,opdst,opedi);
+  begin
+    -- vytvo©it si zdrojov˜ operand
+    opesi.create_on_stack(edt_binary,size);--newopstack(inst,info,context,opesi,size);
 
-  -- na‡¡st adresy operand– do EDI a ESI
-  i_gen_lea(inst,info,context,opesi,in_esi);
-  i_gen_lea(inst,info,context,opedi,in_edi);
+    -- odvodit nov˜ c¡lov˜ operand
+    opedi.clone(inst,info,context,opdst);
 
-  -- p©esunout
-  i_gen_movsd_static(inst,info,context,opesi,opedi,size);
+    -- na‡¡st adresy operand– do EDI a ESI
+    i_gen_lea(inst,info,context,opesi,in_esi);
+    i_gen_lea(inst,info,context,opedi,in_edi);
 
-  -- zarovnat na 4 a z¡skat tak pou‘itou velikost prostoru na stacku
-  addalign(aligned_size,0,size,4);
+    -- p©esunout
+    i_gen_movsd_static(inst,info,context,opesi,opedi,size);
 
-  -- odstranit zdrojov˜ operand ze stacku
-  addaddimm(inst,info,op_esp,aligned_size);
+  leave
+    -- uvolnit operandy
+    opesi.free(info,context);
+    opedi.free(info,context);
+    end declare;
+
+  declare var
+    aligned_size   : t_unsigned32;               -- zarovnan  velikost b ze
+
+  begin
+    -- zarovnat na 4 a z¡skat tak pou‘itou velikost prostoru na stacku
+    addalign(aligned_size,0,size,4);
+
+    -- odstranit zdrojov˜ operand ze stacku
+    addaddimm(inst,info,context,op_esp,aligned_size);
+    end declare;
   end i_gen_pop_static;
 
 
@@ -1532,16 +1635,9 @@ procedure i_gen_move_array =
 ----------------------------------------------------------------------------------------------------
 with
   standard.numerics;
-
 var
   availregs        : iuniregset;                 -- voln‚ pracovn¡ registry
-  rcount           : t_unsigned;                 -- po‡et 32bitov˜ch registr– v AVAILREGS
   iter             : t_unsigned;                 -- kolik byt– se zkop¡ruje v jedn‚ iteraci
-  tg_start         : itarget;                    -- za‡ tek cyklu
-  tg_end           : itarget;                    -- konec cyklu
-  opsrcl           : ioper;                      -- operandy bˆhem iterace cyklu
-  opdstl           : ioper;                      -- operandy bˆhem iterace cyklu
-  rsize            : t_unsigned;                 -- zvolen  velikost registru pro kop¡rov n¡
 
 begin
   verify(342,(opsrc.optype<>io_mem) or (opdst.optype<>io_mem) or (oplength.optype<>io_reg));
@@ -1598,91 +1694,120 @@ begin
 
   -- budou pot©eba nˆjak‚ pracovn¡ registry ?
   -- 8mi bitov˜ bude pot©eba, pokud je velikost b ze nedˆliteln  2 (=lich )
-  reserveavailregs(inst,info,context,getopregs(opsrc)+getopregs(opdst)+getopregs(oplength),availregs,1,is_odd_unsigned(basesize){imm32odd(basesize)});
+  i_reg_reserve_available(inst,info,context,opsrc.get_all_uni_registers+opdst.get_all_uni_registers+oplength.get_all_uni_registers,availregs,1,is_odd_unsigned(basesize){imm32odd(basesize)});
 
-  -- kolik je voln˜ch registr– ?
-  rcount:=regcount(availregs,4);
+  declare var
+    rcount         : t_unsigned;                 -- po‡et 32bitov˜ch registr– v AVAILREGS
 
-  -- nem  b ze p©¡hodou velikost ? (K*4 | basesize, K in 3..RCOUNT)
-  while rcount>2 loop
-    if basesize mod (rcount*4)=0 then break; end if;
-    pred rcount;
-    end loop;
+  begin
+    -- kolik je voln˜ch registr– ?
+    rcount:=i_reg_get_count(availregs,4);
 
-  -- kolik byt– se tedy zkop¡ruje za jednu iteraci ?
-  iter:=min_unsigned(2,rcount)*4;
+    -- nem  b ze p©¡hodou velikost ? (K*4 | basesize, K in 3..RCOUNT)
+    while rcount>2 loop
+      if basesize mod (rcount*4)=0 then break; end if;
+      pred rcount;
+      end loop;
+
+    -- kolik byt– se tedy zkop¡ruje za jednu iteraci ?
+    iter:=min_unsigned(2,rcount)*4;
+    end declare;
 
   -- p©ev‚st :length na :length*basesize
   i_gen_mul_reg(inst,info,context,oplength,unsigned_to_imm32(basesize));
 
-  -- do operand– p©idat indexn¡ registr
-  composeop(inst,info,context,opsrc,oplength,opsrcl);
-  composeop(inst,info,context,opdst,oplength,opdstl);
+  declare var
+    opsrcl         : c_operand;                  -- operandy bˆhem iterace cyklu
+    opdstl         : c_operand;                  -- operandy bˆhem iterace cyklu
 
-  ---- vygenerovat k¢d na obsluhu nekongruentn¡ch byt– ----
-  if basesize mod iter<>0 then
-    -- p©ipravit n vˆ¨t¡
-    newtarget(info,tg_start);
-    newtarget(info,tg_end);
+  begin
+    -- do operand– p©idat indexn¡ registr
+    opsrcl.clone(inst,info,context,opsrc);
+    opsrcl.shift_by_base_or_index(inst,info,context,oplength.reg.reg);
+    opdstl.clone(inst,info,context,opdst);
+    opdstl.shift_by_base_or_index(inst,info,context,oplength.reg.reg);
 
-    -- za‡ tek cyklu
-    settarget(info,tg_start,getaddr(inst));
+    ---- vygenerovat k¢d na obsluhu nekongruentn¡ch byt– ----
+    if basesize mod iter<>0 then
+      declare var
+        tg_start   : itarget;                    -- za‡ tek cyklu
+        tg_end     : itarget;                    -- konec cyklu
+        rsize      : t_unsigned;                 -- zvolen  velikost registru pro kop¡rov n¡
 
-    -- po jak˜ch kusech budeme kop¡rovat ?
-    if basesize mod 4=0 then rsize:=4
-    elsif basesize mod 2=0 then rsize:=2
-    else
-      rsize:=1
+      begin
+        -- p©ipravit n vˆ¨t¡
+        newtarget(info,tg_start);
+        newtarget(info,tg_end);
+
+        -- za‡ tek cyklu
+        settarget(info,tg_start,getaddr(inst));
+
+        -- po jak˜ch kusech budeme kop¡rovat ?
+        if basesize mod 4=0 then rsize:=4
+        elsif basesize mod 2=0 then rsize:=2
+        else rsize:=1
+        end if;
+
+        -- testovat dˆlitelnost osmi
+        addii(inst,info,ii_test,oplength,op_7,op0);
+
+        -- nen¡ u‘ konec ?
+        addjump(inst,info,context,ic_z,tg_end);
+
+        -- p©ipravit index
+        addsubimm(inst,info,context,oplength,rsize);
+
+        -- zkop¡rovat
+        copyblock(inst,info,context,opdstl,opsrcl,availregs,rsize);
+
+        -- dal¨¡ iterace (je-li RSIZE=4, nen¡ pro‡ cyklit)
+        if rsize<>4 then 
+          addjump(inst,info,context,ic_ucond,tg_start); 
+          end if;
+
+        -- adresa skoku na toto m¡sto
+        settarget(info,tg_end,getaddr(inst));
+        end declare;
       end if;
 
-    -- testovat dˆlitelnost osmi
-    addii(inst,info,ii_test,oplength,op_7,op0);
+    ---- vygenerovat hlavn¡ kop¡rovac¡ cyklus ----
+    declare var
+      tg_start     : itarget;                    -- za‡ tek cyklu
+      tg_end       : itarget;                    -- konec cyklu
 
-    -- nen¡ u‘ konec ?
-    addjump(inst,info,ic_z,tg_end);
+    begin
+      -- p©ipravit n vˆ¨t¡
+      newtarget(info,tg_start);
+      newtarget(info,tg_end);
 
-    -- p©ipravit index
-    addsubimm(inst,info,oplength,rsize);
+      -- za‡ tek cyklu
+      settarget(info,tg_start,getaddr(inst));
 
-    -- zkop¡rovat
-    copyblock(inst,info,context,opdstl,opsrcl,availregs,rsize);
+      -- bude se kop¡rovat dal¨¡ch ITER byt–
+      addopimm(inst,info,context,ii_sub,oplength,iter);
 
-    -- dal¨¡ iterace (je-li RSIZE=4, nen¡ pro‡ cyklit)
-    if rsize<>4 then addjump(inst,info,ic_ucond,tg_start); end if;
+      -- nen¡ u‘ konec ?
+      addjump(inst,info,context,ic_s,tg_end);
 
-    -- adresa skoku na toto m¡sto
-    settarget(info,tg_end,getaddr(inst));
-    end if;
+      -- jedna iterace kop¡rov n¡
+      copyblock(inst,info,context,opdstl,opsrcl,availregs,iter);
 
-  ---- vygenerovat hlavn¡ kop¡rovac¡ cyklus ----
-  -- p©ipravit n vˆ¨t¡
-  newtarget(info,tg_start);
-  newtarget(info,tg_end);
+      -- dal¨¡ iterace
+      addjump(inst,info,context,ic_ucond,tg_start);
 
-  -- za‡ tek cyklu
-  settarget(info,tg_start,getaddr(inst));
+      -- adresa skoku na toto m¡sto
+      settarget(info,tg_end,getaddr(inst));
+      end declare;
 
-  -- bude se kop¡rovat dal¨¡ch ITER byt–
-  addopimm(inst,info,ii_sub,oplength,iter);
+  leave
+    -- uvolnit pozmˆnˆn‚ operandy
+    opsrcl.free(info,context);
+    opdstl.free(info,context);
+    end declare;
 
-  -- nen¡ u‘ konec ?
-  addjump(inst,info,ic_s,tg_end);
-
-  -- jedna iterace kop¡rov n¡
-  copyblock(inst,info,context,opdstl,opsrcl,availregs,iter);
-
-  -- dal¨¡ iterace
-  addjump(inst,info,ic_ucond,tg_start);
-
-  -- adresa skoku na toto m¡sto
-  settarget(info,tg_end,getaddr(inst));
-
-  -- uvolnit pozmˆnˆn‚ operandy
-  i_free(info,context,opsrcl);
-  i_free(info,context,opdstl);
-
+leave
   -- uvolnit pracovn¡ registry
-  freeavailregs(info,context,availregs);
+  i_reg_free_available(info,context,availregs);
   end i_gen_move_array;
 
 
@@ -1691,11 +1816,7 @@ begin
 procedure i_gen_movsd_static =
 -- Kop¡rov n¡ pole velikosti SIZE byt– pomoc¡ REP MOVSD.
 ----------------------------------------------------------------------------------------------------
-var
-  opecx            : ioper;                      -- ECX
-  optemp           : ioper;                      -- pomocn˜ operand
-
-begin;
+begin
   verify(377,(opsrc.optype<>io_reg) or (opsrc.reg.reg<>ir_esi)
           or (opdst.optype<>io_reg) or (opdst.reg.reg<>ir_edi));
 
@@ -1709,15 +1830,24 @@ begin;
 
     -- dostate‡nˆ dlouh˜ blok
     else
-      -- alokovat ECX
-      newopuse(inst,info,context,opecx,idefregsize,ir_ecx);
+      declare var
+        opecx      : c_operand;                  -- ECX
 
-      -- do ECX d t po‡et ‡ty©slov
-      addopimm(inst,info,ii_mov,opecx,size shr 2);
+      begin
+        -- alokovat ECX
+        opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
 
-      -- REP MOVSD
-      addip(inst,info,ip_rep);
-      addii(inst,info,ii_movsd,op0,op0,op0);
+        -- do ECX d t po‡et ‡ty©slov
+        addopimm(inst,info,context,ii_mov,opecx,size shr 2);
+
+        -- REP MOVSD
+        addip(inst,info,ip_rep);
+        addii(inst,info,ii_movsd,op0,op0,op0);
+
+      leave
+        -- uvolnit ECX
+        opecx.free(info,context);
+        end declare;
       end if;
 
   -- dojet zbytek modulo 4
@@ -1734,7 +1864,6 @@ begin;
     when 3 do
         addii(inst,info,ii_movsw,op0,op0,op0);
         addii(inst,info,ii_movsb,op0,op0,op0);
-
     end case;
   end i_gen_movsd_static;
 
@@ -1745,7 +1874,7 @@ procedure i_gen_movsd_array =
 -- Kop¡rov n¡ pole pomoc¡ REP MOVSD.
 ----------------------------------------------------------------------------------------------------
 var
-  optemp           : ioper;
+  optemp           : c_operand;
 
 begin
   verify(362,(opecx.optype<>io_reg) or (opecx.reg.reg<>ir_ecx)
@@ -1765,8 +1894,8 @@ begin
       -- vyn sobit ECX
       i_gen_mul_reg(inst,info,context,opecx,unsigned_to_imm32(basesize));
 
-      -- schovat
-      newoptemp(inst,info,context,optemp,idefregsize);
+      -- schovat ECX na stack
+      optemp.create_temporary(inst,info,edt_unsigned,idefregsize);
       addii(inst,info,ii_mov,optemp,opecx,op0);
 
       -- vydˆlit ‡ty©mi
@@ -1781,7 +1910,6 @@ begin
   if basesize mod 4>0 then
     -- na stacku m me ECX
     addii(inst,info,ii_mov,opecx,optemp,op0);
-    freetemp(inst,info,optemp.imm);
 
     -- vymaskovat
     addii(inst,info,ii_and,opecx,op_3,op0);
@@ -1799,6 +1927,10 @@ begin
         addii(inst,info,ii_movsb,op0,op0,op0);
         end if;
     end if;
+
+leave
+  -- uvolnit pracovn¡ operand
+  optemp.free(info,context);
   end i_gen_movsd_array;
 
 
@@ -1813,38 +1945,31 @@ var
 
     ------------------------------------------------------------------------------------------------
     procedure fillzsmall (
-        opdst      : in out ioper) =
+        opdst      : in out c_operand) =
     -- Fillzov n¡ mal‚ho objektu.
     ------------------------------------------------------------------------------------------------
     begin
       -- zbavit se ‡tve©ic
-      opdst.size:=4;
+      opdst.adjust_size(4);
       while remaining_size div 4>0 loop
         addii(inst,info,ii_mov,opdst,op_0,op0);
-        opdst.disp+timm32(4);
+        opdst.shift_displacement(4);
         remaining_size-4;
         end loop;
 
       -- zbavit se dvojic
       if remaining_size div 2>0 then
-        opdst.size:=2;
+        opdst.adjust_size(2);
         addii(inst,info,ii_mov,opdst,op_0,op0);
-        opdst.disp+timm32(2);
+        opdst.shift_displacement(2);
         end if;
 
       -- zbavit se posledn¡ho bytu
       if remaining_size mod 2>0 then
-        opdst.size:=1;
+        opdst.adjust_size(1);
         addii(inst,info,ii_mov,opdst,op_0,op0);
         end if;
       end fillzsmall;
-
-var
-  opeax            : ioper;                      -- nula pro STOSD
-  opecx            : ioper;                      -- po‡et prvk–
-  optemp           : ioper;                      -- pomocn˜ operand
-  opmem            : ioper;                      -- c¡lov˜ operand ve tvaru [EDI+ofs]
-
 begin
   -- zb˜v  zkop¡rovat cel‚ pole
   remaining_size:=size;
@@ -1857,45 +1982,65 @@ begin
 
     -- velk˜ objekt => pou‘¡t STOSD
     else
-      -- na‡¡st adresu do EDI
-      i_gen_lea(inst,info,context,opdst,in_edi);
+      declare var
+        opeax      : c_operand;                  -- nula pro STOSD
+        opecx      : c_operand;                  -- po‡et prvk–
 
-      -- shodit Direction Flag
-      addii(inst,info,ii_cld,op0,op0,op0);
+      begin
+        -- na‡¡st adresu do EDI
+        i_gen_lea(inst,info,context,opdst,in_edi);
 
-      -- pot©ebujeme EAX a ECX
-      newopuse(inst,info,context,opeax,idefregsize,ir_eax);
-      newopuse(inst,info,context,opecx,idefregsize,ir_ecx);
+        -- shodit Direction Flag
+        addii(inst,info,ii_cld,op0,op0,op0);
 
-      -- do EAX d t nulu
-      addii(inst,info,ii_mov,opeax,op_0,op0);
+        -- pot©ebujeme EAX a ECX
+        opeax.create_use_register(inst,info,context,edt_unsigned,ir_eax);
+        opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
 
-      -- do ECX d t po‡et ‡tve©ic
-      nullop(optemp,io_imm);
-      optemp.imm:=unsigned_to_imm32(remaining_size div 4{size-size mod 4});
-      addii(inst,info,ii_mov,opecx,optemp,op0);
-      i_free(info,context,optemp);
+        -- do EAX d t nulu
+        addii(inst,info,ii_mov,opeax,op_0,op0);
 
-      -- REP STOSD
-      addip(inst,info,ip_rep);
-      addii(inst,info,ii_stosd,op0,op0,op0);
+        -- do ECX d t po‡et ‡tve©ic
+        declare var
+          optemp   : c_operand;                  -- pomocn˜ operand
+        begin
+          optemp.create_imm(edt_unsigned,0,unsigned_to_imm32(remaining_size div 4{size-size mod 4}));
+          addii(inst,info,ii_mov,opecx,optemp,op0);
+        leave
+          optemp.free(info,context);
+          end declare;
 
-      -- dojet zbytek
-      if remaining_size mod 4>0 then
-        -- sestavit [EDI]
-        nullop(opmem,io_mem);
-        i_use(inst,info,context,ir_edi,opmem.base,idefregsize);
-        -- Ondra 12.9.2002 : REP STOSD u‘ nastavil EDI na za‡ tek zbytku
-        opmem.disp:=timm32(0{remaining_size-remaining_size mod 4});
+        -- REP STOSD
+        addip(inst,info,ip_rep);
+        addii(inst,info,ii_stosd,op0,op0,op0);
 
-        -- vyfillzovat zbytek
-        remaining_size:=remaining_size mod 4;
-        fillzsmall(opmem);
-        end if;
+        -- dojet zbytek
+        if remaining_size mod 4>0 then
+          declare var
+            opmem  : c_operand;                  -- c¡lov˜ operand ve tvaru [EDI+ofs]
 
-      -- uvolnit pomocn‚ operandy
-      i_free(info,context,opeax);
-      i_free(info,context,opecx);
+          begin
+            -- sestavit [EDI]
+            opmem.clone(inst,info,context,opdst);
+            opmem.transform_reg_to_mem(edt_binary,0);
+            -- Ondra 12.9.2002 : REP STOSD u‘ nastavil EDI na za‡ tek zbytku
+            -- opmem.disp:=timm32(0{remaining_size-remaining_size mod 4});
+
+            -- vyfillzovat zbytek
+            remaining_size:=remaining_size mod 4;
+            fillzsmall(opmem);
+
+          leave
+            -- uvolnit [EDI]
+            opmem.free(info,context);
+            end declare;
+          end if;
+
+      leave
+        -- uvolnit pomocn‚ operandy
+        opeax.free(info,context);
+        opecx.free(info,context);
+        end declare;
       end if;
   end i_gen_fillz_static;
 
@@ -1908,7 +2053,7 @@ procedure i_gen_fillz_dynamic =
 -- OPSIZE mus¡ b˜t registr ECX.
 ----------------------------------------------------------------------------------------------------
 var
-  opeax            : ioper;                      -- nula pro STOSD
+  opeax            : c_operand;                  -- nula pro STOSD
   tg_3             : itarget;                    -- c¡l skoku na dojet¡ zb˜vaj¡c¡ch byt¡k–
   tg_end           : itarget;                    -- c¡l skoku na konec
 
@@ -1926,14 +2071,14 @@ begin
   addii(inst,info,ii_cld,op0,op0,op0);
 
   -- pot©ebujeme EAX
-  newopuse(inst,info,context,opeax,idefregsize,ir_eax);
+  opeax.create_use_register(inst,info,context,edt_unsigned,ir_eax);
 
   -- do EAX d t nulu
   addii(inst,info,ii_mov,opeax,op_0,op0);
 
   -- nen¡ velikost p©¡znivˆ mal  ?
   addii(inst,info,ii_cmp,opsize,op_3,op0);
-  addjump(inst,info,ic_be,tg_3);
+  addjump(inst,info,context,ic_be,tg_3);
 
   -- schovat si ECX
   addii(inst,info,ii_push,opsize,op0,op0);
@@ -1955,7 +2100,7 @@ begin
   addii(inst,info,ii_and,opsize,op_3,op0);
 
   -- nen¡ to nula ? (nemus¡ se porovn vat, flagy nastav¡ AND)
-  addjump(inst,info,ic_e,tg_end);
+  addjump(inst,info,context,ic_e,tg_end);
 
   -- dojet zbytek
   addip(inst,info,ip_rep);
@@ -1964,8 +2109,9 @@ begin
   -- c¡l skoku na toto m¡sto
   settarget(info,tg_end,getaddr(inst));
 
+leave
   -- uvolnit pomocn‚ operandy
-  i_free(info,context,opeax);
+  opeax.free(info,context);
   end i_gen_fillz_dynamic;
 
 
@@ -1976,16 +2122,14 @@ procedure i_gen_subprogram_address =
 ----------------------------------------------------------------------------------------------------
 begin
   if (psubprog^.etype=et_procedure) and (pentity_procedure(psubprog)^.import<>nil)
-    then nullop(vysl,io_mem)
+    then vysl.create_memory_address(inst,info,context,edt_address,4,ir_none,0);
     else
       if relative
-        then nullop(vysl,io_rel);
-        else nullop(vysl,io_imm);
+        then vysl.create_relative_address(4);
+        else vysl.create_imm(edt_address,4,0);
         end if;
       end if;
-  vysl.rtype:=irt_symbol;
-  vysl.psym:=psubprog;
-  vysl.size:=4;
+  vysl.set_relo_entity(psubprog);
   end i_gen_subprogram_address;
 
 
@@ -2016,12 +2160,11 @@ var
 
 begin
   verify(321,vysl.optype<>io_mem);
-  vysl.disp+imm32_lpointer32;
+  vysl.adjust_size(unidata_size_to_imm32(cpu32_rtattribsize[rta]));
   if rta>rta:first then
     getrtattribsetsize(get_set{%%TODO(SET)expr^.rta_used{%%ATTR}*rtattribset:[rta:first..pred rta]},x);
-    vysl.disp+x;
     end if;
-  vysl.size:=unidata_size_to_imm32(cpu32_rtattribsize[rta]);
+  vysl.shift_displacement(imm32_to_signed{%%X}(imm32_lpointer32+x));
   end i_gen_adjust_rta_position;
 
 
