@@ -1,0 +1,206 @@
+----------------------------------------------------------------------------------------------------
+--module private chains =
+-- Flex Run-time Library
+-- Memory manager definitions
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+class private c_rtl_chain =
+  var
+    cslock         : t_rtl_critical;             --rychly zamek 
+
+    ------------------------------------------------------------------------------------------------
+    virtual freeitem =
+    -- vola se pri clear all, tato implementace je prazdna
+    ------------------------------------------------------------------------------------------------
+    begin
+      del_not_locked(hdr);
+      end freeitem;
+    
+    ------------------------------------------------------------------------------------------------
+    static create_subchain =
+    ------------------------------------------------------------------------------------------------
+    begin
+      rtl_critical_lock(cslock);
+      new subchain;
+      subchain^.parentchain:=^this;
+      if firstchain=nil then
+        firstchain:=subchain;
+      else
+        firstchain^.prevchain:=subchain;
+        subchain^.nextchain:=firstchain;
+        firstchain:=subchain;
+        end if;
+      rtl_critical_unlock(cslock);
+      end create_subchain;
+
+    ------------------------------------------------------------------------------------------------
+    static destroy_subchain =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if subchain^.parentchain<>^this then
+        raise memory_error;
+        end if;
+
+      rtl_critical_lock(cslock);
+
+      --vyradim ho z retazu
+      if firstchain=subchain then
+        firstchain:=subchain^.nextchain;
+        firstchain^.prevchain:=nil;
+      else
+        if subchain^.nextchain<>nil then
+          subchain^.nextchain^.prevchain:=subchain^.prevchain;
+          subchain^.prevchain^.nextchain:=subchain^.nextchain;
+        else
+          subchain^.prevchain^.nextchain:=nil;
+          end if;
+        end if;
+
+      rtl_critical_unlock(cslock);
+
+      -- uvolnim vse co drzi on
+      subchain^.cleanall(num);
+
+      -- odalokuju
+      discard subchain;
+      end destroy_subchain;
+
+    ------------------------------------------------------------------------------------------------
+    static cleanall =
+    ------------------------------------------------------------------------------------------------
+    begin
+      rtl_critical_lock(cslock);
+      while(firstchain<>nil) loop
+        destroy_subchain(num,firstchain);
+        end loop;
+      while(first<>nil) loop
+        freeitem(first,num);
+        end loop;
+      rtl_critical_unlock(cslock);
+    {%%TODO catch
+      when others do
+        raise memory_corrupt_error;}
+      end cleanall;
+
+    ------------------------------------------------------------------------------------------------
+    static del = 
+    ------------------------------------------------------------------------------------------------
+    begin
+      rtl_critical_lock(cslock);
+      del_not_locked(hdr);
+      rtl_critical_unlock(cslock);
+      end del;
+
+    ------------------------------------------------------------------------------------------------
+    static add =
+    ------------------------------------------------------------------------------------------------
+    begin
+      rtl_critical_lock(cslock);
+      add_not_locked(hdr);
+      rtl_critical_unlock(cslock);
+      end add;
+
+    ------------------------------------------------------------------------------------------------
+    static del_not_locked = 
+    ------------------------------------------------------------------------------------------------
+    begin
+      if first=hdr then
+        first:=hdr^.next;
+        if first<>nil then
+          first^.prev:=nil;
+        else
+          first:=nil;
+          end if;
+      else
+        if hdr^.next<>nil then
+          hdr^.next^.prev:=hdr^.prev;
+          hdr^.prev^.next:=hdr^.next;
+        else
+          hdr^.prev^.next:=nil;
+          end if;
+        end if;
+      end del_not_locked;
+
+    ------------------------------------------------------------------------------------------------
+    static add_not_locked =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if first=nil then
+        first:=hdr;
+        hdr^.next:=nil;
+        hdr^.prev:=nil;
+      else
+        first^.prev:=hdr;
+        hdr^.prev:=nil;
+        hdr^.next:=first;
+        first:=hdr;
+        end if;
+      end add_not_locked;
+
+    ------------------------------------------------------------------------------------------------
+    static get_next_chain_item =
+    ------------------------------------------------------------------------------------------------
+    begin
+      rtl_critical_lock(cslock);
+      get_next_chain_item_not_locked(item);
+      rtl_critical_unlock(cslock);
+      end get_next_chain_item;
+
+    ------------------------------------------------------------------------------------------------
+    static get_next_chain_item_not_locked =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if item=nil then
+        item:=first;
+      else
+        item:=item^.next;
+        end if;
+      end get_next_chain_item_not_locked;
+
+    ------------------------------------------------------------------------------------------------
+    static lock =
+    ------------------------------------------------------------------------------------------------
+    begin
+      rtl_critical_lock(cslock);
+      end lock;
+
+    ------------------------------------------------------------------------------------------------
+    static unlock =
+    ------------------------------------------------------------------------------------------------
+    begin
+      rtl_critical_unlock(cslock);
+      end unlock;
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    ------------------------------------------------------------------------------------------------
+    begin
+      first:=nil;
+      firstchain:=nil;
+      parentchain:=nil;
+      nextchain:=nil;
+      prevchain:=nil;
+      rtl_critical_new(cslock);
+      end entry;
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    ------------------------------------------------------------------------------------------------
+    begin
+      cleanall({mun}0);
+      rtl_critical_discard(cslock);
+      end exit;
+    end c_rtl_chain;
+
+class private c_rtl_memchain =
+    ------------------------------------------------------------------------------------------------
+    override freeitem =
+    -- vola se pri clear all, tato implementace uvolnuje pamet
+    ------------------------------------------------------------------------------------------------
+    begin
+      p_rtl_memmgr_header(first:unchecked)^.dealocator^.memmgr_free(num,hdr2adr(p_rtl_memmgr_header(hdr:unchecked)),^this);
+      end freeitem;
+    end c_rtl_memchain;
+
+--end chains;

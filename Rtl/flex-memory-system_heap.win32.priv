@@ -1,0 +1,194 @@
+----------------------------------------------------------------------------------------------------
+module private system_heap =
+-- Flex Run-time Library
+-- Memory manager - segregated
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+type THANDLE = t_rtl_unsigned32;
+type DWORD   = t_rtl_unsigned32;
+type SIZE_T  = t_rtl_unsigned32;
+type BOOL    = t_rtl_logical8;
+type LPVOID  = t_rtl_pointer;
+type LPCVOID = t_rtl_pointer;
+
+procedure HeapAlloc(
+    hHeap           : in THANDLE; 
+    dwFlags         : in DWORD; 
+    dwBytes         : in SIZE_T)
+                      return LPVOID;
+#pragma convention(HeapAlloc,system);
+#pragma import(HeapAlloc,'HeapAlloc','kernel32.dll');
+
+procedure HeapReAlloc(
+    hHeap           : in THANDLE; 
+    dwFlags         : in DWORD; 
+    lpMem           : in LPVOID; 
+    dwBytes         : in SIZE_T)
+                      return LPVOID;
+#pragma convention(HeapReAlloc,system);
+#pragma import(HeapReAlloc,'HeapReAlloc','kernel32.dll');
+
+procedure HeapFree(
+    hHeap           : in THANDLE; 
+    dwFlags         : in DWORD; 
+    lpMem           : in LPVOID)
+                      return BOOL;
+#pragma convention(HeapFree,system);
+#pragma import(HeapFree,'HeapFree','kernel32.dll');
+
+procedure HeapValidate(
+    hHeap           : in THANDLE; 
+    dwFlags         : in DWORD; 
+    lpMem           : in LPCVOID)
+                      return BOOL;
+#pragma convention(HeapValidate,system);
+#pragma import(HeapValidate,'HeapValidate','kernel32.dll');
+
+{
+procedure HeapSize(
+    hHeap           : in THANDLE; 
+    dwFlags         : in DWORD; 
+    lpMem           : in LPCVOID)
+                      return SIZE_T;
+#pragma convention(HeapSize,system);
+#pragma import(HeapSize,'HeapSize','kernel32.dll');
+
+
+procedure HeapCompact(
+    hHeap           : in THANDLE; 
+    dwFlags         : in DWORD)
+                      return SIZE_T;
+#pragma convention(HeapCompact,system);
+#pragma import(HeapCompact,'HeapCompact','kernel32.dll');
+
+procedure HeapCreate(
+    flOptions       : in DWORD; 
+    dwInitialSize   : in SIZE_T; 
+    dwMaximumSize   : in SIZE_T)
+                      return THANDLE;
+#pragma convention(HeapCreate,system);
+#pragma import(HeapCreate,'HeapCreate','kernel32.dll');
+
+procedure HeapDestroy(
+    hHeap           : in out THANDLE)
+                      return BOOL;
+#pragma convention(HeapDestroy,system);
+#pragma import(HeapDestroy,'HeapDestroy','kernel32.dll');
+
+procedure GetLastError
+                      return DWORD;
+#pragma convention(GetLastError,system);
+#pragma import(GetLastError,'GetLastError','kernel32.dll');
+
+
+}
+procedure GetProcessHeap
+                      return THANDLE;
+#pragma convention(GetProcessHeap,system);
+#pragma import(GetProcessHeap,'GetProcessHeap','kernel32.dll');
+
+procedure CloseHandle(
+    hObject         : in THANDLE)
+                      return BOOL;
+#pragma convention(CloseHandle,system);
+#pragma import(CloseHandle,'CloseHandle','kernel32.dll');
+
+const 
+    initial_heap_size = 256*1024;
+
+class private c_rtl_systemmemheap =
+    var
+      sysheap             : THANDLE;
+
+    ------------------------------------------------------------------------------------------------
+    override memmgr_alloc =
+    ------------------------------------------------------------------------------------------------
+    var
+      header       : p_rtl_memmgr_header;
+    begin
+
+      --%%TODO Remove debug
+      --if (memory_blocks_conter mod 2500) = 0 then
+      --  memmgr_validate;
+      --  end if;
+      
+      header:unchecked:=HeapAlloc(sysheap,0,addheader(size));
+      if header=nil then
+        raise memory_alloc_error;
+        end if;
+      set_header_alloc(num,header,size,^this,chain,nil);
+      addr:=hdr2adr(header);
+      end memmgr_alloc;
+
+    ------------------------------------------------------------------------------------------------
+    override  memmgr_adjust =
+    ------------------------------------------------------------------------------------------------
+    var
+      header       : p_rtl_memmgr_header;
+    begin
+      header:=adr2hdr(addr);
+      check_allocated_header(header);
+      header:unchecked:=HeapReAlloc(sysheap,0,header,addheader(size));
+      if header=nil then
+        raise memory_alloc_error;
+        end if;
+      set_header_alloc(num,header,size,^this,nil,nil);
+      addr:=hdr2adr(header);
+      end memmgr_adjust;
+
+    -----------------------------------------------------------------------------------------------
+    override  memmgr_free =
+    ------------------------------------------------------------------------------------------------
+    var
+      header       : p_rtl_memmgr_header;
+    begin
+      header:=adr2hdr(addr);
+      check_allocated_header(header);
+      set_header_free(num,header,nil,chain);
+      if not HeapFree(sysheap,0,header) then
+        raise memory_corrupt_error;
+        end if;
+      end memmgr_free;
+
+    -----------------------------------------------------------------------------------------------
+    override  memmgr_validate =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if not HeapValidate(sysheap,0,nil) then
+        raise memory_corrupt_error;
+        end if;
+      end memmgr_validate;
+    
+    
+    ------------------------------------------------------------------------------------------------
+    entry =
+    ------------------------------------------------------------------------------------------------
+    begin
+      sysheap:=0;
+
+      -- vytvorim si systemovy heap
+      -- sysheap:=HeapCreate(0,initial_heap_size,0);
+      -- nebo dostanu heap procesu
+      sysheap:=GetProcessHeap();
+      if sysheap=0 then 
+        raise memory_error;
+        end if;
+      end entry;
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    ------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO Remove debug
+      --memmgr_validate;
+
+      -- zrusim systemovy heap
+      -- pouze pokud neni heap procesu
+      --if HeapDestroy(sysheap)=0 then
+      --  raise memory_error;
+      --  end if;
+      end exit;
+
+    end c_rtl_systemmemheap;
+end system_heap;

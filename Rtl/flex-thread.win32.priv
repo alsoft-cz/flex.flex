@@ -1,0 +1,906 @@
+---------------------------------------------------------------------------------------------------
+module private thread =
+-- Flex Run-time Library
+-- Thread variables
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+with
+    synchronization;
+
+type
+    t_thread_sysTIBuservalue;
+    p_thread_sysTIBuservalue = ^t_thread_sysTIBuservalue;
+    t_thread_sysTIBuservalue = record
+      value        : t_rtl_native_unsigned;
+      prev         : p_thread_sysTIBuservalue;
+      end record;
+    t_thread_header = record
+      estack       : t_rtl_pointer;
+      threadid     : t_thread_id;
+      threadhandle : t_rtl_native_unsigned;
+      parentthread : p_thread_header;
+      variables    : vars.t_thread_vars;
+      usagecount   : t_rtl_native_unsigned;
+      TIBusrval    : t_thread_sysTIBuservalue;
+      knownstart   : t_rtl_logical8;
+      listnext     : p_thread_header;
+      listprev     : p_thread_header;
+      ref_lock     : t_rtl_mutex;
+      ref_count    : t_rtl_native_unsigned;
+      ref_first    : p_thread_ref;
+      flexreserve  : array 0..63 of t_rtl_native_unsigned;
+      userreserve  : array 0..63 of t_rtl_native_unsigned;
+      end record;
+
+var
+{system TSL}
+    sthread_header : t_rtl_unsigned32;
+-- main thread task control block
+    mainthreadheader : t_thread_header;
+    thread_list_first : p_thread_header;
+    thread_list_lock  : t_rtl_mutex;
+    thread_list_count : t_rtl_native_unsigned;
+
+
+type THANDLE = t_rtl_unsigned32;
+type DWORD   = t_rtl_unsigned32;
+type SIZE_T  = t_rtl_unsigned32;
+type BOOL    = t_rtl_logical8;
+type LVOID   = t_rtl_pointer;
+type LPVOID  = t_rtl_pointer;
+type LPCVOID = t_rtl_pointer;
+    
+type 
+    t_thread_starter;
+    p_thread_starter = ^t_thread_starter for machine_pointer use true;
+
+type
+    t_rtl_thread_entry_internal = procedure ( starter : p_thread_starter) return DWORD;
+    --#pragma convention(t_rtl_thread_entry_internal,system);
+    p_rtl_thread_entry_internal =^t_rtl_thread_entry_internal for machine_pointer use true;
+
+
+const
+  STACK_SIZE_PARAM_IS_A_RESERVATION= $10000;
+
+procedure CreateThread(
+    lpThreadAttributes : in t_rtl_pointer; 
+    dwStackSize     : in SIZE_T; 
+    lpStartAddress  : in p_rtl_thread_entry_internal; 
+    lpParameter     : in p_thread_starter; 
+    dwCreationFlags : in DWORD; 
+    lpThreadId      : out t_thread_id)
+                      return THANDLE;
+#pragma convention(CreateThread,system);
+#pragma import(CreateThread,'CreateThread','kernel32.dll');
+
+procedure Sleep(
+    dwMilliseconds  : in DWORD);
+#pragma convention(Sleep,system);
+#pragma import(Sleep,'Sleep','kernel32.dll');
+
+procedure GetCurrentThread
+                      return THANDLE;
+#pragma convention(GetCurrentThread,system);
+#pragma import(GetCurrentThread,'GetCurrentThread','kernel32.dll');
+
+procedure GetCurrentThreadId
+                      return DWORD;
+#pragma convention(GetCurrentThreadId,system);
+#pragma import(GetCurrentThreadId,'GetCurrentThreadId','kernel32.dll');
+
+
+--#define SYNCHRONIZE                      (0x00100000L)
+--#define STANDARD_RIGHTS_REQUIRED         (0x000F0000L)
+--#define THREAD_ALL_ACCESS                (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x3FF)
+const
+    THREAD_ALL_ACCESS : DWORD = 2032639; --$0x001F03FF;
+
+procedure OpenThread(
+    dwDesiredAccess : DWORD; 
+    bInheritHandle  : BOOL; 
+    dwThreadId      : DWORD)
+                      return THANDLE;
+#pragma convention(OpenThread,system);
+#pragma import(OpenThread,'OpenThread','kernel32.dll');
+
+
+procedure TlsAlloc
+                      return DWORD;
+#pragma convention(TlsAlloc,system);
+#pragma import(TlsAlloc,'TlsAlloc','kernel32.dll');
+
+procedure TlsFree(
+    dwTlsIndex      : in DWORD)
+                      return BOOL;
+#pragma convention(TlsFree,system);
+#pragma import(TlsFree,'TlsFree','kernel32.dll');
+
+procedure TlsGetValue(
+    dwTlsIndex      : in DWORD)
+                      return LPVOID;
+#pragma convention(TlsGetValue,system);
+#pragma import(TlsGetValue,'TlsGetValue','kernel32.dll');
+
+procedure TlsSetValue(
+    dwTlsIndex      : in DWORD; 
+    lpTlsValue      : in LPVOID)
+                      return BOOL;
+#pragma convention(TlsSetValue,system);
+#pragma import(TlsSetValue,'TlsSetValue','kernel32.dll');
+
+
+procedure WaitForSingleObject(
+    hHandle         : in THANDLE; 
+    dwMilliseconds  : in DWORD)
+                      return DWORD;
+#pragma convention(WaitForSingleObject,system);
+#pragma import(WaitForSingleObject,'WaitForSingleObject','kernel32.dll');
+
+const 
+    INFINITE       : t_rtl_unsigned32 = $FFFFFFFF;
+    WAIT_FAILED    : t_rtl_unsigned32 = $FFFFFFFF;
+    INVALID_HANDLE : t_rtl_unsigned32 = $FFFFFFFF;
+
+procedure ResumeThread(
+    hThread         : in THANDLE)
+                      return DWORD;
+#pragma convention(ResumeThread,system);
+#pragma import(ResumeThread,'ResumeThread','kernel32.dll');
+
+procedure SuspendThread(
+    hThread         : in THANDLE)
+                      return DWORD;
+#pragma convention(SuspendThread,system);
+#pragma import(SuspendThread,'SuspendThread','kernel32.dll');
+
+
+procedure TerminateThread(
+    hThread         : in THANDLE; 
+    dwExitCode      : in DWORD)
+                      return BOOL;
+#pragma convention(TerminateThread,system);
+#pragma import(TerminateThread,'TerminateThread','kernel32.dll');
+
+procedure CloseHandle(
+    hObject         : in THANDLE)
+                      return BOOL;
+#pragma convention(CloseHandle,system);
+#pragma import(CloseHandle,'CloseHandle','kernel32.dll');
+
+{
+type
+    t_NT_TIB;
+    p_NT_TIB = ^t_NT_TIB;
+    t_NT_TIB = record
+      ExceptionList : PVOID;
+      StackBase     : PVOID;
+      StackLimit    : PVOID;
+      SubSystemTib  : PVOID;
+      FiberData     : PVOID;
+      ArUserPointer : PVOID;
+      Self          : p_NT_TIB;
+      end record;
+      }
+
+type
+    t_threadvar_id = t_rtl_native_unsigned;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_initialize_threads_immediate_threadvar(
+    threadvarid    : in t_threadvar_id);
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinitialize_threads_threadvar(
+    threadvarid    : in t_threadvar_id);
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_thread_safe return p_thread_header;
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_thread return p_thread_header;
+----------------------------------------------------------------------------------------------------
+procedure rtl_suspend_thread_internal(
+    threadheader   : in p_thread_header);
+----------------------------------------------------------------------------------------------------
+procedure rtl_resume_thread_internal(
+    threadheader   : in p_thread_header);
+----------------------------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------------------------
+#separate private vars;
+----------------------------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_initialize_threads_immediate_threadvar =
+----------------------------------------------------------------------------------------------------
+var
+    mythreadheader : p_thread_header;
+    threadheader   : p_thread_header;
+    estackback     : t_rtl_pointer;
+begin
+  mythreadheader:=rtl_get_current_thread;
+  rtl_mutex_lock(thread_list_lock);
+  threadheader:=thread_list_first;
+  while(threadheader<>nil) loop
+    --zastavim ho
+    if threadheader<>mythreadheader then
+      rtl_suspend_thread_internal(threadheader);
+      end if;
+    
+    --zalohuju jeho estack
+    estackback:=threadheader^.estack;
+
+    --nastavim si tam svuj aby vyjimka padala na muj estack
+    threadheader^.estack:=mythreadheader^.estack;
+
+    --nastavim jeho TIB
+    #syntax asm;
+      --set new value
+      mov    eax,threadheader
+      insert $64
+      mov    [20],eax
+      #end asm;
+
+    -- nastavit jako systemovou threadovou promennou
+    if not TlsSetValue(sthread_header,LPVOID(threadheader:unchecked)) then
+      raise tasking_threadvar_error;
+      end if;
+
+    --inicializuju jeho jmenem
+    if vars.rtl_create_threadvar(threadvarid,threadheader,nil)=nil then
+      raise tasking_threadvar_error;
+      end if;
+
+    --obnovim jeho estack
+    threadheader^.estack:=estackback;
+
+    --nastavim zase svuj TIB
+    #syntax asm;
+      --set new value
+      mov    eax,mythreadheader
+      insert $64
+      mov    [20],eax
+      #end asm;
+
+    -- nastavit jako systemovou threadovou promennou
+    if not TlsSetValue(sthread_header,LPVOID(mythreadheader:unchecked)) then
+      raise tasking_error;
+      end if;
+
+    --zase ho pustim
+    if threadheader<>mythreadheader then
+      rtl_resume_thread_internal(threadheader);
+      end if;
+
+    threadheader:=threadheader^.listnext;
+    end loop;
+  rtl_mutex_unlock(thread_list_lock);
+
+leave
+  if threadheader<>nil then
+    --asi vyjimka
+
+    --obnovim jeho estack
+    threadheader^.estack:=estackback;
+
+    --zase ho pustim
+    if threadheader<>mythreadheader then
+      rtl_resume_thread_internal(threadheader);
+      end if;
+    end if;
+  --nastavim zase svuj TIB
+  #syntax asm;
+    --set new value
+    mov    eax,mythreadheader
+    insert $64
+    mov    [20],eax
+    #end asm;
+
+  -- nastavit jako systemovou threadovou promennou
+  if not TlsSetValue(sthread_header,LPVOID(mythreadheader:unchecked)) then
+    raise tasking_error;
+    end if;
+  end rtl_initialize_threads_immediate_threadvar; 
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinitialize_threads_threadvar =
+----------------------------------------------------------------------------------------------------
+var
+    mythreadheader : p_thread_header;
+    threadheader   : p_thread_header;
+    estackback     : t_rtl_pointer;
+begin
+  mythreadheader:=rtl_get_current_thread;
+  rtl_mutex_lock(thread_list_lock);
+  threadheader:=thread_list_first;
+  while(threadheader<>nil) loop
+    --zastavim ho
+    if threadheader<>mythreadheader then
+      rtl_suspend_thread_internal(threadheader);
+      end if;
+
+    --zalohuju jeho estack
+    estackback:=threadheader^.estack;
+
+    --nastavim si tam svuj aby vyjimka padala na muj estack
+    threadheader^.estack:=mythreadheader^.estack;
+
+    --nastavim jeho TIB
+    #syntax asm;
+      --set new value
+      mov    eax,threadheader
+      insert $64
+      mov    [20],eax
+      #end asm;
+
+    -- nastavit jako systemovou threadovou promennou
+    if not TlsSetValue(sthread_header,LPVOID(threadheader:unchecked)) then
+      raise tasking_threadvar_error;
+      end if;
+
+    --uvolnim jeho jmenem
+    vars.rtl_free_threadvar(threadvarid,threadheader);
+
+    --obnovim jeho estack
+    threadheader^.estack:=estackback;
+
+    --nastavim zase svuj TIB
+    #syntax asm;
+      --set new value
+      mov    eax,mythreadheader
+      insert $64
+      mov    [20],eax
+      #end asm;
+
+    -- nastavit jako systemovou threadovou promennou
+    if not TlsSetValue(sthread_header,LPVOID(mythreadheader:unchecked)) then
+      raise tasking_error;
+      end if;
+
+    --zase ho pustim
+    if threadheader<>mythreadheader then
+      rtl_resume_thread_internal(threadheader);
+      end if;
+
+    threadheader:=threadheader^.listnext;
+    end loop;
+ 
+  rtl_mutex_unlock(thread_list_lock);
+leave
+  if threadheader<>nil then
+    --asi vyjimka
+
+    --obnovim jeho estack
+    threadheader^.estack:=estackback;
+
+    --zase ho pustim
+    if threadheader<>mythreadheader then
+      rtl_resume_thread_internal(threadheader);
+      end if;
+    end if;
+  --nastavim zase svuj TIB
+  #syntax asm;
+    --set new value
+    mov    eax,mythreadheader
+    insert $64
+    mov    [20],eax
+    #end asm;
+
+  -- nastavit jako systemovou threadovou promennou
+  if not TlsSetValue(sthread_header,LPVOID(mythreadheader:unchecked)) then
+    raise tasking_error;
+    end if;
+  end rtl_deinitialize_threads_threadvar; 
+
+
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_thread_list_add(
+    threadheader   : in p_thread_header) =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_mutex_lock(thread_list_lock);
+  threadheader^.listprev:=nil;
+  threadheader^.listnext:=thread_list_first;
+  if thread_list_first<>nil then
+    thread_list_first^.listprev:=threadheader;
+    end if;
+  thread_list_first:=threadheader;
+  thread_list_count + 1;
+  rtl_mutex_unlock(thread_list_lock);
+  end rtl_thread_list_add;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_thread_list_del(
+    threadheader   : in p_thread_header) =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_mutex_lock(thread_list_lock);
+  if threadheader^.listprev=nil then
+    thread_list_first:=threadheader^.listnext;
+    if thread_list_first<>nil then
+      thread_list_first^.listprev:=nil;
+      end if;
+    threadheader^.listnext:=nil;
+  else
+    if threadheader^.listnext<>nil then
+      threadheader^.listnext^.listprev:=threadheader^.listprev;
+      end if;
+    threadheader^.listprev^.listnext:=threadheader^.listnext;
+    threadheader^.listprev:=nil;
+    threadheader^.listnext:=nil;
+    end if;
+  thread_list_count - 1;
+  rtl_mutex_unlock(thread_list_lock);
+  end rtl_thread_list_del;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_thread_safe =
+----------------------------------------------------------------------------------------------------
+begin 
+  result:unchecked:=TlsGetValue(sthread_header);
+  end rtl_get_current_thread_safe;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_thread =
+----------------------------------------------------------------------------------------------------
+begin 
+  #syntax asm;
+      insert $64
+      mov    eax,[20]
+      mov    result,eax
+      #end asm;
+  end rtl_get_current_thread;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_suspend_thread_internal =
+----------------------------------------------------------------------------------------------------
+begin 
+  if SuspendThread(threadheader^.threadhandle)=$FFFFFFFF then 
+    raise tasking_error;
+    end if;
+  end rtl_suspend_thread_internal;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_resume_thread_internal =
+----------------------------------------------------------------------------------------------------
+begin 
+  if ResumeThread(threadheader^.threadhandle)=$FFFFFFFF then 
+    raise tasking_error;
+    end if;
+  end rtl_resume_thread_internal;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_create_thread_ref(
+    threadheader   : in p_thread_header;
+    outthread_ref  : in out ref t_thread_ref)=
+----------------------------------------------------------------------------------------------------
+begin
+  outthread_ref.threadheader:=threadheader;
+  outthread_ref.next_ref:=threadheader^.ref_first;
+  outthread_ref.prev_ref:=nil;
+  if threadheader^.ref_first<>nil then
+    threadheader^.ref_first^.prev_ref:=^outthread_ref;
+    end if;
+  threadheader^.ref_first:=^outthread_ref;
+  threadheader^.ref_count + 1; 
+  end rtl_create_thread_ref;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_thread_ref =
+----------------------------------------------------------------------------------------------------
+var
+    threadheader   : p_thread_header;
+begin
+  threadheader:=rtl_get_current_thread;
+  rtl_mutex_lock(threadheader^.ref_lock);
+  rtl_create_thread_ref(threadheader,thread_ref);
+  rtl_mutex_unlock(threadheader^.ref_lock);
+  end rtl_get_current_thread_ref;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_copy_thread_ref =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_mutex_lock(inthread_ref.threadheader^.ref_lock);
+  rtl_create_thread_ref(inthread_ref.threadheader,outthread_ref);
+  rtl_mutex_unlock(inthread_ref.threadheader^.ref_lock);
+  end rtl_copy_thread_ref;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_discard_thread_ref =
+----------------------------------------------------------------------------------------------------
+begin
+  if thread_ref.threadheader<>nil then
+    rtl_mutex_lock(thread_ref.threadheader^.ref_lock);
+    if ^thread_ref=thread_ref.threadheader^.ref_first then
+      thread_ref.threadheader^.ref_first:=thread_ref.next_ref;
+      if thread_ref.next_ref<>nil then
+        thread_ref.next_ref^.prev_ref:=nil;
+        thread_ref.next_ref:=nil;
+        end if;
+    else
+      if thread_ref.next_ref<>nil then
+        thread_ref.next_ref^.prev_ref:=thread_ref.prev_ref;
+        end if;
+      thread_ref.prev_ref^.next_ref:=thread_ref.next_ref;
+      thread_ref.next_ref:=nil;
+      thread_ref.prev_ref:=nil;
+      end if;
+    thread_ref.threadheader^.ref_count - 1; 
+    rtl_mutex_unlock(thread_ref.threadheader^.ref_lock);
+    thread_ref.threadheader:=nil;
+    end if;
+  end rtl_discard_thread_ref;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_discard_all_thread_ref (
+    threadheader   : in p_thread_header)=
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_mutex_lock(threadheader^.ref_lock);
+  while(threadheader^.ref_first<>nil) loop
+    rtl_discard_thread_ref(threadheader^.ref_first^);
+    end loop;
+  rtl_mutex_unlock(threadheader^.ref_lock);
+  end rtl_discard_all_thread_ref;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_task_header(
+    knownstart     : in t_rtl_logical8;
+    initvars       : in t_rtl_logical8;
+    threadheader   : in p_thread_header;
+    parentthread   : in p_thread_header) =
+----------------------------------------------------------------------------------------------------
+begin
+    threadheader^.parentthread:=parentthread;
+    threadheader^.variables:=nil;
+    threadheader^.flexreserve:=nil;
+    threadheader^.userreserve:=nil;
+    threadheader^.usagecount:=1;
+    threadheader^.listnext:=nil;
+    threadheader^.listprev:=nil;
+    threadheader^.knownstart:=knownstart;
+    rtl_mutex_new(threadheader^.ref_lock);
+    threadheader^.ref_count:=0;
+    threadheader^.ref_first:=nil;
+    if knownstart then
+      if initvars then
+        vars.rtl_initialize_all_threadvars(threadheader,parentthread);
+        end if;
+      rtl_thread_list_add(threadheader);
+      end if;
+  end rtl_init_task_header;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinit_task_header(
+    threadheader   : in p_thread_header) =
+----------------------------------------------------------------------------------------------------
+begin
+  vars.rtl_discard_all_threadvars(threadheader);
+  if threadheader^.knownstart then
+    rtl_thread_list_del(threadheader);
+    end if;
+  end rtl_deinit_task_header;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_task_helper(
+    thread_header  : p_thread_header)=
+----------------------------------------------------------------------------------------------------
+begin
+  -- nastavit jako systemovou threadovou promennou
+  if not TlsSetValue(sthread_header,LPVOID(thread_header:unchecked)) then
+    raise tasking_error;
+    end if;
+  thread_header^.threadid:=t_thread_id(GetCurrentThreadId);
+  thread_header^.threadhandle:=OpenThread(THREAD_ALL_ACCESS,false,thread_header^.threadid);
+  if thread_header^.threadhandle=INVALID_HANDLE then 
+    raise tasking_error;
+    end if;
+  end rtl_init_task_helper;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinit_task_helper(
+    thread_header  : p_thread_header)=
+----------------------------------------------------------------------------------------------------
+begin
+  if not CloseHandle(THANDLE(thread_header^.threadhandle)) then
+    raise tasking_error;
+    end if;
+  thread_header^.threadhandle:=INVALID_HANDLE;
+  thread_header^.threadid:=INVALID_HANDLE;
+  if not TlsSetValue(sthread_header,nil) then
+    raise tasking_error;
+    end if;
+  rtl_mutex_discard(thread_header^.ref_lock);
+  end rtl_deinit_task_helper;
+
+
+type 
+    t_thread_starter = record
+      userdata     : t_rtl_pointer;
+      thread_entry : p_rtl_thread_entry;
+      threadheader : p_thread_header;
+      suspended    : t_rtl_logical8;
+      wait_event   : t_rtl_event;
+      end record;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure thread_entry_internal:t_rtl_thread_entry_internal= 
+----------------------------------------------------------------------------------------------------
+var
+    stacpy         : t_thread_starter;
+    threadheader   : p_thread_header;
+    tibvalptr      : ^ t_rtl_native_unsigned;
+begin
+  stacpy:=starter^;
+  threadheader:=stacpy.threadheader;
+
+  --nastavim svuj TIB
+  threadheader^.TIBusrval.prev:=nil;
+  tibvalptr:=^threadheader^.TIBusrval.value;
+  #syntax asm;
+    --backup old value of TIB user val
+    insert $64
+    mov    eax,[20]
+    mov    edx,tibvalptr
+    mov    [edx],eax  {%%TODO(asm) mov mainthreadheader.TIBusrval.value,eax }
+    --set new value
+    mov    eax,threadheader
+    insert $64
+    mov    [20],eax
+    #end asm;
+
+  -- nastavit jako systemovou threadovou promennou
+  if not TlsSetValue(sthread_header,LPVOID(threadheader:unchecked)) then
+    raise tasking_error;
+    end if;
+
+  -- inicializovat threadove promenne
+  rtl_init_task_header(true,true,threadheader,threadheader^.parentthread);
+
+  -- allow parent run
+  rtl_event_set(starter^.wait_event);
+
+  --suspend if need
+  if stacpy.suspended then
+    rtl_suspend_thread_internal(stacpy.threadheader);
+    end if;
+  stacpy.thread_entry^(stacpy.userdata);
+
+  rtl_deinit_task_header(stacpy.threadheader);
+  if not TlsSetValue(sthread_header,nil) then
+    raise tasking_error;
+    end if;
+  
+  
+  end thread_entry_internal;
+#pragma convention(thread_entry_internal,system);
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_start_thread =
+----------------------------------------------------------------------------------------------------
+var
+  starter          : t_thread_starter;
+  i                : DWORD;
+  threadheader     : p_thread_header;
+begin 
+  new threadheader;
+  starter.userdata:=userdata;
+  starter.thread_entry:=thread_entry;
+  starter.threadheader:=threadheader;
+  starter.suspended:=suspended;
+  threadheader^.parentthread:=rtl_get_current_thread;
+  rtl_event_new(starter.wait_event);
+  starter.threadheader^.threadhandle:=CreateThread(nil,64*1024{%%TODO remove when dynamic stack}*8{},^thread_entry_internal,^starter,STACK_SIZE_PARAM_IS_A_RESERVATION,starter.threadheader^.threadid);
+  if starter.threadheader^.threadhandle=0 then
+    discard threadheader;
+    rtl_event_discard(starter.wait_event);
+    raise tasking_error;
+    end if;
+  rtl_event_wait(starter.wait_event);
+  rtl_event_discard(starter.wait_event);
+  rtl_create_thread_ref(threadheader,thread_ref);
+  end rtl_start_thread;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_main_task =
+----------------------------------------------------------------------------------------------------
+var
+    tibvalptr      : ^ t_rtl_native_unsigned;
+begin
+  --nastavim svuj TIB
+  mainthreadheader.TIBusrval.prev:=nil;
+  tibvalptr:=^mainthreadheader.TIBusrval.value;
+  #syntax asm;
+    --backup old value of TIB user val
+    insert $64
+    mov    eax,[20]
+    mov    edx,tibvalptr
+    mov    [edx],eax  {%%TODO(asm) mov mainthreadheader.TIBusrval.value,eax }
+    --set new value
+    lea    eax,mainthreadheader
+    insert $64
+    mov    [20],eax
+    #end asm;
+
+  -- inicializovat systemovou threadovou promennou
+  sthread_header:=TlsAlloc;
+  rtl_mutex_new(thread_list_lock);
+  thread_list_count:=0;
+
+  -- inicializovat
+  rtl_init_task_helper(^mainthreadheader);
+  rtl_init_task_header(true,false,^mainthreadheader,nil);
+
+  --%%TODO dynamic stack
+  end rtl_init_main_task;
+
+-- compiler magic
+#pragma assign(init_main_task,rtl_init_main_task);
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinit_main_task =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_deinit_task_header(^mainthreadheader);
+  rtl_discard_all_thread_ref(^mainthreadheader);
+  rtl_deinit_task_helper(^mainthreadheader);
+  rtl_mutex_discard(thread_list_lock);
+  end rtl_deinit_main_task;
+
+-- compiler magic
+#pragma assign(deinit_main_task,rtl_deinit_main_task);
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_register_task =
+----------------------------------------------------------------------------------------------------
+var
+  threadheader     : p_thread_header;
+  tibvalptr        : ^ t_rtl_native_unsigned;
+  TBIPrev          : p_thread_sysTIBuservalue;
+  unknown          : t_rtl_logical8:=true;
+begin
+  threadheader:=rtl_get_current_thread_safe;
+  if threadheader<>nil then
+    unknown:=false;
+    threadheader^.usagecount + 1;
+    --zalohuju posledni TIB
+    new TBIPrev;
+    TBIPrev^.prev:=threadheader^.TIBusrval.prev;
+    TBIPrev^.value:=threadheader^.TIBusrval.value;
+    threadheader^.TIBusrval.prev:=TBIPrev;
+  else
+    new threadheader;
+    threadheader^.TIBusrval.prev:=nil;
+    end if;
+
+  --nastavim(obnovim) svuj TIB
+  tibvalptr:=^threadheader^.TIBusrval.value;
+  #syntax asm;
+    --backup old value of TIB user val
+    insert $64
+    mov    eax,[20]
+    mov    edx,tibvalptr
+    mov    [edx],eax  {%%TODO(asm) mov mainthreadheader.TIBusrval.value,eax }
+    --set new value
+    mov    eax,threadheader
+    insert $64
+    mov    [20],eax
+    #end asm;
+  if unknown then
+    -- inicializovat
+    threadheader^.parentthread:=nil;
+    rtl_init_task_helper(threadheader);
+    rtl_init_task_header(false,false,threadheader,nil);
+    end if;
+  end rtl_register_task;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_unregister_task =
+----------------------------------------------------------------------------------------------------
+var
+  threadheader     : p_thread_header;
+  tibval           : t_rtl_native_unsigned;
+  tibptr           : p_thread_sysTIBuservalue;
+begin
+  threadheader:=rtl_get_current_thread_safe;
+  if threadheader=nil then
+    raise tasking_error;
+    end if;
+  threadheader^.usagecount - 1;
+  tibval:=threadheader^.TIBusrval.value;
+  tibptr:=threadheader^.TIBusrval.prev;
+  if tibptr<>nil then
+    threadheader^.TIBusrval.value:=tibptr^.value;
+    threadheader^.TIBusrval.prev:=tibptr^.prev;
+    discard tibptr;
+    end if;
+  if threadheader^.usagecount=0 then
+    rtl_deinit_task_header(threadheader);
+    rtl_deinit_task_helper(threadheader);
+    discard threadheader;
+    end if;
+  #syntax asm;
+    --restore prev value
+    mov    eax,tibval
+    insert $64
+    mov    [20],eax
+    #end asm;
+  end rtl_unregister_task;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_wait_and_finish_thread =
+----------------------------------------------------------------------------------------------------
+var
+  threadheader : p_thread_header;
+begin 
+  threadheader:=thread_ref.threadheader;
+  if WaitForSingleObject(threadheader^.threadhandle,INFINITE)=WAIT_FAILED then
+    raise tasking_error;
+    end if;
+  Sleep(0);
+  rtl_discard_all_thread_ref(threadheader);
+  if not CloseHandle(THANDLE(threadheader^.threadhandle)) then
+    raise tasking_error;
+    end if;
+  threadheader^.threadhandle:=INVALID_HANDLE;
+  threadheader^.threadid:=INVALID_HANDLE;
+  rtl_mutex_discard(threadheader^.ref_lock);
+  discard threadheader;
+  end rtl_wait_and_finish_thread;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_kill_and_finish_thread =
+----------------------------------------------------------------------------------------------------
+begin
+  --%%TODO radeji hodit vyjimku a kill az pokud to nepujde
+  if not TerminateThread(THANDLE(thread_ref.threadheader^.threadhandle),0) then 
+    raise tasking_error;
+    end if;
+  rtl_wait_and_finish_thread(thread_ref);
+  end rtl_kill_and_finish_thread;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_wait_for_finish_thread =
+----------------------------------------------------------------------------------------------------
+begin 
+  if thread_ref.threadheader<>nil then
+    if WaitForSingleObject(thread_ref.threadheader^.threadhandle,INFINITE)=WAIT_FAILED then
+      raise tasking_error;
+      end if;
+    end if;
+  end rtl_wait_for_finish_thread;
+
+
+----------------------------------------------------------------------------------------------------
+entry =
+----------------------------------------------------------------------------------------------------
+begin
+  end entry;
+
+----------------------------------------------------------------------------------------------------
+exit =
+----------------------------------------------------------------------------------------------------
+begin
+  if not TlsFree(sthread_header) then
+    raise tasking_error;
+    end if;
+  end exit;
+
+end thread;

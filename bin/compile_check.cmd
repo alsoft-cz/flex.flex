@@ -1,2 +1,0 @@
-  out\fcc.exe ..\fcc\fcc.src -sd:..\..\flex -sd:..\..\flex\fcc -sd:..\..\flex\rtl -sdr:..\..\lib -odx:out.1
-out.1\fcc.exe ..\fcc\fcc.src -sd:..\..\flex -sd:..\..\flex\fcc -sd:..\..\flex\rtl -sdr:..\..\lib -odx:out.2

@@ -2,13 +2,61 @@
 module private ff_cmd_line =
 -- Zpracov n¡ p©¡kazov‚ © dky.
 ----------------------------------------------------------------------------------------------------
+-- ???????  ?????      : Vytvoril
+-- TomasH : 10.07.2003 : Pridal vyhodnoceni -TX a -AHD parametru
+-- TomasH : 10.07.2003 : Pridal podporu na varianty pripon souboru
+----------------------------------------------------------------------------------------------------
+#if #declared tomash;; #and then; tomash then;
+  #warning 'README';
+  {
+    Takov‚hle informace je obecnˆ vhodn‚ ps t p©¡mo k m¡stu, kter‚ho se to t˜k , tedy v tomto
+    p©¡padˆ do tˆla [parse_command_line]. Nav¡c v p©eklada‡i jsem si zvykl form tovat je takto:
+         ---- %%TECH Konfigurace adres ©– ----------
+         -- Text...
+         -------------------------------------------
+  }
+#end if;
+-- Prochazeni adresaru a sestaveni seznamu pouzitelnych filu je treba odlozit az po nacteni vsech
+-- paramteru, protoze maji vliv na to ktere fily se pouziji. Tyka se to techto parametru
+--    -AHD                   skryte adresare
+--    -TO, TT, TS, TC, TU    prepinace platformy
+
 
 with
   standard.strings,
-  standard.program_control;
+  standard.program_control,
+  standard.classes,
+  standard.classes.lists;
+
 
 type
   pp_char32ustr    = ^p_char32ustr;
+
+
+
+----------------------------------------------------------------------------------------------------
+class c_cmdline_directory = extend c_list_item;
+  var
+    directory   : p_text_name;           -- konfiguracni adresar
+    recursive   : t_logical;             -- bude se prohledavat rekurzivne
+
+#if #declared tomash;; #and then; tomash then;
+  #warning 'README';
+  {
+    U t‚to t©¡dy pros¡m 1. opravit form tov n¡ a 2. doplnit nˆjakou metodu [add_directory], kterou
+    se p©id  jm‚no adres ©e se zapozd©en¡m alokace pamˆti.
+  }
+#end if;
+
+  exit =
+  begin 
+    discard directory;
+    end exit;
+  end c_cmdline_directory;
+
+type p_cmdline_directory = ^class c_cmdline_directory;
+
+
 
 ----------------------------------------------------------------------------------------------------
 procedure check_parameter (
@@ -26,16 +74,24 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure retrieve_file_name (
+procedure retrieve_parameter (
     param          : in t_char32ustr;            -- testovan˜ parametr
     prefix         : in t_char32ustr;            -- prefix parametru
-    value          : out p_text_name) =          -- jm‚no souboru
+    value          : out p_char32ustr) =          -- jm‚no souboru ci parametru
 -- Z parametru odseparuje jm‚no souboru.
 ----------------------------------------------------------------------------------------------------
 begin
   new value range param:length-prefix:length-1;
   value^:=str_copy(param,prefix:length+2,param:length);
-  end retrieve_file_name;
+  end retrieve_parameter;
+#if #declared tomash;; #and then; tomash then;
+  #warning 'README';
+  {
+    Pros¡m obnovit [retrieve_file_name]. [retrieve_parameter] je ok, ale chtˆl bych pro jednotliv‚
+    t©¡dy parametr– m¡t [retrieve_*] metody s odpov¡daj¡c¡ typovou kontrolou.
+  }
+#end if;
+
 
 
 
@@ -61,8 +117,10 @@ begin
   os.write_line('');
   os.write_line('Target system specification:');
   os.write_line('    -TO:<os>     Target Operating system');
+  os.write_line('    -TT:<type>   Target OS Type');
   os.write_line('    -TS:<subsys> Target Subsystem');
   os.write_line('    -TC:<cpu>    Target CPU');
+  os.write_line('    -TU:<id>     User defined variant');
   os.write_line('');
   os.write_line('Directories:');
   os.write_line('    -SD:<dir>    Search Directory');
@@ -80,6 +138,7 @@ begin
   os.write_line('    -NS          No Shared file access');
   os.write_line('    -H           prints this page');
   os.write_line('    -VER         displays full version information');
+  os.write_line('    -AHD         Allow scanning of Hidden Directories');
   os.write_line('');
   os.write_line('All parameters are case-insensitive');
   os.write_line('See documentation for the list of supported values of specific parameters');
@@ -112,16 +171,29 @@ with
 
 use
   cc_def,
-  cc_def.cc_var;
+  cc_def.cc_var,
+  cc_def.cc_desc;
+
   
 var
   cmd_line         : p_command_line_parameters;  -- blok © dkov˜ch parametr–
   search_dir       : p_text_name;                -- adres © pro vyhled v n¡                               
-  value            : p_char32ustr;
+--  value            : p_char32ustr;
+  folder_list      : p_list;                     -- seznam adresaru pro prohledavani     
+  directory_def    : p_cmdline_directory;      
+  os_family_name   : p_char32ustr;               -- vyplnena OS family
+  os_type_name     : p_char32ustr;               -- vyplneny OS type
+  os_subsystem_name: p_char32ustr;               -- vyplneny OS subsystem
+  cpu_arch_name    : p_char32ustr;               -- vyplnena CPU architektura
+  user_variant_name: p_char32ustr;               -- vyplnena uzivatelska varianta
+  variant          : p_config_item;              -- mozna pripona souboru
 
 begin
   -- z¡skat blok parametr–
   get_command_line_parameters(cmd_line);
+
+  -- naalokovat seznam 
+  new folder_list;
 
   -- jsou v–bec nˆjak‚ ?
   if cmd_line^:length=0 then
@@ -135,53 +207,81 @@ begin
     -- SD = Search Directory
     if check_parameter(cmd_line^[i]^,'SD:',true) then
       -- z¡skat jm‚no souboru
-      retrieve_file_name(cmd_line^[i]^,'SD:',search_dir);
+      retrieve_parameter(cmd_line^[i]^,'SD:',p_char32ustr(search_dir));
 
-      -- doplnit do seznamu adres ©– pro vyhled v n¡
-      p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_search_path(search_dir^,false);
-
-      -- uvolnit pamˆŸ
-      discard search_dir;
+      -- doplnit do seznamu adres ©– pro odlozene vyhled v n¡
+      new directory_def;
+      directory_def^.directory:=search_dir;
+      directory_def^.recursive:=false; 
+      folder_list^.insert(directory_def);
                                           
     -- SD = Search Directory - Recursive
     elsif check_parameter(cmd_line^[i]^,'SDR:',true) then
       -- z¡skat jm‚no souboru
-      retrieve_file_name(cmd_line^[i]^,'SDR:',search_dir);
+      retrieve_parameter(cmd_line^[i]^,'SDR:',p_char32ustr(search_dir));
 
-      -- doplnit do seznamu adres ©– pro vyhled v n¡
-      p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_search_path(search_dir^,true);
+      -- doplnit do seznamu adres ©– pro odlozene vyhled v n¡
+      new directory_def;
+      directory_def^.directory:=search_dir;
+      directory_def^.recursive:=true; 
+      folder_list^.insert(directory_def);
 
-      -- uvolnit pamˆŸ
-      discard search_dir;
 
     -- ODX = Output Directory for eXecutables
     elsif check_parameter(cmd_line^[i]^,'ODX:',true) then
       -- z¡skat jm‚no adres ©e
-      retrieve_file_name(cmd_line^[i]^,'ODX:',exe_directory);
+      retrieve_parameter(cmd_line^[i]^,'ODX:',p_char32ustr(exe_directory));
       -- %%TODO(LIB) zkontrolovat existenci adres ©e
 
     -- ODX = Output Directory for Modules
     elsif check_parameter(cmd_line^[i]^,'ODM:',true) then
       -- z¡skat jm‚no adres ©e
-      retrieve_file_name(cmd_line^[i]^,'ODM:',mod_directory);
+      retrieve_parameter(cmd_line^[i]^,'ODM:',p_char32ustr(mod_directory));
       -- %%TODO(LIB) zkontrolovat existenci adres ©e
 
     -- XE = eXecutable Extension
     elsif check_parameter(cmd_line^[i]^,'XE:',true) then
       -- z¡skat p©¡ponu
-      retrieve_file_name(cmd_line^[i]^,'XE:',exe_extension);
+      retrieve_parameter(cmd_line^[i]^,'XE:',p_char32ustr(exe_extension));
 
     -- TO = Target Operating system
     elsif check_parameter(cmd_line^[i]^,'TO:',true) then
       -- %%FLEX
+#if #declared tomash;; #and then; tomash then;
+  #warning 'README';
+  {
+    Nen¡ jasn‚, co se t¡m %%FLEX chce ©¡ct. Chtˆlo by to koment ©. Btw. %%FLEX pou‘¡v m tam,
+    kde nˆco nezvl dne p©eklada‡ (e.g. je v nˆm bug, neimplementov no atd.). Nehotov‚ vˆci
+    zna‡¡m na "%%TODO(ID) Popis" kde ID je identifik tor kategorie probl‚mu.
+  }
+#end if;
+      retrieve_parameter(cmd_line^[i]^,'TO:',os_family_name);
+
+    -- TT = Target Operating system type
+    elsif check_parameter(cmd_line^[i]^,'TT:',true) then
+      -- %%FLEX
+      retrieve_parameter(cmd_line^[i]^,'TT:',os_type_name);
 
     -- TS = Target Subsystem
     elsif check_parameter(cmd_line^[i]^,'TS:',true) then
       -- %%FLEX
+      retrieve_parameter(cmd_line^[i]^,'TS:',os_subsystem_name);
 
     -- TC = Target CPU
     elsif check_parameter(cmd_line^[i]^,'TC:',true) then
       -- %%FLEX
+      retrieve_parameter(cmd_line^[i]^,'TC:',cpu_arch_name);
+
+    -- TU = User defined variant
+    elsif check_parameter(cmd_line^[i]^,'TU:',true) then
+      -- %%FLEX
+      -- rovnou ulozime do seznamu platnych pripon
+      retrieve_parameter(cmd_line^[i]^,'TU:',user_variant_name);
+      new variant; variant^.config_item := user_variant_name^;
+      p_file_source_external_files(cc_def.cc_var.cfg_files)^.searched_variants.insert(variant);
+
+      -- uklid
+      discard user_variant_name;
 
     -- NL = No Listing
     elsif check_parameter(cmd_line^[i]^,'NL',nil) then
@@ -202,6 +302,10 @@ begin
     -- SCO = Syntax Check Only
     elsif check_parameter(cmd_line^[i]^,'SCO',nil) then
       cc_def.cc_var.cfg_syntax_check_only:=true;
+
+    -- -AHD - Allow scanning of Hidden Directories
+    elsif check_parameter(cmd_line^[i]^,'AHD',nil) then
+      p_file_source_external_files(cc_def.cc_var.cfg_files)^.allow_hidden_dirs:=true;
 
     -- H, ? = Help
     elsif check_parameter(cmd_line^[i]^,'H',nil) or check_parameter(cmd_line^[i]^,'?',nil) then
@@ -233,10 +337,62 @@ begin
       end if;
     end loop;
 
+  -- ted jsou vsechny parametry nactene, zkontrolujeme zda jsou zname a pripustnost jejich kombinaci
+  {%%TODO(MESSAGE)  chtelo by to misto extra definovane exception pouzit fcc_error a poslat ji parametrem}
+  if (os_family_name <> nil)    then cc_def.cc_desc.set_os_family(os_family_name^, os);        end if;
+  if (os_type_name <> nil)      then cc_def.cc_desc.set_os_type(os_type_name^, os);            end if;
+  if (os_subsystem_name <> nil) then cc_def.cc_desc.set_os_subsystem(os_subsystem_name^, os);  end if;
+  if (cpu_arch_name <> nil)     then cc_def.cc_desc.set_cpu_architecture(cpu_arch_name^, os);  end if;
+
+#if #declared tomash;; #and then; tomash then;
+  #warning 'README';
+  {
+    Opˆt bych m¡sto lok ln¡ promˆnn‚ [variant] preferoval nˆjakou metodu [add_config_extension] t©¡dy
+    [c_file_source_...]. Pros¡m upravit.
+  }
+#end if;
+
+  -- nastavit prislusne identifikatory do file_source, aby vedel jake jsou pripustne pripony souboru
+  -- ulozit family
+  new variant; variant^.config_item := cc_def.cc_desc.get_os_family_name;
+  p_file_source_external_files(cc_def.cc_var.cfg_files)^.searched_variants.insert(variant);
+
+  -- ulozit type
+  new variant; variant^.config_item := cc_def.cc_desc.get_os_type_name;
+  p_file_source_external_files(cc_def.cc_var.cfg_files)^.searched_variants.insert(variant);
+
+  -- ulozit subsystem
+  new variant; variant^.config_item := cc_def.cc_desc.get_os_subsystem_name;
+  p_file_source_external_files(cc_def.cc_var.cfg_files)^.searched_variants.insert(variant);
+
+  -- ulozit cpu
+  new variant; variant^.config_item := cc_def.cc_desc.get_cpu_architecture_name;
+  p_file_source_external_files(cc_def.cc_var.cfg_files)^.searched_variants.insert(variant);
+
+  -- vsechny parametry nactene a overene, takze je mozne na jejich zaklade nacist seznam souboru   
+  declare var 
+    iterator       : c_list_iterator;
+
+  begin
+    iterator.init(folder_list^, tlwd_forward);
+    while iterator.get(p_item(directory_def)) loop
+      p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_search_path(directory_def^.directory^,directory_def^.recursive);
+      end loop;
+    end declare;
+
 leave
   -- parametry u‘ nebudou pot©eba
   discard_command_line_parameters(cmd_line);
-  discard search_dir;
+  folder_list^.delete_all;
+  discard folder_list;
+--  discard search_dir;    -- neni potreba, jeho obsah je uz dealokovany 
+  discard os_family_name;
+  discard os_type_name;
+  discard os_subsystem_name;
+  discard cpu_arch_name;
+  discard user_variant_name;
   end parse_command_line;
+
+
 
 end ff_cmd_line;

@@ -4,6 +4,7 @@ module private ff_files =
 -- Seznam jmen soubor–.
 ----------------------------------------------------------------------------------------------------
 -- Ondra : 17.02.2002 : Vytvo©il
+-- TomasH : 10.07.2003 : Pridal podporu na varianty pripon souboru
 ----------------------------------------------------------------------------------------------------
 
 with
@@ -14,6 +15,8 @@ const
   ext_source       = 'src';
   ext_public       = 'pub';
   ext_private      = 'priv';
+
+
 
 ----------------------------------------------------------------------------------------------------
 class private c_file_source_external_files =
@@ -28,6 +31,41 @@ class private c_file_source_external_files =
     var
       -- seznamy jmen soubor– oddˆlenˆ podle logick‚ ‡ sti
       files        : array t_part of c_names;    
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static extension_match_variant (
+        extension: in t_text_name)               -- zkoumane extension
+        return t_logical =
+    -- zjisti zda dane extension odpovida jedne z variant OS/CPU/USER
+    ------------------------------------------------------------------------------------------------
+    var 
+      iterator     : c_list_iterator;
+      config_item  : p_config_item;
+
+    begin
+      result := true;  -- predpoklad ze ho najdeme
+      iterator.init(searched_variants, tlwd_forward);
+
+      while iterator.get(p_item(config_item)) loop
+        if str_compare_case_insensitive(extension, config_item^.config_item) then return end if;
+        end loop;
+
+      result := false;    -- tak to bohuzel nevyslo 
+      end extension_match_variant;
+#if #declared tomash;; #and then; tomash then;
+  #warning 'README';
+  {
+    Dvˆ pozn mky:
+      1. Kolem oper tor– m me ve zvyku nepsat mezery.
+      2. Nejd©¡v jsem u p©¡kaz– nevidˆl koment ©e - tys je omylem napsal za p©¡kazy a ne p©ed.
+         Je¨tˆ bych doplnil koment © k tomu while (inicializaci iter toru p©irazit k nˆmu), aby
+         se vˆdˆlo, co ‘e vlastnˆ dˆl .
+  }
+#end if;
+
+
 
     ------------------------------------------------------------------------------------------------
     static add_name (
@@ -67,6 +105,39 @@ class private c_file_source_external_files =
     -- Prohled  zadan˜ folder a dopln¡ do seznamu jmen soubor– v¨echny vyhovuj¡c¡ soubory. Je-li
     -- [recursive] nastaveno na [true], projde pot‚ i v¨echny podadres ©e.
     ------------------------------------------------------------------------------------------------
+
+          ------------------------------------------------------------------------------------------
+          procedure is_hidden_folder(folder: in c_folder) return t_logical =
+          -- Test if folder is hidden, i.e. starts with '.' (empty base name) or has the attribute 
+          -- "hidden".
+          ------------------------------------------------------------------------------------------
+          var
+            base_name :  p_text_name;
+            folder_name: p_name_component_file_or_folder;
+
+          begin
+            result := false;
+
+            -- test if basename is empty
+            folder_name:=folder.name.components.get_last;
+            folder_name^.get_base_name(base_name);
+            if str_is_empty(base_name^,".") then result:=true; return; end if;
+
+#if #declared tomash;; #and then; tomash then;
+  #warning 'README';
+  {
+    [str_is_empty] je zde imho zbyte‡n‚. [get_base_name] by mˆl vr tit £plnˆ pr zdn˜
+    ©etˆzec.
+  }
+#end if;
+            -- test if folder has hidden attribute
+            if folder.get_attribute(tfattr_hidden) then result:=true; return; end if;
+
+            -- possibly more hidden conditions here
+          leave      
+            discard base_name;
+            end is_hidden_folder;
+
     var
       file_name    : p_name;                     -- jm‚no nalezen‚ho souboru
       file_name_component : p_name_component_file_or_folder; -- jedin  komponenta jm‚na souboru
@@ -74,7 +145,6 @@ class private c_file_source_external_files =
       matches      : t_logical;                  -- T-jm‚no souboru vyhovuje podm¡nk m pro za©azen¡
       iterator     : c_list_iterator;            -- iter tor pro proch zen¡ seznamu jmen soubor–
       sub_folder_name : p_name;                  -- jm‚no podadres ©e
-      sub_folder   : c_name;                     -- podadres ©
       extension    : p_name_subcomponent_extension; -- p©¡pona jm‚na souboru
 
     begin
@@ -99,7 +169,11 @@ class private c_file_source_external_files =
           if file_name_component^.subcomponents.count>2 then
             {%%FLEX}
             extension:=file_name_component^.subcomponents.get_next(file_name_component^.subcomponents.get_first);
-            matches:=str_compare_case_insensitive(extension^.name^,'win32');
+            loop
+              -- musi vyhovet vsechny mezilehle pripony
+              matches:=matches and extension_match_variant(extension^.name^);
+              extension:=file_name_component^.subcomponents.get_next(extension);
+              until extension=file_name_component^.subcomponents.get_last;
             end if;
 
           -- p©idat do seznamu jmen
@@ -113,7 +187,10 @@ class private c_file_source_external_files =
       if recursive then
         iterator.init({%%TODO(TAG)}p_list(^folder.folders)^,tlwd_forward);
         while iterator.get(p_item(sub_folder_name)) loop
-          trace_search_path(folder.get_sub_folder(sub_folder_name^),recursive);
+          -- zkontrolovat zda neni schovany = zacina teckou nebo ma atribut hidden
+          if allow_hidden_dirs or not is_hidden_folder(folder.get_sub_folder(sub_folder_name^)) then 
+            trace_search_path(folder.get_sub_folder(sub_folder_name^),recursive);
+            end if;
           end loop;
         end if;
       end trace_search_path;
@@ -224,6 +301,15 @@ class private c_file_source_external_files =
     leave
       discard text_name;
       end get_included_file_name;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    ------------------------------------------------------------------------------------------------
+    begin
+      searched_variants.delete_all;
+      end exit;
 
     end c_file_source_external_files;
 

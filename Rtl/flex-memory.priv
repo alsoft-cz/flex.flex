@@ -4,535 +4,59 @@ module private memory =
 -- Memory Manager
 -- Copyright (C) 1999-2003 A && L soft
 ----------------------------------------------------------------------------------------------------
--- To do:
---   -- in rtl_alloc, use assembly-optimized version of memory zeroing,
-----------------------------------------------------------------------------------------------------
-
 with
   synchronization;
 
-----------------------------------------------------------------------------------------------------
-#separate public address_space;
-#separate private address_space;
--- Address space operations
-----------------------------------------------------------------------------------------------------
+#separate private blocks;
+#separate private chains;
+#separate private heap;
+#separate private system_heap;
+#separate private system_pages;
 
-{%%FLEX
-message
-  rtl_memory_error_ex extend memory_error with (code : t_rtl_mem_error_code);
-}
+var
+--%%TODO threadvar 
+    actual_thread_heap : p_rtl_memheap := nil;
 
-type
-  -- fyzical memory locking mode
-  t_rtl_mem_locking = enum
-      trml_none;                                 -- don't locking fyzical memory
-      trml_main;                                 -- locking only main block
-      trml_full;                                 -- locking all blocks
-      end enum;                                  
-
-type
-  -- memory block header
-  t_memory_block_header;
-  p_memory_block_header = ^t_memory_block_header;
-  t_memory_block_header = record
-      size         : t_rtl_unsigned32;           -- size of memory block
-      next         : p_memory_block_header;      -- pointer to next memory block
-      num          : t_rtl_unsigned32;           -- allocation ID
-      threadid     : t_rtl_unsigned32;           -- allocation thread ID
-      end record;
---__tmemory_block_header = true..tmemory_block_header:size=16;
+var
+    systemheap     : system_heap.c_rtl_systemmemheap;
+    systempages    : system_pages.c_rtl_systemmempages;
 
 const
-  memory_page_size = 4096;                       -- size of one virtual memory page
-  memory_block_gran= t_memory_block_header:size; -- memory granuality
-
-  -- size of small block limit
-  small_block_limit= ((memory_page_size-24) div 4)*memory_block_gran;
-
-  -- number of records in free blocks table searched in first phase of allocation
-  first_small_count= 8;
-
-type
-  -- small block table
-  t_small_block_table = array 1..small_block_limit div memory_block_gran of p_memory_block_header;
-
-type
-  -- memory address space header
-  t_memory_space_header;
-  p_memory_space_header = ^t_memory_space_header;
-  t_memory_space_header = record
-      next         : p_memory_space_header;      -- next address space
-      size         : t_rtl_unsigned32;           -- memory address space size
-      freestart    : t_rtl_unsigned32;           -- offset of unfragmented memory
-      lfirst       : p_memory_block_header;      -- first large block
-      llast        : p_memory_block_header;      -- last large block
-      locked       : t_rtl_logical32;            -- T-locked in fyzical memory
-      smalltab     : t_small_block_table;        -- table of small blocks
-      end record;
---__tmemspace      = true..sizeof(tmemspace)=mempagesize;
-
-type
-  -- memory manager properties
-  t_rtl_memory_manager_info = record
-      init_size    : t_rtl_unsigned32;           -- initialize size of memory 
-      delta_size   : t_rtl_unsigned32;           -- size of allocated memory blocks
-      lockmem      : t_rtl_mem_locking;          -- fyzical memory locking mode
-
-      -- list of address spaces
-      sfirst       : p_memory_space_header;      -- first address space
-      slast        : p_memory_space_header;      -- last address space
-      scurr        : p_memory_space_header;      -- current address space
-
-      -- synchronization
-      sync         : t_rtl_mutex;                -- synchronization mutex
-      end record;
-
-var
-  memory_manager_info : t_rtl_memory_manager_info; -- memory manager properties     
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure alloc_new_space (
-    size           : in t_rtl_unsigned32;        -- requaired size
-    space          : out p_memory_space_header;  -- allocated address space 
-    lock           : in t_rtl_logical32) =       -- T-lock this space
--- allocate new address space
-----------------------------------------------------------------------------------------------------
-var
-  error            : t_rtl_logical32;            -- error detected
-
-begin
-  -- allocate memory
-  space:=address_space.rtl_as_commit({MEM=}000000,address_space.trmt_heap,nil,size);
-  if space=nil then return; end if;
-
-  -- initialize the header
-  space^:=nil;
-  space^.size:=size;
-  space^.freestart:=space^:size;
-
-  -- insert into the list
-  if memory_manager_info.slast<>nil 
-    then memory_manager_info.slast^.next:=space;
-    else memory_manager_info.sfirst:=space;
-    end if;
-  memory_manager_info.slast:=space;
-
-  -- lock the address space
-  if lock then
-    address_space.rtl_as_lock({MEM=}000000,space,size,error);
-
-    -- set the "locked" attribute
-    if not error then space^.locked:=true; end if; 
-    end if; 
-  end alloc_new_space;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure discard_space (
-    space          : in out p_memory_space_header) = -- discarded address space
--- discard allocated address space
-----------------------------------------------------------------------------------------------------
-var
-  prevspace        : p_memory_space_header;      -- previours address space
-  size             : t_rtl_unsigned32;           -- size of discarded address space
-  error            : t_rtl_logical32;            -- error detected
-  xspace           : p_memory_space_header;
-
-begin
-  -- find previours address space
-  prevspace:=nil;
-  xspace:=memory_manager_info.sfirst;
-  while (xspace<>space) and (xspace<>nil) loop
-    prevspace:=xspace;
-    xspace:=xspace^.next;
-    end loop;
-
-  -- if not fount address space in list 
-  if xspace=nil then return; end if;
-
-  -- free from list
-  if prevspace<>nil 
-    then prevspace^.next:=space^.next;
-    else memory_manager_info.sfirst:=space^.next;
-    end if;
-  if memory_manager_info.slast=space then 
-    memory_manager_info.slast:=prevspace; 
-    end if;
-  if memory_manager_info.scurr=space then 
-    memory_manager_info.scurr:=memory_manager_info.sfirst; 
-    end if;
-
-  -- save info about address space size
-  size:=space^.size;
-
-  -- unlock address space
-  if space^.locked then
-    address_space.rtl_as_unlock({MEM=}000000,space,size,error);
-    end if;
-
-  -- discard allocated memory
-  error:=address_space.rtl_as_decommit({MEM=}000000,space,size);
-  error:=address_space.rtl_as_release({MEM=}000000,space,size);
-  end discard_space;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure alloc_free0 (
-    pspace         : in p_memory_space_header;   -- address sapce for allocation
-    block          : out p_memory_block_header;  -- allocated block
-    bspace         : out p_memory_space_header;  -- current address space
-    size           : in t_rtl_unsigned32) =      -- block size
--- allocate block in free region of address space, free region required
-----------------------------------------------------------------------------------------------------
-begin
-  -- address of block
-  t_rtl_unsigned32(block:unchecked):=t_rtl_unsigned32(pspace:unchecked)+pspace^.freestart;
-  bspace:=pspace;
-
-  -- set new pointer to free region
-  pspace^.freestart+size;
-
-  -- initialize block
-  block^.size:=size;
-  block^.next:=nil;
-  end alloc_free0;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure alloc_new (
-    block          : out p_memory_block_header;  -- allocated block
-    bspace         : out p_memory_space_header;  -- allocated address space
-    size           : in t_rtl_unsigned32) =      -- size of block
--- allocate new address space and one it's block
-----------------------------------------------------------------------------------------------------
-var
-  pspace           : p_memory_space_header;      -- address space
-
-begin
-  -- initialize
-  block:=nil;
-
-  -- allocate new address space
-  alloc_new_space(((size+t_memory_space_header:size+memory_manager_info.delta_size-1) div 
-                   memory_manager_info.delta_size)*memory_manager_info.delta_size,
-                   pspace,memory_manager_info.lockmem=trml_full);
-  if pspace=nil then return; end if;
-
-  -- allocate block
-  alloc_free0(pspace,block,bspace,size);
-  end alloc_new;
-
-
-
----------------------------------------------------------------------------------------------------
-procedure alloc_large_block (
-    block          : out p_memory_block_header;  -- allocated memory block
-    bspace         : out p_memory_space_header;  -- current address space
-    size           : in t_rtl_unsigned32) =      -- size (in granuality)
--- allocate large block
-----------------------------------------------------------------------------------------------------
-var
-  pspace           : p_memory_space_header;      -- address space
-  currblock        : p_memory_block_header;      -- current block
-  currprev         : p_memory_block_header;      -- previous block
-  bestblock        : p_memory_block_header;      -- founded acceptable block
-  bestprev         : p_memory_block_header;      -- previous block
-  bestfree         : p_memory_space_header;      -- address space with best unfragmented region
-
-begin
-  block:=nil;
-
-  -- search all address spaces
-  pspace:=memory_manager_info.scurr;
-  bestfree:=nil;
-  loop
-    -- search best-fit block
-    bestblock:=nil;
-    bestprev:=nil;
-    currblock:=pspace^.lfirst;
-    currprev:=nil;
-
-    while currblock<>nil loop
-      -- is this block better as current
-      if (currblock^.size>=size) and ((bestblock=nil) or (currblock^.size<bestblock^.size)) then
-        bestprev:=currprev;
-        bestblock:=currblock;
-        end if;
-
-      -- next bloxk
-      currprev:=currblock;
-      currblock:=currblock^.next;
-      end loop;
-
-    -- found ? => use it !
-    if bestblock<>nil then
-      -- remove from list...
-      if bestprev<>nil 
-        then bestprev^.next:=bestblock^.next; 
-        else pspace^.lfirst:=bestblock^.next; 
-        end if;
-
-      -- ...and exit
-      block:=bestblock;
-      bspace:=pspace;
-      return;
-      end if;
-
-    -- is posible allocate in free region of this address space ?
-    if (pspace^.size-pspace^.freestart>=size) and 
-    ((bestfree=nil) or (bestfree^.size-bestfree^.freestart>pspace^.size-pspace^.freestart)) then
-      bestfree:=pspace;
-      end if;
-
-    -- next address space
-    pspace:=pspace^.next;
-    if pspace=nil then pspace:=memory_manager_info.sfirst; end if;
-    until pspace=memory_manager_info.scurr;
-
-  -- is any available address space ?
-  if bestfree<>nil then
-    alloc_free0(bestfree,block,bspace,size);
-    return;
-    end if;
-
-  -- allocatin in new address space
-  alloc_new(block,bspace,size);
-  end alloc_large_block;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure alloc_small_block (
-    block          : out p_memory_block_header;  -- allocated memory block
-    bspace         : out p_memory_space_header;  -- current address space
-    bsize          : in t_rtl_unsigned32) =      -- size (in granuality)
--- allocate small block
-----------------------------------------------------------------------------------------------------
-var
-  pspace           : p_memory_space_header;      -- address space
-  bestfree         : p_memory_space_header;      -- address space with best unfragmented region
-  j                : t_rtl_unsigned32;           -- index
-
-begin
-  block:=nil;
-  bspace:=nil;
-
-  -- try find block in small block table
-  pspace:=memory_manager_info.scurr;
-  bestfree:=nil;
-
-  loop
-    j:=bsize+first_small_count-1;
-    if t_small_block_table:last<j then 
-      j:=t_small_block_table:last;
-      end if;
-
-    -- is available acceptable block ?
-    for i in bsize..j loop
-      -- is any block free ?
-      if pspace^.smalltab[i]<>nil then
-        block:=pspace^.smalltab[i];
-        bspace:=pspace;
-        pspace^.smalltab[i]:=block^.next;
-        return;
-        end if;
-      end loop;
-
-    -- is this address space better for allocation in free region ?
-    if (pspace^.size-pspace^.freestart>=bsize*memory_block_gran) and 
-       ((bestfree=nil) or (bestfree^.size-bestfree^.freestart>pspace^.size-pspace^.freestart)) then
-      -- yes, it is :-)
-      bestfree:=pspace;
-      end if;
-
-    -- next address space
-    pspace:=pspace^.next;
-    if pspace=nil then pspace:=memory_manager_info.sfirst; end if;
-    until pspace=memory_manager_info.scurr;
-
-  -- is any available address space ?
-  if bestfree<>nil then
-    -- allock block in free space
-    alloc_free0(bestfree,block,bspace,bsize*memory_block_gran);
-    return;
-    end if;
-
-  -- search all larger small blocks
-  pspace:=memory_manager_info.scurr;
-  loop
-    -- is availeable any free block ?
-    for i in bsize+first_small_count..t_small_block_table:last loop
-      if pspace^.smalltab[i]<>nil then
-        block:=pspace^.smalltab[i];
-        bspace:=pspace;
-        pspace^.smalltab[i]:=block^.next;
-        return;
-        end if;
-      end loop;
-
-    -- next address space
-    pspace:=pspace^.next;
-    if pspace=nil then pspace:=memory_manager_info.sfirst; end if;
-    until pspace=memory_manager_info.scurr;
-
-  -- try alloc in large blocks or create new address space
-  alloc_large_block(block,bspace,bsize*memory_block_gran);
-  end alloc_small_block;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure free_block (
-    block          : in p_memory_block_header;   -- block
-    bspace         : in p_memory_space_header) = -- address space of block
--- insert block into list of free blocks
-----------------------------------------------------------------------------------------------------
-var
-  bsize            : t_rtl_unsigned32;           -- block size in granuality
-
-begin
-  -- mark block as free
-  block^.threadid:=0;
-
-  -- is block last ?
-  if t_rtl_unsigned32(block:unchecked)+block^.size=t_rtl_unsigned32(bspace:unchecked)+bspace^.freestart 
-
-    -- yes, simply increse free region
-    then
-      bspace^.freestart-block^.size;
-
-    -- insert block into list of free blocks
-    else
-
-      -- test size of block
-      if block^.size<=small_block_limit 
-
-        -- block is small, insert into table of small block
-        then
-          bsize:=block^.size div memory_block_gran;
-          block^.next:=bspace^.smalltab[bsize];
-          bspace^.smalltab[bsize]:=block;
-        
-        -- block is large, insert into large block
-        else
-          block^.next:=bspace^.lfirst;
-          if bspace^.lfirst=nil then bspace^.llast:=block; end if;
-          bspace^.lfirst:=block;
-          end if;
-      end if;
-  end free_block;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure memory_manager_init (
-    init_size      : in t_rtl_unsigned32;        -- initialize size of heap
-    delta_size     : in t_rtl_unsigned32;        -- size of allocated memory blocks
-    lockmem        : in t_rtl_mem_locking) =     -- fyzical memory locking mode
--- initialize memory manager
--- INIT_SIZE and DELTA_SIZE in multiple of 64kB, 0=default value
-----------------------------------------------------------------------------------------------------
-begin
-  -- set initial memory size
-  if init_size<>0 then 
-    memory_manager_info.init_size:=init_size; 
-    end if;
-
-  -- set delta memory size
-  if delta_size<>0 then 
-    memory_manager_info.delta_size:=delta_size;
-    end if;
-
-  -- set locking mode
-  memory_manager_info.lockmem:=lockmem;
-
-  -- allocate first address space block
-  alloc_new_space(memory_manager_info.init_size,memory_manager_info.scurr,memory_manager_info.lockmem<>trml_none);
-  end memory_manager_init;
-
+    largeblocksize : t_rtl_native_unsigned       = 64*1024;
 
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_alloc =
 -- allocate memory
 ----------------------------------------------------------------------------------------------------
-var
-  bsize            : t_rtl_unsigned32;           -- size of allocated block in granuality
-  block            : p_memory_block_header;      -- found block
-  bspace           : p_memory_space_header;      -- address space of block
-  xblock           : p_memory_block_header;      -- temporary block
-  xaddr            : t_rtl_unsigned32;
-
 begin
-  -- synchronization
-  rtl_mutex_lock(memory_manager_info.sync);
-
-  -- compute block size[granuality] including header
-  bsize:=(t_memory_block_header:size+size+memory_block_gran-1) div memory_block_gran;
-
-  -- test size of block
-  if bsize<small_block_limit div memory_block_gran then
-    -- allocate as small block
-    alloc_small_block(block,bspace,bsize)
-
+  if (actual_thread_heap=nil) then
+    if size>=largeblocksize then
+      systempages.memmgr_alloc({num}0,addr,size,nil);
+    else
+      systemheap.memmgr_alloc({num}0,addr,size,nil);
+      end if;
   else
-    -- allocate as large block
-    alloc_large_block(block,bspace,bsize*memory_block_gran);
+    actual_thread_heap^.memmgr_alloc({num}0,addr,size,nil);
     end if;
-
-  -- is block successfuly allocated ?
-  if block=nil then return; end if;
-
-  -- divide very large block
-  if block^.size>=(bsize+2)*memory_block_gran then
-    -- create new block
-    t_rtl_unsigned32(xblock:unchecked):=t_rtl_unsigned32(block:unchecked)+bsize*memory_block_gran;
-
-    -- initialize new block
-    xblock^.size:=block^.size-bsize*memory_block_gran;
-    xblock^.next:=nil;
-    xblock^.num:=0;
-    xblock^.threadid:=0;
-
-    -- set new block size
-    block^.size:=bsize*memory_block_gran;
-
-    -- add new block to list of free blocks
-    free_block(xblock,bspace);
-    end if;
-
-  -- fill in block properties
-  t_rtl_unsigned32(block^.next:unchecked):=block^.size xor $FFFFFFFF;
-  block^.num:=0{%%FLEX num};
-  {%%FLEX block^.threadid:=getcurrentthreadid;}
-
-  -- zero allocated memory
-  xaddr:=t_rtl_unsigned32(block:unchecked)+t_memory_block_header:size;
-  while xaddr<t_rtl_unsigned32(block:unchecked)+t_memory_block_header:size+block^.size-1 loop
-    p_rtl_unsigned32(xaddr:unchecked)^:=0;
-    xaddr+4;
-    end loop;
-
-  -- return block address
-  t_rtl_unsigned32(addr:unchecked):=t_rtl_unsigned32(block:unchecked)+t_memory_block_header:size;
-
-leave
-  -- synchronization
-  rtl_mutex_unlock(memory_manager_info.sync);
   end rtl_alloc;
-
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_adjust =
--- reallocate memory
+-- allocate memory
 ----------------------------------------------------------------------------------------------------
+var
+  header       : p_rtl_memmgr_header;
 begin
-  {%%TODO(ADJUST)}
+  if addr=nil then
+    rtl_alloc({num,}addr,size);
+  else
+    header:=adr2hdr(addr);
+    header^.dealocator^.memmgr_adjust({num}0,addr,size);
+    end if;
+{%%TODO catch
+  when others do
+    raise memory_corrupt_error;}
   end rtl_adjust;
 
 ----------------------------------------------------------------------------------------------------
@@ -540,111 +64,42 @@ procedure rtl_free =
 -- free memory
 ----------------------------------------------------------------------------------------------------
 var
-  pspace           : p_memory_space_header;      -- block address space
-  block            : p_memory_block_header;      -- found block
-  res              : t_rtl_mem_error_code;       -- error status
-
+  header       : p_rtl_memmgr_header;
 begin
-  -- initialize
-  res:=rmec_ok;
-
-  -- check if there is anything to free
-  if addr=nil then return; end if;
-
-  -- synchronization
-  rtl_mutex_lock(memory_manager_info.sync);
-
-  -- get block address
-  t_rtl_unsigned32(block:unchecked):=t_rtl_unsigned32(addr:unchecked)-t_memory_block_header:size;
-
-  -- get address space of block
-  pspace:=memory_manager_info.sfirst;
-  while pspace<>nil loop
-    if (t_rtl_unsigned32(addr:unchecked)>=t_rtl_unsigned32(pspace:unchecked)+t_memory_space_header:size) and
-       (t_rtl_unsigned32(addr:unchecked)<t_rtl_unsigned32(pspace:unchecked)+pspace^.size) then
-      break;
-      end if;
-
-    -- next address space
-    pspace:=pspace^.next;
-    end loop;
-
-  -- found address space of block ?
-  if pspace=nil then
-    res:=rmec_invalid;
-    return;
-    end if;    
-
-  -- check consistence of block size
-  if block^.size<>t_rtl_unsigned32(t_rtl_unsigned32(block^.next:unchecked) xor $FFFFFFFF) then
-    res:=rmec_bad;
+  if addr=nil then 
     return;
     end if;
-
-  -- check block size
-  if (block^.size=0) or (block^.size>pspace^.size) then
-    res:=rmec_bad_size;
-    return;
-    end if;
-
-  -- check allocation thread id
-  if block^.threadid=0 then
-    res:=rmec_multiple;
-    return;
-    end if;
-
-  -- insert into list of free blocks
-  free_block(block,pspace);
-
-leave
-  -- synchronization
-  rtl_mutex_unlock(memory_manager_info.sync);
-
-  -- error reporting
-  if res<>rmec_ok then
-    {%%FLEX raise memory_error;}
-    {%%FLEX raise rtl_memory_error_ex(chyba);}
-    end if;
-
-  -- set as free
+  header:=adr2hdr(addr);
+  header^.dealocator^.memmgr_free({num}0,addr,nil);
   addr:=nil;
+{%%TODO catch
+  when others do
+    raise memory_corrupt_error;}
   end rtl_free;
 
-
-
----- Compiler magic --------------------------------------------------------------------------------
-#pragma assign(alloc,rtl_alloc);
-#pragma assign(free,rtl_free);
 ----------------------------------------------------------------------------------------------------
-
-
+procedure rtl_validate_heap =
+----------------------------------------------------------------------------------------------------
+begin
+  systemheap.memmgr_validate;
+  end rtl_validate_heap;
 
 ----------------------------------------------------------------------------------------------------
 entry =
--- Initialization.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- initialize memory manager properties
-  memory_manager_info.init_size:=256{128}*1024*1024;
-  memory_manager_info.delta_size:=256{128}*1024*1024;
-  memory_manager_info.lockmem:=trml_none;
-  memory_manager_info.sfirst:=nil;
-  memory_manager_info.slast:=nil;
-  memory_manager_info.scurr:=nil;
-  rtl_mutex_new(memory_manager_info.sync);
-
-  memory_manager_init(0,0,trml_none);
   end entry;
-
-
 
 ----------------------------------------------------------------------------------------------------
 exit =
--- Finalization.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- discard mutex
-  rtl_mutex_discard(memory_manager_info.sync);
   end exit;
+
+---- Compiler magic --------------------------------------------------------------------------------
+#pragma assign(alloc,rtl_alloc);
+#pragma assign(realloc,rtl_adjust);
+#pragma assign(free,rtl_free);
+----------------------------------------------------------------------------------------------------
 
 end memory;

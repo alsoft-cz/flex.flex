@@ -202,25 +202,6 @@ module private exceptions =
 with 
   messages;
 
-{
-----------------------------------------------------------------------------------------------------
-procedure tlsalloc return int32;
-#pragma convention(tlsalloc,system);
-#pragma import(tlsalloc,'TlsAlloc','KERNEL32.DLL');
-----------------------------------------------------------------------------------------------------
-procedure tlssetvalue (index : int32; value : uint32) return bool32;
-#pragma convention(tlssetvalue,system);
-#pragma import(tlssetvalue,'TlsSetValue','KERNEL32.DLL');
-----------------------------------------------------------------------------------------------------
-procedure tlsgetvalue (index : int32) return uint32;
-#pragma convention(tlsgetvalue,system);
-#pragma import(tlsgetvalue,'TlsGetValue','KERNEL32.DLL');
-----------------------------------------------------------------------------------------------------
-}
-
-var
-  estack           : {%%TODO(task)} t_rtl_pointer;-- per-task exception-frame stack
-
 ----------------------------------------------------------------------------------------------------
 procedure rtl_init_xframe (
     frameptr       : in t_rtl_pointer);          -- pointer to expcetion frame
@@ -231,7 +212,11 @@ procedure rtl_init_xframe =
 begin
   #syntax asm;
     mov    edi,[esp+4]    -- exception-frame address
-    mov    eax,estack
+
+    insert $64
+    mov    eax,[20]
+    mov    eax,[eax]      -- get last exception stack address
+
     mov    edx,0
     mov    [edi+24],eax   -- uplink
  -- set by the compiler
@@ -244,7 +229,10 @@ begin
     mov    [edi+4],ebp    -- frameebp
     lea    eax,[esp+8]    -- EIP and xframe addr. is pushed on the stack now
     mov    [edi+0],eax    -- frameesp
-    mov    estack,edi     -- update exception-frame stack
+
+    insert $64
+    mov    eax,[20]
+    mov    [eax],edi        -- update exception-frame stack
     #end asm;
   end rtl_init_xframe;
 
@@ -263,12 +251,19 @@ var
 begin
   #syntax asm;
     -- restore previous exception handler
-    mov    esi,estack
-    mov    edi,[esi+24]
-    mov    estack,edi
+
+    insert $64
+    mov    eax,[20]
+    mov    eax,[eax]            -- get last exception stack address
+
+    mov    edi,[eax+24]
+
+    insert $64
+    mov    esi,[20]
+    mov    [esi],edi            -- set prev exception stack address
 
     -- any exception pending ?
-    mov    eax,[esi+16]
+    mov    eax,[eax+16]
     cmp    eax,0
     jne    @1
     ret    
@@ -322,7 +317,10 @@ var
 begin
   #syntax asm;
     -- check handler
-    mov    eax,estack
+    insert $64
+    mov    eax,[20]
+    mov    eax,[eax]           -- get last exception stack address
+
   #if rtl_debug then;
     cmp    eax,0
     je     @1
@@ -361,7 +359,10 @@ procedure rtl_discard_exception =
 begin
   #syntax asm;
     mov    edx,0
-    mov    eax,estack
+
+    insert $64
+    mov    eax,[20]
+    mov    eax,[eax]    -- get last exception stack address
 
     -- reset exception code
     mov    [eax+16],edx        -- exception code
@@ -384,7 +385,9 @@ procedure rtl_check_code =
 ----------------------------------------------------------------------------------------------------
 begin
   #syntax asm;
-    mov    edx,estack
+    insert $64
+    mov    edx,[20]
+    mov    edx,[edx]           -- get last exception stack address
     cmp    [edx+16],eax        -- input in EAX, output in EFLAGS.ZF
     #end asm;
   end rtl_check_code;
@@ -404,20 +407,6 @@ begin
   end rtl_unhandled_exception;
 
 
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_init_exceptions =
--- Initializes exception handling (cannot use ENTRY).
-----------------------------------------------------------------------------------------------------
-begin
-  -- allocate per-task exception stack
-  -- estack:=tlsalloc;
-  -- if estack<0 then rtl_terminate(3) end if;
-  estack:=nil
-  end rtl_init_exceptions;
-
-
-
 ---- Compiler magic --------------------------------------------------------------------------------
 #pragma assign(init_xframe        ,flex.exceptions.rtl_init_xframe);
 #pragma assign(end_xframe         ,flex.exceptions.rtl_end_xframe);
@@ -425,7 +414,6 @@ begin
 #pragma assign(discard_exception  ,flex.exceptions.rtl_discard_exception);
 #pragma assign(check_code         ,flex.exceptions.rtl_check_code);
 #pragma assign(unhandled_exception,flex.exceptions.rtl_unhandled_exception);
-#pragma assign(init_exceptions    ,flex.exceptions.rtl_init_exceptions);
 ----------------------------------------------------------------------------------------------------
 
 
