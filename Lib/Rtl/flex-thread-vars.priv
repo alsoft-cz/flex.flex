@@ -5,7 +5,10 @@ module private vars =
 -- Copyright (C) 1999-2003 A && L soft
 ----------------------------------------------------------------------------------------------------
 with
-    synchronization;
+    synchronization
+    ,tags
+    ,tags.types
+    ;
 
 type
   --%%TODO copy of unchecked array 
@@ -23,10 +26,14 @@ type
       inheritable  : t_rtl_logical8;
       immediate    : t_rtl_logical8;
       next         : p_tv_type;
+      typetag      : p_desc_type;
       size         : t_rtl_native_unsigned;
-      tv_entry     : p_rtl_threadvar_entry;
-      tv_adjust    : p_rtl_threadvar_adjust;
-      tv_exit      : p_rtl_threadvar_exit;
+      { --%%TODO call entry adjust exit
+      tv_init      : t_rtl_pointer;
+      tv_entry     : t_rtl_pointer;
+      tv_adjust    : t_rtl_pointer;
+      tv_exit      : t_rtl_pointer;
+      }
       end record;
 
 
@@ -52,12 +59,23 @@ begin
   rtl_mutex_lock(var_lock);
   threadvarid:=maxtvid;
   tv_type^.threadvarid:=threadvarid;
-  tv_type^.tv_entry:=tv_entry;
-  tv_type^.tv_adjust:=tv_adjust;
-  tv_type^.tv_exit:=tv_exit;
   tv_type^.inheritable:=inheritable;
   tv_type^.immediate:=immediate;
-  tv_type^.size:=size;
+
+  tv_type^.typetag:=p_desc_type(typetag:unchecked);
+  tv_type^.size:=tv_type^.typetag^.size;
+  {
+  --%%TODO call entry adjust exit
+  tv_type^.tv_entry:=nil;
+  tv_type^.tv_adjust:=nil;
+  tv_type^.tv_exit:=nil;
+
+  flex.tags.types.rtl_call_init
+  flex.tags.types.rtl_call_entry
+  flex.tags.types.rtl_call_exit
+  flex.tags.types.rtl_call_adjust
+  }
+
   h:=threadvarid mod tv_hash_size;
   
   --zvednu pocitadlo
@@ -165,6 +183,7 @@ begin
 
   result:=tv_var^.data;
   inherit:=false;
+  { --%%TODO call entry adjust exit
   if (origthreadhead<>nil) then
     origdata:=rtl_get_threadvar_other(threadvarid,origthreadhead);
     end if;
@@ -195,6 +214,7 @@ begin
       tv_type^.tv_entry^(tv_var^.data,tv_type^.threadvarid,threadhead);
       end if;
     end if;
+    }
 
   end rtl_create_threadvar;
 
@@ -313,10 +333,12 @@ begin
     tv_var_prev^.next_var:=tv_var^.next_var;
     end if;
 
+  { --%%TODO call entry adjust exit
   -- volam exit
   if tv_type^.tv_exit<>nil then
     tv_type^.tv_exit^(tv_var^.data,threadvarid,threadhead);
     end if;
+    }
 
   --pamet
   discard tv_var^.data;

@@ -7,17 +7,334 @@ module private cc_text =
 ----------------------------------------------------------------------------------------------------
 
 with
+#if #declared profiler_lex; #and then; profiler_lex then;
+  rdtsc_profile;
+#end if;
   standard.console,
+  standard.conversions,
   standard.files,
   cc_def.cc_codes,
-  cc_def.cc_var;
+  cc_def.cc_var,
+  cc_lex;
+
+---- %%TECH Upozornˆn¡ na nestandardn¡ optimalizace ------------------------------------------------
+-- Pozor: Tento k¢d obsahuje vzl ¨Ÿ slizk‚ c‚‡ka©sk‚ optimalizace na rychlost, proto‘e [getchar]
+-- a spol. je kritick  rutina cel‚ho p©eklada‡e. V¨e je na direktivu [fast_getchar]. Vypnut¡m se
+-- aktivuje ‡istˆ naprogramovan  verze, kter  nen¡ tak v˜konn .
+----------------------------------------------------------------------------------------------------
+
 
 ----------------------------------------------------------------------------------------------------
-procedure openfile =
--- Otev©e nov˜ soubor a um¡st¡ ho na vrchol z sobn¡ku otev©en˜ch soubor–.
+class private c_source_text = 
+-- Reprezentace textov‚ho souboru. 
+-- Poskytuje z kladn¡ primitiva pro ‡ten¡ textu po znac¡ch.
 ----------------------------------------------------------------------------------------------------
+
+    var
+      num          : lexfilenum;                 -- ‡¡slo souboru
+    
+      -- unget buffer na znaky (ji‘ konvertovan‚ na intern¡ reprezentaci LEXCHAR)
+      znpos        : t_unsigned;                 -- kursor do unget bufferu
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      znbuf_line   : lexline;                    -- ‡¡slo aktu ln¡ho © dku
+    #else;
+      znbuf        : array 0..maxungetchar-1 of aliased lexinputunget; -- znakov˜ buffer
+    #end if;
+    
+      -- vstupn¡ buffer
+      buf          : pinputchararray;            -- buffer pro ‡ten¡ ze souboru
+      bufsize      : t_unsigned;                 -- velikost bufferu %%TODO(STRING) BUFSIZE nahradit atributem BUF^:LENGTH
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      bufptr       : ^tinputchar;                -- urychlov tko: na hrub˜ pytel c‚‡kov  z plata
+      buflinebegin : ^tinputchar;                -- urychlov tko: na hrub˜ pytel c‚‡kov  z plata
+      bufend       : ^tinputchar;                -- urychlov tko: na hrub˜ pytel c‚‡kov  z plata
+    #else;
+      bufpos       : t_unsigned;                 -- pozice aktu ln¡ho znaku v bufferu
+    #end if;
+
+    ------------------------------------------------------------------------------------------------
+    static init =
+    -- Otev©e soubor a p©iprav¡ ho pro ‡ten¡.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- otev©¡t soubor
+      f.init_text_name(name);
+      if cfg_sharing
+        then f.open(t_fs_object_mode_set:[tfm_read],tfa_sequential,tfss_shared_read,false);
+        else f.open(t_fs_object_mode_set:[tfm_read],tfa_sequential,tfss_not_shared,false);
+        end if;
+      if f.res<>tfe_ok then
+        ce^.seterror({CCERR=}000061,ce_f_open);
+        ce^.setparam(name);
+        ce^.raiseerror;
+        end if;
+
+      -- alokovat buffer
+      -- %%TECH Trik: alokujeme o byte v¡ce, kter˜ nech me nulov˜. Zajist¡ se tak, ‘e posledn¡
+      -- p©e‡ten˜ znak bude v‘dy nula a ve spojen¡ s [is_eof] se spr vnˆ detekuje konec souboru.
+      -- U¨et©¡ se tak jeden IF v [getchar], co‘ je dost d–le‘it‚, proto‘e je to v˜konovˆ
+      -- kritick  procedura.
+      bufsize:=f.get_size+1;
+      new buf range bufsize;
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      bufptr:=^(buf^[0]);
+      bufend:=^(buf^[bufsize]);
+    #end if;
+
+      -- doplnit dal¨¡ £daje
+      this.include:=include;
+
+      -- prvn¡ © dek m  ‡¡slo 1 (‡¡slo sloupce na 1 se nastav¡ p©e‡ten¡m prvn¡ho znaku)
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      znbuf_line:=1;
+      buflinebegin:=bufptr;
+    #else;
+      znbuf[0].line:=1;
+    #end if;
+
+      -- zaregistrovat jm‚no otev©en‚ho souboru a poznamenat si jeho p©idˆlen‚ identifika‡n¡ ‡¡slo
+      used_files^.add_file_name(name,num);
+
+      -- na‡¡st ve¨ker  data ze souboru
+      -- %%TECH Pozor, ze souboru se mus¡ ‡¡st o byte m‚nˆ, ne‘ m me velk˜ buffer. Viz popis
+      -- triku s nulou na konci v˜¨e.
+      f.read(0,buf^,bufsize-1);
+    #if not #declared fast_getchar; #or else; not fast_getchar then;
+      bufpos:=0;
+    #end if;
+
+      -- povedlo se ?
+      if f.res<>tfe_ok then
+        ce^.seterror({CCERR=}000000,ce_f_read);
+        ce^.setparam(name);
+        ce^.raiseerror;
+        end if;
+      end init;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static getchar =
+    -- P©e‡te znak ze vstupu. Na konci vstupu vr t¡ \0, p©¡padn‚ znaky \0 v souboru nijak 
+    -- neo¨et©uje, tak‘e se u‘ivatel mus¡ je¨tˆ ujistit vol n¡m [is_eof].
+    -- Po p©e‡ten¡ nov‚ho znaku ze vstupu inkrementuje po‡¡tadlo sloupc–. Nijak neo¨et©uje konce
+    -- © dk–. Aktualizace po‡¡tadla © dk– je ponech na na u‘ivateli.
+    ------------------------------------------------------------------------------------------------
+  #if #declared fast_getchar; #and then; fast_getchar then;
+    var
+      backbuf      : bufptr:type;
+  #else;
+    label
+      output;
+  #end if;
+
+    begin
+    #if #declared profiler_lex; #and then; profiler_lex then;
+      rdtsc_start;
+      succ _getchar;
+    #end if;
+
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      -- jak jsme na tom se stavem unget bufferu ?
+      if znpos>0 then
+        case znpos
+          when 1 do t_unsigned32(backbuf:unchecked):=t_unsigned32(bufptr:unchecked)-tinputchar:size;
+          when 2 do t_unsigned32(backbuf:unchecked):=t_unsigned32(bufptr:unchecked)-2*tinputchar:size;
+          end case;
+        c:=lexchar(backbuf^);
+        pred znpos;
+        return;
+        end if;
+
+      -- na‡¡st znak z bufferu a zkonvertovat do intern¡ reprezentace
+      c:=lexchar(bufptr^);
+
+      -- p©ipravit pointer na dal¨¡ znak
+      t_unsigned32(bufptr:unchecked)+tinputchar:size;
+    #else;
+      -- pokud nen¡ v unget bufferu ‘ dn˜ znak, p©e‡¡st jeden ze vstupu
+      if znpos=0 then
+        -- posledn¡ znak ulo‘it coby p©edposledn¡
+        znbuf[1]:=znbuf[0];
+
+        -- %%TECH Nemus¡me se starat o to, jestli nejsme na konci bufferu, proto‘e p©i po‡ te‡n¡m
+        -- naplnˆn¡ bufferu se na konec doplnil znak \0 a ve spojen¡ s [is_eof] se tak korektnˆ 
+        -- signalizuje konec souboru.
+
+        -- na‡¡st znak z bufferu a zkonvertovat do intern¡ reprezentace
+        znbuf[0].zn:=lexchar(buf^[bufpos]);
+        succ bufpos;
+
+        -- posunout ‡¡ta‡ sloupce
+        succ znbuf[0].col;
+
+        -- v bufferu je ted prave jeden znak
+        znpos:=1;
+        end if;
+
+      -- nyn¡ je aspo¤ jeden znak v bufferu => p©edat ho ven
+      pred znpos;
+      c:=znbuf[znpos].zn;
+    #end if;
+
+    #if #declared profiler_lex; #and then; profiler_lex then;
+      rdtsc_stop(_getchar_t);
+    #end if;
+      end getchar;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static ungetchar =
+    -- Vr t¡ naposledy p©e‡ten˜ znak do vstupu.
+    ------------------------------------------------------------------------------------------------
+    begin
+    #if #declared profiler_lex; #and then; profiler_lex then;
+      rdtsc_start;
+      succ _ungetchar;
+    #end if;
+
+      succ znpos;
+
+    #if #declared profiler_lex; #and then; profiler_lex then;
+      rdtsc_stop(_ungetchar_t);
+    #end if;
+      end ungetchar;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static next_line =
+    -- Posune po‡¡tadlo © dk– o jedni‡ku a zresetuje po‡¡tadlo sloupc–.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- posunout ‡¡ta‡ © dk–
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      succ znbuf_line;
+      buflinebegin:=bufptr;
+    #else;
+      succ znbuf[znpos].line;
+      znbuf[znpos].col:=0;
+    #end if;
+
+      -- p©ibyl jeden zpracovan˜ © dek
+      succ total_lines;
+
+      -- postarat se t‚‘ o ‡¡ta‡ efektivn¡ch (nepr zdn˜ch, nekoment ©ov˜ch) © dk–
+      effective_lines+effective:ord;
+      effective:=false;
+      end next_line;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static check_meta_statements =
+    -- Zkontroluje, zda jsou uzav©eny v¨echny blokov‚ metap©¡kazy.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if metastack:length>0 then
+        for i in metastack:range loop
+          ce^.seterror({CCERR=}000083,ce_meta_no_end);
+          ce^.setpos(metastack[i].pos);
+          end loop;
+        metastack:=nil;
+        end if;
+      end check_meta_statements;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static is_eof =
+    -- True, jestli‘e ji‘ byl p©e‡ten cel˜ soubor.
+    ------------------------------------------------------------------------------------------------
+    begin
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      result:=znpos=0 and t_unsigned32(bufptr:unchecked)=t_unsigned32(bufend:unchecked){bufpos=buflen};
+    #else;
+      result:=znpos=0 and bufpos=bufsize;
+    #end if;
+      end is_eof;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_lines =
+    -- Dosud zpracovan˜ po‡et © dk– souboru.
+    ------------------------------------------------------------------------------------------------
+    begin
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      result:=znbuf_line;
+    #else;
+      result:=znbuf[0].line;
+    #end if;
+      end get_lines;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_position =
+    -- Zjist¡ aktu ln¡ pozici ve zdroj ku.
+    ------------------------------------------------------------------------------------------------
+    begin
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      pos.line:=znbuf_line;
+      pos.col:=t_unsigned32(bufptr:unchecked)-t_unsigned32(buflinebegin:unchecked){+1}-znpos;
+    #else;
+      pos.line:=znbuf[0].line;
+      pos.col:=znbuf[0].col;
+    #end if;
+      pos.num:=num;
+      end get_position;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_length =
+    -- Podle zapamatovan‚ pozice dopo‡¡t  d‚lku lexik ln¡ho elementu.
+    ------------------------------------------------------------------------------------------------
+    begin
+    #if #declared fast_getchar; #and then; fast_getchar then;
+      if pos.line=znbuf_line then
+        pos.len:=t_unsigned32(bufptr:unchecked)-t_unsigned32(buflinebegin:unchecked){+1}-znpos-pos.col+1;
+        end if;
+    #else;
+      if pos.line=znbuf[0].line then
+        pos.len:=znbuf[0].col-pos.col+1;
+        end if;
+    #end if;
+      end get_length;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    -- Finalizace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- soubor zase zav©¡t
+      f.close;
+
+      -- uvolnit buffer
+      discard buf;
+      end exit;
+
+    end c_source_text;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure text_open =
+-- Otev©e nov˜ soubor zadan‚ho jm‚na a um¡st¡ ho na vrchol z sobn¡ku otev©en˜ch soubor–.
+----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.6' then;
+with
+#else;
+use
+#end if;
+  supervised c_source_text;
+
 var
-  ifile            : plexinput;                  -- nov˜ vstupn¡ soubor
+  text             : p_source_text;
   s                : t_char32str;
 
 begin
@@ -25,263 +342,80 @@ begin
   s:='Compiling ' & name; -- %%TODO(RTATTRIB:LAST)
   listing^.write_line(s);
   listing^.start_indent;
-  
-  -- alokovat pamˆŸ pro deskriptor souboru
-  new ifile;
 
-  begin
-    -- otev©¡t soubor
-    ifile^.f.init_text_name(name);
-    if cfg_sharing
-      then ifile^.f.open(t_fs_object_mode_set:[tfm_read],tfa_sequential,tfss_shared_read,false);
-      else ifile^.f.open(t_fs_object_mode_set:[tfm_read],tfa_sequential,tfss_not_shared,false);
-      end if;
-    if ifile^.f.res<>tfe_ok then
-      ce^.seterror({CCERR=}000061,ce_f_open);
-      ce^.setparam(name);
-      ce^.raiseerror;
-      end if;
+  -- alokovat pamˆŸ
+  new text;
 
-    -- alokovat buffer
-    ifile^.bufsize:=ifile^.f.get_size;
-    new ifile^.buf range ifile^.bufsize;
+  -- inicializovat
+  text^.init(name,include);
 
-    -- doplnit dal¨¡ £daje
-    ifile^.include:=include;
+  -- za©adit na stack
+  text^.next:=lex_input;
+  lex_input:=text;
 
-    -- prvn¡ © dek m  ‡¡slo 1 (‡¡slo sloupce na 1 se nastav¡ p©e‡ten¡m prvn¡ho znaku)
-    ifile^.znbuf[0].line:=1;
+  -- zalo‘it implicitn¡ lexik ln¡ analyz tor
+  lex_set_default_lexer;
 
-    -- zaregistrovat jm‚no otev©en‚ho souboru a poznamenat si jeho p©idˆlen‚ identifika‡n¡ ‡¡slo
-    used_files^.add_file_name(name,ifile^.num);
-
-    -- za©adit na stack
-    ifile^.next:=lex_input;
-    lex_input:=ifile;
-
-  catch
-    when others do
-        -- uzav©¡t soubor
-        ifile^.f.close;
-
-        -- uvolnit buffer
-        discard ifile^.buf;
-
-        -- uvolnit deskriptor souboru
-        discard ifile;
-
-        -- v˜jimku poslat d l
-        raise;
-    end;
-  end openfile;
+rollback
+  -- p©i chybˆ poslat do h je
+  discard text;
+  end text_open;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure popfile =
--- Zav©e aktu ln¡ soubor.
+procedure text_close =
+-- Zav©e soubor na vrcholu z sobn¡ku otev©en˜ch soubor– a p©ejde k nad©azen‚mu.
+-- P©ed zav©en¡m zkontroluje ukon‡en¡ v¨ech blokov˜ch metap©¡kaz– v aktu ln¡m souboru.
 ----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.6' then;
 with
-  standard.conversions,
-  standard.names;
+#else;
+use
+#end if;
+  supervised c_source_text;
 
 var
-  ifile            : plexinput;                  -- deskriptor zav¡ran‚ho souboru
-  text_name        : p_text_name;                -- plain-text jm‚no souboru
+  text             : p_source_text;
 
 begin
   -- konec odsazen¡ v listingu
   listing^.end_indent;
 
   -- je ukon‡en podm¡nˆn˜ p©eklad ?
-  checkmeta;
+  lex_input^.check_meta_statements;
+
+  -- zru¨it lexik ln¡ analyz tor
+  lex_pop_default_lexer;
 
   -- vyjmout ze stacku vrchn¡ soubor
-  ifile:=lex_input;
-  lex_input:=ifile^.next;
+  text:=lex_input;
+  lex_input:=text^.next;
 
-  -- ozn mit dokon‡en¡ p©ekladu tohoto souboru
-  if cfg_verbosity>=vl_default then
-    output^.write('Compiled ');
-    begin
-      ifile^.f.name.compose_name(text_name);
-      output^.write(text_name^);
-    leave
-      discard text_name;
-      end;
-    output^.write(' (');
-    output^.write(unsigned_to_string(ifile^.znbuf[0].line));
-    output^.write('/');
-    output^.write(unsigned_to_string(total_lines));
-    output^.write_line(')');
-    end if;
-
-  -- zav©¡t soubor
-  ifile^.f.close;
-
-  -- uvolnit buffer
-  discard ifile^.buf;
-
-  -- uvolnit deskriptor souboru
-  discard ifile;
-
-  -- sn¡‘it odsazen¡ v listingu
-  --lstendi;
-  end popfile;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure checkmeta =
--- Zkontroluje, zda jsou uzavreny vsechny blokove metaprikazy.
-----------------------------------------------------------------------------------------------------
-begin
-  if lex_input^.metastack:length>0 then
-    for i in lex_input^.metastack:range loop
-      ce^.seterror({CCERR=}000083,ce_meta_no_end);
-      ce^.setpos(lex_input^.metastack[i].pos);
-      {%%RESUME ce^.raiseerror;}
-      end loop;
-    lex_input^.metastack:=nil;
-    end if;
-  end checkmeta;
-
-
-      
-----------------------------------------------------------------------------------------------------
-procedure getchar =
--- P©e‡te znak ze souboru. Na konci souboru vrac¡ \0. Pokud p©e‡te ze souboru znak \0, vr t¡ \32.
--- Automaticky odstra¤uje ze z sobn¡ku includovan‚ soubory.
-----------------------------------------------------------------------------------------------------
-with
-  standard.names;
-
-var
-  znak             : lexchar;                    -- znak p©e‡ten˜ a konvertovan˜ ze vstupu
-  fsize            : t_file_pointer;             -- velikost souboru
-  eof              : t_logical := false;         -- T-hl sit konec souboru, i kdy‘ v bufferu nˆco je
-  text_name        : p_text_name;                -- plain-text jm‚no souboru
-
-begin
-  -- pokud nen¡ v unget bufferu ‘ dn˜ znak, p©e‡¡st jeden ze vstupu
-  if lex_input^.znpos=0 then
-    
-    -- nen¡ pot©eba na‡¡st data ze souboru ?
-    if lex_input^.bufpos>=lex_input^.buflen then
-      -- zjistit velikost souboru
-      fsize:=lex_input^.f.get_size;
-
-      -- nen¡ u‘ konec souboru a nem–‘eme jeden soubor odstranit ze stacku ?
-      while lex_input^.fpos>=fsize and then lex_input^.include loop
-        -- sice se vrac¡me k p©edchoz¡mu souboru, ale konec souboru mus¡me hl sit
-        --eof:=true;
-
-        -- zav©¡t jeden soubor
-        popfile;
-
-        -- znova zjistit velikost souboru
-        fsize:=lex_input^.f.get_size;
-
-        -- pokud nejsme na konci input buferu nech soubor jeste otevreny
-        if lex_input^.bufpos<lex_input^.buflen then break end if;
-        end loop;
-
-      -- m–‘eme (a pot©ebujeme) je¨tˆ nˆco na‡¡st ?
-      if lex_input^.bufpos>=lex_input^.buflen and then lex_input^.fpos<fsize then
-        -- kolik se bude ‡¡st
-        if fsize-lex_input^.fpos<lex_input^.bufsize
-          then lex_input^.buflen:=fsize-lex_input^.fpos
-          else lex_input^.buflen:=lex_input^.bufsize
-          end if;
-
-        -- na‡¡st
-        lex_input^.f.read(lex_input^.fpos,lex_input^.buf^,lex_input^.buflen);
-        lex_input^.fpos+t_file_pointer(lex_input^.buflen);
-        lex_input^.bufpos:=0;
-
-        -- povedlo se ?
-        if lex_input^.f.res<>tfe_ok then
-          ce^.seterror({CCERR=}000000,ce_f_read);
-          begin
-            lex_input^.f.name.compose_name(text_name);
-            ce^.setparam(text_name^);
-          leave
-            discard text_name;
-            end;
-          ce^.raiseerror;
-          end if;
-        end if;
+  begin
+    -- ozn mit dokon‡en¡ p©ekladu tohoto souboru
+    if cfg_verbosity>=vl_default then
+      output^.write('Compiled ');
+      declare var
+        text_name    : p_text_name;                -- plain-text jm‚no souboru
+      begin
+        text^.f.name.compose_name(text_name);
+        output^.write(text_name^);
+      leave
+        discard text_name;
+        end declare;
+      output^.write(' (');
+      output^.write(unsigned_to_string(text^.get_lines));
+      output^.write('/');
+      output^.write(unsigned_to_string(total_lines));
+      output^.write_line(')');
       end if;
 
-    -- posledn¡ znak ulo‘it coby p©edposledn¡
-    lex_input^.znbuf[1]:=lex_input^.znbuf[0];
-    {%%TODO(SLICE): lex_input^.znbuf[lex_input^.znbuf:first..lex_input^.znbuf:last-1]:=lex_input^.znbuf[lex_input^.znbuf:first+1..lex_input^.znbuf:last]}
-
-    -- je k dispozici znak ?
-    if lex_input^.bufpos<lex_input^.buflen and then not eof
-
-      -- ano => na‡¡st do bufferu
-      then
-        -- na‡¡st znak z bufferu z konvertovat do intern¡ reprezentace
-        znak:=lexchar(lex_input^.buf^[lex_input^.bufpos]);
-        succ lex_input^.bufpos;
-
-        -- ulo‘it do bufferu a konvertovat \0
-        if znak=\0
-          then lex_input^.znbuf[0].zn:=\32
-          else lex_input^.znbuf[0].zn:=znak
-          end if;
-
-        -- vypo‡¡tat pozici znaku (odvodit od pozice posledn¡ho p©e‡ten‚ho znaku)
-        if znak<>\10
-
-          -- jin˜ znak
-          then
-            succ lex_input^.znbuf[0].col;
-
-          -- LF - konec © dku
-          else
-            succ total_lines;
-            if lex_input^.effective then
-              succ effective_lines;
-              lex_input^.effective:=false;
-              end if;
-            succ lex_input^.znbuf[0].line;
-            lex_input^.znbuf[0].col:=0;
-            end if;
-
-      -- ne => konec souboru
-      else
-        lex_input^.znbuf[0].zn:=\0;      
-        end if;
-
-    -- v bufferu je ted prave jeden znak
-    lex_input^.znpos:=1;
-    end if;
-
-  -- nyn¡ je aspo¤ jeden znak v bufferu => p©edat ho ven
-  pred lex_input^.znpos;
-  c:=lex_input^.znbuf[lex_input^.znpos].zn;
-  end getchar;
-
-
-{%%X
-----------------------------------------------------------------------------------------------------
-procedure scanchar =
--- €te znaky ze souboru a‘ naraz¡ na jeden z C1 nebo C2 nebo na konec souboru. Vr t¡ nalezen˜ znak.
-----------------------------------------------------------------------------------------------------
-begin
-  end scanchar;
-}
-
-
-----------------------------------------------------------------------------------------------------
-procedure ungetchar =
--- Vr t¡ naposledy p©e‡ten˜ znak do vstupu.
-----------------------------------------------------------------------------------------------------
-begin
-  succ lex_input^.znpos;
-  end ungetchar;
+  leave
+    -- uvolnit soubor
+    discard text;
+    end;
+  end text_close;
 
 
 

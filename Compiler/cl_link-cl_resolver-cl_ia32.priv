@@ -123,6 +123,7 @@ class private linkresolver_ia32 =
 
     var
       pvar             : pentity_var;                -- promˆnn 
+      tmp_addr         : tunidata_addr;
 
     begin
       -- je v–bec co p©idˆlovat ?
@@ -145,7 +146,8 @@ class private linkresolver_ia32 =
         pvar^.linked:=ls_linked;
 
         -- zapsat do map filu
-        map_static_variable(sym_get_qid(pvar),prg32_to_unidata_addr(picodegen_var(pvar^.codegen)^.addr),pvar^.typ.getctype^.size);
+        tmp_addr:=prg32_to_unidata_addr(picodegen_var(pvar^.codegen)^.addr);
+        map_static_variable(sym_get_qid(pvar),tmp_addr,pvar^.typ.getctype^.size);
         end loop;
       end assign_var_addresses;
 
@@ -188,10 +190,13 @@ class private linkresolver_ia32 =
     ------------------------------------------------------------------------------------------------
     var
       pmethod      : pentity_code;
+      reg_size     : t_mod_unsigned;
 
     begin
+      reg_size:=t_mod_unsigned((t_mod_unsigned(picodegen_interface(interface^.codegen)^.vtable^:last)-t_mod_unsigned(picodegen_interface(interface^.codegen)^.vtable^:first)+1)*4);
+
       -- velikost tabulky virtu ln¡ metod zapo‡¡tat do celkov‚ho sou‡tu velikost– komponent deskriptoru
-      addr.register_size({%%TODO(COMPATIBILITY}(picodegen_interface(interface^.codegen)^.vtable^:last-picodegen_interface(interface^.codegen)^.vtable^:first+1)*4);
+      addr.register_size({%%TODO(COMPATIBILITY}t_unsigned(reg_size));
 
       -- zpracovat v¨echny virtu ln¡ metody ve virtu ln¡ tabulce
       for vindex in 1..interface^.get_vtable_size loop
@@ -426,6 +431,9 @@ class private linkresolver_ia32 =
     with
       cg_gen.cg_ia32.ci_code,
       cg_gen.cg_ia32.ci_code.ci_instr;
+    
+    var
+      modtemp   : t_mod_unsigned32;
 
     begin
       -- je v–bec co vyhodnocovat ?
@@ -471,7 +479,10 @@ class private linkresolver_ia32 =
                         -- norm ln¡ symbol }{%%X A kter  instance to je ?
                         else
                           if not r.absolute
-                            then setfield(inst,r.disp,picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart-(r.nextip+inst.cstart));
+                            then 
+                              modtemp:=t_mod_unsigned32(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
+                              modtemp-t_mod_unsigned32((r.nextip+inst.cstart));
+                              setfield(inst,r.disp,t_unsigned32(modtemp));
                             else 
                               setfield(inst,r.disp,picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
                               
@@ -484,7 +495,10 @@ class private linkresolver_ia32 =
                   when et_program, et_static, et_virtual, et_override, et_special, et_compile do
                       {%%X A kter  instance to je ? }
                       if not r.absolute
-                        then setfield(inst,r.disp,picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart-(r.nextip+inst.cstart));
+                        then 
+                          modtemp:=t_mod_unsigned32(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
+                          modtemp-t_mod_unsigned32((r.nextip+inst.cstart));
+                          setfield(inst,r.disp,t_unsigned32(modtemp));
                         else 
                           setfield(inst,r.disp,picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
                           
@@ -955,6 +969,7 @@ class private linkresolver_ia32 =
         --------------------------------------------------------------------------------------------
         var
           size     : t_unsigned;                 -- kumulativn¡ velikost v¨ech slo‘ek
+          modtemp  : t_mod_unsigned;
 
         begin
           -- z klad tvo©¡ deskriptor typu
@@ -963,9 +978,10 @@ class private linkresolver_ia32 =
 
           -- n sleduje virtu ln¡ tabulka
           if codegen^.vtable<>nil then
-            os^.writex(codegen^.vtable^,(codegen^.vtable^:last-codegen^.vtable^:first+1)*4);
+            modtemp:=(t_mod_unsigned(codegen^.vtable^:last)-t_mod_unsigned(codegen^.vtable^:first)+1)*4;
+            os^.writex(codegen^.vtable^,t_unsigned(modtemp));
                        {%%TODO(COMPATIBILITY) codegen^.vtable^:size);}
-            size+(codegen^.vtable^:last-codegen^.vtable^:first+1)*4;
+            size+t_unsigned(modtemp);
             end if;
 
           -- a tabulka interfac– 

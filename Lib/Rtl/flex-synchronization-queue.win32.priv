@@ -1,7 +1,8 @@
 ----------------------------------------------------------------------------------------------------
 procedure rtl_squeue_draw_out_now (
     squeue         : in out ref t_rtl_squeue;
-    data           : out t_rtl_pointer);
+    data           : out t_rtl_pointer)
+    return t_rtl_logical8;
 ----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
@@ -12,11 +13,12 @@ var
 begin
   squeue:=nil;
   squeue.waitable:=waitable;
+  squeue.freedata:=freedata;
   if waitable then
     rtl_critisem_new_owned(squeue.critisem,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
     end if;
   rtl_abaref_new(squeue.tail);
-  rtl_abaref_copy_pointer_none(squeue.head,squeue.tail,success);
+  rtl_abaref_copy_pointer_none(squeue.head,squeue.tail,squeue.freedata,success);
   end rtl_squeue_new;
 
 
@@ -44,9 +46,11 @@ begin
   rtl_squeue_move(squeue,oldqueue);
   -- projizdim cely queue a zahazuju vsechno
   loop
-    rtl_squeue_draw_out_now(oldqueue,data);
-    -- odalokace data se nevedou
-    if data=nil then
+    if rtl_squeue_draw_out_now(oldqueue,data) then
+      if squeue.freedata<>nil then
+        squeue.freedata^(data);
+        end if;
+    else
       break;
       end if;
     end loop;
@@ -61,12 +65,13 @@ var
   oldqueue         : t_rtl_squeue;
 
 begin
-  if fromqueue.waitable then
-    --%%TODO zatim nevim jak presunout pocitadlo a synchronizaci synchronizovane
-    raise implementation_error;
-    end if;
-
   rtl_squeue_new(toqueue,fromqueue.waitable);
+
+  -- pocitadlo
+  oldqueue.critisem:=fromqueue.critisem;
+  fromqueue.critisem:=toqueue.critisem;
+  toqueue.critisem:=oldqueue.critisem;
+  
   -- prvne hlavicku
   loop
     oldqueue.head:=fromqueue.head;
@@ -123,36 +128,36 @@ restart:
   oldtail:=squeue.tail;
 
   -- zkopiruju si pointer na "posledni prvek"
-  rtl_abaref_copy_pointer_source(prevnode,squeue.tail,^oldtail,success);
+  rtl_abaref_copy_pointer_source(prevnode,squeue.tail,^oldtail,squeue.freedata,success);
   if not success then goto restart; end if;
 
   --hledam jestli je opravdu posledni
   while prevnode.ptr^.next.ptr<>nil loop
 
     -- neni posledni takze si posunu ukazatel na posledni
-    rtl_abaref_copy_pointer_source(prevnode,prevnode.ptr^.next,nil,success);
+    rtl_abaref_copy_pointer_source(prevnode,prevnode.ptr^.next,nil,squeue.freedata,success);
     if not success then goto restart; end if;
 
     -- zkusim prehodit pointer na "posledni prvek" na tenhle prvek
-    rtl_abaref_copy_pointer_target(squeue.tail,^oldtail,prevnode,^oldtail,success);
+    rtl_abaref_copy_pointer_target(squeue.tail,^oldtail,prevnode,^oldtail,squeue.freedata,success);
     if not success then goto restart; end if;
     end loop;
 
   -- mam docasneho reprezentanta posledniho prvku
   -- zkusim do nej nakopirovat novy node za predpokladu ze je opravdu posledni
-  rtl_abaref_copy_pointer_target(prevnode.ptr^.next,^zero,newnode,nil,success);
+  rtl_abaref_copy_pointer_target(prevnode.ptr^.next,^zero,newnode,nil,squeue.freedata,success);
   if not success then goto restart; end if;
 
   -- podarilo se mi 
   -- zkusim prehodit pointer na "posledni prvek" na tenhle prvek
-  rtl_abaref_copy_pointer_target(squeue.tail,^oldtail,newnode,nil,success);
+  rtl_abaref_copy_pointer_target(squeue.tail,^oldtail,newnode,nil,squeue.freedata,success);
   -- pokud se nepodarilo tak to asi udelal nekdo jiny a mne to nevadi
 
   -- uvolnim predchozi prvek
-  rtl_abaref_discard(prevnode,success);
+  rtl_abaref_discard(prevnode,squeue.freedata,success);
 
   -- uvolnim novy prvek
-  rtl_abaref_discard(newnode,success);
+  rtl_abaref_discard(newnode,squeue.freedata,success);
 
   -- zvednu pocet prvku ve fronte a nebo povolim dalsimu threadu cteni
   if squeue.waitable then
@@ -181,35 +186,37 @@ restart:
   temp:=squeue.head;
 
   -- zkopiruju si pointer na prvni "dumb" node
-  rtl_abaref_copy_pointer_source(dumbnode,squeue.head,^temp,success);
+  rtl_abaref_copy_pointer_source(dumbnode,squeue.head,^temp,squeue.freedata,success);
   if not success then goto restart; end if;
 
   -- otestuju jestli neni fronta prazdna
   if dumbnode.ptr^.next.ptr=nil then
     -- je prazdna, uklidim
     data:=nil;
-    rtl_abaref_discard(nextnode,success);
-    rtl_abaref_discard(dumbnode,success);
+    result:=false;
+    rtl_abaref_discard(nextnode,squeue.freedata,success);
+    rtl_abaref_discard(dumbnode,squeue.freedata,success);
     return;
     end if;
   
   -- z dumb node zkopiruju pointer na dalsi
-  rtl_abaref_copy_pointer_source(nextnode,dumbnode.ptr^.next,nil,success);
+  rtl_abaref_copy_pointer_source(nextnode,dumbnode.ptr^.next,nil,squeue.freedata,success);
   if not success then goto restart; end if;
 
   -- zkusim ten dalsi nastavit jako prvni
-  rtl_abaref_copy_pointer_target(squeue.head,^temp,nextnode,nil,success);
+  rtl_abaref_copy_pointer_target(squeue.head,^temp,nextnode,nil,squeue.freedata,success);
   if not success then goto restart; end if;
 
   --podarilo se, prectu si data
   data:=nextnode.ptr^.data;
 
   -- uvolnim next
-  rtl_abaref_discard(dumbnode.ptr^.next,success);
-  rtl_abaref_discard(nextnode,success);
+  rtl_abaref_discard(dumbnode.ptr^.next,squeue.freedata,success);
+  rtl_abaref_discard(nextnode,squeue.freedata,success);
 
   -- uvolnim dumb
-  rtl_abaref_discard(dumbnode,success);
+  rtl_abaref_discard(dumbnode,squeue.freedata,success);
+  result:=true;
   end rtl_squeue_draw_out_now;
 
 
@@ -219,11 +226,12 @@ procedure rtl_squeue_draw_out =
 ----------------------------------------------------------------------------------------------------
 begin
   if squeue.waitable then
-    if not rtl_squeue_try_draw_out(squeue,data,t_rtl_wait_infinite) then
+    result:=rtl_squeue_try_draw_out(squeue,data,t_rtl_wait_infinite);
+    if not result then
       raise synchronization_error;
       end if;
   else
-    rtl_squeue_draw_out_now(squeue,data);
+    result:=rtl_squeue_draw_out_now(squeue,data);
     end if;
   end rtl_squeue_draw_out;
 
@@ -247,10 +255,9 @@ begin
     end if;
 
   -- zkusim si ho opravdu vzit
-  rtl_squeue_draw_out_now(squeue,data);
+  result:=rtl_squeue_draw_out_now(squeue,data);
 
   -- pokud neumi cekani tak uz na nic necekam
-  result:=(data<>nil);
   if not squeue.waitable or milisec=t_rtl_wait_immediate or result then
     if not result then
       --uklidit po neuspesnem pokusu
@@ -280,13 +287,10 @@ begin
       end if;
 
     -- zkusim jestli mne nekdo nepredbehne
-    rtl_squeue_draw_out_now(squeue,data);
+    result:=rtl_squeue_draw_out_now(squeue,data);
 
-    -- podarilo se sebrat prvek
-    if data<>nil then
-      result:=true;
-      return;
-      end if;
+    -- podarilo se sebrat prvek, koncim
+    if result then return; end if;
 
     -- pokus se nezdaril vratim pocitadlo itemu
     rtl_critisem_force_unlock(squeue.critisem);
@@ -304,3 +308,27 @@ begin
     end loop;
   end rtl_squeue_try_draw_out;
 
+
+{
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_try_pin =
+----------------------------------------------------------------------------------------------------
+begin
+  end rtl_squeue_try_pin;
+ 
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_try_get_pinned =
+----------------------------------------------------------------------------------------------------
+begin
+  end rtl_squeue_try_get_pinned;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_drop_pin =
+----------------------------------------------------------------------------------------------------
+begin
+  end rtl_squeue_drop_pin;
+}

@@ -27,15 +27,38 @@ procedure a_make_subprogram (
     ptype          : in tentitytype;             -- typ symbolu
     id_proc        : in pentityident;            -- identifik tor procedury
     id_param       : in pentityident;            -- identifik tor parametru
+    range_call     : in t_logical;               -- procedura vol na na ur‡en˜ rozsah
     pproc          : out pentity_subprogram;     -- vytvo©en  procedura
     pproc_context  : out tcontext) =             -- kontext vytvo©en‚ procedury
--- Vytvo©¡ proceduru s jedn¡m in out parametrem zadan‚ho typu.
+-- Vytvo©¡ proceduru s jedn¡m in out parametrem zadan‚ho typu a pripadne dvema paramtery ud vajici
+-- rozsah.
 ----------------------------------------------------------------------------------------------------
 var
   pproctyp         : pentity_type;               -- typ procedury
   pproctyp_context : tcontext;                   -- kontext typu procedury
   pparam           : pentity_param;              -- parametr procedury
   pparam_context   : tcontext;                   -- kontext parametru procedury
+
+    ------------------------------------------------------------------------------------------------
+    procedure add_param (
+        param_id   : in pentityident;            -- identifik tor parametru
+        mode       : in parammode;               -- m¢d parametru
+        pass       : in parampass;               -- zp–sob p©ed n¡ parametru
+        typ        : in pentity_type) =          -- typ
+    -- Prida parametr danych attributu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- parametr
+      d_create_internal(pproctyp_context,pentity(pparam),pparam_context,et_param,param_id);
+
+      -- doplnit z kladn¡ £daje
+      pparam^.mode:=mode;
+      pparam^.pass:=pass;
+      pparam^.typ.settype(typ);
+
+      -- konec deklarace parametru
+      d_end_internal(pparam^,true);
+      end add_param;
 
 begin
   -- vytvo©it proceduru
@@ -52,16 +75,17 @@ begin
   -- asociovat s procedurou
   pproc^.typ.settype(pproctyp);
 
-  -- parametr
-  d_create_internal(pproctyp_context,pentity(pparam),pparam_context,et_param,id_param);
+  -- predame jako parametr analyzovany symbol
+  add_param(id_param,pm_inout,pp_ref,^typ);
 
-  -- doplnit z kladn¡ £daje
-  pparam^.mode:=pm_inout;
-  pparam^.pass:=pp_ref;
-  pparam^.typ.settype(^typ);
+  -- u stringu a pole se bude predavat rozsah inicializace
+  if range_call then 
+    -- predame jako parametr dolni mez provadeni
+    add_param(^id_int_low,pm_in,pp_value,typ.srange.getctype);
 
-  -- konec deklarace parametru
-  d_end_internal(pparam^,true);
+    -- predame jako parametr horni mez provadeni
+    add_param(^id_int_high,pm_in,pp_value,typ.srange.getctype);
+    end if;
 
   -- konec deklarace typu procedury
   d_end_internal(pproctyp^,true);
@@ -90,15 +114,23 @@ procedure a_type_prepare (
 -- P©iprav¡ speci ln¡ metodu
 ----------------------------------------------------------------------------------------------------
 var
-  srch             : tentitysearch;      -- hled tko
+  srch             : tentitysearch;              -- hled tko
+  range_call       : t_logical;                  -- procedura vol na na ur‡en˜ rozsah
+  crange           : texecuterange;              -- rozsah prov dˆn¡
 
 begin
   if typ.derive=td_private_extension then
     unimplemented(193);
     end if;
 
+  -- budeme volat na cel˜ nebo omezen˜ rozsah typu?
+  if (typ.stype in dts_index) 
+    then range_call:=true
+    else range_call:=false;
+      end if;
+
   -- vytvo©it podprogram
-  a_make_subprogram(typ,et_special,tspectypeid[tst],^id_int_param,pentity_subprogram(pproc),pproc_context);
+  a_make_subprogram(typ,et_special,tspectypeid[tst],^id_int_param,range_call,pentity_subprogram(pproc),pproc_context);
 
   -- ur‡it typ objektu, ke kter‚mu se metoda vztahuje
   pproc^.specobj:=tso_type;
@@ -120,10 +152,15 @@ begin
   -- asociovat s procedurou
   pproc^.bl.setblock(bl);
 
+
   -- zavolat odpov¡daj¡c¡ metodu p©edka
   if ancestor and typ.ancestor.isset and pentity_type(typ.ancestor.getcentity)^.stable[tst].isset then
+    -- v jak‚m rozsahu inicializujeme p©edka?
+    get_index_type_range(pproc_context,xinfo,pentity_type(typ.ancestor.getcentity),crange);
+
+	-- zavol me inicializa‡n¡ proceduru
     a_list_append(bl^.sub,
-      a_type_make_call(pproc_context,binfo,xinfo,tst,pentity_type(typ.ancestor.getcentity)^,
+      a_type_make_call(pproc_context,binfo,xinfo,tst,pentity_type(typ.ancestor.getcentity)^,crange,
         x_make_component_var(pproc_context,xinfo,pvar)
         )
       );
@@ -328,6 +365,9 @@ procedure a_make_action_on_prefix (
     xinfo          : in expinfo) =               -- kontext generov n¡ v˜razu
 -- Pro zadan˜ prefix a vygeneruje akci vol n¡ po‘adovan‚ speci ln¡ metody.
 ----------------------------------------------------------------------------------------------------
+var
+  crange           : texecuterange;              -- rozsah prov dˆn¡
+
 begin
   -- vygenerovat vlastn¡ akci v z vislosti na typu speci ln¡ metody
   case tst
@@ -354,9 +394,12 @@ begin
         -- m  p©¡slu¨nou metodu, nen¡ nutn‚ ji volat, proto‘e stejnˆ obsahuje jen p©i©azen¡
         -- po‡ te‡n¡ hodnoty, kter‚ jsme provedli p©ed chv¡l¡ (mimo tuto proceduru).
         elsif t_contains_class(ptyp^) and ptyp^.stable[tst].isset then
+          -- rozsah p–soben¡ metody
+          get_index_type_range(pproc_context,xinfo,ptyp,crange);
+
           -- Instance.Item:entry()
           a_list_append(destbl,
-            a_type_make_call(pproc_context,binfo,xinfo,tst,ptyp^,
+            a_type_make_call(pproc_context,binfo,xinfo,tst,ptyp^,crange,
               prefix^(pproc_context,data,ptyp,xinfo)
               )
             );
@@ -606,6 +649,8 @@ var
   data             : tprefixarray;               -- data pro generov n¡ prefixu
   for_loop_context : tcontext;                   -- kontext FOR cyklu
   for_var_context  : tcontext;                   -- kontext ©¡d¡c¡ promˆnn‚ cyklu
+  range_low        : pentity_var;                -- spodni mez rozsahu 
+  range_high       : pentity_var;                -- horni mez rozsahu 
 
 begin
   verify(566,typ.stype not in tdatatypeset:[dt_array,dt_uarray]);
@@ -633,10 +678,26 @@ begin
   data.for_var^.vaccess:=va_const;
   d_end_internal(data.for_var^,true);
 
-  -- for @I in @PARAM:range loop
-  blfor:=b_make_for(for_loop_context,binfo,data.for_var,data.for_region,bfo_normal,
-    x_make_component_type(for_loop_context,xinfo,typ.srange.getctype)
-    );
+  -- dohledat promˆnnou odpov¡daj¡c¡ doln¡ a horn¡ mezi rozsahu
+  a_find_executing_range(pproc_context,range_low,range_high);
+  
+  -- vygenerujeme variantu s explicitnˆ uveden˜m rozsahem...
+  if range_low<>nil then
+    -- for @I in range_low..range_high loop
+    blfor:=b_make_for(for_loop_context,binfo,data.for_var,data.for_region,bfo_normal,
+      x_make_range(for_loop_context,xinfo,erk_static,typ.srange.getctype,
+        x_make_component_var(for_loop_context,xinfo,range_low),
+        x_make_component_var(for_loop_context,xinfo,range_high)
+        )
+      );
+
+  -- ...nebo pres cel˜ rozsah typu?
+  else
+    -- for @I in @PARAM:range loop
+    blfor:=b_make_for(for_loop_context,binfo,data.for_var,data.for_region,bfo_normal,
+      x_make_component_type(for_loop_context,xinfo,typ.srange.getctype)
+      );
+    end if;
   a_list_append(bl^.sub,blfor);
 
   -- zavolat speci ln¡ metodu
@@ -855,6 +916,33 @@ begin
       -- sestavit v˜raz
       x_param:=x_make_param(typ_context,xinfo,instance,pentity_param(srch.psym));
 
+      -- u stringu a pole jeste predame rozsah inicializace (pokud je o‡ek v n)
+      if typ.stype in dts_index then
+        -- dohledat spodn¡ mez
+        srch.find_local_all(sym_primary_context(pentity_special(typ.stable[tst].getcentity)^.typ.getctype^),id_int_low);
+
+		-- pokud existuje spodn¡ mez mus¡ bt hledan‚ho typu a mus¡ existovat i horn¡ mez
+		if srch.psym<>nil then
+          verify(686,(srch.psym=nil) or (srch.psym^.etype<>et_param));
+
+          -- sestavit v˜raz
+          x_param^.next:=x_make_param(typ_context,xinfo,
+            crange.low,
+            pentity_param(srch.psym)
+            );
+
+          -- dohledat horn¡ mez
+          srch.find_local_all(sym_primary_context(pentity_special(typ.stable[tst].getcentity)^.typ.getctype^),id_int_high);
+          verify(685,(srch.psym=nil) or (srch.psym^.etype<>et_param));
+
+          -- sestavit v˜raz
+          x_param^.next^.next:=x_make_param(typ_context,xinfo,
+            crange.high,
+            pentity_param(srch.psym)
+            );
+		  end if;
+        end if;
+
     -- ‘ dn‚ parametry nebudou
     else
       x_param:=nil;
@@ -880,7 +968,7 @@ begin
   verify(623,typ.stype=dt_class);
 
   -- zavolat
-  result:=a_type_make_call_qualified(typ,binfo,xinfo,tst,nil,instance);
+  result:=a_type_make_call_qualified(typ,binfo,xinfo,tst,nil,crange,instance);
   end a_type_make_call;
 
 
@@ -910,9 +998,21 @@ begin
     end if;
 
   -- zavolat
-  result:=a_type_make_call_qualified(ancestor^,binfo,xinfo,tst,x_make_this(sym_primary_context(typ),xinfo,^typ),nil);
+  result:=a_type_make_call_qualified(ancestor^,binfo,xinfo,tst,x_make_this(sym_primary_context(typ),xinfo,^typ),crange,nil);
   end a_type_make_call_ancestor;
 
 
 
+----------------------------------------------------------------------------------------------------
+procedure get_index_type_range =
+-- Vr t¡ rozsah indexovan‚ho typu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- pokud se jedn  o string nebo pole
+  if (typ^.stype=dt_array) or (typ^.stype=dt_string) then
+    -- spodn¡ a doln¡ rozsah inicializace
+    crange.low:=x_make_imm_uniint(context,xinfo,typ^.srange.getctype^.lval);
+    crange.high:=x_make_imm_uniint(context,xinfo,typ^.srange.getctype^.hval);
+    end if;
+  end get_index_type_range;
 end ca_type;

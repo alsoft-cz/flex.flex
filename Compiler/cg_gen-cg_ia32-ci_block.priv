@@ -10,6 +10,7 @@ with
   standard,
   cc_base,
   cc_base.cc_rtl,
+  cc_base.cc_options,
   cc_attr,
   cx_expr,
   cx_expr.cx_def,
@@ -91,7 +92,8 @@ procedure addjump (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o p©ekladu
     cond           : in icond;                   -- podm¡nka skoku
-    target         : in itarget) =               -- c¡l skoku
+    target         : in itarget;                 -- c¡l skoku
+    prediction     : in ijumpprediction := ijp_none) = -- predikce skoku
 -- P©id  (ne)podm¡nˆn˜ relativn¡ skok dan˜ absolutn¡ c¡lovou adresou.
 -- Varianta [cg_gen.cg_ia32.ci_code.ci_instr.addjump], kter  si sama p©iprav¡ kontext v˜razu.
 ----------------------------------------------------------------------------------------------------
@@ -103,7 +105,7 @@ begin
   i_createcontext(context,lm_gen,nil);
 
   -- zavolat skute‡n˜ [addjump]
-  ci_instr.addjump(inst,info,context,cond,target);
+  ci_instr.addjump(inst,info,context,cond,target,prediction);
   end addjump;
 
 
@@ -579,6 +581,136 @@ leave
 
 
 ----------------------------------------------------------------------------------------------------
+procedure i_adjust (
+    curr           : in class tentity_code;      -- p©ekl dan˜ prvek
+    bl             : in pblnew;                  -- p©¡kaz
+    context        : in iblcontext;              -- aktu ln¡ kontext p©¡kazu
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo) =          -- informace o pr–bˆhu generov n¡
+-- Generov n¡ k¢du p©¡kazu ADJUST.
+----------------------------------------------------------------------------------------------------
+var
+  ptyp             : pentity_type;               -- typ promˆnn‚
+  base             : pentity_type;               -- typ b ze pointeru
+  mastercontext    : iexprcontext;               -- kontext generov n¡ v¨ech v˜raz–
+
+    ------------------------------------------------------------------------------------------------
+    procedure storertattrib (
+        opvar      : in out c_operand;           -- promˆnn 
+        rta        : in rtattrib;                -- ukl dan˜ atribut
+        oprtavalue : in c_operand) =             -- hodnota atributu
+    -- Do pointeru ulo‘¡ zadan˜ dynamick˜ atribut (je-li to po‘adov no).
+    ------------------------------------------------------------------------------------------------
+    begin
+      if rta in ptyp^.pattrib then
+        declare var
+          oprtaaddr: c_operand;                  -- adresa dynamick‚ho atributu
+        begin
+          -- obnovit registry
+          opvar.refresh(inst,info,mastercontext);
+
+          -- sestavit adresu atributu
+          i_gen_load_rtattrib_addr(inst,info,mastercontext,ptyp^.pattrib,opvar,rta,oprtaaddr);
+
+          -- p©i©adit
+          addii(inst,info,ii_mov,oprtaaddr,oprtavalue,op0);
+
+          -- korekce pro :last - neomezen‚ pole b zovat od nuly
+          if (rta=rta_last) and then (base<>nil) and then (base^.stype=dt_uarray) then
+            addii(inst,info,ii_dec,oprtaaddr,op0,op0);
+            end if;
+
+        leave
+          -- uvolnit operand
+          oprtaaddr.free(info,mastercontext);
+          end declare;
+        end if;
+      end storertattrib;
+
+var
+  opvar            : c_operand;                  -- adresa promˆnn‚
+
+begin
+  -- typ promˆnn‚ a b ze pointeru
+  ptyp:=bl^.xvar^.t.getctype;
+  base:=ptyp^.base.getutype;
+
+  -- vytvo©it kontext pro generov n¡ v¨ech v˜raz–
+  i_createcontext(mastercontext,lm_gen,nil);
+
+
+  ---- (1) generov n¡ jm‚na promˆnn‚ ----
+  declare var
+    subcontext     : iexprcontext;               -- kontext generov n¡ jednoho v˜razu
+    opnone   : c_operand;
+
+  begin
+    -- p©ipravit kontext generov n¡
+    i_newcontext(mastercontext,subcontext,lm_push_addr,nil);
+
+    -- jm‚no promˆnn‚
+    i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xvar,opnone);
+
+  leave
+    opnone.free(info,mastercontext);
+    end declare;
+
+
+  ---- (2) generov n¡ velikosti ----
+  declare var
+    oprtavalue     : c_operand;                  -- hodnota atributu
+
+  begin
+    -- vypo‡¡tat dynamickou velikost
+    declare var
+      subcontext : iexprcontext;                 -- kontext generov n¡ jednoho v˜razu
+
+    begin
+      -- na‡¡st hodnotu
+      i_newcontext(mastercontext,subcontext,lm_reg_all,nil);
+      i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xrange,oprtavalue);
+
+      -- ulo‘it hodnotu atributu :last do pointeru
+      storertattrib(opvar,rta_last,oprtavalue);
+
+      -- je to ^unconstrained array/string ?
+      if base<>nil then
+        verify(446,base^.stype not in dts_index);
+
+        -- vyn sobit velikost¡ b ze
+        i_gen_mul_reg(inst,info,mastercontext,oprtavalue,unidata_size_to_imm32(base^.base.getctype^.size));
+
+        -- p©i‡¡st z kladn¡ velikost objektu
+        if base^.stype in dts_string then
+          addopimm(inst,info,mastercontext,ii_add,oprtavalue,lstrisize32);
+          end if;
+        end if;
+      end declare;
+
+    -- ulo‘it hodnotu atributu :size do pointeru
+    storertattrib(opvar,rta_size,oprtavalue);
+
+    -- ulo‘it atribut :size na stack
+    addii(inst,info,ii_push,oprtavalue,op0,op0);
+
+  leave
+    -- uvolnit hodnotu atributu :size
+    oprtavalue.free(info,mastercontext);
+    end declare;
+
+
+  ---- (3) vlastn¡ realokace pamˆti ----
+  -- zavolat ADJUST
+  addcallrtl(inst,info,rtl_realloc);
+
+leave
+  -- uvolnit operand s promˆnnou
+  opvar.free(info,mastercontext);
+  end i_adjust;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_discard (
     curr           : in class tentity_code;      -- p©ekl dan˜ prvek
     bl             : in pbldiscard;              -- p©¡kaz
@@ -970,15 +1102,15 @@ begin
       -- FOR s dekrementac¡
       then
         if bl^.for_var^.typ.getctype^.stype=dt_signed
-          then addjump(inst,info,ic_l,tg_end);
-          else addjump(inst,info,ic_b,tg_end);
+          then addjump(inst,info,ic_l,tg_end{,ijp_not_taken});
+          else addjump(inst,info,ic_b,tg_end{,ijp_not_taken});
           end if;
 
       -- FOR s inkrementac¡
       else
         if bl^.for_var^.typ.getctype^.stype=dt_signed
-          then addjump(inst,info,ic_g,tg_end);
-          else addjump(inst,info,ic_a,tg_end);
+          then addjump(inst,info,ic_g,tg_end{,ijp_not_taken});
+          else addjump(inst,info,ic_a,tg_end{,ijp_not_taken});
           end if;
         end if;
     end if;
@@ -1030,7 +1162,7 @@ begin
       end if;
 
   -- skok ven z cyklu p©i dosa‘en¡ horn¡ meze
-  addjump(inst,info,ic_e,tg_end);
+  addjump(inst,info,ic_e,tg_end{,ijp_not_taken});
 
   -- zmˆnit ©¡d¡c¡ promˆnnou
   if bl^.order=bfo_reverse
@@ -1179,7 +1311,9 @@ begin
     blwhen:=pblwhen_c(bl^.sub.first);
     for i in tg_list^:range loop
       -- doplnit z znam pro generov n¡ debug informac¡
-      adddebuginfo(inst.di,dbt_when,getaddr(inst),blwhen^.pos[bp_begin]{.b},nil);
+      if o_is_option_by_entity(opt_extra_debug_info,info.entity^) then 
+        adddebuginfo(inst.di,dbt_when,getaddr(inst),blwhen^.pos[bp_begin]{.b},nil);
+        end if;
 
       -- n vˆ¨t¡ pro skok na tuto tabulku
       settarget(info,tg_list^[i].tg_jmp,getaddr(inst));
@@ -1546,7 +1680,9 @@ begin
 
         begin
           -- doplnit z znam pro generov n¡ debug informac¡
-          adddebuginfo(inst.di,dbt_when,getaddr(inst),blwhen^.pos[bp_begin]{.b},nil);
+          if o_is_option_by_entity(opt_extra_debug_info,info.entity^) then 
+            adddebuginfo(inst.di,dbt_when,getaddr(inst),blwhen^.pos[bp_begin]{.b},nil);
+            end if;
 
           -- vygenerovat v˜bˆr
           case blwhen^.ctype
@@ -1612,7 +1748,7 @@ begin
           addcallrtl(inst,info,rtl_discard_exception);
 
           -- je-li nahozen  je¨tˆ nˆjak  v˜jimka, tak ji zpracovat
-          addjump(inst,info,ic_ne,tg_catch_loop);
+          addjump(inst,info,ic_ne,tg_catch_loop{,ijp_not_taken});
 
           -- skok na COMMIT
           addjump(inst,info,ic_ucond,tg_commit);
@@ -2001,6 +2137,9 @@ begin
     -- p©¡kaz NEW
     when bt_new         do adddebuginfo(inst.di,dbt_new,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
 
+    -- p©¡kaz ADJUST
+    when bt_adjust      do adddebuginfo(inst.di,dbt_adjust,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
+
     -- p©¡kaz DISCARD
     when bt_discard     do adddebuginfo(inst.di,dbt_discard,getaddr(inst),bl^.pos[bp_begin]{.b},nil);
 
@@ -2036,6 +2175,9 @@ begin
 
     -- p©¡kaz NEW
     when bt_new         do i_new(curr,pblnew(bl),context,inst,info);
+
+    -- p©¡kaz ADJUST
+    when bt_adjust      do i_adjust(curr,pblnew(bl),context,inst,info);
 
     -- p©¡kaz DISCARD
     when bt_discard     do i_discard(curr,pbldiscard(bl),context,inst,info);
@@ -2085,6 +2227,9 @@ begin
 
     -- p©¡kaz NEW
     when bt_new         do i_simple(curr,pblsimple(bl),context,inst,info);
+
+    -- p©¡kaz ADJUST
+    when bt_adjust      do i_simple(curr,pblsimple(bl),context,inst,info);
 
     -- p©¡kaz DISCARD
     when bt_discard     do i_simple(curr,pblsimple(bl),context,inst,info);

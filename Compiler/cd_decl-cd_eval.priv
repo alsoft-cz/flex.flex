@@ -1,4 +1,4 @@
-----------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------
 module private cd_eval =
 -- P©eklada‡ Flexu.
 -- Vyhodnocen¡ deklarac¡.
@@ -34,6 +34,7 @@ var
       for ete_generic     use 'generic',         
       for ete_evaluated   use 'evaluated',       
       for ete_unevaluated use 'unevaluated'];
+
 #end if;
 
 type
@@ -114,6 +115,7 @@ procedure type_setalign (
     align          : in tunidata_size) =         -- zarovn n¡
 -- Dosad¡ do typu zarovn n¡.
 ----------------------------------------------------------------------------------------------------
+
 var
   ui               : tuniint;
 
@@ -147,39 +149,62 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure report_unused (
-    curr           : in tcontext) =              -- p©ekl dan˜ prvek
+    curr           : in tcontext;                -- p©ekl dan˜ kontext
+    curr_context   : in tcontext) =              -- prim rn¡ kontext entity
 -- Ohl s¡ varov n¡ pro ka‘dou nepou‘itou entitu uvnit© [curr].
 ----------------------------------------------------------------------------------------------------
 var
   p                : pentity;
   region           : pregion;
+  pevar            : pentity_var;                -- entita je promenna
 
 begin
-  if cw_unused_entity in curr.entity^.compv.warns then
+if ch_unused_entity in curr.entity^.compv.hints then
     -- v¨echny entity v tomto regionu
     p:=curr.region^.entities.first;
     while p<>nil loop
-      -- pokud nebyl pou‘it, ohl sit varov n¡
-      if p^.stat_usage=0 and p^.id<>nil and etc_generated not in p^.compile then
-        ce^.setwarning(curr,{CCERR=}000000,cw_unused_entity);
-        ce^.setpos(p^.pos[etp_header]);
-        ce^.setparam(entityident_to_string(p^.id^));
-        end if;
+      declare var ommit : t_logical;             -- obejit hlaseni?
 
-      -- dal¨¡ symbol
-      p:=p^.next;
+      begin
+        if p^.stat_usage=0 and p^.id<>nil and etc_generated not in p^.compile then
+
+          -- parametr virtualni metody ci overridu?
+	  if p^.etype=et_var then
+            pevar:=pentity_var(p);
+            if pevar<>nil and then pevar^.vimplements=vi_parameter and then pevar^.imp_param<>nil then
+              ommit or curr.entity^.etype in tentitytypeset:[et_virtual,et_override];
+	      end if;
+            end if;
+
+          -- public nebo protected slozka tridy ci modulu?
+          ommit or (p^.visible<>etv_private and then p^.context.entity<>nil 
+	                 and then p^.context.entity^.etype in ets_modular);
+
+          -- nastav HINT
+	  if not ommit then
+            ce^.sethint(curr_context,000000,ch_unused_entity);
+            ce^.setparam(entityident_to_string(p^.id^));
+            ce^.setpos(p^.pos[etp_header]);
+	    --ce^.loadpos;
+            end if;
+	  end if;
+
+        -- dal¨¡ symbol
+        p:=p^.next;
+        end declare;
       end loop;
     
     -- v¨echny podregiony
     region:=curr.region^.regions.first;
     while region<>nil loop
       -- zpracovat 
-      report_unused(sym_build_context(curr.entity,region));
+      report_unused(sym_build_context(curr.entity,region),curr_context);
 
       -- dal¨¡ region
       region:=region^.next;
       end loop;
     end if;
+ 
   end report_unused;
 
 
@@ -1785,7 +1810,7 @@ begin
   if e_part(curr.eval,curr.bl.e) then return; end if;
 
   -- vygenerovat varov n¡ pro nepou‘it‚ entity
-  report_unused(curr_context);
+  report_unused(curr_context,curr_context);
   end e_code_body;
 
 
@@ -2456,14 +2481,13 @@ var
 begin
   case level
     -- --> incomplete
-    when etd_incomplete  do curr.eval:=ete_evaluated;
+    when etd_incomplete do curr.eval:=ete_evaluated;
 
     -- --> full
     when etd_full do
         -- lok ln¡ symboly
         e_all(curr,etd_full,final,e);
         if e_part(curr.eval,e) then return; end if;
-
 
     when others do verify(166,true);
     end case;
@@ -2707,6 +2731,40 @@ var
 
 
 
+
+----------------------------------------------------------------------------------------------------
+procedure check_unused_with(
+    context        : in tcontext)=
+-- Nahlasi nepouzite moduly, uvedene ve WITH tabulce entity
+----------------------------------------------------------------------------------------------------
+var
+  entity           : pentity;
+  _e               : pentity;
+  wtab             : twithtable;
+
+begin
+  if context=nil then return; end if;
+
+  -- projit WITH tabulku
+  wtab:=context.entity^.regions[rc_primary]^.withtable;
+  if wtab<>nil then
+    for i in wtab^:range loop
+
+      -- nahlasit nepouzite moduly
+      if wtab^[i].stat_usage=0 then
+        ce^.sethint(context,000000,ch_unused_module);
+        ce^.setparam(entityident_to_string(wtab^[i].entity.getcentity^.id^));
+        ce^.setpos(wtab^[i].lexpos);
+        end if;
+      end loop;
+    end if;
+
+  end check_unused_with;
+
+
+
+
+
 ----------------------------------------------------------------------------------------------------
 procedure e_symbol =
 -- Vyhodnocen¡ jednoho symbolu.
@@ -2769,6 +2827,11 @@ begin
       when others do verify(15,true);
       end case;
 
+    -- nahlasit nepouzite WITH/USE moduly
+    if psym^.etype in ets_enclosing then
+      check_unused_with(sym_context);
+      end if;
+
     -- povedlo se deklaraci vyhodnotit ?
   #if #declared dump; #and then; dump then;
     elevel-2;
@@ -2828,9 +2891,6 @@ procedure e_all_context (
     e              : in out tentityeval) =       -- kumulativn¡ vyhodnocen¡
 -- Vyhodnocen¡ v¨ech prvk– obsa‘en˜ch v zadan‚m kontextu a v¨ech subkontextech. 
 ----------------------------------------------------------------------------------------------------
-{with
-  standard,console;}
-  
 var
   p                : pentity;                    -- vyhodnocovan  entita
   ee               : tentityeval;                -- vyhodnocen¡ entity
@@ -2895,6 +2955,16 @@ begin
 
 
 
+
+
+
+
+
+
+
+
+
+
 ----------------------------------------------------------------------------------------------------
 entry =
 -- Inicializace.
@@ -2925,7 +2995,4 @@ begin
   e_spec_tab[dt_procedure ]:=^e_spec_procedure;
   e_spec_tab[dt_task      ]:=^e_spec_procedure;
   end entry;              
-
-
-
 end cd_eval;

@@ -6,7 +6,7 @@ module private cc_advanced =
 -- Ondra : 04.12.2002 : Oddˆlil od CC_SYM.
 ----------------------------------------------------------------------------------------------------
 
-
+with cc_lex;
 
 ----------------------------------------------------------------------------------------------------
 -- Primitiva pro budov n¡ stromu entit a region–
@@ -218,6 +218,99 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure clause_duplicate(
+    context        : in tcontext;                -- aktu ln¡ kontext
+    entity         : in pentity;                 -- entita
+    mode           : in t_with_mode)             -- re‘im WITH/USE
+                     return t_logical =
+-- Duplicita v ramci klausule?
+----------------------------------------------------------------------------------------------------
+var
+  _e               : pentity;
+  loop_region      : pregion;
+  loop_wtable      : twithtable;
+
+begin
+  result:=false;
+  loop_region:=context.entity^.regions[rc_primary];
+  if loop_region<>nil then
+
+    -- projit WITH tabulku
+    loop_wtable:=loop_region^.withtable;
+    if loop_wtable<>nil then
+      for i in loop_wtable^:range loop
+
+        -- _e << entita ve with tabulce
+        _e:=loop_wtable^[i].entity.getcentity;
+        
+        -- porovnat entitu v tabulce s nove pridavanou
+        if _e=entity{_e^.id=entity^.id} and then loop_wtable^[i].mode=mode then
+
+          -- vicenasobny WITH/USE v ramci klausule
+          ce^.sethint(context,000000,ch_multiple_clause_with);
+          ce^.setparam(entityident_to_string(_e^.id^));
+          ce^.loadpos;
+          result:=true;
+          return;
+          end if;
+        end loop;
+      end if;
+    end if;
+  end clause_duplicate;
+
+
+----------------------------------------------------------------------------------------------------
+procedure module_duplicate(    
+    context        : in tcontext;                -- aktu ln¡ kontext
+    entity         : in pentity;                 -- entita
+    mode           : in t_with_mode)             -- re‘im WITH/USE
+                     return t_logical =
+-- Duplicita v ramci modulu?
+----------------------------------------------------------------------------------------------------
+var
+  _e               : pentity;
+  loop_entity      : pentity;
+  loop_region      : pregion;
+  loop_wtable      : twithtable;
+
+begin
+  result:=false;
+  if context.entity<>nil and then context.entity^.context<>nil then 
+    loop_entity:=context.entity^.context.entity;
+    end if;
+
+  -- prochazet nadrazene entity
+  while loop_entity<>nil loop
+    loop_region:=loop_entity^.regions[rc_primary];
+    if loop_region<>nil then
+
+    -- projit WITH tabulku
+      loop_wtable:=loop_region^.withtable;
+      if loop_wtable<>nil then
+        for i in loop_wtable^:range loop
+
+          -- _e << entita ve with tabulce
+          _e:=loop_wtable^[i].entity.getcentity;
+
+          -- porovnat entitu v tabulce s nove pridavanou
+          if _e=entity{_e^.id=entity^.id} and then loop_wtable^[i].mode=mode then
+
+             -- vicenasobny WITH/USE v ramci modulu
+            ce^.sethint(context,000000,ch_multiple_module_with);
+            ce^.setparam(entityident_to_string(_e^.id^));
+            ce^.loadpos;
+            result:=true;
+            return;
+            end if;
+          end loop;
+        end if;
+      end if;
+    if loop_entity^.context=nil then break end if;
+    loop_entity:=loop_entity^.context.entity;
+    end loop;
+  end module_duplicate;
+
+----------------------------------------------------------------------------------------------------
 procedure sym_add_with =
 -- V zadan‚m kontextu [context] vytvo©¡ vazbu v re‘imu [mode] na entitu [entity] s £rovn¡ [level].
 -- Pokud vazba ji‘ existuje, hl s¡ hint o nadbyte‡n‚ vazbˆ.
@@ -232,9 +325,12 @@ type
 var
   _withtable       : context.region^.withtable:type;
   _with            : ^context.region^.withtable^:base;
+  position         : lexposblock;
 
 begin
-  -- zjistit, zda ji‘ vazba neexistuje
+  -- eliminovat duplicity
+  if clause_duplicate(context,entity,mode) then return end if;
+  if module_duplicate(context,entity,mode) then return end if;
 
   -- relokovat pamˆŸ
   if context.region^.withtable=nil then
@@ -253,6 +349,9 @@ begin
   _with^.entity.setentity(entity);
   _with^.mode:=mode;
   _with^.level:=level;
+  --getlexposall(position,ll_prev);
+  getlexposall(_with^.lexpos,ll_prev);
+
   context.region^.withtable^ & _with^;
   discard p_machine_pointer(_with);
   end sym_add_with;
@@ -277,6 +376,8 @@ begin
 
   -- parametry p©ekladu
   entity^.compv.warns:=context.entity^.compv.warns;
+  entity^.compv.hints:=context.entity^.compv.hints;
+  entity^.compv.diags:=context.entity^.compv.diags;
 
   -- za©adit do tabulky
   if context.region^.entities.first=nil

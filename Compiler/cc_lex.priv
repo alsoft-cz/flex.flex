@@ -7,7 +7,11 @@ module private cc_lex =
 ----------------------------------------------------------------------------------------------------
 
 with
-  cc_var,cc_def.cc_codes;
+#if #declared profiler_lex; #and then; profiler_lex then;
+  rdtsc_profile,
+#end if;
+  cc_var,
+  cc_def.cc_codes;
 
 var
   -- aktu ln¡ roz¨¡©en¡ lexik ln¡ anal˜zy
@@ -17,12 +21,72 @@ var
 class abstract c_lexer; type p_lexer = ^class c_lexer;
 
 ----------------------------------------------------------------------------------------------------
-class abstract c_lexer = 
+class public abstract c_lexer = 
+-- Lexik ln¡ analyz tor - zdroj lexik ln¡ch element–.
+----------------------------------------------------------------------------------------------------
+
+    type
+      -- unget buffer na jeden lexik ln¡ element
+      lexungetbuffer = record
+          valid    : t_logical;                  -- T-obsah bufferu je platn˜
+          lex      : lexsym;                     -- lexik ln¡ element
+          val      : lexval;                     -- hodnota elementu
+          pos      : lexpos;                     -- pozice elementu
+          end record;
+
+    var
+      -- buffer na posledn¡ lexik ln¡ element
+      last         : lexungetbuffer;
+
+      -- buffer na posledn¡ch nˆkolik pozic lexik ln¡ch element–
+      last_pos     : array 0..2 of lexpos;       -- kruhov˜ buffer na pozice posledn¡ch t©¡ element–
+      last_pos_curr: t_unsigned;                 -- index do kruhov‚ho bufferu
+
+    ------------------------------------------------------------------------------------------------
+    virtual discardable return t_logical; 
+    -- True, je-li lexik ln¡ analyz tor na jedno pou‘it¡.
+    ------------------------------------------------------------------------------------------------
+    virtual top_level return t_logical;  
+    -- True, je-li to top-level lexik ln¡ analyz tor, kter˜ nesm¡ b˜t odstranˆn bez toho, ‘e by se
+    -- p©e¨lo k nad©azen‚mu souboru.
+    ------------------------------------------------------------------------------------------------
+    virtual abstract get_lex_element;
+    -- Z¡sk  ze vstupu jeden lexik ln¡ prvek a napln¡ j¡m slo‘ku [last].
+    -- Vr t¡-li lexik ln¡ analyz tor hodnotu [lex_nul], volaj¡c¡ zavol  [get_lex_element] znovu.
+    -- Vr t¡-li lexik ln¡ analyz tor hodnotu [lex_eof] a existuje je¨tˆ nˆjak˜ dal¨¡ lexik ln¡
+    -- analyz tor, zavol  volaj¡c¡ [lex_pop_lexer] a vol n¡ [get_lex_element] opakuje, jinak
+    -- [lex_eof] odpov¡d  skute‡n‚ho konci souboru.
+    ------------------------------------------------------------------------------------------------
+    static unget_lex_element;
+    -- Poslednˆ p©e‡ten˜ element vr t¡ zpˆt do vstupu - obsah unget buffer ozna‡¡ za platn˜.
+    ------------------------------------------------------------------------------------------------
+    static get_lex_pos (
+        level      : in lexlevel;                -- kter˜ element zpˆt n s zaj¡m 
+        pos        : out lexpos);                -- z¡skan  pozice
+    -- Z¡sk  pozici lexik ln¡ho elementu.
+    ------------------------------------------------------------------------------------------------
+    virtual optimize_memory (
+        val        : in lexval);                 -- hodnota symbolu
+    -- Optimalizuje pamˆŸ vyu‘itou poslednˆ vr cen˜m lexik ln¡m elementem.
+    ------------------------------------------------------------------------------------------------
+    static store_last_position;
+    -- Ulo‘i pozici posledn¡ho elementu do bufferu pozic.
+    ------------------------------------------------------------------------------------------------
+
+  supervised
+
+    var
+      next         : p_lexer;                    -- dal¨¡ lexik ln¡ analyz tor na stacku
+
+    end c_lexer;
+
+----------------------------------------------------------------------------------------------------
+class private abstract c_lexer = 
 -- Lexik ln¡ analyz tor - zdroj lexik ln¡ch element–.
 ----------------------------------------------------------------------------------------------------
 
     ------------------------------------------------------------------------------------------------
-    virtual discardable return t_logical =
+    virtual discardable =
     -- True, je-li lexik ln¡ analyz tor na jedno pou‘it¡.
     ------------------------------------------------------------------------------------------------
     begin
@@ -32,32 +96,90 @@ class abstract c_lexer =
 
 
     ------------------------------------------------------------------------------------------------
-    virtual abstract get_lex_element (
-        lex        : out lexsym;                 -- ziskany symbol
-        val        : out lexval;                 -- hodnota symbolu
-        line       : out lexline;                -- radek na kterem je prvek
-        col        : out lexcolumn;              -- sloupec na kterem je prvek
-        length     : out lexlength);             -- delka prvku
-    -- Z¡sk  ze vstupu jeden lexik ln¡ prvek.
-    -- Vr t¡-li lexik ln¡ analyz tor hodnotu [lex_nul], volaj¡c¡ zavol  [get_lex_element] znovu.
-    -- Vr t¡-li lexik ln¡ analyz tor hodnotu [lex_eof] a existuje je¨tˆ nˆjak˜ dal¨¡ lexik ln¡
-    -- analyz tor, zavol  volaj¡c¡ [lex_pop_lexer] a vol n¡ [get_lex_element] opakuje.
+    virtual top_level =
+    -- True, je-li to top-level lexik ln¡ analyz tor, kter˜ nesm¡ b˜t odstranˆn bez toho, ‘e by se
+    -- p©e¨lo k nad©azen‚mu souboru.
     ------------------------------------------------------------------------------------------------
-
+    begin
+      result:=false;
+      end top_level;
 
 
     ------------------------------------------------------------------------------------------------
-    virtual optimize_memory (
-        val        : in lexval) =                -- hodnota symbolu
+    static unget_lex_element =
+    -- Poslednˆ p©e‡ten˜ element vr t¡ zpˆt do vstupu - obsah unget buffer ozna‡¡ za platn˜.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- ozna‡it obsah unget bufferu za platn˜
+      last.valid:=true;
+
+      -- posunout index v bufferu pozic zpˆt
+      if last_pos_curr=last_pos:first
+        then last_pos_curr:=last_pos:last;
+        else pred last_pos_curr;
+        end if;
+      end unget_lex_element;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_lex_pos =
+    -- Z¡sk  pozici lexik ln¡ho elementu.
+    ------------------------------------------------------------------------------------------------
+    var
+      i            : t_unsigned;
+
+    begin
+      -- p©ipravit si index pozice
+      i:=last_pos_curr;
+      if level=ll_prev then
+        if i=last_pos:first
+          then i:=last_pos:last
+          else pred i;
+          end if;
+        end if;
+
+      -- je pozice k dispozici ?
+      if last_pos[i].num<>0
+
+        -- ano => p©edat ven
+        then pos:=last_pos[i]
+
+        -- ne => mus¡me se zkusit zeptat p©edka
+        else
+          -- mus¡ b˜t v¨ak nˆjak˜ p©edek k dispozici
+          if next=nil then return end if;
+
+          -- hled me-li p©edchoz¡ element a v tomto lexeru nen¡ k dispozici ani aktu ln¡,
+          -- propagovat beze zmˆny n¡‘, jinak v‘dy redukovat na dotaz na aktu ln¡ element
+          if level=ll_prev and last_pos[last_pos_curr].num=0
+            then next^.get_lex_pos(ll_prev,pos);
+            else next^.get_lex_pos(ll_curr,pos);
+            end if;
+          end if;
+      end get_lex_pos;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    virtual optimize_memory =
     -- Optimalizuje pamˆŸ vyu‘itou poslednˆ vr cen˜m lexik ln¡m elementem.
     ------------------------------------------------------------------------------------------------
     begin 
       -- implicitnˆ nic nedˆlat
       end optimize_memory;
 
-    var
-      next         : p_lexer;                    -- dal¨¡ lexik ln¡ analyz tor na stacku
 
+
+    ------------------------------------------------------------------------------------------------
+    static store_last_position =
+    -- Ulo‘i pozici posledn¡ho elementu do bufferu pozic.
+    ------------------------------------------------------------------------------------------------
+    begin
+      last_pos_curr:=(last_pos_curr+1) mod last_pos:length;
+      last_pos[last_pos_curr]:=last.pos;
+      end store_last_position;
+  
     end c_lexer;
 
 ----------------------------------------------------------------------------------------------------
@@ -69,11 +191,9 @@ procedure lex_pop_lexer;
 -- P©ejde od sou‡asn‚ho k p©edchoz¡mu lexik ln¡mu analyz toru.
 ----------------------------------------------------------------------------------------------------
 procedure lex_get_lex_element (
-    lex            : out lexsym;                 -- ziskany symbol
-    val            : out lexval;                 -- hodnota symbolu
-    line           : out lexline;                -- radek na kterem je prvek
-    col            : out lexcolumn;              -- sloupec na kterem je prvek
-    length         : out lexlength);             -- delka prvku
+    lex            : out lexsym{;                -- ziskan˜ lexik ln¡ element
+    val            : out lexval;                 -- hodnota elementu
+    pos            : out lexpos});               -- pozice elementu
 -- Z¡sk  ze vstupu jeden lexik ln¡ prvek.
 ----------------------------------------------------------------------------------------------------
 
@@ -98,73 +218,38 @@ procedure getlex =
 -- P©e‡te ze vstupu jeden lexik ln¡ element.
 ----------------------------------------------------------------------------------------------------
 var
-  xlex             : lexsym;                     -- ziskany symbol
-  xval             : lexval;                     -- hodnota symbolu
-  xline            : lexline;                    -- radek na kterem je prvek
-  xcol             : lexcolumn;                  -- sloupec na kterem je prvek
-  xlength          : lexlength;                  -- delka prvku
+  xlex             : lexsym;                     -- ziskany elementu
+--xval             : lexval;                     -- hodnota elementu
+--xpos             : lexpos;                     -- pozice elementu
   xend             : t_logical;                  -- T-konec ‡ten¡ symbol–
 
 begin
+#if #declared profiler_lex; #and then; profiler_lex then;
+  rdtsc_start;
+  succ _getlex;
+#end if;
+
   loop
-    -- nˆjak˜ umˆle vlo‘en˜ symbol je ji‘ nezaj¡mav˜
-    --input^.lastins:=lex_nul;
+    -- p©e‡¡st symbol ze vstupu
+    lex_get_lex_element(xlex{,xval,xpos});
 
-    -- je k dispozici nˆjak˜ lexik ln¡ element v bufferu ?
-    if lex_input^.lastvalid
+    -- je tento symbol zaj¡mav˜ pro preprocesor ?
+    if xlex=lex_id or xlex=lex_meta_id {xlex in lexsymset:[lex_meta_id,lex_id]}
 
-      -- ano => pou‘¡t ji‘ jednou zpracovan˜ lexik ln¡ element
-      then
-        xend:=true;
+      -- ano => zavolat preprocesor
+      then cc_pre.p_preprocessor(context,xlex,lexer^.last.val{xval},xend);
 
-      -- ne => na‡¡st ze vstupu
-      else
-        -- optimalizovat vyu‘it¡ pamˆti
-        if lex_input^.lastlex.lex<>lex_nul then
-          lexer^.optimize_memory(lex_input^.lastlex.val);
-          end if;
-
-        -- p©e‡¡st symbol ze vstupu
-        lex_get_lex_element(xlex,xval,xline,xcol,xlength);
-
-        -- um¡stit do bufferu
-        lex_input^.lastlex.lex:=xlex;
-        lex_input^.lastlex.val:=xval;
-        lex_input^.posbuf[ll_prev]:=lex_input^.posbuf[ll_curr];
-        lex_input^.posbuf[ll_curr].line:=xline;
-        lex_input^.posbuf[ll_curr].col :=xcol;
-        lex_input^.posbuf[ll_curr].len :=xlength;
-        lex_input^.posbuf[ll_curr].num :=lex_input^.num;
-{%%TODO(AGGREGATE)
-        lex_input^.lastlex:=[
-            for lex use xlex,
-            for val use xval];
-        lex_input^.posbuf:=[
-            for ll_prev use lex_input^.posbuf[ll_curr],
-            for ll_curr use [
-                for line use xline,
-                for col  use xcol,
-                for len  use xlength,
-                for num  use lex_input^.num]
-            ];
-}
-        lex_input^.lastvalid:=false;
-
-        -- je tento symbol zaj¡mav˜ pro preprocesor ?
-        if xlex in lexsymset:[lex_meta_id,lex_id]
-
-          -- ano => zavolat preprocesor
-          then cc_pre.p_preprocessor(context,xlex,xval,xend);
-
-          -- ne => konec
-          else xend:=true;
-          end if;
-        end if;
+      -- ne => konec
+      else xend:=true;
+      end if;
     until xend;
 
-  -- v bufferu je teƒ pou‘iteln˜ lexik ln¡ element
-  lex:=lex_input^.lastlex.lex;
-  lex_input^.lastvalid:=false;
+  -- lexik ln¡ element p©edat ven
+  lex:=xlex;
+
+#if #declared profiler_lex; #and then; profiler_lex then;
+  rdtsc_stop(_getlex_t);
+#end if;
   end getlex;
 
 
@@ -175,7 +260,16 @@ procedure ungetlex =
 -- Flex je LL(1), tak‘e se lze vr tit v‘dy jen o jeden symbol.
 ----------------------------------------------------------------------------------------------------
 begin
-  lex_input^.lastvalid:=true;
+#if #declared profiler_lex; #and then; profiler_lex then;
+  rdtsc_start;
+  succ _ungetlex;
+#end if;
+
+  lexer^.unget_lex_element;
+
+#if #declared profiler_lex; #and then; profiler_lex then;
+  rdtsc_stop(_ungetlex_t);
+#end if;
   end ungetlex;
 
 
@@ -258,7 +352,6 @@ begin
 
   -- jsou rozd¡ln‚, odsimulovat
   ungetlex;
-  lex_input^.lastins:=lex;
   end followlex;
 
 
@@ -359,7 +452,7 @@ begin
     -- nalezen LEX 
     if xlex=lex then
       case rl
-        when rl_skip  do {nic};
+        when rl_skip  do -- nic
         when rl_leave do ungetlex;
         when others   do verify(188,true);
         end case;
@@ -368,7 +461,7 @@ begin
     -- nalezen TERM 
     elsif xlex=term then
       case rt
-        when rt_skip   do {nic};
+        when rt_skip   do -- nic
         when rt_leave  do ungetlex;
         when rt_resume do ungetlex; ce^.resumeerror;
         when rt_fail   do ce^.raiseerror;
@@ -390,9 +483,11 @@ procedure getlexpos =
 -- Vr t¡ pozici lexik ln¡ho prvku.
 ----------------------------------------------------------------------------------------------------
 begin
-  pos:=lex_input^.posbuf[level];
-  --%%X Vy©e¨it pou‘it¡ AFTER
-  --if after then inc(pos.col,src.sfile^.lastdelka[level]);
+  lexer^.get_lex_pos(level,pos);
+  if after then
+    pos.col+pos.len;
+    pos.len:=0;
+    end if;
   end getlexpos;
 
 
@@ -413,7 +508,7 @@ procedure cmplexposb =
 -- True <=> POS1 < POS2
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=(pos1.num=pos2.num) and ((pos1.line<pos2.line) or ((pos1.line=pos2.line) and (pos1.col<pos2.col)));
+  result:=pos1.num=pos2.num and (pos1.line<pos2.line or (pos1.line=pos2.line and pos1.col<pos2.col));
   end cmplexposb;
 
 
@@ -423,7 +518,7 @@ procedure cmplexposa =
 -- True <=> POS1 > POS2
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=(pos1.num=pos2.num) and ((pos1.line>pos2.line) or ((pos1.line=pos2.line) and (pos1.col>pos2.col)));
+  result:=pos1.num=pos2.num and (pos1.line>pos2.line or (pos1.line=pos2.line and pos1.col>pos2.col));
   end cmplexposa;
 
 
@@ -433,8 +528,8 @@ procedure getlexid =
 -- Poslednˆ p©e‡ten˜ lexik ln¡ element: identifik tor.
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=lex_input^.lastlex.val.id;
-  lex_input^.lastlex.val.id_used:=true;
+  result:=lexer^.last.val.id;
+  lexer^.last.val.id_used:=true;
   end getlexid;
 
 
@@ -444,8 +539,8 @@ procedure getlextxt =
 -- Poslednˆ p©e‡ten˜ lexik ln¡ element: textov˜ tvar lexik ln¡ho elementu ze vstupu.
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=lex_input^.lastlex.val.txt;
-  lex_input^.lastlex.val.txt_used:=true;
+  result:=lexer^.last.val.txt;
+  lexer^.last.val.txt_used:=true;
   end getlextxt;
 
 
@@ -456,7 +551,7 @@ procedure getlexui =
 ----------------------------------------------------------------------------------------------------
 begin
   --%%X Doplnit form ln¡ kontrolu
-  result:=lex_input^.lastlex.val.ui;
+  result:=lexer^.last.val.ui;
   end getlexui;
 
 
@@ -467,7 +562,7 @@ procedure getlexur =
 ----------------------------------------------------------------------------------------------------
 begin
   --%%X Doplnit form ln¡ kontrolu
-  result:=lex_input^.lastlex.val.ur;
+  result:=lexer^.last.val.ur;
   end getlexur;
 
 
@@ -478,7 +573,7 @@ procedure getlexstring =
 ----------------------------------------------------------------------------------------------------
 begin
   --%%X Doplnit form ln¡ kontrolu
-  result:=lex_input^.lastlex.val.str;
+  result:=lexer^.last.val.str;
   end getlexstring;
 
 
@@ -489,8 +584,18 @@ procedure getlexcode =
 ----------------------------------------------------------------------------------------------------
 begin
   --%%X Doplnit form ln¡ kontrolu
-  result:=lex_input^.lastlex.val.code;
+  result:=lexer^.last.val.code;
   end getlexcode;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure getlexval =
+-- Poslednˆ p©e‡ten˜ lexik ln¡ element: cel  hodnota.
+----------------------------------------------------------------------------------------------------
+begin
+  val:=lexer^.last.val;
+  end getlexval;
 
 
 
@@ -499,7 +604,7 @@ procedure setlex =
 -- Zmˆn¡ poslednˆ p©e‡ten˜ lexik ln¡ element.
 ----------------------------------------------------------------------------------------------------
 begin
-  lex_input^.lastlex.lex:=lex;
+  lexer^.last.lex:=lex;
   end setlex;
 
 
@@ -509,8 +614,8 @@ procedure setlexid =
 -- Zmˆn¡ identifik tor souvisej¡c¡ s poslednˆ p©e‡ten˜m lexik ln¡m elementem.
 ----------------------------------------------------------------------------------------------------
 begin
-  lex_input^.lastlex.val.id:=id;
-  lex_input^.lastlex.val.id_used:=true;
+  lexer^.last.val.id:=id;
+  lexer^.last.val.id_used:=true;
   end setlexid;
 
 
@@ -520,9 +625,9 @@ procedure setlexval =
 -- Zmˆn¡ hodnotu poslednˆ p©e‡ten‚ho lexik ln¡ho symbolu.
 ----------------------------------------------------------------------------------------------------
 begin
-  lex_input^.lastlex.val:=val;
-  lex_input^.lastlex.val.id_used:=true;
-  lex_input^.lastlex.val.txt_used:=true;
+  lexer^.last.val:=val;
+  lexer^.last.val.id_used:=true;
+  lexer^.last.val.txt_used:=true;
   end setlexval;
 
 
@@ -531,7 +636,15 @@ begin
 procedure lex_set_lexer =
 -- Nastav¡ aktu ln¡ lexik ln¡ analyz tor na zadan˜ [lexer].
 ----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.6' then;
+with
+#else;
+use
+#end if;
+  supervised c_lexer;
+
 begin
+  -- za©adit do seznamu
   lexer^.next:=current module.lexer;
   current module.lexer:=lexer;
   end lex_set_lexer;
@@ -542,6 +655,13 @@ begin
 procedure lex_pop_lexer =
 -- P©ejde od sou‡asn‚ho k p©edchoz¡mu lexik ln¡mu analyz toru.
 ----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.6' then;
+with
+#else;
+use
+#end if;
+  supervised c_lexer;
+
 var
   x                : p_lexer;
 
@@ -565,35 +685,82 @@ begin
 procedure lex_get_lex_element =
 -- Z¡sk  ze vstupu jeden lexik ln¡ prvek.
 ----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.6' then;
+with
+#else;
+use
+#end if;
+  supervised cc_base.cc_text;
+
 begin
+#if #declared profiler_lex; #and then; profiler_lex then;
+  rdtsc_start;
+  succ _lex_get_lex_element;
+#end if;
+
   loop
     -- p©e‡¡st element
-    lexer^.get_lex_element(lex,val,line,col,length);
+    if lexer^.last.valid
 
-    -- je to konec toku element– a m me v z sobˆ je¨tˆ dal¨¡ analyz tor ? => p©ej¡t k nˆmu
-    if lex=lex_eof and then lexer^.next<>nil then lex_pop_lexer;
+      -- pou‘¡t element z bufferu
+      then
+        lexer^.last.valid:=false;
 
-    -- konec © dku
-    elsif lex=lex_eoln then
-      -- hl sit jen je-li to po‘adov no
-      if behavior<>nil and then behavior^.report_eol then
-        break;
+      -- na‡¡st ‡erstv˜ element
+      else
+        lexer^.get_lex_element;
         end if;
 
-    -- identifik tor
-    elsif lex=lex_id then
-      -- zkusit vyhledat v tabulce kl¡‡ov˜ch slov
-      if behavior<>nil then
-        behavior^.search_keyword(val.id^,lex,val);
-        end if;
-      break;
+    case lexer^.last.lex
+      -- identifik tor
+      when lex_id do
+          -- zkusit vyhledat v tabulce kl¡‡ov˜ch slov
+          if behavior<>nil then
+            behavior^.search_keyword(lexer^.last.val.id^,lexer^.last.lex,lexer^.last.val);
+            end if;
+          break;
 
-    -- je to nˆjak˜ konkr‚tn¡ element ? => vr tit ho
-    elsif lex<>lex_nul then break;
+      -- konec © dku
+      when lex_eoln do
+          -- hl sit jen je-li to po‘adov no
+          if behavior<>nil and then behavior^.report_eol then
+            break;
+            end if;
 
-    -- je-li to [lex_nul], pak opakujeme
-    end if;  
+      -- je-li to [lex_nul], pak opakujeme
+      when lex_nul do -- nic nedˆlat
+
+      -- konec toku element– 
+      when lex_eof do
+          -- m me v z sobˆ je¨tˆ dal¨¡ analyz tor ? => p©ej¡t k nˆmu
+          if not lexer^.top_level then lex_pop_lexer;
+
+          -- byl soubor includovan˜ ? => p©ej¡t k nad©azen‚mu
+          elsif cc_base.cc_text.lex_input^.include then 
+            cc_base.cc_text.text_close;
+
+          -- jinak p©edat konec souboru ven
+          else 
+            break;
+            end if;
+
+      -- je to nˆjak˜ konkr‚tn¡ element ? => vr tit ho
+      when others do break;
+      end case;
     end loop;
+
+  -- pozici z¡skan‚ho elementu p©esunout do bufferu pozic
+  lexer^.store_last_position;
+
+  -- z¡skan˜ element p©edat ven
+  lex:=lexer^.last.lex;
+{
+  val:=lexer^.last.val;
+  pos:=lexer^.last.pos;
+}
+#if #declared profiler_lex; #and then; profiler_lex then;
+  rdtsc_stop(_lex_get_lex_element_t);
+#end if;
   end lex_get_lex_element;
 
 
@@ -607,9 +774,23 @@ var
   x                : ^cc_lex0;
 
 begin
+  -- vytvo©it implicitn¡ lexik ln¡ analyz tor
   new x;
-  lexer:=x;
+
+  -- za©adit do zpracov n¡
+  lex_set_lexer(x);
   end lex_set_default_lexer;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure lex_pop_default_lexer =
+-- Zru¨¡ implicitn¡ lexik ln¡ analyz tor.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(705,lexer=nil or else not lexer^.top_level);
+  lex_pop_lexer;
+  end lex_pop_default_lexer;
 
 
 
@@ -658,11 +839,16 @@ class private c_lex_behavior_flex =
     override search_keyword =
     -- Vyhled n¡ kl¡‡ov‚ho slova podle jeho textov‚ reprezentace.
     ------------------------------------------------------------------------------------------------
+    with
+      standard.characters,
+      standard.characters.ascii;
+
     var
-      zac          : lexkeywords:range;
-      stred        : lexkeywords:range;
-      kon          : lexkeywords:range;
-      first_c      : tidentchar;
+      zac            : lexkeywords:range;
+      stred_unsigned : t_unsigned;
+      stred          : lexkeywords:range;
+      kon            : lexkeywords:range;
+      first_c        : tidentchar;
 
     begin
       -- kl¡‡ov  slova neobsahuj¡ znaky _ a 0..9
@@ -670,13 +856,18 @@ class private c_lex_behavior_flex =
         return;
         end if;
 
+      -- %%TODO(OVERLOAD) - zmenit ascii_char_to_upper na char_to_upper
       -- zkusit naj¡t kl¡‡ov‚ slovo
-      first_c:=txt[1];
+      first_c:=ascii_char_to_upper(txt[1]);
+      
+      if first_c:ord<lexkeywords_index:first or first_c:ord>lexkeywords_index:last then return; end if;
+
       zac:=lexkeywords_index[first_c:ord].first;
       if zac<>nil {and then txt:length<=lexkeywords_index[first_c:ord].max_length} then
         kon:=lexkeywords_index[first_c:ord].last;
         loop
-          stred:=(zac+kon) div 2;
+          stred_unsigned:=(zac+kon) div 2;
+          stred:=stred_unsigned;
           if txt>lexkeywords[stred].txt
             then zac:=stred+1
             else kon:=stred

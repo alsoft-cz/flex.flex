@@ -20,7 +20,7 @@ procedure i_gen_op_integer_mul =
 --        A1 * ... * Ak      -->     A1 * ... * Ak
 --    V * A2 * ... * Ak      -->     A2 * ... * Ak * V
 --        A1 * ... * Ak * C  --> C * A1 * ... * Ak
---    V * A2 * ... * Ak * C  --> C * A1 * ... * Ak * V
+--    V * A2 * ... * Ak * C  --> C * A2 * ... * Ak * V
 -- Pro po‘adovanou velikost v˜sledku 8 bit– se pou‘ije jednooperandov  verze
 -- instrukce MUL/IMUL, pro 16 a 32 bit– se pou‘ije dvouoperandov  verze.
 --
@@ -60,6 +60,8 @@ procedure i_gen_op_integer_mul =
 --      (se stejnou optimalizac¡ zkr cen‚ho p©i©azen¡ jako v p©edchoz¡m
 --      p©¡padˆ)
 --------------------------------------------------------------------------
+with
+  ci_rcheck;
 
 var
   el               : pexpnode;                   -- lev˜ podv˜raz
@@ -71,7 +73,10 @@ var
   rsize            : t_unsigned32;               -- po‘adovan  velikost v˜sledku
   c                : pexpnode;                   -- konstantn¡ operand
   ii               : iinstr;                     -- n sob¡c¡ instrukce
+  typ_modular      : t_logical;                  -- T - typ vyrazu ma modularni aritmetiku
+  typ_ranged       : t_logical;                  -- T - typ vyrazu ma logicke meze
 
+    
     ------------------------------------------------------------------------------------------------
     #template perform_mul (ii_and_operands);     -- po‘adovan  n sob¡c¡ instrukce a 2 operandy
     -- Provede n soben¡ meziv˜sledku [vysl] prav˜m operandem [er].
@@ -91,6 +96,9 @@ var
         -- vyn sobit
         addii(inst,info,ii_and_operands,op0);
 
+        -- provest behove kontroly operace nasobeni
+        ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,pexpnode(expr)^,vysl);
+
       leave
         -- uvolnit operand
         op2.free(info,context);
@@ -105,6 +113,7 @@ var
     ------------------------------------------------------------------------------------------------
       declare var
         op2        : c_operand;                  -- prav˜ operand
+
       begin
         -- vygenerovat
         i_newcontext(context,newcontext,lm_gen,nil{expr^.t.getctype});
@@ -117,6 +126,12 @@ var
         -- vyn sobit
         addii(inst,info,ii_and_operands,op0);
 
+        -- provest behove kontroly operace nasobeni
+        ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,pexpnode(expr)^,vysl);
+
+        -- provest behove kontroly prirazeni
+        ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_load,pexpnode(expr)^,vysl);
+
         -- p©i©adit
         addii(inst,info,ii_mov,op2,vysl,op0);
 
@@ -125,6 +140,9 @@ var
         op2.free(info,context);
         end declare;
       #end perform_assign;
+
+var
+  range_checks_req : t_logical;
 
 begin
   verify(136,expr^.arity<>eoa_n);
@@ -177,14 +195,49 @@ begin
   ----- n soben¡ konstantou -----
   if opcnt=1 {and (rsize in [2,3])} {and (k in [3,5,9])} and not expr^.assign then
     -- vygenerovat a na‡¡st lev˜ podv˜raz
-    i_newcontext(context,newcontext,lm_reg,expr^.t.getctype);
-    i_load(inst,info,newcontext,context{lm_reg,expr^.t.getctype},el,vysl);
+    i_newcontext(context,newcontext,lm_reg_all,expr^.t.getctype);
+    i_load(inst,info,newcontext,context,el,vysl);
 
     -- obnovit registry
     vysl.refresh(inst,info,context);
 
-    -- vyn sobit
-    i_gen_mul_reg(inst,info,context,vysl,uniint_to_imm32(pexpimm(c)^.imm.ui));
+    -- je treba kontrola mezi?
+    range_checks_req:=t_runtime_check_set:[rch_ordinal_range]*expr^.get_run_checks(rchcl_load)<>t_runtime_check_set:[] or 
+      t_runtime_check_set:[rch_ordinal_overflow,rch_ordinal_range]*expr^.get_run_checks(rchcl_gen)<>t_runtime_check_set:[];
+    
+    -- kontroly mezi?
+    if range_checks_req
+      
+      -- ANO - pouzi ii_mul instrukci
+      then
+        
+        -- je treba nasobit?
+        if uniint_to_imm32(pexpimm(c)^.imm.ui)<>timm32(1) then
+
+          declare var
+            op2    : c_operand;
+
+          begin
+
+            -- p©ipravit druh˜ operand
+            op2.create_imm(edt_unsigned,unidata_size_to_unsigned(c^.t.getsize),uniint_to_imm32(pexpimm(c)^.imm.ui));
+
+            -- p©idat instrukci
+            addii(inst,info,ii_imul,vysl,op2,op0);
+
+          leave
+            op2.free(info,context);
+            end declare;
+          end if;
+
+      -- NE - mozno i shl nebo lea
+      else
+        -- vyn sobit
+        i_gen_mul_reg(inst,info,context,vysl,uniint_to_imm32(pexpimm(c)^.imm.ui));
+      end if;
+
+    -- provest behove kontroly operace nasobeni
+    ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,pexpnode(expr)^,vysl);
 
   ----- 8-mi bitov˜ v˜sledek, nen¡ co ©e¨it -----
   elsif rsize=1 then
@@ -199,7 +252,7 @@ begin
       -- ano, zpracujeme ji p©ednostnˆ
       then
         i_newcontext(context,newcontext,lm_reg_eax,expr^.t.getctype);
-        i_load(inst,info,newcontext,context{lm_reg_eax,expr^.t.getutype},c,vysl)
+        i_load(inst,info,newcontext,context{lm_reg_eax,expr^.t.getutype},c,vysl);
 
       -- ne, vezmeme prvn¡ operand
       else
@@ -259,6 +312,10 @@ begin
             then addii(inst,info,ii_imul,op2,op0,op0);
             else addii(inst,info,ii_mul,op2,op0,op0);
             end if;
+          
+          -- provest behove kontroly operace nasobeni
+          ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,pexpnode(expr)^,vysl);
+
           end declare;
 
         -- v˜sledek
@@ -593,6 +650,9 @@ procedure i_gen_op_integer =
 -- operac¡ nad jin˜mi datov˜mi typy p©¡zniv‚ velikosti. Nap©¡klad pro mno‘iny
 -- velikosti 1, 2 nebo 4 byty ‡i logick‚ XOR.
 ----------------------------------------------------------------------------------------------------
+with 
+  ci_rcheck;
+
 var
   el               : pexpnode;                   -- lev˜ podv˜raz
   er               : pexpnode;                   -- prav˜ podv˜raz
@@ -654,6 +714,10 @@ var
 
         when others do verify(48,true);
         end case;
+
+        -- provest behove kontroly operace nasobeni
+        ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,pexpnode(expr)^,op1);
+      
       end genop;
 
 
@@ -698,6 +762,7 @@ var
 --op2              : c_operand;                  -- operand 2
 --optemp           : c_operand;                  -- meziv˜sledek
   newcontext       : iexprcontext;               -- kontext podv˜raz–
+  range_checks_req : t_logical;                  -- T-je treba kontrola mezi
 
 begin
   verify(138,expr^.arity<>eoa_n);
@@ -728,8 +793,14 @@ begin
         er_typ:=expr^.t.getctype;
     end case;
 
+  -- je treba kontrola mezi?
+  range_checks_req:=t_runtime_check_set:[rch_ordinal_range]*expr^.get_run_checks(rchcl_load)<>t_runtime_check_set:[] or 
+    t_runtime_check_set:[rch_ordinal_overflow,rch_ordinal_range]*expr^.get_run_checks(rchcl_gen)<>t_runtime_check_set:[];
+
   -- zkr cen‚ p©i©azen¡ se dvˆma operandy jin‚ ne‘ logick‚ XOR
-  if expr^.assign and (expr^.oper<>op_xor) and (er^.next=nil) then
+  -- a bez range a overflow behove kontroly; pro behove kontroly techto potrebujeme 
+  -- docasnou promennou pro vysledek pred konecnym prirazenim
+  if expr^.assign and (expr^.oper<>op_xor) and (er^.next=nil) and not range_checks_req then
     declare var
       op2          : c_operand;                  -- operand 2
     begin
@@ -748,6 +819,9 @@ begin
 
       -- vygenerovat operanci
       genop(op1,op2);
+
+      -- provest behove kontroly prirazeni
+      ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_load,pexpnode(expr)^,op1);
 
     leave
       -- uvolnit prav˜ operand
@@ -775,6 +849,9 @@ begin
       -- obnovit registry
       op1.refresh(inst,info,context);
 
+      -- provest behove kontroly prirazeni
+      ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_load,pexpnode(expr)^,optemp);
+      
       -- p©i©adit
       addii(inst,info,ii_mov,op1,optemp,op0);
 

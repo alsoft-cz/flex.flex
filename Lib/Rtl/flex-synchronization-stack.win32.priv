@@ -1,7 +1,8 @@
 ----------------------------------------------------------------------------------------------------
 procedure rtl_sstack_pop_now (
     stack          : in out ref t_rtl_sstack;
-    data           : out t_rtl_pointer);
+    data           : out t_rtl_pointer)
+    return t_rtl_logical8;
 ----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
@@ -10,6 +11,7 @@ procedure rtl_sstack_new =
 begin 
   stack:=nil;
   stack.waitable:=waitable;
+  stack.freedata:=freedata;
   if waitable then
     rtl_critisem_new_owned(stack.critisem,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
     end if;
@@ -39,9 +41,11 @@ begin
   rtl_sstack_move(stack,oldstack);
   -- projizdim cely stack a zahazuju vsechno
   loop
-    rtl_sstack_pop_now(oldstack,data);
-    -- odalokace data se nevedou
-    if data=nil then
+    if rtl_sstack_pop_now(oldstack,data) then
+      if stack.freedata<>nil then
+        stack.freedata^(data);
+        end if;
+    else
       break;
       end if;
     end loop;
@@ -55,11 +59,14 @@ var
   oldstack         : t_rtl_sstack;
 
 begin
-  if fromstack.waitable then
-    --%%TODO zatim nevim jak presunout pocitadlo a synchronizaci synchronizovane
-    raise implementation_error;
-    end if;
-  rtl_sstack_new(tostack,fromstack.waitable);
+  rtl_sstack_new(tostack,fromstack.waitable,fromstack.freedata);
+
+  -- pocitadlo
+  oldstack.critisem:=fromstack.critisem;
+  fromstack.critisem:=tostack.critisem;
+  tostack.critisem:=oldstack.critisem;
+
+  -- hlavicku
   loop
     oldstack:=fromstack;
     rtl_interlocked_abaref_compare_exchange(^fromstack.first,
@@ -71,7 +78,6 @@ begin
       break;
       end if;
     end loop;
-    --%%TODO move critisem taky
   end rtl_sstack_move; 
 
 ----------------------------------------------------------------------------------------------------
@@ -95,15 +101,15 @@ restart:
   temp:=stack.first;
 
   -- zkopiruju si prvni nod jako svuj dalsi
-  rtl_abaref_copy_pointer_source(newnode.ptr^.next,stack.first,^temp,success);
+  rtl_abaref_copy_pointer_source(newnode.ptr^.next,stack.first,^temp,stack.freedata,success);
   if not success then goto restart; end if;
 
   -- zkusim nahradit stack.first svym novym nodem
-  rtl_abaref_copy_pointer_target(stack.first,^temp,newnode,nil,success);
+  rtl_abaref_copy_pointer_target(stack.first,^temp,newnode,nil,stack.freedata,success);
   if not success then goto restart; end if;
 
   -- podarilo se uvolnim novy nod
-  rtl_abaref_discard(newnode,success);
+  rtl_abaref_discard(newnode,stack.freedata,success);
 
   -- zvednu pocet prvku ve stacku a nebo povolim dalsimu threadu cteni
   if stack.waitable 
@@ -134,26 +140,28 @@ restart:
     data:=nil;
 
     --uvolnim posledni zkopirovany pointer
-    rtl_abaref_discard(mynode,success);
+    rtl_abaref_discard(mynode,stack.freedata,success);
+    result:=false;
     return;
     end if;
 
   -- zkopiruju si pointer na prvni prvek
-  rtl_abaref_copy_pointer_source(mynode,stack.first,^temp,success);
+  rtl_abaref_copy_pointer_source(mynode,stack.first,^temp,stack.freedata,success);
   if not success then goto restart; end if;
 
   -- zkusim jestli se mi podari prehodit stack.first na dalsi prvek
-  rtl_abaref_copy_pointer_target(stack.first,^temp,mynode.ptr^.next,nil,success);
+  rtl_abaref_copy_pointer_target(stack.first,^temp,mynode.ptr^.next,nil,stack.freedata,success);
   if not success then goto restart; end if;
 
   -- podarilo se mi to, vezmu si data
   data:=mynode.ptr^.data;
 
   -- uvolnim pointer na dalsi prvek
-  rtl_abaref_discard(mynode.ptr^.next,success);
+  rtl_abaref_discard(mynode.ptr^.next,stack.freedata,success);
 
   -- uvolnim tento prvek
-  rtl_abaref_discard(mynode,success);
+  rtl_abaref_discard(mynode,stack.freedata,success);
+  result:=true;
   end rtl_sstack_pop_now;
 
 
@@ -163,11 +171,12 @@ procedure rtl_sstack_pop =
 ----------------------------------------------------------------------------------------------------
 begin
   if stack.waitable then
-    if not rtl_sstack_try_pop(stack,data,t_rtl_wait_infinite) then
+    result:=rtl_sstack_try_pop(stack,data,t_rtl_wait_infinite);
+    if not result then
       raise synchronization_error;
       end if;
   else
-    rtl_sstack_pop_now(stack,data);
+    result:=rtl_sstack_pop_now(stack,data);
     end if;
   end rtl_sstack_pop;
 
@@ -190,10 +199,9 @@ begin
     end if;
 
   -- zkusim si ho opravdu vzit
-  rtl_sstack_pop_now(stack,data);
+  result:=rtl_sstack_pop_now(stack,data);
 
   -- pokud neumi cekani tak uz na nic necekam
-  result:=(data<>nil);
   if not stack.waitable or milisec=t_rtl_wait_immediate or result then
     if not result then
       --uklidit po neuspesnem pokusu
@@ -223,13 +231,10 @@ begin
       end if;
 
     -- zkusim jestli mne nekdo nepredbehne
-    rtl_sstack_pop_now(stack,data);
+    result:=rtl_sstack_pop_now(stack,data);
 
-    -- podarilo se sebrat prvek
-    if data<>nil then
-      result:=true;
-      return;
-      end if;
+    -- podarilo se sebrat prvek, koncim
+    if result then return; end if;
 
     -- pokus se nezdaril vratim pocitadlo itemu
     rtl_critisem_force_unlock(stack.critisem);

@@ -332,6 +332,14 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+#separate public ci_rcheck;
+#separate private ci_rcheck;
+-- behove kontroly
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_load (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
@@ -361,6 +369,9 @@ begin
 
   -- vygenerovat podv˜raz
   i_gen(inst,info,subcontext,sub,vysl);
+
+  -- provest behove kontroly dokud je vysledek cerstvy
+  ci_rcheck.i_gen_runtime_checks(inst,info,subcontext,rchcl_load,sub^,vysl);
 
   -- na‡¡st hodnotu
   case subcontext.mode
@@ -431,6 +442,18 @@ begin
           -- na‡¡st adresu
           i_gen_lea(inst,info,subcontext,vysl,in_none);
           end if;
+
+        -- %%HYNEK -- other commit
+        {
+        -- je [vysl] hodnota, respektive ne adresa/pointer?
+        if (vysl.optype=io_imm or vysl.optype=io_reg) and vysl.edtype<>edt_pointer and vysl.edtype<>edt_address and vysl.edtype<>edt_offset then 
+          -- nacist do docasne promenne
+          i_gen_loadtemp(inst,info,subcontext,vysl);
+          
+          -- a ziskat adresu teto
+          i_gen_lea(inst,info,subcontext,vysl,IN_NONE);
+          end if;
+        }
 
         -- ulo‘it na stack
         i_gen_pushstack(inst,info,subcontext,vysl);
@@ -1210,11 +1233,13 @@ begin
           stype    : tdatatype;                  -- spole‡n˜ typ operand–
 
         begin
-          -- zjistit typ spole‡n˜ typ operand–
+          -- zjisti spole‡n˜ typ operand–
           stype:=x_resolve_opdtype(expr,true);
 
-          -- vygenerovat
+          -- mame nejaky generator?
           verifyx(99,opertab[expr^.oper,stype]=nil,expr^.pos);
+
+          -- zavolej prislusny generator
           opertab[expr^.oper,stype]^(inst,info,context,expr,vysl);
           end declare;
 
@@ -1235,19 +1260,28 @@ procedure i_gen_unary (
 ----------------------------------------------------------------------------------------------------
 var
   el               : pexpnode;                   -- podv˜raz
-  op1              : c_operand;                  -- operand
+  op1              : aliased c_operand;          -- operand
   newcontext       : iexprcontext;               -- kontext podv˜raz–
+  optype           : expunarytype;               -- typ unarniho operatoru
+  range_checks_req : t_logical;                  -- T-je treba kontrola mezi
 
 begin
   -- podv˜razy
   expr^.get(el);
 
+  optype:=expr^.oper;
+  
   -- "architektura" Intel t¡hne k nep©¡jemn˜m v˜jimk m,
   -- tak‘e ka‘d  instrukce vy‘aduje jin‚ zpracov n¡
-  case expr^.oper
+  case optype
     -- inkrementace/dekrementace, un rn¡ m¡nus, bitov  negace
     when un_succ,un_pred,un_minus,un_bitnot do
-        -- vygenerovat podv˜raz
+        -- je treba kontrola mezi?
+        range_checks_req:=t_runtime_check_set:[rch_ordinal_range]*expr^.get_run_checks(rchcl_load)<>t_runtime_check_set:[] or 
+          t_runtime_check_set:[rch_ordinal_overflow,rch_ordinal_range]*expr^.get_run_checks(rchcl_gen)<>t_runtime_check_set:[];
+
+        -- podvyraz nemusime nacist do registru jen pokud nepotrebujeme kontrolu mezi,
+        -- jinak je treba operaci provest v docasne promenne
         if expr^.assign
           then
             i_newcontext(context,newcontext,lm_gen,nil);
@@ -1260,21 +1294,50 @@ begin
         -- obnovit registry
         op1.refresh(inst,info,context);
 
-        -- instrukce
         declare var
-          ii       : iinstr;                     -- instrukce
+          optemp   : aliased c_operand;
+          pop      : ^c_operand;
+
         begin
+          pop:=^op1;
+
+          -- pro prirazeni s behovymi kontrolami potrebujeme docasnou promennou na kontrolu vysledku
+          if expr^.assign and range_checks_req then
+            -- registr na docasny vysledek
+            optemp.create_new_register(inst,info,context,op1.edtype,op1.size);
+
+            -- po‡ te‡n¡ hodnota
+            addii(inst,info,ii_mov,optemp,op1,op0);
+
+            pop:=^optemp;
+            end if;
+
+          -- instrukce
           case expr^.oper
-            when un_minus  do ii:=ii_neg;
-            when un_succ   do ii:=ii_inc;
-            when un_pred   do ii:=ii_dec;
-            when un_bitnot do ii:=ii_not;
+            when un_minus  do addii(inst,info,ii_neg,pop^,op0,op0);
+            when un_succ   do addii(inst,info,ii_add,pop^,op_1,op0);
+            when un_pred   do addii(inst,info,ii_sub,pop^,op_1,op0);
+            when un_bitnot do addii(inst,info,ii_not,pop^,op0,op0);
             when others do verify(47,true);
             end case;
-          addii(inst,info,ii,op1,op0,op0);
-          end declare;
 
-        -- v˜sledek
+          -- provest behove kontroly operace operatoru
+          ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,pexpnode(expr)^,pop^);
+
+          -- provest behove kontroly operace prirazeni
+          ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_load,pexpnode(expr)^,pop^);
+          
+          -- docasny vysledek?
+          if expr^.assign and range_checks_req then
+            -- ANO - priradit
+            addii(inst,info,ii_mov,op1,optemp,op0);
+            end if;
+          
+          leave
+            optemp.free(info,context);
+          end declare;
+        
+        -- vysledek
         vysl.transfer(op1);
 
     -- logick  negace
@@ -1310,6 +1373,7 @@ begin
 
     -- absolutn¡ hodnota
     when un_abs do
+        -- %%TODO - nezapomenout na kontroly mezi
         unimplemented(29);
 
     when others do verify(46,true);
@@ -2095,7 +2159,7 @@ begin
                   -- naj¡t instanci
                   x_classinstance(el^.sub,instance);
 
-                  if instance<>nil
+                  if instance<>nil and then instance^.nclass in ncs_value
 
                     -- je k dispozici => vygenerovat podv˜raz
                     then
@@ -3559,10 +3623,10 @@ begin
 
     -- udˆlat z operandu atribut ":rta"
     i_gen_adjust_rta_position(rta,expr,vysl);
-  {
+{
     -- na‡¡st hodnotu do registru
     i_gen_loadreg(inst,info,context,{nil,}vysl,false,irm_int);
-  }
+}
     -- na‡¡st do temporary promˆnn‚
     if reg
       then i_gen_loadreg(inst,info,context,nil,vysl,false,irm_int);

@@ -11,6 +11,7 @@ with
   cd_decl,cd_decl.cd_unit,
   cx_util,cx_rta;
 
+
 ----------------------------------------------------------------------------------------------------
 procedure a_form_imm (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
@@ -167,6 +168,79 @@ begin
     a_resolve(curr,pexpambiguous(expr),ptyp,info);
     end if;
   end checkresolve;
+
+
+
+------------------------------------------------------------------------------------------------
+procedure check_aliased (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in pexpnode;                -- obaluj¡c¡ v˜raz
+    sub            : in pexpnode) =              -- kontrolovan˜ podv˜raz
+-- Kontrola, zda je povolen ALIASED p©¡stup k podv˜razu.
+-- V p©¡padech, jako je p©etypov n¡, vol  rekurzivnˆ samo sebe.
+------------------------------------------------------------------------------------------------
+begin
+  case sub^.ntype
+    -- komponenta
+    when nt_component do
+        verify(703,sub^.getsymbol=nil or else sub^.getsymbol^.etype<>et_var);
+        
+        -- na promˆnnou lze z¡skat referenci jen tehdy, je-li aliased
+        if not pentity_var(sub^.getsymbol)^.valiased then
+          ce^.seterror({CCERR=}000000,ce_i_reference);
+          expr^.errpos;
+          ce^.resumeerror;
+          end if;
+
+    -- index pole nebo ©etˆzce
+    when nt_index do
+        -- na slo‘ku pole nebo ©etˆzce lze z¡skat referenci jen tehdy, je-li aliased
+        if not sub^.sub^.t.getctype^.saliased then
+          ce^.seterror({CCERR=}000000,ce_i_reference);
+          expr^.errpos;
+          ce^.resumeerror;
+          end if;
+
+    -- dereference
+    when nt_deref do 
+        -- nic nedˆlat, reference je inverze dereference
+
+    -- p©etypov n¡ 
+    when nt_typecast do 
+        check_aliased(curr,expr,sub^.sub^.next^.sub);
+
+    -- interface cast
+    when nt_interface_cast do 
+        -- nic nedˆlat, reference je v‘dy dovolena
+
+    -- THIS
+    when nt_this do 
+        -- nic nedˆlat, reference je v‘dy dovolena
+
+    -- atribut
+    when nt_attrib do
+        check_aliased(curr,expr,sub^.sub);
+
+      { Aha, a co takov‚ vˆci jako :unchechek, ‘e?
+        -- nelze z¡skat referenci na atribut, a to ani na dynamick˜, proto‘e obecnˆ
+        -- m–‘e b˜t vypo‡ten˜
+        ce^.seterror({CCERR=}000000,ce_i_reference);
+        expr^.errpos;
+        ce^.resumeerror;
+      }
+{
+    -- vol n¡ procedury resp. jej¡ n vratov  hodnota
+    when nt_call do
+
+    --
+    when nt_operator, nt_unary do
+}
+    -- pro ostatn¡ p©¡pady nem  reference smysl
+    -- %%TECH A‘ to tady zdechne na intern¡ chybu, tak viz t‚‘ pozn mka na konci [a_form_call]
+    -- ve v˜po‡tu t©¡dy uzlu.
+    when others do verify(704,true);
+    end case;
+  end check_aliased;
 
 
 
@@ -807,6 +881,7 @@ begin
     else checkresolve(curr,arg^.sub,arg^.t,info);
     end if;
 
+  -- kontrola t©¡dy podv˜razu a kompatibility typ– v z vislosti na zp–sobu p©ed n¡ parametru
   case param^.pass
     -- hodnotou nebo referenc¡
     when pp_value, pp_ref do
@@ -892,6 +967,12 @@ begin
 
     when others do verify(59,true);
     end case;
+{
+  -- kontrola aliased p©¡stupu pro aliased parametry
+  if param^.paliased then
+    check_aliased(curr,arg,arg^.sub);
+    end if;
+}
   end a_form_param;
 
 
@@ -1037,7 +1118,7 @@ begin
           ce^.setparam(entityident_to_string(param^.id^));
           if arg<>nil 
             then arg^.errpos 
-            else -- %%X Doplnit nˆco rozumn‚ho (=pravou z vorku u vol n¡)
+            else el^.errpos
             end if;
           ce^.resumeerror;
           end if;
@@ -1750,6 +1831,9 @@ var
     procedure find_in_entity =
     -- Vyhled n¡ komponenty v souvisej¡c¡ entitˆ.
     ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_sym.cc_advanced;
+
     var
       sv           : tentityvisibleset;          -- povolen‚ £rovnˆ viditelnosti
 
@@ -1763,6 +1847,21 @@ var
 
       -- povolen‚ £rovnˆ viditelnosti hledan‚ho symbolu
       sym_get_visibility(curr.entity,expr^.sub^.getsymbol,sv);
+
+      -- jestli‘e nejsou povoleny ‘ dn‚ £rovnˆ viditelnosti
+      if sv=tentityvisibleset:[] 
+      -- a p©ekl dan˜ v˜raz bude pou‘it jako jm‚no v nˆjak‚ vazebn¡ klauzuli
+      and info.kind in eks_link 
+      -- a podv˜raz reprezentuje modul nebo t©¡du
+      and expr^.sub^.getsymbol^.etype in ets_modular 
+      -- m–‘eme to zkusit zachr nit automatick˜m USE
+      then
+        -- automatick‚ USE
+        sym_add_with(curr,expr^.sub,expr^.sub^.getsymbol,twm_use,twl_normal);
+
+        -- a zkusit zjistit viditelnost je¨tˆ jednou
+        sym_get_visibility(curr.entity,expr^.sub^.getsymbol,sv);
+        end if;
 
       -- nejsou povoleny ‘ dn‚ £rovnˆ viditelnosti => hled n¡ (selektor) je zak z no
       if sv=tentityvisibleset:[] then
@@ -1809,15 +1908,15 @@ begin
       -- nekvalifikovany identifikator 
       then
         -- vyhledat 
-        srch.find_global(curr,expr^.id^);
+	srch.find_global(curr,expr^.id^);
 
         -- v ur‡it‚m kontextu by to mohlo b˜t jm‚no dosud nep©elo‘en‚ho modulu 
-        if srch.psym=nil and info.kind in expkindset:[ek_context_extend,ek_context_expose,ek_context_with,ek_context_use] then
+        if srch.psym=nil and info.kind in eks_link then
           -- zkusit p©elo‘it soubor 
           p_loadmodule(curr,expr^.id^);
 
           -- a zkusit je¨tˆ jednou vyhledat 
-          srch.find_global(curr,expr^.id^)
+          srch.find_global(curr,expr^.id^);
           end if;
 
       -- kvalifikovany identifikator 
@@ -2457,68 +2556,6 @@ procedure a_form_ref (
 with
   cx_phase;
 
-    ------------------------------------------------------------------------------------------------
-    procedure check_aliased (
-        sub        : in pexpnode) =              -- kontrolovan˜ podv˜raz
-    -- Kontrola, zda je povolen ALIASED p©¡stup k podv˜razu.
-    -- V p©¡padech, jako je p©etypov n¡, vol  rekurzivnˆ samo sebe.
-    ------------------------------------------------------------------------------------------------
-    begin
-      case sub^.ntype
-        -- komponenta
-        when nt_component do
-            verify(703,sub^.getsymbol=nil or else sub^.getsymbol^.etype<>et_var);
-            
-            -- na promˆnnou lze z¡skat referenci jen tehdy, je-li aliased
-            if not pentity_var(sub^.getsymbol)^.valiased then
-              ce^.seterror({CCERR=}000000,ce_i_reference);
-              expr^.errpos;
-              ce^.resumeerror;
-              end if;
-
-        -- index pole nebo ©etˆzce
-        when nt_index do
-            -- na slo‘ku pole nebo ©etˆzce lze z¡skat referenci jen tehdy, je-li aliased
-            if not sub^.sub^.t.getctype^.saliased then
-              ce^.seterror({CCERR=}000000,ce_i_reference);
-              expr^.errpos;
-              ce^.resumeerror;
-              end if;
-
-        -- dereference
-        when nt_deref do 
-            -- nic nedˆlat, reference je inverze dereference
-   
-        -- p©etypov n¡ 
-        when nt_typecast do 
-            check_aliased(sub^.sub^.next^.sub);
-
-        -- interface cast
-        when nt_interface_cast do 
-            -- nic nedˆlat, reference je v‘dy dovolena
-
-        -- THIS
-        when nt_this do 
-            -- nic nedˆlat, reference je v‘dy dovolena
-
-        -- atribut
-        when nt_attrib do
-            check_aliased(sub^.sub);
-
-          { Aha, a co takov‚ vˆci jako :unchechek, ‘e?
-            -- nelze z¡skat referenci na atribut, a to ani na dynamick˜, proto‘e obecnˆ
-            -- m–‘e b˜t vypo‡ten˜
-            ce^.seterror({CCERR=}000000,ce_i_reference);
-            expr^.errpos;
-            ce^.resumeerror;
-          }
-        -- pro ostatn¡ p©¡pady nem  reference smysl
-        -- %%TECH A‘ to tady zdechne na intern¡ chybu, tak viz t‚‘ pozn mka na konci [a_form_call]
-        -- ve v˜po‡tu t©¡dy uzlu.
-        when others do verify(704,true);
-        end case;
-      end check_aliased;
-
 var
   el               : pexpnode;                   -- podv˜raz
 
@@ -2600,7 +2637,7 @@ begin
 
   -- pro referenci na objekt zkontrolovat povolen¡ reference
   if el^.nclass=nc_var then
-    check_aliased(el);
+    check_aliased(curr,expr,el);
     end if;
 
   -- vypo‡¡tat typ reference a t©¡du v˜razu
@@ -3233,9 +3270,9 @@ begin
       psym:=sym_get_container(curr.entity);
 
       -- mus¡ to b˜t t©¡da nebo modul 
-      if (psym=nil) or not (psym^.etype in tentitytypeset:[et_class,et_module])
+      if psym=nil or psym^.etype not in ets_modular
       -- a ADJUST, ROLLBACK, COMMIT lze nav¡c volat jen v t©¡dˆ 
-      or ((expr^.spectype in tspectypeset:[tst_adjust,tst_rollback,tst_commit]) and (psym^.etype<>et_class))
+      or (expr^.spectype in tspectypeset:[tst_adjust,tst_rollback,tst_commit] and psym^.etype<>et_class)
       then
         {%%X zp©esnit chybov‚ hl ¨en¡ }
         ce^.seterror({CCERR=}000070,ce_i_callspec);

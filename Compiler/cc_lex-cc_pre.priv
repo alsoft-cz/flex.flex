@@ -14,6 +14,7 @@ with
   cc_def.cc_files,
   cc_base.cc_sym,
   cc_base.cc_rtl,
+  cc_base.cc_text,
   cd_decl,
   cd_decl.cd_create,
   cx_expr,
@@ -69,29 +70,25 @@ procedure lex_get_lex_element_inside_meta (
     depth          : in out t_unsigned;          -- aktu ln¡ £rove¤ vno©en¡ metap©¡kaz–
     quit           : out t_logical;              -- ukon‡it zpracov n¡
     lex            : out lexsym;                 -- ziskany symbol
-    cmd            : out tmetacmd;               -- souvisej¡c¡ metap©¡kaz
-    val            : out lexval;                 -- hodnota symbolu
-    line           : out lexline;                -- radek na kterem je prvek
-    col            : out lexcolumn;              -- sloupec na kterem je prvek
-    length         : out lexlength) =            -- delka prvku
+    cmd            : out tmetacmd) =             -- souvisej¡c¡ metap©¡kaz
 -- Z¡sk  ze vstupu jeden lexik ln¡ prvek. Bere p©i tom ohled na vno©en‚ metap©¡kazy a najde-li na 
 -- nult‚ £rovni vno©en¡ metap©¡kaz z mno‘iny [terminators], ukon‡¡ zpracov n¡ s p©¡znakem 
 -- [quit]=true. Podobnˆ ukon‡¡ zpracov n¡ nalezne-li metap©¡kaz #END na nult‚ £rovni.
 ----------------------------------------------------------------------------------------------------
 begin
   -- p©e‡¡st symbol
-  lex_get_lex_element(lex,val,line,col,length);
+  lex_get_lex_element(lex);
 
   -- konec souboru
   if lex=lex_eof then
-    checkmeta;
+    lex_input^.check_meta_statements;
     return;
     end if;
 
   -- analyzovat metap©¡kaz
   if lex=lex_meta_id then
     -- vyhledat
-    searchmeta(val.id^,cmd);
+    searchmeta(getlexid^,cmd);
 
     -- nen¡ to terminuj¡c¡ element?
     if depth=0 and then cmd in terminators then
@@ -144,7 +141,7 @@ begin
     getlex(curr,lex);
     case lex
       when lex_scol     do break;
-      when lex_eof      do checkmeta; return;
+      when lex_eof      do lex_input^.check_meta_statements; return;
       end case;
     end loop;
   end p_skipunknown;
@@ -182,7 +179,7 @@ begin
       when lex_rpar     do break;
       
       -- konec - koncime
-      when lex_eof      do checkmeta; return;
+      when lex_eof      do lex_input^.check_meta_statements; return;
       
       -- ostatni - chyba - cekame pravou zavorku
       when others       do
@@ -642,6 +639,13 @@ begin
 procedure p_meta_include : tmetaaction =
 -- Metap©¡kaz #INCLUDE.
 ----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.6' then;
+with
+#else;
+use
+#end if;
+  supervised c_source_text;
+
 var
   lex              : lexsym;                     -- lexik ln¡ symbol
   expr             : pexpnode;                   -- v˜raz
@@ -664,7 +668,6 @@ begin
     end if;
 
   -- nal‚zt soubor
-  --%%TODO(FILENAME) n2:=findfilename(src.modimpl,srcext,src.modlist,spathname(lex_input^.name),n1);  
   n2:=cfg_files^.get_included_file_name(lex_input^.f.name,n1);
   if n2='' then
     ce^.seterror({CCERR=}000176,ce_f_notfound);
@@ -674,7 +677,7 @@ begin
     end if;
 
   -- includovat soubor
-  openfile(n2,true);
+  text_open(n2,true);
   end p_meta_include;
 
 
@@ -752,7 +755,7 @@ begin
     end if;
 
   -- includovat soubor
-  openfile(n2,true);
+  text_open(n2,true);
   end p_meta_separate;
 
 
@@ -1285,7 +1288,7 @@ begin
       getlex(curr,lex);
       case lex
         when lex_endasm,lex_meta_end do break;
-        when lex_eof do checkmeta; return;
+        when lex_eof do lex_input^.check_meta_statements; return;
         end case;
       end loop;
     end if;
@@ -1409,10 +1412,6 @@ var
   expr             : pexpnode;                   -- v˜raz
   eval             : tentityeval;                -- vyhodnocen¡
   vysl             : t_logical;                  -- vysledek vyhodnoceni podminky
-  xval             : lexval;                     -- hodnota symbolu
-  xline            : lexline;                    -- radek na kterem je prvek
-  xcol             : lexcolumn;                  -- sloupec na kterem je prvek
-  xlength          : lexlength;                  -- delka prvku
   ul               : tunilogical;
   ms               : tmetastackitem;             -- polo‘ka z sobn¡ku blokov˜ch metap©¡kaz–
   cmd              : tmetacmd;                   -- metap©¡kaz
@@ -1572,58 +1571,13 @@ begin
         depth:=0;
         loop
           -- p©e‡¡st symbol
-          lex_get_lex_element_inside_meta([meta_elsif,meta_else],depth,quit,lex,cmd,xval,xline,xcol,xlength);
+          lex_get_lex_element_inside_meta([meta_elsif,meta_else],depth,quit,lex,cmd);
 
           -- byl-li konec souboru, tak hned kon‡¡me
           if lex=lex_eof then return end if;
 
           -- jinak kon‡it a‘ po nalezen¡ terminuj¡c¡ho metap©¡kazu
-          until quit;
-          
-{
-        level:=0;
-        loop
-          -- p©e‡¡st symbol
-          lex_get_lex_element(lex,xval,xline,xcol,xlength);
-
-          -- konec souboru
-          if lex=lex_eof then
-            checkmeta;
-            return;
-            end if;
-
-          -- analyzovat metap©¡kaz
-          if lex=lex_meta_id then
-            -- vyhledat
-            searchmeta(xval.id^,cmd);
-
-            -- zpracovat nˆkter‚ metap©¡kazy
-            case cmd
-              -- za‡ tek p rov‚ho metap©¡kazu
-              when meta_if, meta_syntax, meta_template do 
-                  succ level;
-
-              -- dal¨¡ vˆtev #if
-              when meta_elsif, meta_else do
-                  -- nen¡ na¨e vˆtev ?
-                  if level=0 then break; end if;
-
-              -- konec p rov‚ho metap©¡kazu
-              when meta_end do
-                  -- nen¡ to n ¨ #end ?
-                  if level=0
-                    -- ano => konec #if
-                    then break
-                    -- ne => pokra‡ovat d l
-                    else
-                      pred level
-                      end if;
-
-              -- jin‚ metap©¡kazy n s nezaj¡maj¡
-              end case;
-            end if;
-          end loop;
-}
+          until quit;        
         end if;
     end loop;
   end p_meta_if_cont;
@@ -1888,17 +1842,6 @@ var
   param_context    : tcontext;                   -- kontext parametru
   parampos         : lexposblock;                -- pozice parametru
   srch             : tentitysearch;              -- hled tko
-  lexnode          : plexnode;                   -- jeden lexik ln¡ element ¨ablony
-  lexlast          : plexnode;                   -- zat¡m posledn¡ zpracovan˜ element ¨ablony
-
-  xlex             : lexsym;                     -- ziskany symbol
-  xval             : lexval;                     -- hodnota symbolu
-  xline            : lexline;                    -- radek na kterem je prvek
-  xcol             : lexcolumn;                  -- sloupec na kterem je prvek
-  xlength          : lexlength;                  -- delka prvku
-  cmd              : tmetacmd;                   -- vno©en˜ metap©¡kaz
-  depth            : t_unsigned;                 -- hloubka vno©en¡ p rov˜ch metap©¡kaz–
-  quit             : t_logical;                  -- T-nalezen terminuj¡c¡ metap©¡kaz
 
 begin
   -- za‡ tek deklarace
@@ -1933,6 +1876,13 @@ begin
   d_next(ptemplate^,pos);
 
   declare var
+    lexnode        : plexnode;                   -- jeden lexik ln¡ element ¨ablony
+    lexlast        : plexnode;                   -- zat¡m posledn¡ zpracovan˜ element ¨ablony
+    xlex           : lexsym;                     -- ziskany symbol
+    cmd            : tmetacmd;                   -- vno©en˜ metap©¡kaz
+    depth          : t_unsigned;                 -- hloubka vno©en¡ p rov˜ch metap©¡kaz–
+    quit           : t_logical;                  -- T-nalezen terminuj¡c¡ metap©¡kaz
+
     -- uvnit© ¨ablony se nerozli¨uj¡ kl¡‡ov  slova a hl s¡ se pr zdn‚ © dky
     _behavior      : c_lex_behavior_plain;
 
@@ -1942,7 +1892,7 @@ begin
     lexlast:=nil;
     loop
       -- p©e‡¡st symbol
-      lex_get_lex_element_inside_meta([],depth,quit,xlex,cmd,xval,xline,xcol,xlength);
+      lex_get_lex_element_inside_meta([],depth,quit,xlex,cmd);
 
       -- byl-li konec souboru, tak hned kon‡¡me
       if xlex=lex_eof then return end if;
@@ -1952,11 +1902,11 @@ begin
 
       -- je-li to identifik tor, tak zkusit naj¡t parametr
       if xlex=lex_id then
-        srch.find_local_all(template_context,xval.id^);
+        srch.find_local_all(template_context,getlexid^);
         end if;
 
       -- jak to dopadlo ?
-      if (xlex=lex_id) and (srch.psym<>nil)
+      if xlex=lex_id and srch.psym<>nil
 
         -- zalo‘it jako odkaz na parametr
         then
@@ -1977,10 +1927,8 @@ begin
 
           -- doplnit £daje
           plexnode_lex(lexnode)^.xlex:=xlex;
-          plexnode_lex(lexnode)^.xval:=xval;
-          plexnode_lex(lexnode)^.xline:=xline;
-          plexnode_lex(lexnode)^.xcol:=xcol;
-          plexnode_lex(lexnode)^.xlength:=xlength;
+          getlexval(plexnode_lex(lexnode)^.xval);
+          getlexpos(plexnode_lex(lexnode)^.xpos,ll_curr,false);
           end if;
 
       -- za©adit na konec
@@ -2034,11 +1982,9 @@ class public c_expand_parameter = extend c_lexer;
     -- True, je-li toto expandova‡ pro zadan˜ parametr
     ------------------------------------------------------------------------------------------------
     static add_element (
-        lex        : in lexsym;                  -- ziskany symbol
-        val        : in lexval;                  -- hodnota symbolu
-        line       : in lexline;                 -- radek na kterem je prvek
-        col        : in lexcolumn;               -- sloupec na kterem je prvek
-        length     : in lexlength);              -- delka prvku
+        lex        : in lexsym;                  -- ziskany element
+        val        : in lexval;                  -- hodnota elementu
+        pos        : in lexpos);                 -- pozice elementu
     -- Do hodnoty parametru p©id  jeden lexik ln¡ element.
     ------------------------------------------------------------------------------------------------
     static trim_eols;
@@ -2065,8 +2011,8 @@ class private c_expand_parameter =
       param        : pentity_tparam;
 
       -- seznam lexik ln¡ch element– tvo©¡c¡ch hodnotu parametru
-      first        : plexnode_lex;               -- prvn¡ lexik ln¡ element
-      last         : plexnode_lex;               -- posledn¡ lexik ln¡ element
+      first_lex    : plexnode_lex;               -- prvn¡ lexik ln¡ element
+      last_lex     : plexnode_lex;               -- posledn¡ lexik ln¡ element
       curr_lex     : plexnode_lex;               -- aktu ln¡ lexik ln¡ element
 
     ------------------------------------------------------------------------------------------------
@@ -2098,7 +2044,7 @@ class private c_expand_parameter =
 
     begin
       -- £vodn¡ konce © dk– jsou nezaj¡mav‚, ba a‘ kontraproduktivn¡
-      if lex=lex_eoln and first=nil then 
+      if lex=lex_eoln and first_lex=nil then 
         return 
         end if;
 
@@ -2109,17 +2055,15 @@ class private c_expand_parameter =
       -- doplnit £daje
       lexnode^.xlex:=lex;
       lexnode^.xval:=val;
-      lexnode^.xline:=line;
-      lexnode^.xcol:=col;
-      lexnode^.xlength:=length;
+      lexnode^.xpos:=pos;
 
       -- za©adit do seznamu
-      if last<>nil
-        then last^.next:=lexnode
-        else first:=lexnode
+      if last_lex<>nil
+        then last_lex^.next:=lexnode
+        else first_lex:=lexnode
         end if;
-      lexnode^.prev:=last;
-      last:=lexnode;
+      lexnode^.prev:=last_lex;
+      last_lex:=lexnode;
       end add_element;
 
 
@@ -2130,15 +2074,15 @@ class private c_expand_parameter =
     ------------------------------------------------------------------------------------------------
     begin
       -- sta‡¡ od©ezat ty koncov‚, £vodn¡ za n s o¨et©il [add_element]
-      while last<>nil and then last^.xlex=lex_eoln loop
+      while last_lex<>nil and then last_lex^.xlex=lex_eoln loop
         declare var
           p : plexnode_lex;
         begin
-          p:=last;
-          last:=last^.prev;
-          if last=nil 
-            then first:=nil 
-            else last^.next:=nil
+          p:=last_lex;
+          last_lex:=last_lex^.prev;
+          if last_lex=nil 
+            then first_lex:=nil 
+            else last_lex^.next:=nil
             end if;         
         commit
           discard p;
@@ -2153,7 +2097,8 @@ class private c_expand_parameter =
     -- Resetuje expandova‡ na prvn¡ lexik ln¡ element.
     ------------------------------------------------------------------------------------------------
     begin
-      curr_lex:=first;
+      curr_lex:=first_lex;
+      last:=nil;
       end reset;
     
 
@@ -2164,16 +2109,14 @@ class private c_expand_parameter =
     begin
       -- pokud ji‘ nen¡ co expandovat, tak konec
       if curr_lex=nil then
-        lex:=lex_eof;
+        last.lex:=lex_eof;
         return;
         end if;
 
       -- vr tit element
-      lex   :=curr_lex^.xlex;
-      val   :=curr_lex^.xval;
-      line  :=curr_lex^.xline;
-      col   :=curr_lex^.xcol;
-      length:=curr_lex^.xlength;
+      last.lex:=curr_lex^.xlex;
+      last.val:=curr_lex^.xval;
+      last.pos:=curr_lex^.xpos;
 
       -- p©ipravit si element pro p©¡¨tˆ
       curr_lex:=curr_lex^.next;
@@ -2196,11 +2139,11 @@ class private c_expand_parameter =
     ------------------------------------------------------------------------------------------------
     begin
       -- uvolnit v¨echny lexik ln¡ elementy
-      curr_lex:=first;
+      curr_lex:=first_lex;
       while curr_lex<>nil loop
-        first:=curr_lex^.next;
+        first_lex:=curr_lex^.next;
         discard curr_lex;
-        curr_lex:=first;
+        curr_lex:=first_lex;
         end loop;
       end exit;
 
@@ -2310,7 +2253,7 @@ class private c_expand_template =
     begin
       -- pokud ji‘ nen¡ co expandovat, tak konec
       if curr_lex=nil then
-        lex:=lex_eof;
+        last.lex:=lex_eof;
         return;
         end if;
 
@@ -2319,11 +2262,9 @@ class private c_expand_template =
         -- p©¡mo lexik ln¡ element
         when _tag_lex do 
             -- p©edat ven
-            lex   :=plexnode_lex(curr_lex)^.xlex;
-            val   :=plexnode_lex(curr_lex)^.xval;
-            line  :=plexnode_lex(curr_lex)^.xline;
-            col   :=plexnode_lex(curr_lex)^.xcol;
-            length:=plexnode_lex(curr_lex)^.xlength;
+            last.lex:=plexnode_lex(curr_lex)^.xlex;
+            last.val:=plexnode_lex(curr_lex)^.xval;
+            last.pos:=plexnode_lex(curr_lex)^.xpos;
 
         -- parameter
         when _tag_param do
@@ -2331,6 +2272,9 @@ class private c_expand_template =
               param : p_expand_parameter;        -- expandova‡ parametru
 
             begin
+              -- nevr tit nic
+              last.lex:=lex_nul;
+
               -- vyhledat hodnotu parametru
               param:=first_param;
               while param<>nil and then not param^.match_param(plexnode_param(curr_lex)^.pparam) loop
@@ -2342,9 +2286,6 @@ class private c_expand_template =
                 param^.reset;
                 lex_set_lexer(param);
                 end if;
-
-              -- a nevr tit nic
-              lex:=lex_nul;
               end declare;
         end case;
 
@@ -2384,14 +2325,7 @@ with
 
 var
   template         : pentity_template;           -- expandovan  ¨ablona
-
   lex              : lexsym;                     -- ziskany symbol
-  val              : lexval;                     -- hodnota symbolu
-  line             : lexline;                    -- radek na kterem je prvek
-  col              : lexcolumn;                  -- sloupec na kterem je prvek
-  length           : lexlength;                  -- delka prvku
-
-  cmd              : tmetacmd;                   -- metap©¡kaz
   quit             : t_logical;                  -- T-nalezen terminuj¡c¡ metap©¡kaz
 
 begin
@@ -2453,6 +2387,7 @@ begin
     expander       : p_expand_template;          -- expandova‡ ¨ablony
     param          : pentity_tparam;             -- parametr ¨ablony
     param_expander : p_expand_parameter;         -- expandova‡ parametru
+    cmd            : tmetacmd;                   -- metap©¡kaz
 
   begin
     -- alokovat expandova‡
@@ -2520,16 +2455,18 @@ begin
         -- zpracovat v¨echny symboly a‘ do dal¨¡ho #FOR nebo #END a za©adit je do hodnoty parametru
         declare var
           depth    : t_unsigned;                 -- £rove¤ vno©en¡ podm¡nˆn‚ho p©ekladu
+          val      : lexval;                     -- hodnota elementu
+          pos      : lexpos;                     -- pozice elementu
 
           -- uvnit© ¨ablony se nerozli¨uj¡ kl¡‡ov  slova a hl s¡ se pr zdn‚ © dky
-          _behavior      : c_lex_behavior_plain;
+          _behavior: c_lex_behavior_plain;
 
         begin
           depth:=0;
           cmd:=meta_unknown;
           loop
             -- p©e‡¡st symbol
-            lex_get_lex_element_inside_meta([meta_for],depth,quit,lex,cmd,val,line,col,length);
+            lex_get_lex_element_inside_meta([meta_for],depth,quit,lex,cmd);
 
             -- byl-li konec souboru, tak hned kon‡¡me
             if lex=lex_eof then return end if;
@@ -2538,7 +2475,9 @@ begin
             if quit then break end if;
 
             -- za©adit element do parametru
-            param_expander^.add_element(lex,val,line,col,length);
+            getlexval(val);
+            getlexpos(pos,ll_curr,false);
+            param_expander^.add_element(lex,val,pos);
             end loop;
 
           -- z parametru odstranit £vodn¡ a koncov‚ line-endy
@@ -2598,7 +2537,7 @@ begin
 
   begin
     -- vyhledat entitu s t¡mto identifik torem
-    srch.find_global(curr,getlexid^);
+    srch.find_global_ex(curr,getlexid^,et_template);
 
     -- pokud se nic nena¨lo
     if srch.psym=nil 
@@ -2642,10 +2581,8 @@ begin
           declare var
             param_expander : p_expand_parameter; -- expandova‡ parametru
             depth    : t_unsigned;               -- £rove¤ vno©en¡ podm¡nˆn‚ho p©ekladu
-            val      : lexval;                   -- hodnota symbolu
-            line     : lexline;                  -- radek na kterem je prvek
-            col      : lexcolumn;                -- sloupec na kterem je prvek
-            length   : lexlength;                -- delka prvku
+            val      : lexval;                   -- hodnota elementu
+            pos      : lexpos;                   -- pozice elementu
 
           begin
             -- zalo‘it parametr
@@ -2655,11 +2592,11 @@ begin
             depth:=0;
             loop
               -- p©e‡¡st symbol
-              lex_get_lex_element(lex,val,line,col,length);
+              lex_get_lex_element(lex);
 
               -- byl-li konec souboru, tak hned kon‡¡me
               if lex=lex_eof then
-                checkmeta;
+                lex_input^.check_meta_statements;
                 return;
 
               -- lev  z vorka => vno©en¡
@@ -2681,7 +2618,9 @@ begin
                 end if;
 
               -- nyn¡ u‘ m–‘eme za©adit lexik ln¡ element do hodnoty parametru
-              param_expander^.add_element(lex,val,line,col,length);
+              getlexval(val);
+              getlexpos(pos,ll_curr,false);
+              param_expander^.add_element(lex,val,pos);
               end loop;
 
             -- z parametru odstranit £vodn¡ a koncov‚ line-endy

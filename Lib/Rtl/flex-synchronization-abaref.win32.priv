@@ -22,22 +22,40 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_abaref_destroy(
-    node           : in out p_rtl_abaref_item
-)=
+    node           : in out p_rtl_abaref_item;
+    freedata       : in p_rtl_list_free_data
+) =
 ----------------------------------------------------------------------------------------------------
 var 
-    success        : t_rtl_logical8;
+  success          : t_rtl_logical8;
+  oldref           : t_rtl_native_signed;
+  delnode          : p_rtl_abaref_item;
+  count            : t_rtl_native_signed;
 
 begin
-  if node^.refcount<>0 then
-    raise synchronization_error;
-    end if;
-  rtl_abaref_discard(node^.next,success);
-  if not success then
-    raise synchronization_error;
-    end if;
-  discard node;
-  node:=nil;
+  loop
+    -- zavolani uvolneni uzivatelskych dat
+    if freedata<>nil then
+      freedata^(node^.data);
+      end if;
+
+
+    delnode:=node^.next.ptr;
+    if delnode<>nil then
+      -- uvolneni pocitadla
+      count:=lock_pointer_base-t_rtl_native_signed(node^.next.refcount);
+      rtl_interlocked_exchange_add(^delnode^.refcount,-count,oldref);
+      -- drzi jeste nekdo jiny
+      if oldref-count<>0 then
+        delnode:=nil;
+        end if;
+      end if;
+    -- uvolneni nodu
+    discard node;
+
+    node:=delnode;
+
+    until(node=nil);
   end rtl_abaref_destroy;
 
 
@@ -62,7 +80,8 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_abaref_decref(
     node           : in out p_rtl_abaref_item;   -- [in] musi byt zamknuto pomoci rtl_abaref_incref,  [out]<>nil muze byt uvolneno
-    count          : t_rtl_native_signed
+    count          : t_rtl_native_signed;
+    freedata       : in p_rtl_list_free_data
     ) =    
 ----------------------------------------------------------------------------------------------------
 var
@@ -72,7 +91,7 @@ begin
   if node<>nil then
     rtl_interlocked_exchange_add(^node^.refcount, -count,oldref);
     if oldref-count=0 then
-      rtl_abaref_destroy(node);
+      rtl_abaref_destroy(node,freedata);
       end if;
     node:=nil;
     end if;
@@ -85,6 +104,7 @@ procedure rtl_abaref_incref_ptr(
     locked_pointer : in out aliased t_rtl_abaref_pointer;
     when_old_eq    : in out ref t_rtl_abaref_pointer;
     count          : t_rtl_signed16;
+    freedata       : in p_rtl_list_free_data;
     success        : out t_rtl_logical8
     ) =
 ----------------------------------------------------------------------------------------------------
@@ -118,7 +138,7 @@ begin
                                                 oldpointer);
         if oldpointer<>when_old_eq then
           -- zmenil se pointer, takze uz to nekdo udelal
-          rtl_abaref_decref(newpointer.ptr,when_old_eq.refcount-1);
+          rtl_abaref_decref(newpointer.ptr,when_old_eq.refcount-1,freedata);
           when_old_eq.refcount:=1;
           end if;
         end if;
@@ -156,7 +176,7 @@ begin
 
   -- lock old tg node by thread
   if old_tg.ptr<>nil then
-    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,freedata,success);
     if not success then
       return;
       end if;
@@ -164,11 +184,11 @@ begin
 
   -- lock source node by thread
   if old_sc.ptr<>nil then
-    rtl_abaref_incref_ptr(source_pointer,old_sc,lock_thread_base,success);
+    rtl_abaref_incref_ptr(source_pointer,old_sc,lock_thread_base,freedata,success);
     if not success then
       -- unlock all locked nodes
       if old_tg.ptr<>nil then
-        rtl_abaref_decref(old_tg.ptr,lock_thread_base);
+        rtl_abaref_decref(old_tg.ptr,lock_thread_base,freedata);
         end if;
       return;
       end if;
@@ -204,10 +224,10 @@ begin
   if not success then
     -- unlock all locked nodes
     if old_tg.ptr<>nil then
-      rtl_abaref_decref(old_tg.ptr,lock_thread_base);
+      rtl_abaref_decref(old_tg.ptr,lock_thread_base,freedata);
       end if;
     if old_sc.ptr<>nil then
-      rtl_abaref_decref(old_sc.ptr,lock_thread_base+lock_pointer_base);
+      rtl_abaref_decref(old_sc.ptr,lock_thread_base+lock_pointer_base,freedata);
       end if;
     return;
     end if;
@@ -217,10 +237,10 @@ begin
     end if;
 
   if old_tg.ptr<>nil then
-    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount),freedata);
     end if;
   if old_sc.ptr<>nil then
-    rtl_abaref_decref(old_sc.ptr,lock_thread_base);
+    rtl_abaref_decref(old_sc.ptr,lock_thread_base,freedata);
     end if;
   end rtl_abaref_copy_pointer_both;
 
@@ -248,7 +268,7 @@ begin
 
   -- lock old tg node by thread
   if old_tg.ptr<>nil then
-    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,freedata,success);
     if not success then
       return;
       end if;
@@ -286,10 +306,10 @@ begin
   if not success then
     -- unlock all locked nodes
     if old_tg.ptr<>nil then
-      rtl_abaref_decref(old_tg.ptr,lock_thread_base);
+      rtl_abaref_decref(old_tg.ptr,lock_thread_base,freedata);
       end if;
     if old_sc.ptr<>nil then
-      rtl_abaref_decref(old_sc.ptr,lock_pointer_base);
+      rtl_abaref_decref(old_sc.ptr,lock_pointer_base,freedata);
       end if;
     return;
     end if;
@@ -299,7 +319,7 @@ begin
     end if;
 
   if old_tg.ptr<>nil then
-    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount),freedata);
     end if;
   end rtl_abaref_copy_pointer_target;
 
@@ -328,7 +348,7 @@ begin
 
   -- lock old tg node by thread
   if old_tg.ptr<>nil then
-    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,freedata,success);
     if not success then
       return;
       end if;
@@ -336,11 +356,11 @@ begin
 
   -- lock source node by thread
   if old_sc.ptr<>nil then
-    rtl_abaref_incref_ptr(source_pointer,old_sc,lock_thread_base,success);
+    rtl_abaref_incref_ptr(source_pointer,old_sc,lock_thread_base,freedata,success);
     if not success then
       -- unlock all locked nodes
       if old_tg.ptr<>nil then
-        rtl_abaref_decref(old_tg.ptr,lock_thread_base);
+        rtl_abaref_decref(old_tg.ptr,lock_thread_base,freedata);
         end if;
       return;
       end if;
@@ -355,17 +375,21 @@ begin
 
   target_pointer.ptr:=old_sc.ptr;
   target_pointer.refcount:=0;
+  -- kdyz se neocekava vice threadovy pristup k target_pointeru, kopiruju abacount z source
+  target_pointer.abacount:=old_sc.abacount;
+  {
   target_pointer.abacount:=old_tg.abacount + 1;
   if target_pointer.abacount>=prime_smaller_than_16_bit_unsigned then
     -- modularni podle prvocisla
     target_pointer.abacount - prime_smaller_than_16_bit_unsigned;
     end if;
+    }
 
   if old_tg.ptr<>nil then
-    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount),freedata);
     end if;
   if old_sc.ptr<>nil then
-    rtl_abaref_decref(old_sc.ptr,lock_thread_base);
+    rtl_abaref_decref(old_sc.ptr,lock_thread_base,freedata);
     end if;
   end rtl_abaref_copy_pointer_source;
 
@@ -390,7 +414,7 @@ begin
   -- lock old tg node by thread
   if old_tg.ptr<>nil then
     --%%TODO optimize to rtl_abaref_incref only ?
-    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,freedata,success);
     if not success then
       return;
       end if;
@@ -406,14 +430,19 @@ begin
 
   target_pointer.ptr:=old_sc.ptr;
   target_pointer.refcount:=0;
+  -- kdyz se neocekava vice threadovy pristup k target_pointeru, kopiruju abacount z source
+  target_pointer.abacount:=old_sc.abacount;
+
+  {
   target_pointer.abacount:=old_tg.abacount + 1;
   if target_pointer.abacount>=prime_smaller_than_16_bit_unsigned then
     -- modularni podle prvocisla
     target_pointer.abacount - prime_smaller_than_16_bit_unsigned;
     end if;
+  }
 
   if old_tg.ptr<>nil then
-    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount),freedata);
     end if;
   end rtl_abaref_copy_pointer_none;
 
@@ -443,7 +472,7 @@ begin
 
   -- lock old tg node by thread
   if old_tg.ptr<>nil then
-    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,success);
+    rtl_abaref_incref_ptr(target_pointer,old_tg,lock_thread_base,freedata,success);
     if not success then
       return;
       end if;
@@ -461,7 +490,7 @@ begin
     end if;
 
   if old_tg.ptr<>nil then
-    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount));
+    rtl_abaref_decref(old_tg.ptr,lock_thread_base+lock_pointer_base-t_rtl_native_signed(oldtemp.refcount),freedata);
     end if;
   end rtl_abaref_discard;
 

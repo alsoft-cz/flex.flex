@@ -1,0 +1,279 @@
+----------------------------------------------------------------------------------------------------
+module private ci_rcheck =
+-- generovani behovych kontrol 
+----------------------------------------------------------------------------------------------------
+
+with
+  cx_expr,
+  cx_expr.cx_def;
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_ordinal_overflow_check (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o pr–bˆhu generov n¡
+    context        : in out iexprcontext;        -- kontext generov n¡ v˜razu
+    val_typ        : in typeview;
+    val            : in c_operand) =
+-- vygeneruje overflow kontrolu pro operace, ktere nastavuji overflow flag OF procesoru
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_rtl;
+
+var
+  l                : itarget;                    -- odskok
+  size             : t_unsigned;
+
+begin
+  -- nemuzeme kontrolovat unchecked typ
+  verify(706,val_typ.tview<>tview_full);
+
+  -- umime jen ordinalni typy
+  verify(707,not (val_typ.stype in dts_ordinal));
+
+  -- umime jen typy priznivych velikosti - 1, 2, 4 byty
+  size:=unidata_size_to_unsigned(val_typ.getsize);
+  verify(708, size<>1 and size<>2 and size<>4);
+
+  -- alokovat navesti
+  newtarget(info,l);
+
+  -- preskoc generovani vyjimky pokud ne overflow/carry
+  if val_typ.stype=dt_signed then
+    addjump(inst,info,context,ic_no,l);
+  else 
+    addjump(inst,info,context,ic_nc,l);
+    end if;
+  
+  -- vyhod constraint_error vyjimku
+  addcallrtl(inst,info,context,rtl_handle_constraint_error);
+  
+  -- nastav adresu odskoku za generovani vyjimky
+  settarget(info,l,getaddr(inst));
+
+  end i_gen_ordinal_overflow_check;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_ordinal_range_check (
+    inst         : in out icodeinst;             -- instance
+    info         : in out igeninfo;              -- informace o pr–bˆhu generov n¡
+    context      : in out iexprcontext;          -- kontext generov n¡ v˜razu
+    dest_typ     : in typeview;                  -- typ proti kteremu se kontroluje [val]
+    val_typ      : in typeview;                  -- typ [val]
+    val          : in c_operand) =               -- hodnota pro kterou se provede kontrola proti typu [typ]
+-- vygeneruje ordinalni range kontrolu
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_rtl;
+
+var
+  penttyp          : pentity_type;               -- entita reprezentujici typ
+  pvaltyp          : pentity_type;               -- entita reprezentujici typ [val]
+  lval             : t_unsigned;                 -- absolutni hodnota logicke dolni meze typu
+  hval             : t_unsigned;                 -- absolutni hodnota logicke horni meze typu
+  lval_sign        : t_logical;                  -- pokud T plati lval<0, jinak F
+  hval_sign        : t_logical;                  -- pokud T plati hval<0, jinak F
+  
+  preexcept        : itarget;                    -- pred vyjimkou
+  postexcept       : itarget;                    -- po vyjimce
+  lo_cond          : icond;
+  hi_cond          : icond;
+  pre_cond         : icond;
+  sign_comparison  : t_logical;
+  val_signed       : t_logical;
+  dest_signed      : t_logical;
+  val_size         : tunidata_size;              -- skutecna velikost tyu [val]
+
+  size             : t_unsigned;
+
+begin
+
+  -- nemuzeme kontrolovat unchecked ordinalni typ
+  verify(709,val_typ.tview<>tview_full or dest_typ.tview<>tview_full);
+
+  -- jedna se o typy jine nez ordinalni?
+  verify(710, not (val_typ.stype in dts_ordinal and dest_typ.stype in dts_ordinal));
+
+  -- umime jen typy priznivych velikosti - 1, 2, 4 byty
+  size:=unidata_size_to_unsigned(val_typ.getsize);
+  verify(711, size<>1 and size<>2 and size<>4);
+  size:=unidata_size_to_unsigned(dest_typ.getsize);
+  verify(712, size<>1 and size<>2 and size<>4);
+  
+  -- souvisejici entity typu vyrazu
+  penttyp:=dest_typ.getctype;
+  pvaltyp:=val_typ.getctype;
+
+  -- zkonvertuj unimeze na meze
+  lval:=uniint_to_unsigned(penttyp^.lval);
+  hval:=uniint_to_unsigned(penttyp^.hval);
+  lval_sign:=uniint_sign(penttyp^.lval);
+  hval_sign:=uniint_sign(penttyp^.hval);
+
+  -- budeme porovnavat znamenkove?
+  dest_signed:=penttyp^.stype=dt_signed;
+  val_signed:=pvaltyp^.stype=dt_signed;
+
+  val_size:=pvaltyp^.size;
+
+  pre_cond:=ic_ucond;
+  lo_cond :=ic_ucond;
+  hi_cond :=ic_ucond;
+
+  if dest_signed 
+    then
+      if val_signed 
+        then
+          lo_cond:=ic_l;
+          hi_cond:=ic_g;
+        else
+          if lval_sign then lval:=0; end if;
+          if hval_sign then hval:=0; end if;
+
+          if lval<>0 then
+            lo_cond:=ic_b;
+            end if;
+
+          hi_cond:=ic_a;
+
+          end if;
+    else
+      verify(996,lval_sign or hval_sign);
+      
+      if val_signed 
+        then
+          pre_cond:=ic_s;
+          
+          if lval<>0 then
+            lo_cond:=ic_b;
+            end if;
+
+          hi_cond:=ic_a;
+        else
+          if lval<>0 then
+            lo_cond:=ic_b;
+            end if;
+
+          hi_cond:=ic_a;
+          end if;
+      end if;
+  
+  -- alespon jedna podminka by mela byt platna, jinak je algoritmus nahore blbe
+  verify(998,pre_cond=ic_ucond and lo_cond=ic_ucond and hi_cond=ic_ucond);
+  
+--  val.adjustsize
+  
+  -- alokovat navesti
+  newtarget(info,preexcept);
+  newtarget(info,postexcept);
+  
+  -- je nejaka predkontrola?
+  case pre_cond
+    -- znamenko
+    when ic_s do
+        -- porovnej [vysl] s 0
+        addopimm(inst,info,context,ii_cmp,val,0);
+
+        -- pokud je [vysl] mensi, skoc na generovani vyjimky
+        addjump(inst,info,context,ic_s,preexcept);
+
+    -- zadna
+    when ic_ucond do ;
+    
+    -- ostatni je chyba
+    when others do verify(713,true);
+    end case;
+
+  declare 
+  var
+    oplo     : c_operand;
+    ophi     : c_operand;
+
+  begin
+    -- je treba zkontrolovat spodni mez?
+    if lo_cond<>ic_ucond then
+      -- porovnej [vysl] s [lval]
+      if lval_sign
+        then addopimmex(inst,info,context,ii_cmp,val,lval,edt_signed,val.size);
+        else addopimmex(inst,info,context,ii_cmp,val,lval,edt_unsigned,val.size);
+        end if;
+
+      -- pokud je [vysl] mensi, skoc na generovani vyjimky
+      addjump(inst,info,context,lo_cond,preexcept);
+      end if;
+
+    -- je treba zkontrolovat horni mez?
+    if hi_cond<>ic_ucond then
+      -- porovnej [vysl] s [hval]
+      if hval_sign
+        then addopimmex(inst,info,context,ii_cmp,val,hval,edt_signed,val.size);
+        else addopimmex(inst,info,context,ii_cmp,val,hval,edt_unsigned,val.size);
+        end if;
+
+      -- pokud je [vysl] vetsi, skoc na generovani vyjimky
+      addjump(inst,info,context,hi_cond,preexcept);
+      end if;
+    end declare;
+
+  -- preskoc generovani vyjimky
+  addjump(inst,info,context,ic_ucond,postexcept);
+
+  -- nastav adresu odskoku [preexcept] pred generovani vyjimky
+  settarget(info,preexcept,getaddr(inst));
+
+  -- vygeneruj vyjimku
+  addcallrtl(inst,info,context,rtl_handle_constraint_error);
+
+  -- nastav adresu odskoku [postexcept] za generovani vyjimky
+  settarget(info,postexcept,getaddr(inst));
+
+  end i_gen_ordinal_range_check;
+
+  
+  ----------------------------------------------------------------------------------------------------
+  procedure i_gen_runtime_checks =
+  -- hlavni procedura pro generovani behovych kontrol
+  ----------------------------------------------------------------------------------------------------
+  var
+    val_size          : t_unsigned;
+    range_typ         : typeview;
+    range_type_size   : tunidata_size;
+
+  begin
+    
+    -- ordinalni preteceni/podteceni
+    if rch_ordinal_overflow in expr.get_run_checks(rcheck_class) then
+      i_gen_ordinal_overflow_check(inst,info,context,expr.t,val);
+      end if;
+     
+    -- ordinalni kontrola mezi
+    if rch_ordinal_range in expr.get_run_checks(rcheck_class) then
+      -- velikost typu proti kteremu provedeme kontrolu mezi
+      range_typ:=expr.get_rangecheck_type(rcheck_class);
+      range_type_size:=range_typ.getsize;
+
+      -- velikost [val]
+      val_size:=val.size;
+
+      verify(714,unsigned_to_unidata_size(val_size)<>expr.t.getsize);
+      
+      begin
+        -- docasne uprav velikost 
+        if range_type_size>unsigned_to_unidata_size(val_size) then
+          --val.adjust_size(unidata_size_to_unsigned(range_type_size));
+          end if;
+
+        i_gen_ordinal_range_check(inst,info,context,range_typ,expr.t,val);
+      
+      leave
+        -- vrat velikost z5
+        --val.adjust_size(val_size);
+        end;
+
+      end if;
+
+    end i_gen_runtime_checks;
+
+  end ci_rcheck;

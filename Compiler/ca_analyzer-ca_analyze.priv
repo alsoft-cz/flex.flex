@@ -10,7 +10,7 @@ module private ca_analyze =
 with
   cc_base,cc_base.cc_type,cc_base.cc_sym,cc_base.cc_debug,
   cb_block,cb_block.cb_def,cb_block.cb_make,
-  cx_expr,cx_expr.cx_def,
+  cx_expr,cx_expr.cx_def,cx_expr.cx_make,
   ca_var,ca_block,ca_util,ca_type,cc_def.cc_var,standard.console;
 
  
@@ -350,6 +350,10 @@ var
   xinfo            : expinfo;                    -- kontext
   mclass           : memclass;                   -- pamˆŸov  t©¡da "glob ln¡ch" promˆnn˜ch
   classonly        : t_logical;                  -- T-inicializovat jen prom. obsahuj¡c¡ t©¡dy
+  typ              : pentity_type;               -- shortcut na typ  
+  crange           : texecuterange;              -- rozsah prov dˆn¡
+  range_low        : pentity_var;                -- spodni mez rozsahu 
+  range_high       : pentity_var;                -- horni mez rozsahu 
 
 begin
   -- analyzovat promˆnn‚
@@ -366,10 +370,23 @@ begin
     when others do verify(612,true);
     end case;
 
+  -- m me informace o rozsahu, kter‚ je mo‘no p©edat d le?
+  typ:=pentity_type(curr.context.entity);
+  if typ<>nil and (typ^.stype in dts_index) then
+    -- dohledat promˆnnou odpov¡daj¡c¡ doln¡ a horn¡ mezi rozsahu
+    a_find_executing_range(curr.context,range_low,range_high);
+
+    -- pokud nalezeno, sestavit rozsah prov dˆn¡
+    if range_low<>nil and range_high<>nil then
+      crange.low:=x_make_component_var(curr.context,xinfo,range_low);
+      crange.high:=x_make_component_var(curr.context,xinfo,range_high);
+      end if;
+    end if;
+
   -- ze v¨eho nejd©¡v zavolat ENTRY/ADJUST/COMMIT p©edka
   if curr.context.entity^.etype=et_class and curr.spectype in tspectypeset:[tst_entry,tst_adjust,tst_commit] then
     a_list_append(pblblock(curr.bl.getcblock)^.binit,
-      a_type_make_call_ancestor(pentity_type(curr.context.entity)^,binfo,xinfo,curr.spectype)
+      a_type_make_call_ancestor(pentity_type(curr.context.entity)^,binfo,xinfo,crange,curr.spectype)
       );
     end if;
 
@@ -412,7 +429,7 @@ begin
   -- £plnˆ na konec zavolat EXIT/ROLLBACK p©edka
   if curr.context.entity^.etype=et_class and curr.spectype in tspectypeset:[tst_exit,tst_rollback] then
     a_list_append(pblblock(curr.bl.getcblock)^.bexit,
-      a_type_make_call_ancestor(pentity_type(curr.context.entity)^,binfo,xinfo,curr.spectype)
+      a_type_make_call_ancestor(pentity_type(curr.context.entity)^,binfo,xinfo,crange,curr.spectype)
       );
     end if;
 
@@ -579,6 +596,18 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure a_pre_override (
+    curr           : in out tentity_override) =  -- analyzovan˜ symbol
+-- P©ed-anal˜za p©et¡‘en¡ virtu ln¡ metody.
+----------------------------------------------------------------------------------------------------
+begin
+  -- analyzovat z kladn¡ virtu ln¡ metodu
+  a_entity(curr.virt.getcentity);
+  end a_pre_override;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure a_context (
     context        : in tcontext) =              -- analyzovan˜ kontext
 -- Anal˜za kontextu (regionu).
@@ -654,6 +683,9 @@ begin
 
     -- t©¡da
     when et_class     do a_pre_class(pentity_type(sym)^);
+
+    -- override
+    when et_override  do a_pre_override(pentity_override(sym)^);
     end case;
 
   -- analyzovat v¨echny kontexty

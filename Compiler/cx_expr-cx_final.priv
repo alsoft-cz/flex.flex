@@ -10,6 +10,12 @@ with
   cc_attr,cc_sym,
   cx_util,cx_imm;
 
+
+type
+  t_final_context  = record
+    assign_typ     : typeview;                   -- skutecny typ prirazovaciho vyrazu finalizace
+    end record;
+
 ----------------------------------------------------------------------------------------------------
 procedure selectusage (
     actual         : in expusage;                -- aktu ln¡ pou‘it¡ v˜razu
@@ -26,6 +32,51 @@ begin
   end selectusage;
 
 
+-- %%HYNEK - zobecnit??
+----------------------------------------------------------------------------------------------------
+procedure is_type_ranged (
+    typ            : in typeview)
+                     return t_logical =
+-- vrati T, pokud je zadany typ "ranged" - ma logicke meze mensi nez jsou fyzicke meze argumentu
+-- [typ] musi byt dts_ordinal, jinak zpusobi interni chybu
+----------------------------------------------------------------------------------------------------
+var
+  penttyp          : pentity_type;               -- entita reprezentujici typ
+  typsize          : tunidata_size;              -- velikost typu v bajtech
+  phlval           : tuniint;                    -- fyzicka dolni unimeze typu
+  phhval           : tuniint;                    -- fyzicka horni unimeze typu
+
+begin
+  -- souvisejici entita typu vyrazu
+  penttyp:=typ.getctype;
+
+  result:=false;
+
+  -- vyraz je ranged pouze pro ordinalni typy
+  verify(717, not (penttyp^.stype in dts_ordinal));
+
+  -- zjisti parametry typu
+  cpu^.getordparams1(penttyp^.stype, penttyp^.bits,typsize,phlval,phhval);
+
+  -- porovnej logicke a fyzicke meze
+  result:=penttyp^.lval<>phlval or penttyp^.hval<>phhval;
+
+  end is_type_ranged;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure do_final (
+    curr           : in tcontext;       -- p©ekl dan˜ prvek
+    expr           : in pexpnode;       -- v˜raz
+    ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
+    usage          : in expusage;       -- pou‘it¡ v˜razu
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context); -- kontext finalizace
+-- Finalizace.
+----------------------------------------------------------------------------------------------------
+
+
 
 ----------------------------------------------------------------------------------------------------
 procedure a_final_operator (
@@ -33,7 +84,8 @@ procedure a_final_operator (
     expr           : in pexpoper;       -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace oper tor–.
 ----------------------------------------------------------------------------------------------------
 
@@ -43,7 +95,8 @@ procedure a_final_operator (
         expr       : in pexpnode;   -- v˜raz
         ptyp       : in typeview;   -- po‘adovan˜ typ v˜razu
         usage      : in expusage;   -- pou‘it¡ v˜razu
-        info       : in expinfo) =  -- informace o pr–bˆhu anal˜zy
+        info       : in expinfo;    -- informace o pr–bˆhu anal˜zy
+        fin_context: in out t_final_context) = -- kontext finalizace
     -- Finalizace.
     ------------------------------------------------------------------------------------------------
     begin
@@ -55,10 +108,10 @@ procedure a_final_operator (
       -- prov‚st typovou kontrolu se spr vn˜m typem
       case expr^.concatkind
         -- substring nebo subpole
-        when nck_substring, nck_subarray do a_final(curr,expr,ptyp,usage,info);
+        when nck_substring, nck_subarray do do_final(curr,expr,ptyp,usage,info,fin_context);
 
         -- komponenta
-        when nck_component do a_final(curr,expr,ptyp.getbase(curr),usage,info);
+        when nck_component do do_final(curr,expr,ptyp.getbase(curr),usage,info,fin_context);
 
         when others do verify(375,true);
         end case;
@@ -69,33 +122,50 @@ var
   er               : pexpnode;                   -- podv˜razy
   er0              : pexpnode;                   -- podv˜razy
   er_zprac         : t_logical;                  -- finalizace prav˜ch podv˜raz–                
+  el_type          : typeview;
+  er_type          : typeview;                   
+  rrd              : t_relative_range_disposition;
+  ass_type         : typeview;
 
 begin
   -- oddˆlit podv˜razy 
   expr^.get(el,er0);
 
+  -- reset typ prirazeni
+  fin_context.assign_typ:=nulltype;
+  
   -- finalizovat lev˜ podv˜raz
   if expr^.assign
 
     -- p©i©azen¡ 
     then
       if expr^.oper=op_assign
-        then a_final(curr,el,nulltype,eu_write,info)
-        else a_final(curr,el,nulltype,eu_change,info);
+        then do_final(curr,el,nulltype,eu_write,info,fin_context);
+        else do_final(curr,el,nulltype,eu_change,info,fin_context);
         end if;
 
     -- norm ln¡ oper tor 
     else
       case expoperinfo[expr^.oper].tc
-        when tc_none    do a_final(curr,el,nulltype,eu_read,info);
-        when tc_left    do a_final(curr,el,expr^.t ,eu_read,info);
-        when tc_right   do a_final(curr,el,nulltype,eu_read,info);
-        when tc_both    do a_final(curr,el,expr^.t ,eu_read,info);
-        when tc_concat  do c_final(curr,el,expr^.t ,eu_read,info);
+        when tc_none    do do_final(curr,el,nulltype,eu_read,info,fin_context);
+        when tc_left    do do_final(curr,el,expr^.t ,eu_read,info,fin_context);
+        when tc_right   do do_final(curr,el,nulltype,eu_read,info,fin_context);
+        when tc_both    do do_final(curr,el,expr^.t ,eu_read,info,fin_context);
+        when tc_concat  do c_final(curr,el,expr^.t ,eu_read,info,fin_context);
         when others     do verify(373,true);
         end case;
       end if;
+  
+  -- mame typ prirazeni?
+  if fin_context.assign_typ.getutype=nil
 
+    -- NE - pouzi typ vyrazu
+    then ass_type:=expr^.t;
+
+    -- ANO - pouzi jej
+    else ass_type:=fin_context.assign_typ;
+    end if;
+  
   -- finalizovat prav˜ podv˜raz 
   {%%X a co UNCHECKED ? }
   er:=er0;
@@ -103,11 +173,11 @@ begin
   while er<>nil loop
     -- finalizovat
     case expoperinfo[expr^.oper].tc
-      when tc_none   do a_final(curr,er,nulltype,eu_read,info);
-      when tc_left   do a_final(curr,er,nulltype,eu_read,info);
-      when tc_right  do a_final(curr,er,expr^.t ,eu_read,info);
-      when tc_both   do a_final(curr,er,expr^.t ,eu_read,info);
-      when tc_concat do c_final(curr,er,expr^.t ,eu_read,info);
+      when tc_none   do do_final(curr,er,nulltype,eu_read,info,fin_context);
+      when tc_left   do do_final(curr,er,nulltype,eu_read,info,fin_context);
+      when tc_right  do do_final(curr,er,expr^.t ,eu_read,info,fin_context);
+      when tc_both   do do_final(curr,er,expr^.t ,eu_read,info,fin_context);
+      when tc_concat do c_final(curr,er,expr^.t ,eu_read,info,fin_context);
       when others    do verify(374,true);
       end case;
 
@@ -118,6 +188,73 @@ begin
     er:=er^.next;
     end loop;
 
+  -- typy podvyrazu
+  el_type:=el^.t;
+  er_type:=er0^.t;
+
+  -- *** Kontroly rozsahu
+  
+  -- operator
+  case expr^.oper
+    
+    -- %%HYNEK - centralizovat podminky pro kontroly mezi
+
+    -- scitani, odcitani, nasobeni
+    when op_add,op_sub,op_mul do
+      -- typ vyrazu s plnym pohledem, ordinalni a bez modularni aritmetiky
+      if expr^.t.tview=tview_full and then expr^.t.stype in dts_ordinal and then 
+         expr^.t.getintaritm<>tia_modular then
+      
+        -- treba provest overflow kontrolu a kontrolu mezi vysledku
+        expr^.set_run_check(rchcl_gen,rch_ordinal_overflow);
+      
+        -- ma typ vyrazu logicke meze mensi nez fyzicke?
+        if is_type_ranged(expr^.t) then
+          -- ano - provest jeste kontrolu mezi
+          expr^.set_run_check(rchcl_gen,rch_ordinal_range);
+          expr^.set_rangecheck_type(rchcl_gen,expr^.t);
+          end if;
+        end if;
+
+      -- typ vysledku s plnym pohledem, ordinalni a bez modularni aritmetiky
+      if expr^.assign and then
+         ass_type.tview=tview_full and then ass_type.stype in dts_ordinal and then
+         ass_type.getintaritm<>tia_modular then
+
+        -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
+        rrd:=t_get_relative_range_disposition(expr^.t, ass_type);
+        
+        -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
+        if rrd<>rrd_equalset and rrd<>rrd_subset then
+          -- kontrola rozsahu
+          expr^.set_run_check(rchcl_load,rch_ordinal_range);
+          expr^.set_rangecheck_type(rchcl_load,ass_type);
+          end if;
+
+        end if;
+    
+    -- prirazeni
+    when op_assign do
+      -- nekonstantni full ordinal --> nemodularni full ordinal
+      if er0^.ntype<>nt_imm and then
+         ass_type.tview=tview_full and then ass_type.stype in dts_ordinal and then
+         ass_type.getintaritm<>tia_modular and then
+         er_type.tview=tview_full and then er_type.stype in dts_ordinal then
+        
+        -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
+        rrd:=t_get_relative_range_disposition(er_type, ass_type);
+
+        -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
+        if rrd<>rrd_equalset and rrd<>rrd_subset then
+          -- ano - kontrola rozsahu
+          er0^.set_run_check(rchcl_load,rch_ordinal_range);
+          er0^.set_rangecheck_type(rchcl_load,ass_type);
+          end if;
+        end if;
+
+    when others do ;
+    end case;
+  
   -- povedla se finalizace podv˜raz– ? 
   if (el^.zprac<ep_final) or not er_zprac {(er^.zprac<ep_final)} then
     el:=nil;
@@ -136,25 +273,77 @@ procedure a_final_unary (
     expr           : in pexpunary;      -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace un rn¡ch oper tor–.
 ----------------------------------------------------------------------------------------------------
 var
   el               : pexpnode;                   -- podv˜razy
+  rrd              : t_relative_range_disposition;
+  ass_type         : typeview;                   -- skutecny typ prirazeni
 
 begin
   -- oddˆlit podv˜razy
   expr^.get(el);
 
+  -- reset tyou prirazeni
+  fin_context.assign_typ:=nulltype;
+
   -- finalizace podv˜razu
   if expr^.assign
 
     -- p©i©azen¡
-    then a_final(curr,el,nulltype,eu_write,info)
+    then do_final(curr,el,nulltype,eu_write,info,fin_context);
 
     -- norm ln¡ oper tor
-    else a_final(curr,el,expr^.t,eu_read,info);
+    else do_final(curr,el,expr^.t,eu_read,info,fin_context);
     end if;
+
+  -- mame typ prirazeni?
+  if fin_context.assign_typ.getutype=nil
+    -- NE - pouzi typ vyrazu
+    then ass_type:=fin_context.assign_typ;
+    
+    -- ANO - pouzi jej
+    else ass_type:=expr^.t;
+    end if;
+  
+  case expr^.oper
+    -- operatory scitani, odcitani, nasobeni
+    when un_succ, un_pred, un_minus, un_abs do
+      -- typ vyrazu s plnym pohledem, ordinalni a bez modularni aritmetiky
+      if expr^.t.tview=tview_full and then expr^.t.stype in dts_ordinal and then 
+         expr^.t.getintaritm<>tia_modular then
+    
+        -- treba provest overflow kontrolu a kontrolu mezi vysledku
+        expr^.set_run_check(rchcl_gen,rch_ordinal_overflow);
+    
+        -- ma typ vyrazu logicke meze mensi nez fyzicke?
+        if is_type_ranged(expr^.t) then
+          -- ano - provest jeste kontrolu mezi
+          expr^.set_run_check(rchcl_gen,rch_ordinal_range);
+          expr^.set_rangecheck_type(rchcl_gen,expr^.t);
+          end if;
+        end if;
+
+      -- typ vysledku s plnym pohledem, ordinalni a bez modularni aritmetiky
+      if expr^.assign and then
+         ass_type.tview=tview_full and then ass_type.stype in dts_ordinal and then
+         ass_type.getintaritm<>tia_modular then
+
+        -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
+        rrd:=t_get_relative_range_disposition(expr^.t, ass_type);
+        
+        -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
+        if rrd<>rrd_equalset and rrd<>rrd_subset then
+          -- kontrola rozsahu
+          expr^.set_run_check(rchcl_load,rch_ordinal_range);
+          expr^.set_rangecheck_type(rchcl_load,ass_type);
+          end if;
+        end if;
+   
+    when others do ;
+    end case;
 
   -- povedla se finalizace podv˜razu ? 
   if el^.zprac<ep_final then return; end if;
@@ -171,7 +360,8 @@ procedure a_final_component (
     expr           : in pexpcomponent;  -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace komponenty.
 ----------------------------------------------------------------------------------------------------
 var
@@ -181,10 +371,17 @@ var
 begin
 {
   -- finalizovat podv˜raz
-  if expr^.sub<>nil then a_final(curr,expr^.sub,nulltype,usage,info); end if;
+  if expr^.sub<>nil then do_final(curr,expr^.sub,nulltype,usage,info,fin_context); end if;
 
   {%%X Co se tady d  finalizovat ? }
 }
+  
+  -- komponenta se pouzije pro zapis?
+  if usage in expusageset:[eu_write,eu_change] then
+    -- nastav typ prirazeni
+    fin_context.assign_typ:=expr^.t;
+    end if;
+
   case expr^.nclass
     -- promˆnn 
     when nc_var do
@@ -196,9 +393,9 @@ begin
           -- nen¡ souvisej¡c¡ entita slo‘ka nˆ‡eho ?
           if (psym=nil) or (pentity_var(psym)^.mclass in mcs_offset)
             -- pokud o entitˆ nic nev¡m, nebo je to nˆ‡¡ slo‘ka, finalizovat pro stejn‚ pou‘it¡
-            then a_final(curr,expr^.sub,nulltype,usage,info)
+            then do_final(curr,expr^.sub,nulltype,usage,info,fin_context);
             -- jinak finalizovat pro ‡istˆ form ln¡ pou‘it¡
-            else a_final(curr,expr^.sub,nulltype,eu_formal,info);
+            else do_final(curr,expr^.sub,nulltype,eu_formal,info,fin_context);
             end if;
           end if;
 
@@ -251,7 +448,7 @@ begin
     when nc_value do
         -- finalizovat podv˜raz
         if expr^.sub<>nil then
-          a_final(curr,expr^.sub,nulltype,usage,info);
+          do_final(curr,expr^.sub,nulltype,usage,info,fin_context);
           end if;
 
         -- z pis nen¡ povolen
@@ -271,9 +468,9 @@ begin
           if usage=eu_addr and then psym<>nil and then pentity_subprogram(psym)^.instance<>tip_none 
           and then instance<>nil and then instance^.nclass<>nc_type
             -- zji¨Ÿuje se adresa metody => nepochybnˆ bude pot©eba i adresa instance
-            then a_final(curr,expr^.sub,nulltype,eu_addr,info)
+            then do_final(curr,expr^.sub,nulltype,eu_addr,info,fin_context);
             -- jak‚koliv jin‚ zp–soby pou‘it¡ indikuj¡ finalizaci podv˜razu pro form ln¡ pou‘it¡
-            else a_final(curr,expr^.sub,nulltype,eu_formal,info);
+            else do_final(curr,expr^.sub,nulltype,eu_formal,info,fin_context);
             end if;
           end if;
 
@@ -284,7 +481,7 @@ begin
     when nc_message     do
         -- finalizovat podv˜raz
         if expr^.sub<>nil then
-          a_final(curr,expr^.sub,nulltype,eu_formal{usage},info);
+          do_final(curr,expr^.sub,nulltype,eu_formal{usage},info,fin_context);
           end if;
 
         -- je povolen jen form ln¡ p©¡stup a z¡sk n¡ adresy
@@ -294,7 +491,7 @@ begin
     when nc_type do
         -- finalizovat podv˜raz
         if expr^.sub<>nil then
-          a_final(curr,expr^.sub,nulltype,eu_formal{usage},info);
+          do_final(curr,expr^.sub,nulltype,eu_formal{usage},info,fin_context);
           end if;
 
         -- je povolen jen form ln¡ p©¡stup a pou‘it¡ hodnoty (tagu)
@@ -304,7 +501,7 @@ begin
     when others do
         -- finalizovat podv˜raz
         if expr^.sub<>nil then
-          a_final(curr,expr^.sub,nulltype,usage,info);
+          do_final(curr,expr^.sub,nulltype,usage,info,fin_context);
           end if;
 
         -- je povolen jen form ln¡ p©¡stup
@@ -327,7 +524,8 @@ procedure a_final_imm (
     expr           : in pexpimm;        -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in  expinfo;       -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace p©¡m‚ hodnoty.
 ----------------------------------------------------------------------------------------------------
 var
@@ -374,6 +572,7 @@ begin
   --         or (expr^.imm.ic=ic_array and expr^.imm.aitems^.lcount>expr^.imm.aitems^.lsize)
   --         or (expr^.imm.ic=ic_record and expr^.imm.ritems^.lcount>expr^.imm.ritems^.lsize),expr^.pos);
 
+
   -- finalizace £spˆ¨nˆ dokon‡ena 
   expr^.zprac:=ep_final;
   end a_final_imm;
@@ -386,7 +585,8 @@ procedure a_final_call (
     expr           : in pexplist;       -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace vol n¡.
 ----------------------------------------------------------------------------------------------------
 var
@@ -399,7 +599,7 @@ begin
   expr^.get(el,arg);
 
   -- finalizovat podv˜raz
-  a_final(curr,el,nulltype,eu_addr,info);
+  do_final(curr,el,nulltype,eu_addr,info,fin_context);
 
   -- finalizovat argumenty
   vyhodnoceno:=true;
@@ -411,13 +611,13 @@ begin
       then
         case pentity_param(arg^.sym)^.mode
           -- IN
-          when pm_in    do a_final(curr,arg^.sub,arg^.t,eu_use,info);
+          when pm_in    do do_final(curr,arg^.sub,arg^.t,eu_use,info,fin_context);
 
           -- OUT
-          when pm_out   do a_final(curr,arg^.sub,arg^.t,eu_write,info);
+          when pm_out   do do_final(curr,arg^.sub,arg^.t,eu_write,info,fin_context);
 
           -- IN OUT
-          when pm_inout do a_final(curr,arg^.sub,arg^.t,eu_change,info);
+          when pm_inout do do_final(curr,arg^.sub,arg^.t,eu_change,info,fin_context);
 
           when others   do verify(180,true);
           end case;
@@ -450,7 +650,8 @@ procedure a_final_range (
     expr           : in pexprange;      -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace rozsahu.
 ----------------------------------------------------------------------------------------------------
 var
@@ -462,10 +663,10 @@ begin
   expr^.get(el,er);
 
   -- finalizovat lev˜ podv˜raz 
-  a_final(curr,el,expr^.t{nulltype},usage,info);
+  do_final(curr,el,expr^.t{nulltype},usage,info,fin_context);
 
   -- finalizovat prav˜ podv˜raz 
-  a_final(curr,er,expr^.t{nulltype},usage,info);
+  do_final(curr,er,expr^.t{nulltype},usage,info,fin_context);
 
   -- povedla se finalizace podv˜raz– ? 
   if (el^.zprac<ep_final) or (er^.zprac<ep_final) then return; end if;
@@ -482,22 +683,43 @@ procedure a_final_index (
     expr           : in pexpindex;      -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace indexu.
 ----------------------------------------------------------------------------------------------------
 var
   el               : pexpnode;                   -- podv˜razy
   er               : pexpnode;                   -- podv˜razy
+  el_range         : typeview;
+  er_type          : typeview;                   
+  rrd              : t_relative_range_disposition;
 
 begin
   -- oddˆlit podv˜razy
   expr^.get(el,er);
 
   -- finalizovat lev˜ podv˜raz
-  a_final(curr,el,nulltype,usage,info);
+  do_final(curr,el,nulltype,usage,info,fin_context);
 
   -- finalizovat prav˜ podv˜raz 
-  a_final(curr,er,el^.t.getrange(curr),eu_use,info);
+  do_final(curr,er,el^.t.getrange(curr),eu_use,info,fin_context);
+
+  -- typy podvyrazu
+  el_range:=el^.t.getrange(el^.t.getctype^.context);
+  er_type:=er^.t;
+
+  -- pravy podvyraz konstanta?
+  if er^.ntype<>nt_imm then
+    -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
+    rrd:=t_get_relative_range_disposition(er_type, el_range);
+    
+    -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
+    if rrd<>rrd_equalset and rrd<>rrd_subset then
+      -- kontrola rozsahu
+      er^.set_run_check(rchcl_load,rch_ordinal_range);
+      er^.set_rangecheck_type(rchcl_load,el_range);
+      end if;
+    end if;
 
   -- povedla se finalizace podv˜raz– ? 
   if (el^.zprac<ep_final) or (er^.zprac<ep_final) then return; end if;
@@ -514,12 +736,13 @@ procedure a_final_ref (
     expr           : in pexpref;        -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace reference.
 ----------------------------------------------------------------------------------------------------
 begin
   -- finalizovat podv˜raz 
-  a_final(curr,expr^.sub,nulltype,eu_addr,info);
+  do_final(curr,expr^.sub,nulltype,eu_addr,info,fin_context);
 
   -- povedla se finalizace podv˜razu ? 
   if expr^.sub^.zprac<ep_final then return; end if;
@@ -536,12 +759,13 @@ procedure a_final_deref (
     expr           : in pexpderef;      -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace dereference.
 ----------------------------------------------------------------------------------------------------
 begin
   -- finalizovat podv˜raz
-  a_final(curr,expr^.sub,nulltype,selectusage(usage,eu_read),info);
+  do_final(curr,expr^.sub,nulltype,selectusage(usage,eu_read),info,fin_context);
 
   -- m  cenu bl¡‘e zkoumat jen pokusy o z pis
   if usage in expusageset:[eu_write,eu_change] then
@@ -584,7 +808,8 @@ procedure a_final_attrib (
     expr           : in pexpattrib;     -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace atributu.
 ----------------------------------------------------------------------------------------------------
 var
@@ -611,9 +836,9 @@ begin
 
       case expr^.aclass
         {%%X Je pravda, ‘e pro ka‘d˜ statick˜ atribut je pou‘it¡ EU_FORMAL ? }
-        when atc_static  do a_final(curr,el,nulltype,eu_formal,info);
+        when atc_static  do do_final(curr,el,nulltype,eu_formal,info,fin_context);
         {%%X Nen¡ t©eba pro dynamick‚ atributy nˆkdy zmˆnit pou‘it¡ ? }
-        when atc_dynamic do a_final(curr,el,nulltype,usage,info);
+        when atc_dynamic do do_final(curr,el,nulltype,usage,info,fin_context);
       --when atc_generic do u_nimplemented(50);
         when others      do verify(128,true);
         end case;
@@ -640,24 +865,46 @@ procedure a_final_typecast (
     expr           : in pexplist;       -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace p©etypov n¡.
 ----------------------------------------------------------------------------------------------------
 var
   el               : pexpnode;                   -- podv˜raz
   arg              : pexpitem;                   -- argument
-
+  er               : pexpitem;
+  rrd              : t_relative_range_disposition;
+  
 begin
   -- oddˆlit podv˜razy 
   expr^.get(el,arg);
+  er:=arg^.sub;
 
   -- finalizovat lev˜ podv˜raz 
-  a_final(curr,el,nulltype,eu_formal,info);
+  do_final(curr,el,nulltype,eu_formal,info,fin_context);
 
   -- finalizovat prav˜ podv˜raz 
-  a_final(curr,arg^.sub,nulltype,usage,info);
+  do_final(curr,arg^.sub,nulltype,usage,info,fin_context);
   arg^.zprac:=arg^.sub^.zprac;
 
+  -- pro typecast nekonstanta full view --> full view
+  if er^.ntype<>nt_imm and
+     er^.t.tview=tview_full and expr^.t.tview=tview_full then
+    -- a ordinal --> ordinal', kde ordinal' nema modularni aritmetiku
+    if er^.t.stype in dts_ordinal and then expr^.t.stype in dts_ordinal and then expr^.t.getintaritm<>tia_modular then
+      -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
+      rrd:=t_get_relative_range_disposition(er^.t, expr^.t);
+
+      -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
+      if rrd<>rrd_equalset and rrd<>rrd_subset then
+        -- ano - treba provest kontrolu mezi
+        er^.set_run_check(rchcl_load,rch_ordinal_range);
+        er^.set_rangecheck_type(rchcl_load,expr^.t);
+        end if;
+      
+      end if;
+    end if;
+  
   -- povedla se finalizace podv˜raz– ? 
   if (el^.zprac<ep_final) or (arg^.zprac<ep_final) then return; end if;
 
@@ -673,7 +920,8 @@ procedure a_final_interface_cast (
     expr           : in pexpinterfacecast;       -- v˜raz
     ptyp           : in typeview;                -- po‘adovan˜ typ v˜razu
     usage          : in expusage;                -- pou‘it¡ v˜razu
-    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;                 -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace p©etypov n¡.
 ----------------------------------------------------------------------------------------------------
 var
@@ -685,10 +933,10 @@ begin
   expr^.get(el,er);
 
   -- finalizovat lev˜ podv˜raz 
-  a_final(curr,el,nulltype,eu_formal,info);
+  do_final(curr,el,nulltype,eu_formal,info,fin_context);
 
   -- finalizovat prav˜ podv˜raz 
-  a_final(curr,er,nulltype,usage,info);
+  do_final(curr,er,nulltype,usage,info,fin_context);
 
   -- povedla se finalizace podv˜raz– ? 
   if el^.zprac<ep_final or er^.zprac<ep_final then return; end if;
@@ -705,7 +953,8 @@ procedure a_final_aggregate (
     expr           : in pexpaggregate;  -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace agreg tu.
 ----------------------------------------------------------------------------------------------------
 var
@@ -720,7 +969,7 @@ begin
   -- finalizovat lev˜ podv˜raz 
   if el<>nil
     then
-      a_final(curr,el,nulltype,eu_formal,info);
+      do_final(curr,el,nulltype,eu_formal,info,fin_context);
       vyhodnoceno:=el^.zprac>=ep_final;
     else
       vyhodnoceno:=true;
@@ -744,7 +993,8 @@ procedure a_final_message (
     expr           : in pexplist;       -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace vol n¡.
 ----------------------------------------------------------------------------------------------------
 var
@@ -757,7 +1007,7 @@ begin
   expr^.get(el,arg);
 
   -- finalizovat podv˜raz 
-  a_final(curr,el,nulltype,eu_addr,info);
+  do_final(curr,el,nulltype,eu_addr,info,fin_context);
 
   -- finalizovat argumenty 
   vyhodnoceno:=true;
@@ -765,10 +1015,10 @@ begin
     -- finalizovat argument 
     case expr^.ntype
       -- p©ijet¡ zpr vy 
-      when nt_send   do a_final(curr,arg^.sub,arg^.t,eu_use,info);
+      when nt_send   do do_final(curr,arg^.sub,arg^.t,eu_use,info,fin_context);
 
       -- odesl n¡ zpr vy
-      when nt_accept do a_final(curr,arg^.sub,arg^.t,eu_write,info);
+      when nt_accept do do_final(curr,arg^.sub,arg^.t,eu_write,info,fin_context);
 
       when others    do verify(306,true);
       end case;
@@ -796,7 +1046,8 @@ procedure a_final_this (
     expr           : in pexpthis;       -- v˜raz
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
-    info           : in expinfo) =      -- informace o pr–bˆhu anal˜zy
+    info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
+    fin_context    : in out t_final_context) = -- kontext finalizace
 -- Finalizace THIS.
 ----------------------------------------------------------------------------------------------------
 begin
@@ -809,8 +1060,8 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure a_final =
--- Finalizace.                                                                
+procedure do_final =
+-- Finalizace.
 ----------------------------------------------------------------------------------------------------
 begin
   verify(126,expr=nil);
@@ -821,56 +1072,70 @@ begin
   -- zkontrolovat v˜raz 
   case expr^.ntype
     -- oper tor 
-    when nt_operator  do a_final_operator(curr,pexpoper(expr),ptyp,usage,info);
+    when nt_operator  do a_final_operator(curr,pexpoper(expr),ptyp,usage,info,fin_context);;
 
     -- un rn¡ oper tor
-    when nt_unary     do a_final_unary(curr,pexpunary(expr),ptyp,usage,info);
+    when nt_unary     do a_final_unary(curr,pexpunary(expr),ptyp,usage,info,fin_context);;
 
     -- komponenta
-    when nt_component do a_final_component(curr,pexpcomponent(expr),ptyp,usage,info);
+    when nt_component do a_final_component(curr,pexpcomponent(expr),ptyp,usage,info,fin_context);;
 
     -- p©¡m  hodnota
-    when nt_imm       do a_final_imm(curr,pexpimm(expr),ptyp,usage,info);
+    when nt_imm       do a_final_imm(curr,pexpimm(expr),ptyp,usage,info,fin_context);;
 
     -- vol n¡ procedury
-    when nt_call      do a_final_call(curr,pexplist(expr),ptyp,usage,info);
+    when nt_call      do a_final_call(curr,pexplist(expr),ptyp,usage,info,fin_context);;
 
     -- rozsah
-    when nt_range     do a_final_range(curr,pexprange(expr),ptyp,usage,info);
+    when nt_range     do a_final_range(curr,pexprange(expr),ptyp,usage,info,fin_context);;
 
     -- index pole
-    when nt_index     do a_final_index(curr,pexpindex(expr),ptyp,usage,info);
+    when nt_index     do a_final_index(curr,pexpindex(expr),ptyp,usage,info,fin_context);;
 
     -- reference
-    when nt_ref       do a_final_ref(curr,pexpref(expr),ptyp,usage,info);
+    when nt_ref       do a_final_ref(curr,pexpref(expr),ptyp,usage,info,fin_context);;
 
     -- dereference
-    when nt_deref     do a_final_deref(curr,pexpderef(expr),ptyp,usage,info);
+    when nt_deref     do a_final_deref(curr,pexpderef(expr),ptyp,usage,info,fin_context);;
 
     -- atribut
-    when nt_attrib    do a_final_attrib(curr,pexpattrib(expr),ptyp,usage,info);
+    when nt_attrib    do a_final_attrib(curr,pexpattrib(expr),ptyp,usage,info,fin_context);;
 
     -- p©etypov n¡
-    when nt_typecast  do a_final_typecast(curr,pexplist(expr),ptyp,usage,info);
+    when nt_typecast  do a_final_typecast(curr,pexplist(expr),ptyp,usage,info,fin_context);;
 
     -- interface cast
-    when nt_interface_cast do a_final_interface_cast(curr,pexpinterfacecast(expr),ptyp,usage,info);
+    when nt_interface_cast do a_final_interface_cast(curr,pexpinterfacecast(expr),ptyp,usage,info,fin_context);;
 
     -- agreg t
-    when nt_aggregate do a_final_aggregate(curr,pexpaggregate(expr),ptyp,usage,info);
+    when nt_aggregate do a_final_aggregate(curr,pexpaggregate(expr),ptyp,usage,info,fin_context);;
 
     -- odesl n¡ zpr vy
-    when nt_send      do a_final_message(curr,pexplist(expr),ptyp,usage,info);
+    when nt_send      do a_final_message(curr,pexplist(expr),ptyp,usage,info,fin_context);;
 
     -- p©ijet¡ zpr vy
-    when nt_accept    do a_final_message(curr,pexplist(expr),ptyp,usage,info);
+    when nt_accept    do a_final_message(curr,pexplist(expr),ptyp,usage,info,fin_context);;
 
     -- THIS
-    when nt_this      do a_final_this(curr,pexpthis(expr),ptyp,usage,info);
+    when nt_this      do a_final_this(curr,pexpthis(expr),ptyp,usage,info,fin_context);;
 
     -- jin‚ symboly tu nemaj¡ co dˆlat
     when others       do verify(127,true);
     end case;
+
+  end do_final;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_final =
+-- Finalizace.                                                                
+----------------------------------------------------------------------------------------------------
+var
+  fin_context : t_final_context;
+
+begin
+  do_final(curr,expr,ptyp,usage,info,fin_context);
   end a_final;
 
 

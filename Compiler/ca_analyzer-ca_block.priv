@@ -8,7 +8,7 @@ module private ca_block =
 
 with
   cc_base,cc_base.cc_type,cc_base.cc_sym,cc_attr,cc_def.cc_var,
-  cb_block,cb_block.cb_def,cb_block.cb_make,
+  cc_def.cc_unitype,cb_block,cb_block.cb_def,cb_block.cb_make,
   cx_expr,cx_expr.cx_def,cx_expr.cx_make,
   ca_util,ca_temp,ca_type;
 
@@ -142,7 +142,7 @@ procedure a_block_new (
     bl             : in pblnew) =                -- analyzovav˜ p©¡kaz
 -- p©¡kaz NEW
 ----------------------------------------------------------------------------------------------------
-with
+use
   ca_analyzer.ca_analyze;
 
 var
@@ -155,7 +155,7 @@ begin
   -- analyzovat b zov˜ typ
   if base.getutype<>nil then
     if base.isclass
-      then a_entity(base.getctype)
+      then ca_analyzer.ca_analyze.a_entity(base.getctype)
       else a_type(base.getctype^);
       end if;
     end if;
@@ -274,6 +274,10 @@ begin
       xinfo        : expinfo;                    -- kontext
       porgvar      : pexpnode;                   -- p–vodn¡ promˆnn 
       ptempvar     : pentity_var;                -- pracovn¡ promˆnn 
+      crange       : texecuterange;              -- rozsah prov dˆn¡
+      typ          : pentity_type;               -- popis b zov‚ho typu pointeru 
+      prangehighvar : pentity_var;               -- pracovn¡ promˆnn  pro rozsah
+      prangelowvar : pentity_var;                -- pracovn¡ promˆnn  pro rozsah
 
     begin
       verify(589,not base.getctype^.stable[tst_init].isset and not base.getctype^.stable[tst_entry].isset);
@@ -288,26 +292,77 @@ begin
       porgvar:=bl^.xvar;
       bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
 
-      -- zavolat metodu INIT
-      if base.getctype^.stable[tst_init].isset then
-        a_list_append(bl^.bepilog,
-          a_type_make_call(curr,binfo,xinfo,tst_init,base.getctype^,
-            x_make_deref(curr,xinfo,
-              x_make_component_var(curr,xinfo,ptempvar)
+      -- zkr ceny pointer na popis b zov‚ho typu
+      typ:=base.getutype;
+
+      -- pro pole a string mus¡me zajistit rozsah inicializace
+      if (typ^.stype in dts_index) then
+        -- unconstrained type - inicializace d na rozsahem
+        if bl^.xrange<>nil and typ^.stype in dts_unconstrained then
+          -- zalo‘it pracovn¡ promˆnnou
+          a_create_temp_var(curr,prangehighvar,bl^.xrange^.t.getctype);
+
+          -- vypo‡¡tat velikost
+          a_list_append(bl^.bprolog,
+            b_make_cmd(curr,binfo,
+              x_make_op_assign(curr,xinfo,
+                x_make_component_var(curr,xinfo,prangehighvar),
+                bl^.xrange
+                )
               )
-            )
-          );
+            );
+
+          -- update rozsahu
+          bl^.xrange:=x_make_component_var(curr,xinfo,prangehighvar);
+
+          -- unconstrained pole - velikost inicializace d na rozsahem 0..RANGE-1
+          if typ^.stype=dt_uarray then 
+            -- doln¡ mez zpracov van‚ho rozsahu
+            crange.low:=x_make_imm_uniint(curr,xinfo,ui_0);
+
+            -- horn¡ mez zpracov van‚ho rozsahu
+            crange.high:=x_make_op_unary(curr,xinfo,un_pred,
+              x_make_component_var(curr,xinfo,prangehighvar)
+              );
+
+          -- unconstrained string - velikost inicializace d na rozsahem 1..RANGE
+          elsif typ^.stype=dt_ustring then
+            -- doln¡ mez zpracov van‚ho rozsahu
+            crange.low:=x_make_imm_uniint(curr,xinfo,ui_1);
+
+            -- horn¡ mez zpracov van‚ho rozsahu
+            crange.high:=x_make_component_var(curr,xinfo,prangehighvar);
+            end if;
+
+        -- string a array - velikost inicializace d na rozsahem lval..hval
+        elsif bl^.xrange=nil and (typ^.stype=dt_array or typ^.stype=dt_string) then  
+          -- doln¡ mez zpracov van‚ho rozsahu
+          crange.low:=x_make_imm_uniint(curr,xinfo,typ^.lval);
+
+          -- horn¡ mez zpracov van‚ho rozsahu
+          crange.high:=x_make_imm_uniint(curr,xinfo,typ^.hval);
+          end if;
         end if;
 
-      -- zavolat metodu ENTRY
-      if base.getctype^.stable[tst_entry].isset then
-        a_list_append(bl^.bepilog,
-          a_type_make_call(curr,binfo,xinfo,tst_entry,base.getctype^,
-            x_make_deref(curr,xinfo,
-              x_make_component_var(curr,xinfo,ptempvar)
-              )
+    -- zavolat metodu INIT
+    if base.getctype^.stable[tst_init].isset then
+      a_list_append(bl^.bepilog,
+        a_type_make_call(curr,binfo,xinfo,tst_init,base.getctype^,crange,
+          x_make_deref(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar)
             )
-          );
+          )
+        );
+        end if;
+
+    if base.getctype^.stable[tst_entry].isset then
+      a_list_append(bl^.bepilog,
+        a_type_make_call(curr,binfo,xinfo,tst_entry,base.getctype^,crange,
+          x_make_deref(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar)
+            )
+          )
+        );
         end if;
 
       -- Promˆnn  := Instance
@@ -331,6 +386,9 @@ procedure a_block_discard (
     bl             : in pbldiscard) =            -- analyzovav˜ p©¡kaz
 -- p©¡kaz DISCARD
 ----------------------------------------------------------------------------------------------------
+use
+  ca_analyzer.ca_analyze;
+
 var
   --%%TODO(I556)
   nulllist         : const bllist;
@@ -341,6 +399,14 @@ var
 begin
   -- zjistit b zov˜ typ pointeru
   base:=bl^.xvar^.t.getbase(curr);
+
+  -- analyzovat b zov˜ typ
+  if base.getutype<>nil then
+    if base.isclass
+      then ca_analyzer.ca_analyze.a_entity(base.getctype)
+      else a_type(base.getctype^);
+      end if;
+    end if;
 
   -- bude se dealokovat t©¡da ?
   if base.isclass then
@@ -400,6 +466,231 @@ begin
       end declare;
     end if;
   end a_block_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_adjust (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pbladjust) =             -- analyzovav˜ p©¡kaz
+-- p©¡kaz ADJUST
+----------------------------------------------------------------------------------------------------
+with
+  ca_analyzer.ca_analyze;
+
+var
+  binfo            : blinfo;                     -- kontext
+  xinfo            : expinfo;                    -- kontext
+  base             : typeview;                   -- b zov˜ typ pointeru
+  ptempvar         : pentity_var;                -- pracovn¡ promˆnn 
+  typ              : pentity_type;               -- popis b zov‚ho typu pointeru 
+  porgvar          : pexpnode;                   -- p–vodn¡ promˆnn 
+  crange_exit      : texecuterange;              -- rozsah prov dˆn¡ pro metodu exit
+  crange_entry     : texecuterange;              -- rozsah prov dˆn¡ pro metodu entry
+
+    ------------------------------------------------------------------------------------------------
+    procedure compute_variable_size (
+        _variable  : in pentity_var;             -- promˆnn 
+        _atf       : in tattrformal;             -- form ln¡ atribut
+        _ata       : in tattractual) =           -- skute‡n˜ atribut
+    -- Z attribut– promˆnn‚ ptempvar zjist¡ velikost.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vypo‡¡tat velikost
+      a_list_append(bl^.bprolog,
+        b_make_cmd(curr,binfo,
+          x_make_op_assign(curr,xinfo,
+            x_make_component_var(curr,xinfo,_variable),
+            x_make_attribute(curr,xinfo,atc_dynamic,_atf,_ata,inttype_tag,
+              x_make_deref(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar)
+                )
+              )
+            )
+          )
+        );
+      end compute_variable_size;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure compute_range_size (
+        _variable  : in pentity_var) =           -- promˆnn 
+    -- Z attribut– promˆnn‚ ptempvar zjist¡ velikost.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vypo‡¡tat velikost
+      a_list_append(bl^.bprolog,
+        b_make_cmd(curr,binfo,
+          x_make_op_assign(curr,xinfo,
+            x_make_component_var(curr,xinfo,_variable),
+            bl^.xrange
+            )
+          )
+        );
+      end compute_range_size;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure create_exit_range (
+        _atf       : in tattrformal;             -- form ln¡ atribut
+        _ata       : in tattractual) =           -- skute‡n˜ atribut
+    -- Z attribut– promˆnn‚ ptempvar zjist¡ velikost a vygeneruje rozsah deinicializace.
+    ------------------------------------------------------------------------------------------------
+    var
+      pexithighvar : pentity_var;                -- pracovn¡ promˆnn  pro rozsah
+      pexitlowvar  : pentity_var;                -- pracovn¡ promˆnn  pro rozsah
+
+    begin
+      -- zalo‘it pracovn¡ promˆnnou pro spodn¡ deinicializa‡n¡ mez
+      a_create_temp_var(curr,pexitlowvar,bl^.xrange^.t.getctype);
+
+      -- vypo‡¡tat velikost
+      compute_range_size(pexitlowvar);
+
+      -- spodn¡ deinicializa‡n¡ mez zpracov van‚ho rozsahu
+      crange_exit.low:=x_make_op_unary(curr,xinfo,un_succ,
+        x_make_component_var(curr,xinfo,pexitlowvar)
+        );
+
+      -- zalo‘it pracovn¡ promˆnnou pro horn¡ deinicializa‡n¡ mez
+      a_create_temp_var(curr,pexithighvar,bl^.xrange^.t.getctype);
+
+      -- vypo‡¡tat velikost
+      compute_variable_size(pexithighvar,_atf,_ata);
+
+      -- spodn¡ deinicializa‡n¡ mez zpracov van‚ho rozsahu
+      crange_exit.high:=x_make_component_var(curr,xinfo,pexithighvar);
+      end create_exit_range;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure create_entry_range (
+        _atf       : in tattrformal;             -- form ln¡ atribut
+        _ata       : in tattractual) =           -- skute‡n˜ atribut
+    -- Z attribut– promˆnn‚ ptempvar zjist¡ velikost a vygeneruje rozsah deinicializace.
+    ------------------------------------------------------------------------------------------------
+    var
+      pentryhighvar : pentity_var;               -- pracovn¡ promˆnn  pro rozsah
+      pentrylowvar  : pentity_var;               -- pracovn¡ promˆnn  pro rozsah
+
+    begin
+      -- zalo‘it pracovn¡ promˆnnou pro horn¡ inicializa‡n¡ mez
+      a_create_temp_var(curr,pentryhighvar,bl^.xrange^.t.getctype);
+
+      -- vypo‡¡tat velikost
+      compute_range_size(pentryhighvar);
+
+      -- horn¡ inicializa‡n¡ mez zpracov van‚ho rozsahu
+      crange_entry.high:=x_make_component_var(curr,xinfo,pentryhighvar);
+
+      -- zalo‘it pracovn¡ promˆnnou pro doln¡ inicializa‡n¡ mez
+      a_create_temp_var(curr,pentrylowvar,bl^.xrange^.t.getctype);
+
+      -- vypo‡¡tat velikost
+      compute_variable_size(pentrylowvar,_atf,_ata);
+
+      -- spodn¡ inicializa‡n¡ mez zpracov van‚ho rozsahu
+      crange_entry.low:=x_make_op_unary(curr,xinfo,un_succ,
+        x_make_component_var(curr,xinfo,pentrylowvar)
+        );
+      end create_entry_range;
+
+
+begin
+  -- zjistit b zov˜ typ pointeru
+  base:=bl^.xvar^.t.getbase(curr);
+
+  -- analyzovat b zov˜ typ
+  if base.getutype<>nil then
+    if base.isclass
+      then ca_analyzer.ca_analyze.a_entity(base.getctype)
+      else a_type(base.getctype^);
+      end if;
+    end if;
+
+  -- b zov˜ typ pointeru
+  typ:=base.getutype;
+
+  -- um¡me tento typ adjustovat?
+  if typ<>nil and typ^.stype in dts_unconstrained then
+    -- analyzovat b zov˜ typ
+    a_type(typ^);
+
+    -- p©ipravit kontexty
+    a_prepare_info(binfo,xinfo);
+
+    -- zalo‘it pracovn¡ promˆnnou
+    a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+
+    -- zmˆnit p©¡kaz ADJUST na realokaci pracovn¡ promˆnn‚
+    porgvar:=bl^.xvar;
+    bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
+
+    -- unconstrainted string
+    -- if range<length then @exit range+1..length
+    if typ^.stype=dt_ustring then
+      -- deinicializace
+      create_exit_range(atf_length,ata_string_length);
+
+    -- unconstrainted array
+    -- if range<size then @exit range+1..size
+    -- if range>size then @entry size+1..range
+    elsif typ^.stype=dt_uarray then 
+      -- deinicializace
+      create_exit_range(atf_size,ata_array_length);
+
+      -- inicializace
+      create_entry_range(atf_size,ata_array_length);
+      end if;
+
+    -- pro pole i string zavolat metodu EXIT
+    a_list_append(bl^.bprolog,
+      a_type_make_call(curr,binfo,xinfo,tst_exit,base.getctype^,crange_exit,
+        x_make_deref(curr,xinfo,
+          x_make_component_var(curr,xinfo,ptempvar)
+          )
+        )
+      );
+
+    -- pro pole zavol me inicializaci nov˜ch prvku
+    if typ^.stype=dt_uarray then
+      -- zavolat metodu INIT
+      a_list_append(bl^.bepilog,
+        a_type_make_call(curr,binfo,xinfo,tst_init,base.getctype^,crange_entry,
+          x_make_deref(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar)
+            )
+          )
+        );
+
+      -- zavolat metodu ENTRY
+      a_list_append(bl^.bepilog,
+        a_type_make_call(curr,binfo,xinfo,tst_entry,base.getctype^,crange_entry,
+          x_make_deref(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar)
+            )
+          )
+        );
+      end if;
+
+    -- Promˆnn  := Instance
+    a_list_append(bl^.bepilog,
+      b_make_cmd(curr,binfo,
+        x_make_op_assign(curr,xinfo,
+          porgvar,
+          x_make_component_var(curr,xinfo,ptempvar))
+        )
+      );
+
+  -- tohle by se st vat nemˆlo
+  else
+    verify(689,true);
+    end if;
+  end a_block_adjust;
 
 
 
@@ -739,6 +1030,7 @@ begin
       when bt_goto        do a_block_goto(curr,blcontext,pblgoto(p));
       when bt_new         do a_block_new(curr,blcontext,pblnew(p));
       when bt_discard     do a_block_discard(curr,blcontext,pbldiscard(p));
+      when bt_adjust      do a_block_adjust(curr,blcontext,pbladjust(p));
       when bt_delay       do a_block_delay(curr,blcontext,pbldelay(p));
       -- slo‘en‚ p©¡kazy
       when bt_if          do a_block_if(curr,blcontext,pblif(p));

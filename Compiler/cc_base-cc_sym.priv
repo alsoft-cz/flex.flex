@@ -11,7 +11,6 @@ with
   cc_def.cc_codes;
 
 
-
 ----------------------------------------------------------------------------------------------------
 class private tentitysearch =
 -- Hled tko.
@@ -23,7 +22,7 @@ class private tentitysearch =
 
       -- pouze pro hled n¡ podle typu entity
       etype        : tentitytype;                -- typ prvku
-
+      req_etype    : ^tentitytype;                -- pozadovany typ entity (NIL=netestuje)
     ------------------------------------------------------------------------------------------------
     static find_ident (
         idtable    : in pidnode;                 -- tabulka identifikatoru
@@ -100,7 +99,12 @@ class private tentitysearch =
         for i in withtab^:range loop
           if withtab^[i].mode=twm_with then
             find_link(withtab^[i].entity.getcentity,id,tentityvisibleset:[etv_public],node);
-            if node<>nil then break; end if;
+            if node<>nil then
+              if (req_etype=nil or node^.entity^.etype=req_etype^) and node^.entity^.etype not in ets_modular then 
+                succ withtab^[i].stat_usage;
+		end if;		
+	      break;
+              end if;
             end if;
           end loop;
         end if;
@@ -164,10 +168,25 @@ class private tentitysearch =
         then this.psym:=nil;
         else this.psym:=node^.entity;
         end if;
+
       end find_global;
 
+     
 
-      
+    ------------------------------------------------------------------------------------------------
+    static find_global_ex =
+    -- Find_global doplnena o test typu entity
+    -- Pouziva se pri testovani template - neinkrementuje pouziti modulu ve WITH tabulce
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- pokud je req_etype<>nil, testuje ve find_with() typ ve WITH tabulce hledane entity
+      req_etype:=^etype;
+      find_global(context,id);
+      req_etype:=nil;
+      end find_global_ex;
+
+
+    
     ------------------------------------------------------------------------------------------------
     static find_local =
     -- Nalezne entitu podle idenfifik toru.
@@ -283,7 +302,7 @@ class private tentitysearch =
           end if;
 
       -- prohledat
-      while psym<>nil loop
+      while psym<>nil loop	
 
         -- nalezeno
         if psym^.etype=this.etype or else this.etype=et_undef then
@@ -811,12 +830,16 @@ begin
 {
   while where<>nil loop
 }
+
+
     if where.region^.withtable<>nil then
       for i in where.region^.withtable^:range loop
         {%%X Ondra 21.6.2001 : Pro‡ jsem ten typ vazby vlastnˆ zav dˆl? }
         -- Nefungovalo to s t¡m, tak jsem to zakomentoval
         if where.region^.withtable^[i].mode in _mode {and then (where^.withtab^[i].typ in _typ)} 
         and then where.region^.withtable^[i].entity.getcentity=what then
+          where.region^.withtable^[i].stat_usage+1000;
+          --result:=true;
           result:=where.region^.withtable^[i].level;
           return;
           end if;
@@ -982,6 +1005,7 @@ var
   psym             : pentity;
 
 begin
+ 
   -- CONTEXT je obsa‘en v SEARCH => je vidˆt v¨e
   if sym_is_included(context,search) then
     visibility:=tentityvisibleset:full;
@@ -989,7 +1013,7 @@ begin
     end if;
 
   -- co je prohled van˜ symbol za‡ ?
-  if search^.etype in tentitytypeset:[et_module,et_class]
+  if search^.etype in ets_modular
 
     -- prohled van˜ symbol je modul/t©¡da
     then
