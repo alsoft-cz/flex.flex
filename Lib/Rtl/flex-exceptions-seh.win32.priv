@@ -1,0 +1,214 @@
+----------------------------------------------------------------------------------------------------
+module private seh =
+-- exceptions (asynchronous messages).
+-- flex run-time library
+-- copyright (c) 1999-2003 a && l soft
+----------------------------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------------------------
+procedure winnt_except_handler : t_winnt_except_handler;
+#pragma convention(winnt_except_handler,system{%%TODO cdecl});
+#pragma stackframe(winnt_except_handler,stack_pointer_relative);                        
+#pragma no_return(rtl_raise_system_exception);
+----------------------------------------------------------------------------------------------------
+
+--%%todo remove when lea eax,winnt_except_handler
+var handler        : p_winnt_except_handler;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_task_exceptions_win32_inject =
+----------------------------------------------------------------------------------------------------
+begin
+--%%todo remove when lea eax,winnt_except_handler
+  handler:=^winnt_except_handler;
+  #syntax asm;
+    -- skip caller ret
+    pop    edx                                   -- pop out ret address of caller
+    mov    esp,ebp                               -- free stack frame of caller
+    pop    ebp
+    pop    edx                                   -- get ret address of callers caller
+    -- intstall handler
+    push   handler                               -- push address of my handler
+    mov    eax,fs:[t_winnt_tib.exceptionlist]    -- get prev handler registration
+    push   eax                                   -- push prev handler reg
+    mov    fs:[t_winnt_tib.exceptionlist],esp    -- save my handler registartion to tib
+    -- simulate return from caller
+    jmp    edx
+    #end asm;
+  end rtl_init_task_exceptions_win32_inject;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinit_task_exceptions_win32_inject =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    -- skip caller ret
+    pop    edx                                   -- pop out ret address of caller
+    mov    esp,ebp                               -- free stack frame of caller
+    pop    ebp
+    pop    edx                                   -- get ret address of callers caller
+    mov    esp,ebp                               -- free stack frame of caller
+    pop    ebp
+    -- unintstall handler
+    pop    eax                                   -- get pointer to previous handler record
+    mov    fs:[t_winnt_tib.exceptionlist],eax    -- install previous record
+    pop    eax                                   -- get pointer to previous handler record
+    -- simulate return from caller
+    mov    eax,0
+    ret
+    #end asm;
+  end rtl_deinit_task_exceptions_win32_inject;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_task_exceptions_win32 =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    -- intstall handler
+    mov    edx,handler_stack_space               -- get address on stack
+    mov    eax,fs:[t_winnt_tib.exceptionlist]    -- get prev handler registration
+    mov    [edx+t_winnt_exception_registration.prevreg],eax -- save prev handler registration
+    --%%todo change to lea eax,winnt_except_handler
+    mov    eax,handler                           -- get address of my handler
+    mov    [edx+t_winnt_exception_registration.handler],eax -- save address of my handler
+    mov    fs:[t_winnt_tib.exceptionlist],edx    -- save my handler registartion to tib
+    #end asm;
+  end rtl_init_task_exceptions_win32;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinit_task_exceptions_win32 =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    -- unintstall handler
+    mov    edx,handler_stack_space               -- get address on stack
+    mov    eax,[edx+t_winnt_exception_registration.prevreg]-- get prev handler registration
+    mov    fs:[t_winnt_tib.exceptionlist],edx    -- save prev handler registartion to tib
+    #end asm;
+  end rtl_deinit_task_exceptions_win32;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_raise_system_exception =
+-- raises an exception using windows SEH
+----------------------------------------------------------------------------------------------------
+begin
+  --%%TODO predelat na pop posledniho v retezu ktery neni muj
+  -- pozor myslim ze se do tohoto retezu zaradil i handler z rodicovskych threadu
+  #syntax asm;
+    mov    eax,$ffffffff
+    mov    fs:[t_winnt_tib.exceptionlist],eax
+    #end asm;
+  --%%TODO doddelat data, parametry, pocet
+  RaiseException(etag,0,0,nil);
+  rtl_terminate_thread;
+  end rtl_raise_system_exception;
+
+  
+----------------------------------------------------------------------------------------------------
+procedure winnt_except_handler = 
+----------------------------------------------------------------------------------------------------
+var
+    ecode          : t_rtl_unsigned32;
+    etag           : t_rtl_unsigned32;
+    edata          : t_rtl_pointer;
+begin
+  #syntax asm;
+    mov eax,exceptionrecord
+    mov ebx,winnt_exception_noncontinuable
+    cmp [eax+t_winnt_exception_record.exceptionflags],ebx
+    jne @2
+
+    mov eax,1{exceptioncontinuesearch}
+    ret
+
+@2:
+     get_stacktop
+    alloc_estackrow
+    #end asm;
+  case exceptionrecord^.exceptioncode
+{
+--%%todo vyresit tag vs. code
+    when exception_access_violation do
+      etag:unchecked:=memory_error:tag;
+      --%%TODO when exceptions can have parameters
+      --edata^.read_or_write:=exceptionrecord^.exceptioninfo[0];
+      --edata^.address:=exceptionrecord^.exceptioninfo[1];
+    when exception_array_bounds_exceeded do
+      etag:unchecked:=constraint_error:tag;
+    when exception_stack_overflow do
+      etag:unchecked:=memory_error:tag;
+    when exception_datatype_misalignment do
+      etag:unchecked:=constraint_error:tag;
+#if #environment compiler_version;='4.0.2' then;
+    when exception_flt_denormal_operand do
+      etag:unchecked:=fp_denormal_operand:tag;
+    when exception_flt_divide_by_zero do
+      etag:unchecked:=fp_divide_by_zero:tag;
+    when exception_flt_inexact_result do
+      etag:unchecked:=fp_inexact_result:tag;
+    when exception_flt_invalid_operation do
+      etag:unchecked:=fp_invalid_operand:tag;
+    when exception_flt_overflow do
+      etag:unchecked:=fp_numeric_overflow:tag;
+    when exception_flt_stack_check do
+      etag:unchecked:=fp_numeric_error:tag;
+    when exception_flt_underflow do
+      etag:unchecked:=fp_numeric_underflow:tag;
+#end if;
+    when exception_illegal_instruction do
+      etag:unchecked:=implementation_error:tag;
+    when exception_in_page_error do
+      etag:unchecked:=memory_error:tag;
+    when exception_int_divide_by_zero do
+      etag:unchecked:=numeric_error:tag;
+    when exception_int_overflow do
+      etag:unchecked:=numeric_error:tag;
+    when exception_invalid_disposition do
+      etag:unchecked:=implementation_error:tag;
+    when exception_noncontinuable_exception do
+      etag:unchecked:=implementation_error:tag;
+    when exception_priv_instruction do
+      etag:unchecked:=implementation_error:tag;
+    when exception_single_step do
+      etag:unchecked:=implementation_error:tag;
+    when exception_breakpoint do
+      etag:unchecked:=implementation_error:tag;
+    when others do
+      etag:unchecked:=implementation_error:tag;
+}
+    when exception_access_violation do
+      etag:=6{memory_error:code};
+    when others do
+      --%%todo vyresit tag vs. code
+      etag:=exceptionrecord^.exceptioncode;
+    end case;
+
+  #syntax asm;
+    -- get tib & xframe & estack top
+    get_xframe_stacktop
+    set_erow_data
+
+    test   eax,eax                               -- test na zero
+    jz     @6
+    mov    ebx,contextrecord
+    mov    ecx,[eax+t_rtl_except_frame.handler]
+    test   ecx,ecx                               -- test na zero
+    jz     @6
+    mov    [ebx+t_winnt_context.reip],ecx
+    mov    ecx,[eax+t_rtl_except_frame.framebp]
+    mov    [ebx+t_winnt_context.rebp],ecx
+    mov    ecx,[eax+t_rtl_except_frame.framesp]
+    mov    [ebx+t_winnt_context.resp],ecx
+    mov eax,0{exceptioncontinueexecution}
+    ret
+@6:
+    -- do not handle unhandled
+    mov eax,1{exceptioncontinuesearch}
+    ret
+    #end asm;
+  end winnt_except_handler;
+
+
+  end seh;

@@ -1,0 +1,241 @@
+----------------------------------------------------------------------------------------------------
+module private compiler =
+-- P©eklada‡ Flexu.
+----------------------------------------------------------------------------------------------------
+-- TomasH : 10.07.2003 : Odpojil metodu [init] od [entry], ne vsechno se da udelat hned na zacatku.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+class private c_flex_compiler =
+-- P©eklada‡ Flexu.
+----------------------------------------------------------------------------------------------------
+
+    with
+      standard.conversions,
+      standard.names,
+      cc_def,
+      cc_def.cc_entity,
+      cc_def.cc_desc,
+      cc_def.cc_var,
+      cc_base,
+      cd_decl,
+      cd_decl.cd_unit,
+      ca_analyzer,
+      ca_analyzer.ca_analyze,
+      cp_cpu,
+      cp_os,
+      cg_gen,
+      cl_link,
+      cl_link.cl_resolver,
+      cl_link.cl_image;
+
+    use
+      cc_def.cc_env,
+      cc_def.cc_codes,
+      cc_base.cc_text,
+      cp_cpu.cp_ia32,
+      cp_os.cp_win32,
+      cg_gen.cg_ia32,
+      cg_gen.cg_ia32.ci_gen,
+      cl_link.cl_image.cl_pe,
+      cl_link.cl_resolver.cl_ia32;
+
+    type
+      --%%TODO(TAG) Odstranit tento typ.
+      pci_cpuspecific  = ^class cp_cpu.cp_ia32.ci_cpuspecific;
+      pcp_osspecific   = ^class cp_os.cp_win32.cp_osspecific;
+      plinkresolver_ia32_win32 = ^class cl_link.cl_resolver.cl_ia32.linkresolver_ia32_win32;
+      plinkimage_pe            = ^class cl_link.cl_image.cl_pe.linkimage_pe;
+
+    ------------------------------------------------------------------------------------------------
+    static compile =
+    -- P©eklad programu.
+    ------------------------------------------------------------------------------------------------
+    var
+      compi        : pentity_compile;            -- kompila‡n¡ jednotka
+      resolver     : ^class cl_link.cl_resolver.linkresolver;
+      image        : ^class cl_link.cl_image.linkimage;
+      image_name   : p_text_name;                -- jmeno vysledneho image
+
+    begin
+      -- nastavit stream pro z pis pr–bˆhu p©ekladu
+      cc_var.output:=^os;
+      
+      -- inicializovat listing
+      listing.create(lst_name,listing.t_listing_section_set:full);
+      cc_var.listing:=^listing;
+
+
+      ---- (0) opsat do listingu konfiguraci p©ekladu ----
+      listing.start_section(listing.tls_setup);
+
+      begin
+        ---- (1) p©eklad  ----
+
+        -- poznamenat do listingu za‡ tek p©ekladu
+        listing.start_section(listing.tls_compilation);
+        listing.write_header_item('Source code:',src_name);
+        listing.write_header_item('Listing:',lst_name);
+        listing.write_header_item('Date and time of compilation:','%%TODO(LIB)');
+
+        -- otev©¡t soubor
+        cc_text.openfile(src_name,false);
+
+        -- p©elo‘it
+        if cfg_verbosity=vl_low then os.write_line('Compiling...'); end if;
+        
+        p_compunit(compi);
+
+        -- jmeno image ruzne pro knihovnu a program
+        if library then 
+          new image_name range lib_name:length;
+          image_name^:=lib_name;
+        else
+          new image_name range exe_name:length;
+          image_name^:=exe_name;
+          end if;
+
+        -- informuj o uspechu kompilace
+        listing.skip_line;
+        if library         
+          then listing.write_header_item('Compiled library:',src_name);
+          else listing.write_header_item('Compiled program:',src_name);
+          end if;
+        
+        listing.end_header;
+
+        -- konec, pokud je po‘adov na pouze syntaktick  kontrola nebo nastala nˆjak  chyba
+        if ce^.testerror or cfg_syntax_check_only then
+          return;
+          end if;
+
+        -- vynechat pr zdn˜ © dek, vypad  to l‚pe
+        if cfg_verbosity>=vl_default then os.write_line(''); end if;
+
+
+        ---- (2) glob ln¡ anal˜za  ----
+
+        -- poznamenat na obrazovku a do listingu
+        os.write_line('Analyzing...');
+        listing.start_section(listing.tls_global_analysis);
+
+        -- glob ln¡ anal˜za
+        a_analyze(compi);
+
+
+        ---- (3) generov n¡ k¢du  ----
+
+        -- poznamenat na obrazovku a do listingu
+        os.write_line('Generating code...');
+        listing.start_section(listing.tls_code_generation);
+
+        -- generov n¡ k¢du
+        cg_gen.cg_ia32.ci_gen.i_codegen(compi);
+
+
+        ---- (4) linkov n¡  ----
+
+        -- poznamenat na obrazovku a do listingu
+        os.write_line('Linking...');
+        listing.start_section(listing.tls_linking);
+
+        -- linkov n¡
+        new plinkresolver_ia32_win32(resolver);
+        new plinkimage_pe(image);
+
+        -- %%TODO HYNEK - base presunout do os specific
+        -- dej knihovne jinou base
+        if library 
+          then plinkresolver_ia32_win32(resolver)^.init(compi,$10000000,4096,4096,32{16},4);
+          else plinkresolver_ia32_win32(resolver)^.init(compi,$00400000,4096,4096,32{16},4);
+          end if;
+
+        plinkimage_pe(image)^.init(image_name^);
+        l_link(compi,resolver^,image^);
+
+        -- %%FLEX
+        -- #option Image_Base_Address(<num>);
+        -- #option Code_Alignment(<num>);
+        -- #option Global_Data_Alignment(<num>);
+        -- #option Executable_Extension(<string>);
+        -- #pragma No_Return(<subprogram>);
+
+        listing.skip_line;
+        listing.write_header_item('Created image:',image_name^);
+
+
+      catch
+        -- chyby p©i p©ekladu
+        when cc_codes.compiler_error, cc_codes.resume_error, cc_codes.internal_error {%%TODO(EXCEPTION) cc_codes.flex_error} do
+            -- v tuto chv¡li ji‘ nic nedˆlat
+
+      leave
+        ---- (5) v˜sledek p©ekladu ----
+        listing.start_section(listing.tls_summary);
+
+        -- vynechat pr zdn˜ © dek, vypad  to l‚pe
+        os.write_line('');
+
+        -- zobrazit po‡et p©elo‘en˜ch © dk–
+        os.write('Total of '); 
+        os.write(unsigned_to_string(cc_var.total_lines));
+        os.write(' (');
+        os.write(unsigned_to_string(cc_var.effective_lines));
+        os.write_line(' effective) lines compiled in %%TODO(LIB) ms (user: %%TODO(LIB) ms, kernel: %%TODO(LIB) ms)');
+
+        -- vynechat pr zdn˜ © dek, vypad  to l‚pe
+        os.write_line('');
+
+        -- uvolnit pamˆŸ
+        discard resolver;
+        discard image;
+        end;
+      end compile;
+
+
+    
+    ------------------------------------------------------------------------------------------------
+    static init =
+    -- Inicializace pote co zname pozadovanou platformu.
+    ------------------------------------------------------------------------------------------------
+    begin      
+      -- up©esnit verzi p©eklada‡e
+      env_compiler.c_ver:=c_ver;
+      
+      -- nastavit parametry c¡lov‚ platformy
+      {%%TODO(PLATFORM) - podle nastavene platformy v sysdesc alokovat spravny objekt pro danu OS a CPU}
+      new pci_cpuspecific(cpu); --%%TODO(TAG) new cpu tag cp_cpu.cp_ia32.ci_cpuspecific;
+      new pcp_osspecific(os);   --%%TODO(TAG) new cpu tag cp_os.cp_win32.cp_osspecific;
+
+      -- inicializovat environment promˆnn‚
+      cc_def.cc_env.env_init_var;
+      end init;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- Inicializace.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_lex;
+
+    begin
+      -- zvolit platformu
+      env_compiler:=env_compiler_default;
+      env_target_system:=sdbase_list[tos_win32];   -- default
+--    sysdesc.os_subsystem_type:=os_subsystem_console; --sdbase_win32 ma default sybsystem_console
+
+      -- inicializovat seznam jmen pou‘it˜ch soubor–
+      new cc_var.used_files;
+
+      -- inicializovat seznam chyb
+      new cc_var.ce;
+
+      -- inicializovat lexik ln¡ analyz tor
+      lex_set_default_lexer;
+      end entry;
+
+    end c_flex_compiler;
+
+end compiler;

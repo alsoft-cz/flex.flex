@@ -1,0 +1,62 @@
+---------------------------------------------------------------------------------------------------
+module private exceptions =
+-- Flex Run-time Library
+-- Thread variables
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+with os_api,
+     flex.exceptions,
+     flex.exceptions.seh;
+
+----------------------------------------------------------------------------------------------------
+procedure my_win32_exception_apc : t_winnt_apc_callback=
+#pragma convention(my_win32_exception_apc,system);
+#pragma stackframe(my_win32_exception_apc,stack_pointer_relative);                        
+----------------------------------------------------------------------------------------------------
+begin
+  end my_win32_exception_apc;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_raise_external_exception =
+-- raises an exception into other thread
+----------------------------------------------------------------------------------------------------
+var
+    context        : t_winnt_context;
+    handler        : p_external_handler;
+    ntres          : NTSTATUS;
+    qapcres        : DWORD;
+    ntsuspcount    : DWORD;
+    callback       : p_winnt_apc_callback;
+
+begin
+	context.contextflags:=winnt_CONTEXT_i486 + winnt_CONTEXT_CONTROL;
+  rtl_event_wait(threadheader^.exceptions.tasks.canwrite);
+  rtl_suspend_thread_internal(threadheader);
+  threadheader^.exceptions.tasks.pending.etag:=etag;
+  threadheader^.exceptions.tasks.pending.edata:=edata;
+  threadheader^.exceptions.tasks.pending.ecode:=ecode;
+  if not threadheader^.exceptions.tasks.issequential then
+    if not GetThreadContext(threadheader^.threadhandle,^context) then
+      raise tasking_error;
+      end if;
+    handler:=^rtl_external_exception_handler;
+    context.reip:unchecked:=handler;
+    if not SetThreadContext(threadheader^.threadhandle,^context) then
+      raise tasking_error;
+      end if;
+
+    rtl_resume_thread_internal(threadheader);
+
+    -- nastavuju prazdny alert abych probudil thread ktery spi na nejakem mutexu atd.
+    -- zafunguje pouze pro alertable cekani
+    callback:=^my_win32_exception_apc;
+    if QueueUserAPC(callback,threadheader^.threadhandle,0)=0 then
+      raise tasking_error;
+      end if;
+  else
+    threadheader^.exceptions.tasks.ispending:=true;
+    rtl_resume_thread_internal(threadheader);
+    end if;
+  end rtl_raise_external_exception;
+end exceptions;

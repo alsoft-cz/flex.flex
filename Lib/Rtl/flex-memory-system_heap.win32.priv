@@ -1,0 +1,107 @@
+----------------------------------------------------------------------------------------------------
+module private system_heap =
+-- Flex Run-time Library
+-- Memory manager - segregated
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+with os_api;
+
+
+const 
+    initial_heap_size = 256*1024;
+
+class private c_rtl_systemmemheap =
+    var
+      sysheap             : THANDLE;
+
+    ------------------------------------------------------------------------------------------------
+    override memmgr_alloc =
+    ------------------------------------------------------------------------------------------------
+    var
+      header       : p_rtl_memmgr_header;
+    begin
+
+      --%%TODO Remove debug
+      --if (memory_blocks_conter mod 2500) = 0 then
+      --  memmgr_validate;
+      --  end if;
+      
+      header:unchecked:=HeapAlloc(sysheap,0,addheader(size));
+      if header=nil then
+        raise memory_alloc_error;
+        end if;
+      set_header_alloc(num,header,size,^this,chain,nil);
+      addr:=hdr2adr(header);
+      end memmgr_alloc;
+
+    ------------------------------------------------------------------------------------------------
+    override  memmgr_adjust =
+    ------------------------------------------------------------------------------------------------
+    var
+      header       : p_rtl_memmgr_header;
+    begin
+      header:=adr2hdr(addr);
+      check_allocated_header(header);
+      header:unchecked:=HeapReAlloc(sysheap,0,header,addheader(size));
+      if header=nil then
+        raise memory_alloc_error;
+        end if;
+      set_header_alloc(num,header,size,^this,nil,nil);
+      addr:=hdr2adr(header);
+      end memmgr_adjust;
+
+    -----------------------------------------------------------------------------------------------
+    override  memmgr_free =
+    ------------------------------------------------------------------------------------------------
+    var
+      header       : p_rtl_memmgr_header;
+    begin
+      header:=adr2hdr(addr);
+      check_allocated_header(header);
+      set_header_free(num,header,nil,chain);
+      if not HeapFree(sysheap,0,header) then
+        raise memory_corrupt_error;
+        end if;
+      end memmgr_free;
+
+    -----------------------------------------------------------------------------------------------
+    override  memmgr_validate =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if not HeapValidate(sysheap,0,nil) then
+        raise memory_corrupt_error;
+        end if;
+      end memmgr_validate;
+    
+    
+    ------------------------------------------------------------------------------------------------
+    entry =
+    ------------------------------------------------------------------------------------------------
+    begin
+      sysheap:=nil;
+
+      -- vytvorim si systemovy heap
+      -- sysheap:=HeapCreate(0,initial_heap_size,0);
+      -- nebo dostanu heap procesu
+      sysheap:=GetProcessHeap();
+      if sysheap=nil then 
+        raise memory_error;
+        end if;
+      end entry;
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    ------------------------------------------------------------------------------------------------
+    begin
+      --%%TODO Remove debug
+      --memmgr_validate;
+
+      -- zrusim systemovy heap
+      -- pouze pokud neni heap procesu
+      --if HeapDestroy(sysheap)=0 then
+      --  raise memory_error;
+      --  end if;
+      end exit;
+
+    end c_rtl_systemmemheap;
+end system_heap;

@@ -1,0 +1,531 @@
+----------------------------------------------------------------------------------------------------
+module private exceptions =
+-- exceptions (asynchronous messages).
+-- flex run-time library
+-- copyright (c) 1999-2003 a && l soft
+----------------------------------------------------------------------------------------------------
+with
+    synchronization,
+    thread,
+    os_api;
+
+
+----------------------------------------------------------------------------------------------------
+#template start_sequential;
+----------------------------------------------------------------------------------------------------
+    inc    <t_rtl_unsigned32>[ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.issequential]
+    #end start_sequential;
+
+----------------------------------------------------------------------------------------------------
+#template end_sequential_notest;
+----------------------------------------------------------------------------------------------------
+    dec    <t_rtl_unsigned32>[ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.issequential]
+    #end end_sequential_notest;
+
+----------------------------------------------------------------------------------------------------
+#template end_sequential_m(labelid);
+----------------------------------------------------------------------------------------------------
+    mov    edx,1
+    cmp    [ecx+t_rtl_exceptions.tasks+t_rtl_exceptions_tasks.ispending],edx
+    jne    labelid
+    call   rtl_external_pending
+labelid:
+    end_sequential_notest
+    #end end_sequential_m;
+
+----------------------------------------------------------------------------------------------------
+#template get_tib;
+----------------------------------------------------------------------------------------------------
+    mov    ecx,fs:[t_winnt_tib.aruserpointer]                            -- get pointer to tib
+    #end get_tib;
+
+----------------------------------------------------------------------------------------------------
+#template get_xframe;
+----------------------------------------------------------------------------------------------------
+    get_tib
+    mov    eax,[ecx+t_rtl_exceptions_info.xframe]          -- get xframe address
+    #end get_xframe;
+
+----------------------------------------------------------------------------------------------------
+#template get_stacktop;
+----------------------------------------------------------------------------------------------------
+    get_tib
+    mov    ebx,[ecx+t_rtl_exceptions_info.stacktop]        -- exception stack top adress
+    #end get_stacktop;
+
+----------------------------------------------------------------------------------------------------
+#template get_xframe_stacktop;
+----------------------------------------------------------------------------------------------------
+    get_tib
+    mov    ebx,[ecx+t_rtl_exceptions_info.stacktop]        -- exception stack top adress
+    mov    eax,[ecx+t_rtl_exceptions_info.xframe]          -- get xframe address
+    #end get_xframe_stacktop;
+
+----------------------------------------------------------------------------------------------------
+#template set_erow_data;
+----------------------------------------------------------------------------------------------------
+    -- nastavim vyjimku
+    mov    edx,edata                                       -- get exception data from caller
+    mov    [ebx+t_rtl_except_row.edata],edx                -- set data into estack row
+    mov    edx,ecode                                       -- get exception code from caller
+    mov    [ebx+t_rtl_except_row.ecode],edx                -- set code into estack row
+    mov    edx,etag                                        -- get exception tag from caller
+    mov    [ebx+t_rtl_except_row.etag],edx                 -- set tag into estack row
+    #end set_erow_data;
+
+----------------------------------------------------------------------------------------------------
+#template restore_ebp_esp_eax_jump (xframe);
+----------------------------------------------------------------------------------------------------
+    -- restore esp and ebp
+    mov    ebp,[xframe+t_rtl_except_frame.framebp]
+    mov    esp,[xframe+t_rtl_except_frame.framesp]
+    mov    eax,[xframe+t_rtl_except_frame.handler]
+    #end restore_ebp_esp_eax_jump;
+
+----------------------------------------------------------------------------------------------------
+#template alloc_estackrow;
+----------------------------------------------------------------------------------------------------
+    -- alloc stackrow
+    add    ebx,exrowsize                                   -- add 
+
+    -- test stack overflow
+    mov    edx,[ecx+t_rtl_exceptions_info.stackhead]       -- get stack adress
+    mov    edx,[edx+t_rtl_exceptions_stack.rowmaxadr]      -- get max stack row adress
+    cmp    ebx,edx
+
+    jne @1                                                 -- jump stack ok
+
+    call   rtl_alloc_estack
+
+@1:
+    mov    [ecx+t_rtl_exceptions_info.stacktop],ebx        -- set top stack adress
+    #end alloc_estackrow;
+
+
+----------------------------------------------------------------------------------------------------
+#template free_estackrow;
+----------------------------------------------------------------------------------------------------
+    -- test stack underflow
+    mov    edx,[ecx+t_rtl_exceptions_info.stackhead]       -- get stack adress, min adress
+    cmp    ebx,edx
+
+    jne @1                                                 -- jump stack ok
+
+    call   rtl_free_estack
+
+    ret
+
+@1:
+    -- free stackrow
+    sub    ebx,exrowsize                                   -- add 
+
+    mov    [ecx+t_rtl_exceptions_info.stacktop],ebx        -- set top stack adress
+    #end free_estackrow;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_alloc_estack =
+#pragma stackframe(rtl_alloc_estack,stack_pointer_relative);                        
+-- alokuje dalsi stranku pro exception stack
+-- pozor ikdyz neni stack relative pouziva nektere registry nastavene volajicim
+----------------------------------------------------------------------------------------------------
+var
+  newstack         : p_rtl_exceptions_stack;
+  oldstack         : p_rtl_exceptions_stack;
+  tib              : p_rtl_exceptions_info;
+
+begin
+  #syntax asm;
+    mov    edx,[ecx+t_rtl_exceptions_info.stackhead]      -- get stack adress
+    mov    oldstack,edx
+    mov    tib,ecx
+    #end asm;
+  new newstack;
+  tib^.stackhead:=newstack;
+  newstack^.prevstack:=oldstack;
+  newstack^.rowmaxadr:unchecked:=t_rtl_unsigned32(newstack:unchecked) + t_rtl_except_stack_data:size + exrowsize;
+  #syntax asm;
+    mov    ecx,tib
+    mov    eax,[ecx+t_rtl_exceptions_info.xframe]         -- get xframe address
+    mov    ebx,newstack
+    #end asm;
+  end rtl_alloc_estack;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_free_estack =
+#pragma stackframe(rtl_free_estack,stack_pointer_relative);                        
+-- uvolnuje posledni stranku pro exception stack
+-- pozor ikdyz neni stack relative pouziva nektere registry nastavene volajicim
+----------------------------------------------------------------------------------------------------
+var
+  actstack         : p_rtl_exceptions_stack;
+  oldstack         : p_rtl_exceptions_stack;
+  tib              : p_rtl_exceptions_info;
+
+begin
+  #syntax asm;
+    mov    oldstack,edx
+    mov    tib,ecx
+    #end asm;
+  tib^.stackhead:=oldstack^.prevstack;
+  tib^.stacktop:unchecked:=t_rtl_unsigned32(tib^.stackhead^.rowmaxadr:unchecked)-exrowsize;
+  discard oldstack;
+  end rtl_free_estack;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_external_exception_handler=
+-- handle external exception with no sequential
+----------------------------------------------------------------------------------------------------
+var
+    exceptions     : p_rtl_exceptions;
+begin
+  #syntax asm;
+    mov    ecx,fs:[t_winnt_tib.aruserpointer]                            -- get pointer to tib
+    mov    exceptions,ecx
+    #end asm;
+  rtl_set_exception(exceptions^.tasks.pending.ecode,exceptions^.tasks.pending.etag,exceptions^.tasks.pending.edata);
+  rtl_event_set(exceptions^.tasks.canwrite);
+  #syntax asm;
+    get_xframe
+    restore_ebp_esp_eax_jump(eax)
+    jmp    eax
+    #end asm;
+  end rtl_external_exception_handler;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_external_pending;
+#pragma no_return(rtl_external_pending);
+procedure rtl_external_pending=
+-- handle external exception with sequential
+----------------------------------------------------------------------------------------------------
+var
+    ecode          : t_rtl_unsigned32;
+    etag           : t_rtl_unsigned32;
+    edata          : t_rtl_unsigned32; 
+    exceptions     : p_rtl_exceptions;
+begin
+  #syntax asm;
+    mov    ecx,fs:[t_winnt_tib.aruserpointer]                            -- get pointer to tib
+    mov    exceptions,ecx
+    #end asm;
+  ecode:=exceptions^.tasks.pending.ecode;
+  etag:=exceptions^.tasks.pending.etag;
+  edata:=exceptions^.tasks.pending.edata;
+  exceptions^.tasks.ispending:=false;
+  #syntax asm;
+    get_xframe_stacktop
+    alloc_estackrow
+    set_erow_data
+    end_sequential_notest
+    #end asm;
+  rtl_event_set(exceptions^.tasks.canwrite);
+  #syntax asm;
+    get_xframe
+    restore_ebp_esp_eax_jump(eax)
+    jmp    eax
+    #end asm;
+  end rtl_external_pending;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_begin_sequential =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    get_tib
+    start_sequential
+    #end asm;
+  end rtl_begin_sequential;
+ 
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_end_sequential =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    get_tib
+    end_sequential_m(@1)
+    #end asm;
+  end rtl_end_sequential;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_raise_exception =
+-- raises an exception.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    get_xframe_stacktop
+    start_sequential
+    alloc_estackrow
+    set_erow_data
+    end_sequential_m(@12)
+    restore_ebp_esp_eax_jump(eax)
+    jmp    eax
+    #end asm;
+  end rtl_raise_exception;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_set_exception =
+-- sets an exception.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    get_xframe_stacktop
+    start_sequential
+    alloc_estackrow
+    set_erow_data
+    end_sequential_m(@12)
+    #end asm;
+  end rtl_set_exception;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_xframe (
+    frameptr       : in t_rtl_pointer);          -- pointer to expcetion frame
+#pragma stackframe(rtl_init_xframe,stack_pointer_relative);                        
+procedure rtl_init_xframe =
+-- initialization of the calling subprogram's exception-frame.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    get_xframe_stacktop
+
+    -- create xframe
+    mov    edi,[esp+4]                                     -- exception-frame address
+    mov    [edi+t_rtl_except_frame.uplink],eax             -- save uplink
+
+ -- set by the compiler
+ -- mov    edx,0
+ -- mov    [edi+t_rtl_except_frame.handler],edx            -- save handler
+
+    mov    [edi+t_rtl_except_frame.exceptbase],ebx         -- save exception stack top address
+
+    mov    [edi+t_rtl_except_frame.framebp],ebp            -- save frameebp
+    lea    edx,[esp+8]                                     -- eip and xframe addr. is pushed on the stack now
+    mov    [edi+t_rtl_except_frame.framesp],edx            -- save frameesp
+
+    -- set new xframe to tib
+    mov    [ecx+t_rtl_exceptions_info.xframe],edi          -- push xframe address
+    #end asm;
+  end rtl_init_xframe;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_end_xframe; 
+#pragma stackframe(rtl_end_xframe,stack_pointer_relative);
+procedure rtl_end_xframe =
+-- destroys the calling subprogram's exception-frame and propagates any pending exception.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    get_xframe
+
+    -- pop xframe
+    mov    edi,[eax+t_rtl_except_frame.uplink]             -- get uplink xframe address
+    mov    [ecx+t_rtl_exceptions_info.xframe],edi          -- update actual xframe address to uplink
+
+    mov    eax,[eax+t_rtl_except_frame.exceptbase]         -- get exception stack base adress
+    -- test active exception
+    cmp    [ecx+t_rtl_exceptions_info.stacktop],eax
+    -- jump end sequential
+    je     @1
+
+    restore_ebp_esp_eax_jump(edi)
+    jmp    eax
+
+@1:
+    -- no active exception, exit
+    ret
+    #end asm;
+  end rtl_end_xframe;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_end_topmost_xframe; 
+#pragma stackframe(rtl_end_topmost_xframe,stack_pointer_relative);
+procedure rtl_end_topmost_xframe =
+-- destroys the calling subprogram's exception-frame and propagates any pending exception.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    get_xframe_stacktop
+
+    -- pop xframe
+    mov    edi,0
+    mov    [ecx+t_rtl_exceptions_info.xframe],edi          -- update actual xframe address to uplink
+
+    -- test exception pending in topmost xframe
+    -- eax test exception on old xframe
+    mov    eax,[eax+t_rtl_except_frame.exceptbase]         -- get exception stack base adress
+    -- test active exception
+    cmp    ebx,eax
+    je     @1
+
+    -- raise unhandled exception
+    mov    edx,[ebx+t_rtl_except_row.edata]
+    push   edx
+    mov    edx,[ebx+t_rtl_except_row.etag]
+    push   edx
+    mov    edx,[ebx+t_rtl_except_row.ecode]
+    push   edx
+    call   rtl_raise_unhandled_exception
+
+@1:
+    -- no active exception, exit
+    ret
+    #end asm;
+  end rtl_end_topmost_xframe;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_discard_exception; 
+#pragma stackframe(rtl_discard_exception,stack_pointer_relative);
+procedure rtl_discard_exception =
+-- discards currently raised exception.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    get_xframe_stacktop
+    start_sequential
+    free_estackrow
+    end_sequential_m(@12)
+    mov    eax,[ecx+t_rtl_exceptions_info.xframe]          -- get xframe address
+    cmp    [eax+t_rtl_except_frame.exceptbase],ebx         -- test base=stacktop, output in eflags.zf
+    #end asm;
+  end rtl_discard_exception;
+
+       
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_check_exception;
+#pragma stackframe(rtl_check_exception,stack_pointer_relative);
+procedure rtl_check_exception =
+-- tests if exception is pending, return in eflags.zf
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;                                             -- input tag in eax
+    get_xframe_stacktop
+    cmp    [eax+t_rtl_except_frame.exceptbase],ebx         -- test base=stacktop, output in eflags.zf
+    #end asm;
+  end rtl_check_exception;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_check_code;
+#pragma stackframe(rtl_check_code,stack_pointer_relative);
+procedure rtl_check_code =
+-- tests if the given exception code matches the currently raise exception.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;                                             -- input tag in eax
+    get_stacktop
+    cmp    [ebx+t_rtl_except_row.etag],eax                 -- test tag, output in eflags.zf
+    #end asm;
+  end rtl_check_code;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_exception =
+----------------------------------------------------------------------------------------------------
+var
+    row            : p_rtl_except_row;
+begin
+  row:=nil;
+  rtl_check_exception;
+  #syntax asm;
+    je   @10
+    mov  row,ebx
+@10:
+    #end asm;
+  if row<>nil then
+    ecode:=row^.ecode;
+    etag:=row^.etag;
+    edata:=row^.edata;
+    end if;
+  end rtl_get_exception;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_terminate_unhandled_exception =
+-- unhandled exception handler.
+----------------------------------------------------------------------------------------------------
+var
+  msg : static const string 20 of t_syschar := 'unhandled exception'\0;
+
+begin
+  rtl_error_write(msg);
+  --%%TODO terminate child threads ?
+  rtl_terminate_thread;
+  end rtl_terminate_unhandled_exception;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_raise_unhandled_exception=
+----------------------------------------------------------------------------------------------------
+begin
+  seh.rtl_raise_system_exception(ecode,etag,edata);
+  end rtl_raise_unhandled_exception;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_task_exceptions =
+-- inicializuje privni stranku stacku vyjimek a stavovy record
+----------------------------------------------------------------------------------------------------
+begin
+  exceptions^.info.xframe:=nil;
+  exceptions^.info.stackhead:=^exceptions^.firststack;
+  exceptions^.info.stacktop:=^exceptions^.firststack.data[0];
+
+  exceptions^.firststack.rowmaxadr:unchecked:=t_rtl_unsigned32(exceptions^.info.stacktop:unchecked) + t_rtl_except_stack_data:size;
+  exceptions^.firststack.prevstack:=nil;
+  exceptions^.firststack.data:=nil;
+
+  exceptions^.tasks.issequential:=false;
+  exceptions^.tasks.ispending:=false;
+  exceptions^.tasks.pending:=nil;
+  rtl_event_new(exceptions^.tasks.canwrite);
+  rtl_event_set(exceptions^.tasks.canwrite);
+  end rtl_init_task_exceptions;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinit_task_exceptions =
+-- deinicializuje privni stranku stacku vyjimek a stavovy record
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_event_discard(exceptions^.tasks.canwrite);
+  end rtl_deinit_task_exceptions;
+
+----------------------------------------------------------------------------------------------------
+#separate private seh;
+----------------------------------------------------------------------------------------------------
+
+---- compiler magic --------------------------------------------------------------------------------
+#pragma assign(init_xframe        ,flex.exceptions.rtl_init_xframe);
+#pragma assign(end_topmost_xframe,flex.exceptions.rtl_end_topmost_xframe);
+#pragma assign(end_xframe         ,flex.exceptions.rtl_end_xframe);
+#pragma assign(set_exception      ,flex.exceptions.rtl_set_exception);
+#pragma assign(raise_exception    ,flex.exceptions.rtl_raise_exception);
+#pragma assign(discard_exception  ,flex.exceptions.rtl_discard_exception);
+#pragma assign(check_code         ,flex.exceptions.rtl_check_code);
+#pragma assign(unhandled_exception,flex.exceptions.rtl_terminate_unhandled_exception);
+#pragma assign(begin_sequential   ,flex.exceptions.rtl_begin_sequential);
+#pragma assign(end_sequential     ,flex.exceptions.rtl_end_sequential);
+----------------------------------------------------------------------------------------------------
+end exceptions;

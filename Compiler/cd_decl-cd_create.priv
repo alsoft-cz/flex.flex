@@ -1,0 +1,655 @@
+----------------------------------------------------------------------------------------------------
+module private cd_create =
+-- P©eklada‡ Flexu.
+-- Deklarace.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 19.09.2000 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cd_eval;
+
+type
+  -- za‡ tek deklarace
+  tdeclstart       = enum
+      tds_none;                                  -- neuvedeno
+      tds_id;                                    -- deklarace za‡¡n  uveden¡m identifik toru
+      tds_kw;                                    -- deklarace za‡¡n  uveden¡m kl¡‡ov‚ho slova
+      end enum;
+
+  -- maxim ln¡ po‡et ‡ st¡ deklarace
+  tdeclparts       = enum
+      tdp_1;                                     -- Full declaration
+      tdp_2;                                     -- Incomplete/Completion | Full
+      tdp_3;                                     -- Incomplete/Public/Private | Incomplete/Completion | Full
+      end enum;
+
+  -- typ deklarace
+  tdecltype        = enum
+      tdt_public;                                -- Public body
+      tdt_private;                               -- Private body
+      tdt_default;                               -- Incomplete/Completion/Full declaration
+      end enum;
+  tdecltypeset     = set of tdecltype;
+
+type
+  -- informace o deklaraci
+  tdeclinfo        = record
+      start        : tdeclstart;                 -- lexik ln¡ element za‡¡naj¡c¡ deklaraci
+      parts        : tdeclparts;                 -- maxim ln¡ po‡et ‡ st¡ deklarace
+      iparts       : tdeclparts;                 -- maxim ln¡ po‡et ‡ st¡ intern¡ deklarace
+      can_abstract : t_logical;                  -- T-entita sm¡ b˜t abstraktn¡
+      end record;
+
+var
+  -- informace o deklaraci jednotliv˜ch typ– entit
+  declinfo         : array tentitytype of tdeclinfo := [
+      for et_undef     use [for start use tds_none, for parts use tdp_1, for iparts use tdp_1],
+      for et_compile   use [for start use tds_none, for parts use tdp_1, for iparts use tdp_1],
+      for et_program   use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_1],
+      for et_module    use [for start use tds_kw  , for parts use tdp_3, for iparts use tdp_3],
+      for et_special   use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_2],
+      for et_procedure use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
+      for et_virtual   use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2, for can_abstract use true],
+      for et_static    use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
+      for et_task      use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
+      for et_override  use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
+      for et_macro     use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
+      for et_overload  use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_1],
+      for et_operator  use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_1],
+      { et_link      }{(start: tds_none; parts: tdp_1),}                           
+      for et_var       use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
+    --for et_define    use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
+    --for et_alias     use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
+      for et_type      use [for start use tds_id  , for parts use tdp_2, for iparts use tdp_1],
+    --for et_with      use [for start use tds_none, for parts use tdp_1, for iparts use tdp_1],
+      for et_class     use [for start use tds_kw  , for parts use tdp_3, for iparts use tdp_3, for can_abstract use true],
+      for et_const     use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
+      for et_enum      use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
+      for et_param     use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
+      for et_message   use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
+      for et_label     use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
+      for et_template  use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_1], 
+      for et_tparam    use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
+      for et_attribute use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_1]];
+
+----------------------------------------------------------------------------------------------------
+procedure d_create =
+-- Za‡ tek deklarace a vytvo©en¡ symbolu.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  id               : pentityident;               -- identifik tor
+  srch             : tentitysearch;              -- hled tko
+  decltype         : tdecltype;                  -- typ deklarace
+  abstract_present : t_logical;                  -- T-uvedeno ABSTRACT
+
+begin
+  -- pozice deklarace za‡¡naj¡c¡ kl¡‡ov˜m slovem
+  -- (pro jistotu za‡ tek i konec)
+  if declinfo[etype].start=tds_kw then getlexposall(pos,ll_curr); end if;
+
+  -- mohlo by n sledovat PUBLIC/PRIVATE
+  if declinfo[etype].parts=tdp_3
+    then
+      getlex(context,lex);
+      case lex
+        when lex_public  do decltype:=tdt_public;
+        when lex_private do decltype:=tdt_private;
+        when others do
+            decltype:=tdt_default;
+            ungetlex;
+        end case;
+    else
+      decltype:=tdt_default
+      end if;
+
+  -- o¨et©it abstraktn¡ deklarace
+  abstract_present:=declinfo[etype].can_abstract and then checklex(context,lex_abstract);
+
+  -- p©e‡¡st identifik tor
+  getlex(context,lex);
+  if lex<>lex_id then
+    ce^.seterror({CCERR=}000087,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  id:=getlexid;
+
+  -- pozice deklarace za‡¡naj¡c¡ identifik torem
+  -- (pro jistotu za‡ tek i konec)
+  if declinfo[etype].start=tds_id then getlexposall(pos,ll_curr); end if;
+
+  -- zkusit vyhledat
+  srch.find_local_all(context,id^);
+
+  -- zvl ¨Ÿ o¨et©it duplicitu v jin‚m (nad©azen‚m) deklarativn¡m regionu - z t‚to chyby se
+  -- lze snadno zotavit
+  if srch.psym<>nil and then srch.psym^.context.region<>context.region then
+    ce^.seterror({CCERR=}000000,ce_dupid);
+    ce^.setparam(entityident_to_string(id^));
+    --%%X ce^.sethint(formats(hint_dupsymbol,nptostr(prvtypename,ord(srch.psym^.etype))));
+    ce^.loadpos;
+    srch.set_entity(nil);
+    end if;
+
+  if srch.psym<>nil
+
+    -- nalezen nˆjak˜ symbol
+    then
+      -- souhlas¡ typ symbolu ?
+      if srch.psym^.etype<>etype then
+        ce^.seterror({CCERR=}000088,ce_dupid);
+        ce^.setparam(entityident_to_string(id^));
+        --%%X ce^.sethint(formats(hint_dupsymbol,nptostr(prvtypename,ord(srch.psym^.etype))));
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+      -- v jak‚m stavu je deklarace symbolu ?
+      case srch.psym^.declared
+        -- Incomplete declaration
+        when etd_incomplete do
+            -- m–‘e n sledovat cokoliv
+
+        -- Public body declaration
+        when etd_public  do
+            -- mus¡ n sledovat Private body declaration
+            if decltype<>tdt_private then
+              ce^.seterror({CCERR=}000089,ce_wrongdecl);
+              ce^.setparam(entityident_to_string(id^));
+              ce^.sethint(hint_x_private);
+              ce^.loadpos;
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+              end if;
+
+        -- Full declaration
+        when etd_full do
+            ce^.seterror({CCERR=}000090,ce_dupdecl);
+            ce^.setparam(entityident_to_string(id^));
+            ce^.sethint(hint_dupdecl);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+
+        when others do verify(151,true);
+        end case;
+
+      -- mus¡ se shodovat specifikace abstract
+      if srch.psym^.is_abstract<>abstract_present then
+        ce^.seterror({CCERR=}000000,ce_abstract_must_match);
+        ce^.loadpos;
+        end if;
+
+      -- teƒ u‘ je jasn‚, ‘e by to mˆlo b˜t dokon‡en¡ deklarace
+      curr:=srch.psym;
+
+      -- prim rn¡ kontext
+      curr_context:=sym_primary_context(curr^);
+
+    -- symbol nenalezen
+    else
+      -- Mus¡ to b˜t £pln  nebo public deklarace
+      if decltype not in tdecltypeset:[tdt_default,tdt_public] then
+        ce^.seterror({CCERR=}000428,ce_wrongdecl);
+        ce^.setparam(entityident_to_string(id^));
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+
+      -- vytvo©it a za©adit symbol
+      sym_add_new_entity(context,etype,id,curr,curr_context);
+
+      -- nastavit p©¡znak ABSTRACT
+      curr^.is_abstract:=abstract_present;
+
+      -- pokud je deklarovan˜ prvek t©¡da, nesm¡me zapomenout,
+      -- ‘e je to sou‡asnˆ i typ
+      -- %%X Nen¡ tohle nˆco jako z plata ? Nebylo by lep¨¡
+      -- nastavovat p©¡znak STYPE a‘ ve vyhodnocen¡ ?
+      if etype=et_class then pentity_type(curr)^.stype:=dt_class; end if;
+
+      -- nastavit alespo¤ nˆjakou pozici symbolu
+      entity_set_position(curr^,etp_header,pos);
+      end if;
+
+  -- jak  ‡ st deklarace se p©ekl d 
+  case decltype
+    -- Public body
+    when tdt_public  do
+        if curr^.declared=etd_none then curr^.declared:=etd_incomplete; end if;
+        curr^.compiling:=etd_public;
+        curr_context.region^.vsect:=etv_public;
+
+    -- Private body
+    when tdt_private do
+        curr^.compiling:=etd_full;
+        curr_context.region^.vsect:=etv_private;
+
+    -- Incomplete declaration/Full body
+    when tdt_default do
+        if curr^.declared<>etd_none then 
+          curr^.compiling:=etd_full;
+          end if;
+
+    when others do verify(152,true);
+    end case;
+
+  -- vyhodnotit ji‘ zpracovanou ‡ st deklarace
+  if curr^.declared<>etd_none then e_symbol(curr,pos,curr^.declared,true); end if;
+
+  -- pozna‡it, ‘e je symbol p©ekl d n
+  curr^.compile+tentitycompileset:[etc_compiling];
+  end d_create;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_create_at_position =
+-- Za‡ tek deklarace a vytvo©en¡ symbolu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vytvo©it a za©adit symbol
+  sym_add_new_entity(context,etype,id,curr,curr_context);
+
+  -- nastavit alespo¤ nˆjakou pozici symbolu
+  entity_set_position(curr^,etp_header,pos);
+
+  -- jak  ‡ st deklarace se p©ekl d 
+  curr^.compiling:=etd_full;
+
+  -- pozna‡it, ‘e je symbol p©ekl d n
+  curr^.compile+tentitycompileset:[etc_compiling];
+  end d_create_at_position;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_create_without_name =
+-- Za‡ tek deklarace bez zpracov n¡ p©¡padn‚ho jm‚na entity.
+----------------------------------------------------------------------------------------------------
+begin
+  -- pozice deklarace za‡¡naj¡c¡ kl¡‡ov˜m slovem
+  getlexposall(pos,ll_curr);
+
+  -- vytvo©it a za©adit symbol
+  sym_add_new_entity(context,etype,id,curr,curr_context);
+
+  -- nastavit alespo¤ nˆjakou pozici symbolu
+  entity_set_position(curr^,etp_header,pos);
+
+  -- jak  ‡ st deklarace se p©ekl d 
+  if declinfo[etype].parts=tdp_1
+    then curr^.compiling:=etd_full;
+    else curr^.compiling:=etd_none{etd_incomplete};
+    end if;
+
+  -- pozna‡it, ‘e je symbol p©ekl d n
+  curr^.compile+tentitycompileset:[etc_compiling];
+  end d_create_without_name;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_create_internal =
+-- Za‡ tek deklarace a vytvo©en¡ intern¡ho symbolu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vytvo©it a za©adit symbol
+  sym_add_new_entity(context,etype,id,curr,curr_context);
+
+  -- jak  ‡ st deklarace se p©ekl d 
+  if declinfo[etype].iparts=tdp_1
+    then curr^.compiling:=etd_full;
+    else curr^.compiling:=etd_none;
+    end if;
+
+  -- pozna‡it, ‘e je symbol p©ekl d n
+  curr^.compile+tentitycompileset:[etc_compiling];
+
+  -- pozna‡it, ‘e se jedn  o intern¡ symbol
+  curr^.compile+tentitycompileset:[etc_generated];
+  end d_create_internal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_create_temporary_type =
+-- Vytvo©¡ nov˜ do‡asn˜ typ a dosad¡ implicitn¡ hodnoty specifikace.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vytvo©it
+  d_create_at_position(context,pentity(ptyp),ptyp_context,et_type,nil,nil);
+
+  -- po‡ te‡n¡ naplnˆn¡ entity
+  ptyp^.tflags+typeflagsset:[tf_temp];
+
+  -- dosadit implicitn¡ hodnoty do specifikace
+  ptyp^.stype:=stype;
+  ptyp^.size:=dsize;
+  case stype
+    when dt_uniint do
+        -- nic nedˆlat
+
+    when dt_unireal do
+        -- nic nedˆlat
+
+    when dt_unilogical do
+        -- nic nedˆlat
+
+    when dt_unichar do
+        -- nic nedˆlat
+
+    when dt_uniarray do
+        -- nic nedˆlat
+
+    when dt_signed,dt_unsigned do
+        -- velikost v bitech
+        ptyp^.bits:=unidata_bytes_to_bits(dsize);
+
+        -- doplnit meze
+        cpu^.getordparams1(ptyp^.stype,ptyp^.bits,ptyp^.size,ptyp^.lval,ptyp^.hval);
+
+    when dt_pointer do
+        -- nic nedˆlat
+
+    when dt_tag do
+        -- nic nedˆlat
+
+    when dt_string do
+        -- nic nedˆlat
+{
+    when dt_signed do
+        pspecsigned(ptyp^.s)^.bits:=dsize*8;
+        with pspecsigned(ptyp^.s)^ do case dsize
+          1 : begin iiloadl(lval,-128);       iiloadl(hval,127);        end;
+          2 : begin iiloadl(lval,-32768);     iiloadl(hval,32767);      end;
+          4 : begin iiloadl(lval,minlongint); iiloadl(hval,2147483647); end;
+          end case;
+        pspecbase(ptyp^.s)^.base:=ptyp;
+        end when;
+    when dt_unsigned do
+        pspecunsigned(ptyp^.s)^.bits:=dsize*8;
+        with pspecunsigned(ptyp^.s)^ do case dsize
+          1 : begin iloadl(lval,$00);         iloadl(hval,$FF);         end;
+          2 : begin iloadl(lval,$0000);       iloadl(hval,$FFFF);       end;
+          4 : begin iloadl(lval,$00000000);   iloadl(hval,$FFFFFFFF);   end;
+          end case;
+        pspecbase(ptyp^.s)^.base:=ptyp;
+        end when;
+    when dt_enum do
+        pspecenum(ptyp^.s)^.bits:=dsize*8;
+        end when;
+    when dt_char do
+        pspecchar(ptyp^.s)^.bits:=dsize*8;
+        with pspecchar(ptyp^.s)^ do case dsize
+          1 : begin iloadl(lval,$00);         iloadl(hval,$FF);         end;
+          2 : begin iloadl(lval,$0000);       iloadl(hval,$FFFF);       end;
+          4 : begin iloadl(lval,$00000000);   iloadl(hval,$FFFFFFFF);   end;
+          end case;
+        pspecbase(ptyp^.s)^.base:=ptyp;
+        end when;
+    when dt_boolean     do
+        pspecboolean(ptyp^.s)^.bits:=dsize*8;
+        iloadl(pspecboolean(ptyp^.s)^.lval,$0);
+        iloadl(pspecboolean(ptyp^.s)^.hval,$1);
+        pspecbase(ptyp^.s)^.base:=ptyp;
+        end when;
+    when dt_string, dt_ustring do
+        pspecstring(ptyp^.s)^.lsize:=lstrindex;
+        end when;
+    when dt_pointer     do
+        pspecpointer(ptyp^.s)^.acc:=acc_data;
+        end when;
+    when dt_set do
+        -- nic nedˆlat
+        end when;
+}
+    when others do verify(1,true);
+    end case;
+  end d_create_temporary_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_create_region =
+-- Vytvo©¡ nov˜ deklarativn¡ regionu v aktu ln¡m kontextu.
+----------------------------------------------------------------------------------------------------
+begin
+  sym_add_new_region(context,region,region_context);
+  end d_create_region;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_get_attribute_context =
+-- Z¡sk  atributov˜ kontext entity. Pokud je¨tˆ neexistuje, tak ho vytvo©¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- pokud je¨tˆ neexistuje, tak vytvo©it
+  if curr.regions[rc_attribute]=nil then
+    sym_new_region(rt_attribute,curr.regions[rc_attribute]);
+    end if;
+
+  -- sestavit kontext
+  attr_context:=sym_build_context(^curr,curr.regions[rc_attribute]);
+  end d_get_attribute_context;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_next =
+-- P©eklad dal¨¡ ‡ sti deklarace.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(153,curr.compiling<>etd_none);
+
+  -- pozice
+  getlexpos(pos.e,ll_prev,true);
+
+  -- je p©elo‘ena dop©edn  deklarace
+  curr.declared:=etd_incomplete;
+
+  -- bude se p©ekl dat £pln  deklarace
+  curr.compiling:=etd_full;
+
+  -- dosadit pozici hlavi‡ky
+  entity_set_position(curr,etp_header,pos);
+
+  -- vyhodnotit
+  e_symbol(^curr,pos,curr.declared,true);
+
+  -- za‡ tek dal¨¡ ‡ sti deklarace
+  -- (pro jistotu i konec)
+  getlexposall(pos,ll_curr);
+  end d_next;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_next_internal =
+-- P©eklad dal¨¡ ‡ sti deklarace intern¡ho symbolu.
+----------------------------------------------------------------------------------------------------
+begin
+  verify(559,curr.compiling<>etd_none);
+
+  -- je p©elo‘ena dop©edn  deklarace
+  curr.declared:=etd_incomplete;
+
+  -- bude se p©ekl dat £pln  deklarace
+  curr.compiling:=etd_full;
+
+  -- vyhodnotit
+  e_symbol(^curr,nullpos,curr.declared,true);
+  end d_next_internal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_rollback =
+-- Naprav¡, co provedlo D_NEXT.
+----------------------------------------------------------------------------------------------------
+begin
+  -- p©ekl dala se dop©edn  deklarace
+  curr.compiling:=etd_incomplete;
+
+  -- a taky se p©elo‘ila
+  curr.declared:=etd_incomplete;
+  end d_rollback;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_end =
+-- Konec deklarace symbolu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- pozice
+  getlexpos(pos.e,ll_curr,true);
+
+  -- konec deklarace
+  d_end_at_position(curr,pos,true);
+  end d_end;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_end_at_position =
+-- Konec deklarace symbolu na uveden‚ pozici.
+----------------------------------------------------------------------------------------------------
+begin
+  case curr.compiling
+    -- nev¡ se
+    when etd_none do
+        if declinfo[curr.etype].parts<>tdp_1
+
+          -- je to jasnˆ Incomplete declaration
+          -- (jinak by D_NEXT nastavilo COMPILING=SD_FULL)
+          then
+            curr.declared:=etd_incomplete;
+
+            -- pozice
+            entity_set_position(curr,etp_header,pos);
+
+          -- je to jasnˆ Full declaration
+          else
+            curr.declared:=etd_full;
+
+            -- pozice
+            entity_set_position(curr,etp_def,pos);
+            end if;
+
+    -- Incomplete declaration
+    when etd_incomplete  do
+        curr.declared:=etd_incomplete;
+
+        -- pozice
+        entity_set_position(curr,etp_header,pos);
+
+    -- Public body declaration
+    when etd_public do
+        curr.declared:=etd_public;
+
+        -- pozice
+        entity_set_position(curr,etp_spec,pos);
+
+    -- Full declaration
+    when etd_full do
+        curr.declared:=etd_full;
+
+        -- viditelnost £pln‚ deklarace
+        curr.full:=curr.context.region^.vsect;
+
+        -- pozice
+        entity_set_position(curr,etp_def,pos);
+
+    when others do verify(154,true);
+    end case;
+  
+  -- je po‘adov no vyhodnocen¡ deklarace entity ?
+  if evaluate
+
+    -- ano => poctivˆ vyhodnotit
+    then e_symbol(^curr,pos,curr.declared,curr.declared=etd_full);
+
+    -- ne => prohl sit za vyhodnocen‚
+    else sym_set_evaluated(^curr);
+    end if;
+
+  -- pozna‡it, ‘e symbol ji‘ nen¡ p©ekl d n
+  curr.compile-tentitycompileset:[etc_compiling];
+  curr.compiling:=etd_none;
+  end d_end_at_position;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_end_internal =
+-- Konec deklarace intern¡ho symbolu.
+----------------------------------------------------------------------------------------------------
+begin
+  case curr.compiling
+    -- nev¡ se
+    when etd_none do
+        if declinfo[curr.etype].iparts<>tdp_1
+
+          -- je to jasnˆ Incomplete declaration
+          -- (jinak by D_NEXT nastavilo COMPILING=SD_FULL)
+          then
+            curr.declared:=etd_incomplete;
+
+          -- je to jasnˆ Full declaration
+          else
+            curr.declared:=etd_full;
+            end if;
+
+    -- Incomplete declaration
+    when etd_incomplete  do
+        curr.declared:=etd_incomplete;
+
+    -- Public body declaration
+    when etd_public do
+        curr.declared:=etd_public;
+
+    -- Full declaration
+    when etd_full do
+        curr.declared:=etd_full;
+
+        -- viditelnost £pln‚ deklarace
+        curr.full:=curr.context.region^.vsect;
+
+    when others do verify(560,true);
+    end case;
+
+  -- je po‘adov no vyhodnocen¡ deklarace entity ?
+  if evaluate
+
+    -- ano => poctivˆ vyhodnotit
+    then e_symbol(^curr,nullpos,curr.declared,curr.declared=etd_full);
+
+    -- ne => prohl sit za vyhodnocen‚
+    else sym_set_evaluated(^curr);
+    end if;
+
+  -- pozna‡it, ‘e symbol ji‘ nen¡ p©ekl d n
+  curr.compile-tentitycompileset:[etc_compiling];
+  curr.compiling:=etd_none;
+  end d_end_internal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure d_end_temporary_type =
+-- Konec deklarace do‡asn‚ho typu.
+----------------------------------------------------------------------------------------------------
+begin
+  d_end_at_position(curr,nil,false);
+  end d_end_temporary_type;
+
+
+
+end cd_create;

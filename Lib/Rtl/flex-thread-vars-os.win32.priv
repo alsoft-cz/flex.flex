@@ -1,0 +1,161 @@
+---------------------------------------------------------------------------------------------------
+module private os =
+-- Flex Run-time Library
+-- Thread variables
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_initialize_threads_immediate_threadvar =
+----------------------------------------------------------------------------------------------------
+var
+    mythreadheader : p_thread_header;
+    threadheader   : p_thread_header;
+    exceptback     : t_rtl_exceptions_info;
+begin
+  mythreadheader:=rtl_get_current_thread;
+  rtl_critical_lock(thread_list_lock);
+  threadheader:=thread_list_first;
+  while(threadheader<>nil) loop
+
+    -- zamknu si ho
+    rtl_critical_lock(threadheader^.locker);
+
+    --zastavim ho
+    if threadheader<>mythreadheader then
+      rtl_suspend_thread_internal(threadheader);
+      end if;
+    
+    --zalohuju jeho estack
+    exceptback:=threadheader^.exceptions.info;
+
+    --nastavim si tam svuj aby vyjimka padala na muj estack
+    threadheader^.exceptions.info:=mythreadheader^.exceptions.info;
+
+    --nastavim jeho TIB
+    #syntax asm;
+      --set new value
+      mov    eax,threadheader
+      mov    fs:[t_winnt_tib.aruserpointer],eax
+      #end asm;
+
+    -- nastavit jako systemovou threadovou promennou
+    if not TlsSetValue(sthread_header,LPVOID(threadheader:unchecked)) then
+      raise tasking_threadvar_error;
+      end if;
+
+    begin
+      --inicializuju jeho jmenem
+      if vars.rtl_create_threadvar(threadvarid,threadheader,nil)=nil then
+        raise tasking_threadvar_error;
+        end if;
+    leave
+
+      --obnovim jeho estack
+      threadheader^.exceptions.info:=exceptback;
+
+      --nastavim zase svuj TIB
+      #syntax asm;
+        --set new value
+        mov    eax,mythreadheader
+        mov    fs:[t_winnt_tib.aruserpointer],eax
+        #end asm;
+
+      -- nastavit jako systemovou threadovou promennou
+      if not TlsSetValue(sthread_header,LPVOID(mythreadheader:unchecked)) then
+        raise tasking_error;
+        end if;
+
+      --zase ho pustim
+      if threadheader<>mythreadheader then
+        rtl_resume_thread_internal(threadheader);
+        end if;
+
+      -- zase ho odemknu
+      rtl_critical_lock(threadheader^.locker);
+
+      end;
+
+    threadheader:=threadheader^.listnext;
+    end loop;
+leave
+  rtl_critical_unlock(thread_list_lock);
+  end rtl_initialize_threads_immediate_threadvar; 
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinitialize_threads_threadvar =
+----------------------------------------------------------------------------------------------------
+var
+    mythreadheader : p_thread_header;
+    threadheader   : p_thread_header;
+    exceptback     : t_rtl_exceptions_info;
+begin
+  mythreadheader:=rtl_get_current_thread;
+  rtl_critical_lock(thread_list_lock);
+  threadheader:=thread_list_first;
+  while(threadheader<>nil) loop
+    -- zamknu si ho
+    rtl_critical_lock(threadheader^.locker);
+
+    --zastavim ho
+    if threadheader<>mythreadheader then
+      rtl_suspend_thread_internal(threadheader);
+      end if;
+
+    --zalohuju jeho estack
+    exceptback:=threadheader^.exceptions.info;
+
+    --nastavim si tam svuj aby vyjimka padala na muj estack
+    threadheader^.exceptions.info:=mythreadheader^.exceptions.info;
+
+    --nastavim jeho TIB
+    #syntax asm;
+      --set new value
+      mov    eax,threadheader
+      mov    fs:[t_winnt_tib.aruserpointer],eax
+      #end asm;
+
+    -- nastavit jako systemovou threadovou promennou
+    if not TlsSetValue(sthread_header,LPVOID(threadheader:unchecked)) then
+      raise tasking_threadvar_error;
+      end if;
+    begin
+      --uvolnim jeho jmenem
+      vars.rtl_free_threadvar(threadvarid,threadheader);
+
+    leave
+
+      --obnovim jeho estack
+      threadheader^.exceptions.info:=exceptback;
+
+      --nastavim zase svuj TIB
+      #syntax asm;
+        --set new value
+        mov    eax,mythreadheader
+        mov    fs:[t_winnt_tib.aruserpointer],eax
+        #end asm;
+
+      -- nastavit jako systemovou threadovou promennou
+      if not TlsSetValue(sthread_header,LPVOID(mythreadheader:unchecked)) then
+        raise tasking_error;
+        end if;
+
+      --zase ho pustim
+      if threadheader<>mythreadheader then
+        rtl_resume_thread_internal(threadheader);
+        end if;
+
+      -- zase ho odemknu
+      rtl_critical_lock(threadheader^.locker);
+
+      end;
+
+    threadheader:=threadheader^.listnext;
+    end loop;
+ 
+leave
+  rtl_critical_unlock(thread_list_lock);
+  end rtl_deinitialize_threads_threadvar; 
+
+
+end os;

@@ -1,0 +1,790 @@
+----------------------------------------------------------------------------------------------------
+module private cx_compile =
+-- P©eklada‡ Flexu.
+-- Interface na p©eklada‡ v˜razu a n vazn‚ operace.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 18.07.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_debug,cc_attr,
+  cx_imm;
+
+----------------------------------------------------------------------------------------------------
+procedure x_vyraz =
+-- P©eklad v˜razu.
+-- Provede pouze syntaktickou anal˜zu.
+----------------------------------------------------------------------------------------------------
+with
+  cx_parse;
+  
+var
+  info             : expinfo;                    -- informace o pr–bˆhu anal˜zy
+
+begin
+  expr:=nil;
+
+#if dump then;{%OFF}
+  if opt_dump in curr.entity^.compv.opts then
+    debug_dump('---- Prvni pruchod ------------------------------------------------------------');
+    end if;
+#end if;{%ON}
+
+  -- inicializovat informace o pr–bˆhu anal˜zy
+  info.init(false,nil{typ},false{final});
+
+  -- F ze 1: rozklad v˜razu
+#if dump then;{%OFF}
+  if opt_dump in curr.entity^.compv.opts then
+    debug_dump('---- Faze 1: Rozklad vyrazu ---------------------------------------------------');
+    end if;
+#end if;{%ON}
+  info.phase:=ep_syntax;
+  case syntax
+    when es_expr   do a_vyraz(curr,expr,info);
+    when es_range  do a_rozsah(curr,expr,info);
+    when es_choice do a_vyber(curr,expr,info);
+    when es_name   do a_jmeno(curr,expr,info);
+    when es_cmd    do a_prikaz(curr,expr,info);
+    when others    do verify(243,true);
+    end case;
+#if dump then;
+  if opt_dump in curr.entity^.compv.opts then
+    dumptree(expr);
+    end if;
+#end if;
+
+  -- ozna‡it vrcholov˜ uzel
+  if expr<>nil then
+    expr^.nflags+nodeflagset:[nf_top];
+    end if;
+
+catch
+  when resume_error do
+      newnode(expr,info,nt_none);
+      raise;
+  end x_vyraz;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_evaluate =
+-- Vyhodnocen¡ v˜razu.
+-- O‡ek v  ji‘ rozlo‘en˜ v˜raz.
+----------------------------------------------------------------------------------------------------
+with
+  cx_form,cx_type,cx_opt,cx_final;
+  
+var
+  info             : expinfo;                    -- informace o pr–bˆhu anal˜zy
+  t                : typeview;                   -- pohled na typ
+
+    ------------------------------------------------------------------------------------------------
+    procedure is_procedure return t_logical =
+    -- T-v˜raz je procedura.
+    ------------------------------------------------------------------------------------------------
+    begin
+              -- je to procedura
+      result:=(expr^.nclass=nc_proc)
+              -- je to komponenta
+              {%% a co kdy‘ proceduru z¡sk m nˆjak˜m atributem ? }
+              and (expr^.ntype=nt_component)
+              -- a symbol je k dispozici
+              and (pexpcomponent(expr)^.s.psym<>nil) and (pexpcomponent(expr)^.s.psym^.etype=et_procedure);
+      end is_procedure;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure is_static_subprogram return t_logical =
+    -- T-v˜raz je procedura.
+    ------------------------------------------------------------------------------------------------
+    begin
+              -- je to procedura
+      result:=(expr^.nclass=nc_proc)
+              -- je to komponenta
+              {%% a co kdy‘ proceduru z¡sk m nˆjak˜m atributem ? }
+              and (expr^.ntype=nt_component)
+              -- a symbol je k dispozici
+              and (pexpcomponent(expr)^.s.psym<>nil) and (pexpcomponent(expr)^.s.psym^.etype in ets_static_subprogram);
+      end is_static_subprogram;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure is_virtual_procedure return t_logical =
+    -- T-v˜raz je virt ln¡ procedura.
+    ------------------------------------------------------------------------------------------------
+    begin
+              -- je to procedura
+      result:=(expr^.nclass=nc_proc)
+              -- je to komponenta
+              {%% a co kdy‘ proceduru z¡sk m nˆjak˜m atributem ? }
+              and (expr^.ntype=nt_component)
+              -- a symbol je k dispozici
+              and (pexpcomponent(expr)^.s.psym<>nil) and (pexpcomponent(expr)^.s.psym^.etype=et_virtual);
+      end is_virtual_procedure;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure is_var return t_logical =
+    -- T-v˜raz je promˆnn .
+    ------------------------------------------------------------------------------------------------
+    begin
+              -- je to promˆnn 
+      result:=(expr^.nclass=nc_var)
+              -- je to komponenta 
+              {%% a co kdy‘ promˆnnou z¡sk m nˆjak˜m atributem ? }
+              and (expr^.ntype=nt_component)
+              -- a symbol je k dispozici 
+              and (pexpcomponent(expr)^.s.psym<>nil) and (pexpcomponent(expr)^.s.psym^.etype=et_var);
+      end is_var;
+
+
+
+begin
+  -- pr zdn˜  
+  if (expr<>nil) and (expr^.ntype=nt_none) then
+    return;
+    end if;
+
+  -- p©ipravit pohled na typ
+  t.init(curr,typ);
+
+#if dump then;{%OFF}
+  if opt_dump in curr.entity^.compv.opts then
+    debug_dump('---- Druhy pruchod ------------------------------------------------------------');
+    end if;
+#end if;{%ON}
+
+  -- inicializovat informace o pr–bˆhu anal˜zy
+  info.init(true,typ,final);
+  info.kind:=kind;
+
+  -- F ze 2: form ln¡ kontrola
+#if dump then;{%OFF}
+  if opt_dump in curr.entity^.compv.opts then
+    debug_dump('---- Faze 2: Formalni kontrola ------------------------------------------------');
+    end if;
+#end if;{%ON}
+  info.phase:=ep_form;
+  a_form(curr,expr,info);
+#if dump then;
+  if opt_dump in curr.entity^.compv.opts then
+    dumptree(expr);
+    end if;
+#end if;
+
+  -- F ze 3: typov  kontrola
+#if dump then;{%OFF}
+  if opt_dump in curr.entity^.compv.opts then
+    debug_dump('---- Faze 3: Typova kontrola --------------------------------------------------');
+    end if;
+#end if;{%ON}
+  info.phase:=ep_type;
+  a_type(curr,expr,t,info);
+#if dump then;
+  if opt_dump in curr.entity^.compv.opts then
+    dumptree(expr);
+    end if;
+#end if;
+
+  -- F ze 4: optimalizace
+#if dump then;{%OFF}
+  if opt_dump in curr.entity^.compv.opts then
+    debug_dump('---- Faze 4: Optimalizace -----------------------------------------------------');
+    end if;
+#end if;{%ON}
+  info.phase:=ep_opt;
+  a_opt(curr,expr,info);
+#if dump then;
+  if opt_dump in curr.entity^.compv.opts then
+    dumptree(expr);
+    end if;
+#end if;
+
+  -- optimalizac¡ m–‘e nˆkdy zmizet cel˜ strom
+  if (kind=ek_assign) and (expr=nil) then
+    eval:=ete_evaluated;
+    return;
+    end if;
+
+  -- F ze 5: finalizace
+#if dump then;{%OFF}
+  if opt_dump in curr.entity^.compv.opts then
+    debug_dump('---- Faze 5: Finalizace -------------------------------------------------------');
+    end if;
+#end if;{%ON}
+  info.phase:=ep_final;
+  a_final(curr,expr,t,usage,info);
+#if dump then;
+  if opt_dump in curr.entity^.compv.opts then
+    dumptree(expr);
+    end if;
+#end if;
+
+  -- poda©ilo se v˜raz vyhodnotit ? 
+  {%%X if info.generic then eval:=ete_generic
+  els}if expr^.zprac=ep_final then eval:=ete_evaluated
+  else eval:=ete_none;
+  end if;
+
+  if eval=ete_evaluated then
+    -- je to o‡ek van˜ typ v˜razu ?
+    case kind
+      -- libovoln˜ 
+      when ek_any do { je to jedno };
+    {
+      -- s uveden˜ typem
+      when ek_type do { za©¡dila typov  kontrola };
+    }
+      -- jm‚no typu 
+      when ek_typename do 
+          if expr^.nclass<>nc_type then
+            ce^.seterror({CCERR=}000188,ce_x_ex_typename);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- jm‚no typu nebo celo‡¡seln  konstanta
+      when ek_typename_or_const_integer do
+          if not (expr^.nclass=nc_type or (expr^.ntype=nt_imm and then t_is_sts(expr^.t,dts_u_integer))) then
+            ce^.seterror({CCERR=}000000,ce_x_ex_typename_const_int);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- jm‚no diskr‚tn¡ho typu nebo const. rozsah
+      when ek_rangetype do
+          if not (
+          -- typ 
+          (expr^.nclass=nc_type)
+          -- konstantan¡ rozsah 
+          or ((expr^.ntype=nt_range) and (pexprange(expr)^.rkind in erks_const))
+          ) then
+            ce^.seterror({CCERR=}000189,ce_x_ex_rangetype);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- rozsah nebo jm‚no diskr‚tn¡ho typu
+      when ek_range do
+          if not (
+          -- typ 
+          (expr^.nclass=nc_type)
+          -- konstantan¡ rozsah 
+          or ((expr^.ntype=nt_range) {and (pexprange(expr)^.rkind in erks_const)})
+          -- dynamick˜ atribut rozsahu 
+          or ((expr^.ntype=nt_attrib) and (pexpattrib(expr)^.aclass=atc_dynamic) and (pexpattrib(expr)^.atf=atf_range))
+          ) then
+            ce^.seterror({CCERR=}000000,ce_x_ex_range);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- p©i©azen¡/vol n¡
+      when ek_assign do
+          if not (
+          -- je to p©i©azen¡ 
+          ((expr^.ntype in nodetypeset:[nt_operator,nt_unary]) and pexpnoper(expr)^.assign)
+          -- je to vol n¡ procedury, kter  nevrac¡ hodnotu
+          or ((expr^.ntype=nt_call) and (expr^.nclass=nc_none))
+          ) then
+            ce^.seterror({CCERR=}000190,ce_x_assignment);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- podm¡nka
+      when ek_cond do
+          if not (
+          -- je to hodnota 
+          (expr^.nclass in ncs_value)
+          -- je logick‚ho typu 
+          and t_is_sts(expr^.t,dts_u_logical)
+          ) then
+            ce^.seterror({CCERR=}000191,ce_x_ex_cond);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- symbol - libovoln˜
+      when ek_sym do
+          if not (
+          -- je to komponenta 
+          (expr^.ntype=nt_component)
+          -- a symbol je k dispozici 
+          and (pexpcomponent(expr)^.s.psym<>nil)
+          ) then
+            ce^.seterror({CCERR=}000192,ce_x_ex_sym);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- symbol - procedura
+      when ek_sym_proc do
+          if not is_procedure then
+            ce^.seterror({CCERR=}000193,ce_x_ex_sym_proc);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- symbol - statick˜ podprogram
+      when ek_sym_static_subprogram do
+          if not is_static_subprogram then
+            ce^.seterror({CCERR=}000000,ce_x_ex_sym_proc);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+      
+      -- symbol - promˆnn  nebo procedura
+      when ek_sym_var_proc do
+          if not (is_procedure or is_var) then
+            ce^.seterror({CCERR=}000194,ce_x_ex_sym_var_proc);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- symbol - virtu ln¡ metoda
+      when ek_sym_virtual do
+          if not (is_virtual_procedure) then
+            ce^.seterror({CCERR=}000195,ce_x_ex_sym_virtual);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- promˆnn  typu pointer
+      when ek_var_pointer do
+          if not (
+          -- je to promˆnn  
+          {is_var} (expr^.nclass=nc_var) {%% Jak˜ test je spr vnˆ ? }
+          -- typu pointer na objekt 
+          and t_is_pointer_to_object(expr^.t)
+          ) then
+            ce^.seterror({CCERR=}000196,ce_x_ex_var_pointer);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- promˆnn  diskr‚tn¡ho typu
+      when ek_var_ordinal do
+          if not (
+          -- je to promˆnn  
+          {is_var} (expr^.nclass=nc_var) {%% Jak˜ test je spr vnˆ ? }
+          -- diskr‚tn¡ho typu
+          and t_is_sts(expr^.t,dts_ordinal)
+          ) then
+            ce^.seterror({CCERR=}000000,ce_x_ex_var_ordinal);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- v˜raz diskr‚tn¡ho typu
+      when ek_expr_ordinal do
+          if not (
+          -- je to hodnota 
+          (expr^.nclass in ncs_value)
+          -- diskr‚tn¡ho typu 
+          and t_is_sts(expr^.t,dts_ordinal)
+          ) then
+            ce^.seterror({CCERR=}000000,ce_x_ex_expr_ordinal);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- celo‡¡seln˜ v˜raz bez znam‚nka
+      when ek_expr_integer do
+          if not (
+          -- je to hodnota 
+          (expr^.nclass in ncs_value)
+          -- diskr‚tn¡ho typu 
+          and t_is_sts(expr^.t,dts_u_integer)
+          ) then
+            ce^.seterror({CCERR=}000000,ce_x_ex_expr_integer);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- v˜raz typu TAG
+      when ek_expr_tag do
+          if not (
+          -- je to hodnota ? 
+          (expr^.nclass in ncs_value)
+          -- diskr‚tn¡ho typu 
+          and t_is_sts(expr^.t,dts_tag)
+          ) then
+            ce^.seterror({CCERR=}000000,ce_x_ex_expr_tag);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- konstantn¡
+      when ek_const do
+          if expr^.ntype<>nt_imm then
+            ce^.seterror({CCERR=}000197,ce_x_ex_const);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- konstantn¡ - ordin ln¡
+      when ek_const_ord do
+          if (expr^.ntype<>nt_imm) or not t_is_sts(expr^.t,dts_u_ordinal) then
+            ce^.seterror({CCERR=}000198,ce_x_ex_const_ord);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- konstantn¡ - celo‡¡seln˜
+      when ek_const_int do
+          if (expr^.ntype<>nt_imm) or not t_is_sts(expr^.t,dts_u_integer) then
+            ce^.seterror({CCERR=}000199,ce_x_ex_const_int);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- konstantn¡ - logick˜
+      when ek_const_logical do
+          if (expr^.ntype<>nt_imm) or not t_is_sts(expr^.t,dts_u_logical) then
+            ce^.seterror({CCERR=}000200,ce_x_ex_const_logical);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- konstantn¡ - re ln˜
+      when ek_const_real do
+          if (expr^.ntype<>nt_imm) or not t_is_sts(expr^.t,dts_u_real) then
+            ce^.seterror({CCERR=}000201,ce_x_ex_const_real);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- konstantn¡ - string of char
+      when ek_const_str do
+          if not (
+          -- konstanta
+          (expr^.ntype=nt_imm)
+          -- string of char 
+          and t_is_string_of_char(curr,expr^.t)
+          {%%X a co kdy‘ to bude 'X' - to je p©eci CHAR }
+          ) then
+            ce^.seterror({CCERR=}000202,ce_x_ex_const_str);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- kontext - EXTEND modul/t©¡da
+      when ek_context_extend do
+          if not (
+          -- je to komponenta 
+          (expr^.ntype=nt_component)
+          -- a symbol je k dispozici
+          and (pexpcomponent(expr)^.s.psym<>nil)
+          -- a je to modul-modul nebo t©¡da-t©¡da 
+          and (((curr.entity^.etype=et_module) and (pexpcomponent(expr)^.s.psym^.etype=et_module))
+          or ((curr.entity^.etype=et_class) and (pexpcomponent(expr)^.s.psym^.etype=et_class)))
+          ) then
+            ce^.seterror({CCERR=}000203,ce_x_ex_sym);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- kontext - EXPOSE t©¡da
+      when ek_context_expose do
+          if not (
+          -- je to komponenta 
+          expr^.ntype=nt_component
+          -- a symbol je k dispozici
+          and then pexpcomponent(expr)^.s.psym<>nil
+          -- a je to t©¡da-t©¡da 
+          and then curr.entity^.etype=et_class and then pexpcomponent(expr)^.s.psym^.etype=et_class
+          ) then
+            ce^.seterror({CCERR=}000203,ce_x_ex_sym);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- kontext - WITH
+      when ek_context_with do
+          if not (
+          -- je to komponenta 
+          (expr^.ntype=nt_component)
+          -- a symbol je k dispozici 
+          and (pexpcomponent(expr)^.s.psym<>nil)
+          -- a je to modul nebo t©¡da
+          and (pexpcomponent(expr)^.s.psym^.etype in tentitytypeset:[et_module,et_class])
+          ) then
+            ce^.seterror({CCERR=}000204,ce_x_ex_sym);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- kotext - USE
+      when ek_context_use do
+          if not (
+          -- je to komponenta 
+          (expr^.ntype=nt_component)
+          -- a symbol je k dispozici 
+          and (pexpcomponent(expr)^.s.psym<>nil)
+          -- a je to modul 
+          and (pexpcomponent(expr)^.s.psym^.etype=et_module)
+          ) then
+            ce^.seterror({CCERR=}000205,ce_x_ex_sym);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- kotext - EXTEND zpr va
+      when ek_context_message do
+          if not (
+          -- je to komponenta 
+          (expr^.ntype=nt_component)
+          -- a symbol je k dispozici 
+          and (pexpcomponent(expr)^.s.psym<>nil)
+          -- a je to zpr va
+          and (pexpcomponent(expr)^.s.psym^.etype=et_message)
+          ) then
+            ce^.seterror({CCERR=}000206,ce_x_ex_sym);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      -- kontext - SEND zpr va
+      when ek_context_send do
+          if expr^.ntype<>nt_send then
+            ce^.seterror({CCERR=}000000,ce_x_message_send);
+            expr^.errpos;
+            ce^.resumeerror;
+            end if;
+
+      -- kontext - ACCEPT zpr va
+      when ek_context_accept do
+          if expr^.ntype<>nt_accept then
+            ce^.seterror({CCERR=}000000,ce_x_message_accept);
+            expr^.errpos;
+            ce^.resumeerror;
+            end if;
+
+      -- kontext - konstantn¡ v˜bˆr v CASE
+      when ek_context_case do
+          -- kompatibilitu za©¡dila typov  kontrola, je¨tˆ ‘e je konstantn¡
+          if not (
+          -- je to konstanta
+          (expr^.ntype=nt_imm)
+          -- typ
+          or (expr^.nclass=nc_type)
+          -- konstantan¡ nebo nulov˜ rozsah
+          or ((expr^.ntype=nt_range) and (pexprange(expr)^.rkind in erks_const+exprangekindset:[erk_null]))
+          ) then
+            ce^.seterror({CCERR=}000000,ce_x_ex_const_choice);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+      when others do verify(16,true);
+      end case;
+    end if;
+  end x_evaluate;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_select =
+-- P©elo‘¡ seznam v˜raz–.                                                     
+----------------------------------------------------------------------------------------------------
+with
+  cc_lex;
+  
+const
+  exprlistinit     = 1;
+  exprlistdelta    = 4;
+
+var
+  _list            : list:type;
+  expr             : pexpnode;
+
+begin
+  loop
+    -- realokovat pamˆŸ 
+    if list=nil then
+      new list range exprlistinit;
+    elsif list^:length=list^:last then
+      --%%TODO(ADJUST) adjust list range list^:last+exprlistdelta;
+      new _list range list^:last+exprlistdelta;
+      _list^:=list^;
+      discard list;
+      list:=_list;
+      end if;
+
+    -- p©elo‘it
+    x_vyraz(curr,expr,syntax);
+
+    -- za©adit na seznam
+    list^ & expr;
+
+    until not checklex(curr,lex_comma);
+  end x_select;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_const_imm =
+-- Hodnota konstantn¡ho v˜razu.                                               
+----------------------------------------------------------------------------------------------------
+begin
+  -- je to konstantn¡ v˜raz ? 
+  if (expr^.ntype<>nt_imm) then
+    ce^.seterror({CCERR=}000207,ce_x_ex_const);
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- na‡¡st hodnotu 
+  store_imm(imm,pexpimm(expr)^.imm);
+  end x_const_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_const_int =
+-- Hodnota konstantn¡ho celo‡¡seln‚ho v˜razu.                                 
+----------------------------------------------------------------------------------------------------
+begin
+  -- na‡¡st hodnotu 
+  load_uniint(pexpimm(expr)^.imm,ui);
+  end x_const_int;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_const_real =
+-- Hodnota konstantn¡ho re ln‚ho v˜razu.                                      
+----------------------------------------------------------------------------------------------------
+begin
+  -- na‡¡st hodnotu 
+  load_unireal(pexpimm(expr)^.imm,ur);
+  end x_const_real;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_const_logical =
+-- Hodnota konstantn¡ho logick‚ho v˜razu.                                     
+----------------------------------------------------------------------------------------------------
+begin
+  -- na‡¡st hodnotu 
+  load_unilogical(pexpimm(expr)^.imm,ub);
+  end x_const_logical;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_const_range =
+-- Hodnota konstantn¡ho rozsahu.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;
+  er               : pexpnode;
+
+begin
+  -- p©¡mo jm‚no typu 
+  if expr^.nclass=nc_type then
+    lval:=expr^.t.getlval;
+    hval:=expr^.t.gethval;
+
+  -- rozsah
+  elsif expr^.ntype=nt_range then
+    verify(244,not (pexprange(expr)^.rkind in erks_const));
+    pexprange(expr)^.get(el,er);
+    load_uniint(pexpimm(el)^.imm,lval);
+    load_uniint(pexpimm(er)^.imm,hval);
+
+  else
+    verify(242,true);
+    end if;
+  end x_const_range;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_const_sysstr =
+-- Hodnota konstantn¡ho znakov‚ho v˜razu typu syst‚mov˜ ©etˆzec.              
+----------------------------------------------------------------------------------------------------
+begin
+  -- na‡¡st hodnotu 
+  load_sysstr(pexpimm(expr)^.imm,s);
+  end x_const_sysstr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_get_type =
+-- Typ v˜razu nebo typ definovan˜ rozsahem.
+----------------------------------------------------------------------------------------------------
+with
+  cx_util;
+  
+begin
+  -- p©¡mo specifikovan˜ rozsah
+  if expr^.ntype=nt_range then
+    -- co je typ za‡?
+    if t_is_sts(expr^.t,dts_ordinal)
+
+      -- regul rn¡ ordin ln¡ typ rozvnou p©evz¡t
+      then ptyp:=expr^.t.getctype;
+
+      -- z konstantn¡ho rozsahu univerz ln¡ho ordin ln¡ho typu odvodit regul rn¡ ordin ln¡ typ
+      else x_rangetotype(curr,pexprange(expr),ptyp);
+      end if;
+
+  -- nep©¡mo specifikovan˜ rozsah (nap©. jm‚no typu nebo :range)
+  elsif expr^.nclass in ncs_range then
+    ptyp:=expr^.t.getutype;
+
+  else
+    verify(65,true);
+    end if;
+  end x_get_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_get_symbol =
+-- Symbol souvisej¡c¡ s v˜razem.
+----------------------------------------------------------------------------------------------------
+begin
+  psym:=expr^.getsymbol;
+  verify(87,psym=nil);
+  end x_get_symbol;
+
+
+
+end cx_compile;

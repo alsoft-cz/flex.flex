@@ -1,0 +1,1179 @@
+----------------------------------------------------------------------------------------------------
+module public {cx_expr.}cx_def =
+-- P©eklada‡ Flexu.
+-- Definice stromov‚ho tvaru v˜razu a z kladn¡ operace.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 19.06.2001 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+--
+-- %%X Pozn mky:
+--
+--   -- Co by se stalo, kdybych univerz ln¡ typy fyzicky nevytv ©el (T.TYP=NIL),
+--      ale jen do uzlu poznamenal T.STYPE=ST_UNIxxx ?
+--        Z©ejmˆ by to p©ivodilo probl‚my p©i p©eb¡r n¡ v˜sledku v˜razu jako
+--      hodnota konstanty.
+--        Tak‚ bych mohl univerz ln¡ typy vytvo©it jednou pro v‘dy p©i spu¨tˆn¡
+--      p©ekladu. Pak by nap©¡klad platilo "1:TYPE=1:TYPE", co‘ v t‚to
+--      implementaci nen¡ pravda - co je spr vnˆ ?
+--
+--   -- Vy©e¨it postaven¡ oper toru ::. Kde je jeho m¡sto v BNF ? M  b˜t v–bec
+--      sou‡ st¡ jazyka ?
+--
+--   -- Typ REFIMM    : nemel by se spis vzdy uvazovat REFEXPR a hodnotu konstanty
+--      si z vyrazu vzdycky znova vzit ? Kdyz budu promennou inicializovat
+--      adresou jine promenne, tak to stejne neni konstanta. Pro makra (:value)
+--      by se tam holt musela udelat nejaka odbocka.
+--
+--   -- V typech REFxxx by se mˆlo rozli¨ovat mezi vyhodnocen¡m v˜razu
+--      a vyhodnocen¡m souvisej¡c¡ho symbolu.
+--
+--   -- Jak se pozn , ‘e byla promˆnn  inicializov na metap©¡kazem ? Potom
+--      je toti‘ var^.init.x.x=nil.
+--
+--   -- Zp©esnit chybov  hl ¨en¡ pro nekompatibiln¡ operandy.
+--
+--   -- Nemˆl by se v prvn¡ f zi typov‚ kontroly aritmetick˜ch v˜raz– volit
+--      typ :root_base z toho, kter˜ se bere teƒ ?
+--
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_lexsym,cc_def.cc_tree,cc_attr;
+
+use
+  cc_sym;
+
+----- %%TECH ---------------------------------------------------------------------------------------
+-- V˜raz je p©eveden do obecn‚ho stromov‚ho tvaru. Strom je tvo©en
+-- jednosmˆrnˆ z©etˆzen˜mi seznamy (slo‘ka NEXT), kter‚ jsou na sebe
+-- navˆ¨eny do £rovn¡ (slo‘ka SUB). Reprezentuje-li tedy uzel stromu
+-- bin rn¡ oper tor, pak jeho operandy jsou SUB a SUB^.NEXT.
+--   Jednotliv‚ uzly se vytv ©¡ procedurou NEWNODE. Uzly za©azen‚ na vrchol
+-- stromu vytv ©¡ NEWTREE.                                                    
+--                                                                            
+-- Pozn mka: P©eklada‡ Flexu je z©ejmˆ unik tn¡ v tom, ‘e m  necelo‡¡seln˜    
+-- po‡et pr–chod– (tzv. Hausdorf–v p©eklada‡) - pr–chod– stromem je 5.5.      
+--   Mezif ze CX_RESOLVE se prov d¡ buƒ p©i form ln¡ anal˜ze nebo v typov‚    
+-- kontrole a to jen nˆkdy a jen pro nˆkter‚ typy uzl–, ale zato je           
+-- rekurzivn¡ - lze ji tedy pova‘ovat za p-samostatn˜ pr–chod. :-)            
+--                                                                            
+-- Anal˜za v˜razu je rozdˆlena do tˆchto hlavn¡ch pr–chod–:                   
+--   1. Syntaktick  anal˜za (CX_PARSE)
+--      - obecn˜ v˜raz p©evede do stromu, kontroluje BNF v˜razu, ale          
+--        neprov d¡ typov‚ ani ‘ dn‚ jin‚ kontroly                            
+--   2. Form ln¡ anal˜za (CX_FORM)
+--      - anal˜za v˜razu zdola nahoru                                         
+--   -. Mezif ze: Vyhodnocen¡ nejednozna‡n˜ch typ– (CX_RESOLVE)               
+--   3. Typov  kontrola (CX_TYPE)                                             
+--      - anal˜za v˜razu shora dol–                                           
+--   4. Optimalizace (CX_OPT)                                                 
+--      - vyhodnocen¡ statick˜ch podv˜raz–                                    
+--   5. Finalizace (CX_FINAL)                                                 
+--      - z vˆre‡n  kontrola optimalizovan‚ho v˜razu, dosazen¡ typ– konstant, 
+--        kontrola mez¡                                                       
+--                                                                            
+-- Strom se postupnˆ zpracov v  v¨emi f zemi anal˜zy. Nˆkter‚ typy podv˜raz–  
+-- se analyzuj¡ dop©edu: nap©. pro prefix atributu se prov d¡ typov  kontrola 
+-- i optimalizace bˆhem form ln¡ anal˜zy. Obecnˆ lze takto "mimo po©ad¡"      
+-- analyzovat jak˜koli podv˜raz, kter˜ nijak nez vis¡ na nad©azen‚m uzlu.     
+--   Ka‘d˜ pr–chod ignoruje uzly (v‡etnˆ v¨ech podstrom–), kter‚ ji‘ byly     
+-- analyzov ny j¡m nebo dal¨¡m pr–chodem.                                     
+----------------------------------------------------------------------------------------------------
+
+type
+  -- druh o‡ek van‚ho v˜razu
+  expkind          = enum
+      ek_any;                                    -- libovoln˜
+    --ek_type;                                   -- uveden‚ho typu
+      ek_typename;                               -- jm‚no typu
+      ek_typename_or_const_integer;              -- jm‚no typu nebo konstantn¡ celo‡¡seln˜ v˜raz
+      ek_rangetype;                              -- jm‚no diskr‚tn¡ho typu nebo const. rozsah
+      ek_range;                                  -- rozsah nebo jm‚no diskr‚tn¡ho typu
+      ek_assign;                                 -- p©i©azen¡/vol n¡
+      ek_cond;                                   -- podm¡nka
+      ek_sym;                                    -- symbol - libovoln˜
+      ek_sym_proc;                               -- symbol - procedura
+      ek_sym_static_subprogram;                  -- symbol - statick˜ podprogram (procedure nebo static)
+      ek_sym_var_proc;                           -- symbol - promˆnn  nebo procedura
+      ek_sym_virtual;                            -- symbol - virtu ln¡ metoda
+      ek_var_pointer;                            -- promˆnn  typu pointer
+      ek_var_ordinal;                            -- promˆnn  diskr‚tn¡ho typu
+      ek_expr_ordinal;                           -- v˜raz diskr‚tn¡ho typu
+      ek_expr_integer;                           -- celo‡¡seln˜ v˜raz bez znam‚nka
+      ek_expr_tag;                               -- v˜raz typu TAG
+      ek_const;                                  -- konstantn¡ - libovoln˜
+      ek_const_ord;                              -- konstantn¡ - ordin ln¡
+      ek_const_int;                              -- konstantn¡ - celo‡¡seln˜
+      ek_const_logical;                          -- konstantn¡ - logick˜
+      ek_const_real;                             -- konstantn¡ - re ln˜
+      ek_const_str;                              -- konstantn¡ - string of char
+      ek_context_extend;                         -- kontext - EXTEND
+      ek_context_expose;                         -- kontext - EXPOSE
+      ek_context_with;                           -- kontext - WITH
+      ek_context_use;                            -- kontext - USE
+      ek_context_message;                        -- kontext - jm‚no zpr vy
+      ek_context_send;                           -- kontext - SEND nebo RAISE
+      ek_context_accept;                         -- kontext - CATCH
+      ek_context_case;                           -- kontext - konst. v˜bˆr uveden‚ho typu v CASE
+      end enum;
+  expkindset       = set of expkind;
+
+const
+  -- druh v˜razu : jm‚no procedury
+  eks_proc         = expkindset:[ek_sym,ek_sym_proc,ek_sym_static_subprogram,ek_sym_var_proc,ek_sym_virtual];
+  -- druh v˜razu : operace se zpr vou
+  eks_message      = expkindset:[ek_context_send,ek_context_accept];
+
+type
+  -- f ze p©ekladu v˜razu 
+  expphase         = enum
+      ep_syntax;                                 -- syntaktick  anal˜za
+      ep_form;                                   -- form ln¡ kontrola
+      ep_type;                                   -- typov  kontrola
+      ep_opt;                                    -- optimalizace
+      ep_final;                                  -- finalizace
+      end enum;
+
+  -- pou‘it¡ podv˜razu
+  expusage         = enum
+      eu_none;                                   -- nic; neur‡eno
+      -- speci ln¡ typy v˜raz–
+      eu_formal;                                 -- form ln¡ v˜raz; hodnota je nezaj¡mav 
+      -- o‡ek v n adresn¡ v˜raz
+      eu_addr;                                   -- zjistit adresu
+      eu_write;                                  -- p©i©adit jinou hodnotu
+      eu_change;                                 -- p©e‡¡st hodnotu; zmˆnit; p©i©adit zpˆt
+      -- o‡ek v na hodnota
+      eu_read;                                   -- p©e‡¡st hodnotu a transformovat
+      eu_use;                                    -- p©e‡¡st hodnotu a p©i©adit jinam
+      end enum;
+  expusageset      = set of expusage;
+
+----------------------------------------------------------------------------------------------------
+class public expinfo = extend c_flex_class;
+-- informace o pr–bˆhu anal˜zy
+----------------------------------------------------------------------------------------------------
+
+    var
+      phase        : expphase;                   -- f ze p©ekladu
+      kind         : expkind;                    -- druh o‡ek van‚ho v˜razu
+      pass2        : t_logical;                  -- T-druh˜ pr–chod anal˜zy
+    --generic      : t_logical;                  -- T-nalezeny extern¡ odkazy
+      typ          : pentity_type;               -- po‘adovan˜ typ v˜razu
+      final        : t_logical;                  -- T-po‘adov no £pln‚ vyhodnocen¡
+
+    ------------------------------------------------------------------------------------------------
+    static init (
+        _pass2     : in t_logical;               -- T-druh˜ pr–chod anal˜zou
+        _typ       : in pentity_type;            -- po‘adovan˜ typ v˜razu
+        _final     : in t_logical);              -- T-po‘ad. pln‚ vyhodnocen¡
+    -- Inicializace.
+    ------------------------------------------------------------------------------------------------
+    end expinfo;
+
+
+
+----- %%TECH ---------------------------------------------------------------------------------------
+-- Postup p©i p©id v n¡ nov˜ch uzl–:
+--   1. do NODETYPE p©idat identifik tor (d le odkazovan˜ jako xxx)
+--   2. vytvo©it objekt EXPxxx jako (nep©¡m˜) potomek EXPNODE
+--       a pointer PEXPxxx
+--   3. v objektu implementovat alespo¤ metodu DUMP
+--   4. do procedur CX_FORM.A_FORM, CX_TYPE.A_TYPE, CX_OPT.A_OPT
+--      a CX_FINAL.A_FINAL doplnit obsluhu nov‚ho typu uzlu
+----------------------------------------------------------------------------------------------------
+
+type
+  -- typy uzl–
+  nodetype         = enum
+      -- %%TECH NT_NONE se pou‘¡v  pro reprezentaci nezparsovateln˜chh v˜raz–
+      nt_none;                                   -- nezn m˜ uzel
+      -- uzly pou‘it‚ poprv‚ p©i syntaktick‚ anal˜ze
+      nt_operator;                               -- oper tor
+      nt_unary;                                  -- un rn¡ oper tor
+      nt_component;                              -- komponenta
+      nt_imm;                                    -- p©¡m  hodnota (konstanta)
+      nt_range;                                  -- rozsah
+      nt_list;                                   -- seznam v˜raz– (parametr– procedury)
+      nt_item;                                   -- polo‘ka seznamu v˜raz–
+      nt_index;                                  -- selektor pole
+      nt_ref;                                    -- reference
+      nt_deref;                                  -- dereference
+      nt_attrib;                                 -- atribut
+      nt_aggregate;                              -- agreg t
+      nt_callspec;                               -- vol n¡ speci ln¡ metody
+      nt_this;                                   -- THIS
+      -- uzly pou‘it‚ pouze v syntaktick‚ anal˜ze a form ln¡ kontrole
+      nt_current;                                -- CURRENT
+      -- uzly pou‘it‚ poprv‚ p©i form ln¡ kontrole
+      nt_call;                                   -- vol n¡ procedury
+      nt_typecast;                               -- p©etypov n¡
+      nt_send;                                   -- odesl n¡ zpr vy
+      nt_accept;                                 -- p©ijet¡ zpr vy
+      end enum;
+  nodetypeset      = set of nodetype;
+
+const
+  -- oper tory
+  nts_operator     = nodetypeset:[nt_operator,nt_unary];
+  -- uzly s nejednozna‡n˜m typem
+  nts_ambiguous    = nodetypeset:[nt_operator,nt_unary,nt_range];
+
+type
+  -- t©¡dy uzl–
+  nodeclass        = enum
+      nc_undef;                                  -- dosud nezn m  t©¡da uzlu
+      nc_none;                                   -- nic
+      nc_module;                                 -- modul
+      nc_value;                                  -- hodnota/meziv˜sledek
+      nc_composite;                              -- slo‘en  hodnota (typicky rozsah)
+      nc_var;                                    -- adresa promˆnn‚
+    --nc_metavar;                                -- metapromˆnn 
+      nc_proc;                                   -- adresa procedury
+      nc_message;                                -- zpr va
+      nc_type;                                   -- typ
+      nc_tag;                                    -- tag typu
+      end enum;
+  nodeclassset     = set of nodeclass;
+
+const
+  -- promˆnn  
+  ncs_var              = nodeclassset:[nc_var];
+  -- hodnota
+  ncs_value            = ncs_var + nodeclassset:[nc_value];
+  -- podprogramy
+  ncs_subprog          = nodeclassset:[nc_proc];
+  -- zpr vy
+  ncs_message          = nodeclassset:[nc_message];
+  -- entity s adresou
+  ncs_ref              = ncs_var + ncs_subprog + ncs_message;
+  -- v˜bˆr
+  ncs_range            = nodeclassset:[nc_type,nc_composite];
+  ncs_choice           = ncs_value + ncs_range;
+  -- prefix selektoru komponenty
+  ncs_prefix_component = ncs_value + ncs_subprog + nodeclassset:[nc_none,nc_module,nc_type];
+  -- prefix indexu
+  ncs_prefix_index     = ncs_value + nodeclassset:[nc_type];
+  -- prefix dereference
+  ncs_prefix_deref     = ncs_value + nodeclassset:[nc_type];
+  -- prefix agreg tu
+  ncs_prefix_aggregate = nodeclassset:[nc_type];
+  -- prefix p©etypov n¡
+  ncs_prefix_typecast  = nodeclassset:[nc_type];
+  -- prefix odesl n¡ zpr vy
+  ncs_prefix_send      = ncs_value + nodeclassset:[nc_message];
+  -- prefix p©ijet¡ zpr vy
+  ncs_prefix_accept    = ncs_value + nodeclassset:[nc_message,nc_type];
+  -- k¢d zpr vy
+  ncs_message_code     = ncs_value + nodeclassset:[nc_message];
+
+type
+  -- p©¡znaky uzlu
+  nodeflags        = enum
+      nf_name;                                   -- uzel je jm‚no
+      nf_top;                                    -- uzel je na £pln‚m vrcholu stromu
+      nf_parenthesized;                          -- uzel je uz vorkov n
+      nf_reference;                              -- uzel se bude referencovat
+      nf_dereference;                            -- uzel se bude dereferencovat           
+      end enum;
+  nodeflagset      = set of nodeflags;
+
+type
+  ----- %%TECH Zp–sob z©etˆzen¡ uzlu vzhledem k typu -----------------------------------------------
+  -- Pro typovou kontrolu oper toru & se mus¡ ur‡ovat tzv. zp–sob z©etˆzen¡.
+  -- Ur‡uje, zda je podv˜raz pod©etˆzec nebo jedna komponenta ©etˆzce.
+  --   Tento p©¡znak se ur‡uje pouze pro oper tor & v druh‚ f zi typov‚
+  -- kontroly. Vyu‘¡v  se je¨tˆ p©i finalizaci a p©i generov n¡ k¢du.
+  --   V˜po‡et p©¡znaku prov d¡ X_GETCONCATKIND a je ulo‘en v ka‘d‚m uzlu
+  -- ve slo‘ce CONCATKIND. V˜po‡et je podobn˜ pr–bˆhu typov‚ kontroly &.
+  --------------------------------------------------------------------------------------------------
+
+  -- zp–sob z©etˆzen¡ uzlu vzhledem k typu
+  nodeconcatkind = enum
+      nck_unknown;                               -- nev¡ se
+      nck_substring;                             -- pod©etˆzec
+      nck_subarray;                              -- podpole
+      nck_component;                             -- komponenta
+      end enum;                                  
+
+var
+  nodeconcatkindtxt : const array nodeconcatkind of t_char32str := [
+      for nck_unknown   use 'unknown',
+      for nck_substring use 'substring',
+      for nck_subarray  use 'subarray',
+      for nck_component use 'component'];
+
+type
+  -- index typu 
+  typeindex        = t_unsigned;
+
+  -- seznam typ–
+  typeviewlist     = string of record
+      t            : typeview;                   -- typ
+      el           : typeindex;                  -- indexy typ–, ze kter˜ch byl odvozen
+      er           : typeindex;                  -- indexy typ–, ze kter˜ch byl odvozen
+      psym         : pentity;                    -- souvisej¡c¡ symbol (p©et¡‘en˜ oper tor)
+      end record;
+  ptypeviewlist    = ^typeviewlist;
+
+const
+  tlistinit        = 4;
+  tlistdelta       = 4;
+
+
+
+---- Dop©edn‚ deklarace ----------------------------------------------------------------------------
+
+class expnode;          type pexpnode         = ^class expnode;
+class expnoper;         type pexpnoper        = ^class expnoper;
+class expambiguous;     type pexpambiguous    = ^class expambiguous;
+class expoper;          type pexpoper         = ^class expoper;
+class expunary;         type pexpunary        = ^class expunary;
+class expcomponent;     type pexpcomponent    = ^class expcomponent;
+class expimm;           type pexpimm          = ^class expimm;
+class exprange;         type pexprange        = ^class exprange;
+class explist;          type pexplist         = ^class explist;
+class expitem;          type pexpitem         = ^class expitem;
+class expindex;         type pexpindex        = ^class expindex;
+class expref;           type pexpref          = ^class expref;
+class expderef;         type pexpderef        = ^class expderef;
+class expattrib;        type pexpattrib       = ^class expattrib;
+class expaggregate;     type pexpaggregate    = ^class expaggregate;
+class expcallspec;      type pexpcallspec     = ^class expcallspec;
+class expthis;          type pexpthis         = ^class expthis;
+class expcurrent;       type pexpcurrent      = ^class expcurrent;
+
+
+
+----------------------------------------------------------------------------------------------------
+class public expnode = extend c_flex_class;
+-- Uzel
+----------------------------------------------------------------------------------------------------
+
+    var
+      ntype        : nodetype;                   -- typ uzlu
+      nclass       : nodeclass;                  -- t©¡da uzlu
+      nflags       : nodeflagset;                -- dal¨¡ p©¡znaky
+      org          : expphase;                   -- f ze vzniku tohoto uzlu
+      zprac        : expphase;                   -- f ze zpracov n¡ tohoto uzlu
+      sub          : pexpnode;                   -- pod©¡zen˜ uzel
+      next         : pexpnode;                   -- n sleduj¡c¡ uzel
+      t            : typeview;                   -- typ uzlu
+      pos          : lexposblock;                -- za‡ tek a konec uzlu ve zdrojov‚m textu
+      rta_avail    : rtattribset;                -- dynamick‚ atributy poskytovan‚ t¡mto uzlem
+      rta_used     : rtattribset;                -- dynamick‚ atributy pou‘it‚ v nad©azen‚m uzlu
+      concatkind   : nodeconcatkind;             -- zp–sob z©etˆzen¡ uzlu
+
+    ------------------------------------------------------------------------------------------------
+    static newtype (
+      --curr       : in out tentity;             -- p©ekl dan˜ prvek
+        curr       : in tcontext;                -- p©ekl dan˜ prvek
+        stype      : in tdatatype;               -- datov˜ typ
+        size       : in tunidata_size);          -- velikost
+    -- Vytvo©¡ do‡asn˜ typ a dopln¡ do nˆj implicitn¡ hodnoty.
+    ------------------------------------------------------------------------------------------------
+    static settype (
+        curr       : in tcontext;                -- p©ekl dan˜ prvek
+        ptyp       : in pentity_type);           -- typ
+    -- P©i©ad¡ v˜razu typ.
+    ------------------------------------------------------------------------------------------------
+    static settypeunchecked (
+        curr       : in tcontext;                -- p©ekl dan˜ prvek
+        ptyp       : in pentity_type);           -- typ
+    -- P©i©ad¡ v˜razu Unchecked view typu.
+    ------------------------------------------------------------------------------------------------
+    static setunchecked (
+        curr       : in tcontext;                -- p©ekl dan˜ prvek
+        ptyp       : in typeview);               -- typ
+    -- P©i©ad¡ typ v˜razu UNCHECKED.
+    ------------------------------------------------------------------------------------------------
+    virtual gettype (
+        index      : in typeindex;               -- kolik t˜ typ chceme
+        typ        : out ptypeview);             -- typ
+    -- INDEX-t˜ typ uzlu
+    ------------------------------------------------------------------------------------------------
+    virtual gettypecount return typeindex;
+    -- Po‡et typ– uzlu.
+    ------------------------------------------------------------------------------------------------
+    virtual getsymbol return pentity;
+    -- Symbol souvisej¡c¡ s uzlem (je-li nˆjak˜).
+    ------------------------------------------------------------------------------------------------
+    virtual dump return t_char32str;
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    static loadpos (
+        npos       : in nodeposset;              -- nastavovan  pozice
+        level      : in lexlevel);               -- kter˜ lexik ln¡ symbol
+    -- Nastav¡ pozici uzlu podle pozice posledn¡ho symbolu.
+    ------------------------------------------------------------------------------------------------
+    static setpos (
+        _pos       : in lexposblock);            -- pozice uzlu
+    -- Nastav¡ pozici uzlu podle dodan‚ pozice.
+    ------------------------------------------------------------------------------------------------
+    static setpospart (
+        npos       : in nodeposset;              -- nastavovan  pozice
+        _pos       : in lexpos);                 -- pozice lexik ln¡ho symbolu
+    -- Nastav¡ pozici uzlu podle dodan‚ pozice symbolu.
+    ------------------------------------------------------------------------------------------------
+    static getpos (
+        _pos       : out lexposblock);           -- pozice v˜razu
+    -- Zjist¡ pozici v˜razu.
+    ------------------------------------------------------------------------------------------------
+    static errpos;
+    -- Dosad¡ pozici v˜razu do posledn¡ho chybov‚ho hl ¨en¡.
+    ------------------------------------------------------------------------------------------------
+    end expnode;
+
+
+----------------------------------------------------------------------------------------------------
+class public expambiguous = extend expnode;
+-- Uzel s nejednozna‡nˆ ur‡en˜m typem
+----------------------------------------------------------------------------------------------------
+
+    ----- %%TECH Reprezentace uzl– s nejednozna‡n˜m typem ------------------------------------------
+    -- Uzly, kter‚ mohou m¡t nejednozna‡n˜ typ, jsou odvozeny od EXPAMBIGUOS.
+    -- Ka‘d˜ typ uzlu m  p©idˆlen index (od nuly) odvozen˜ od po©ad¡ p©i©azen¡
+    -- k uzlu.
+    --   Z v˜konnostn¡ch d–vod– se pou‘¡v  nestandardn¡ zp–sob ulo‘en¡ seznamu
+    -- typ–. Nult˜ typ je ulo‘en ve slo‘ce EXPNODE.T a indexy typ– podv˜raz–,
+    -- ze kter˜ch byl odvozen jsou v EXPAMBIGUOUS.EL0 a ER0, symbol v PSYM0.
+    -- Prvn¡ a‘ (TLEN-1)-t˜ typ je ulo‘en v poli TLIST.
+    --   Vzhledem k tomu, ‘e vˆt¨ina v˜raz– ma typ ur‡en jednozna‡nˆ, p©eva‘uj¡
+    -- rychlostn¡ v˜hody tohoto ©e¨en¡ nad jeho nesyst‚movost¡.
+    ------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static addtype (
+        typ        : in typeview;                -- p©id van˜ typ
+        el         : in typeindex;               -- indexy zdrojov˜ch typ–
+        er         : in typeindex;               -- indexy zdrojov˜ch typ–
+        psym       : in pentity);                -- souvisej¡c¡ symbol
+    -- Do tabulku typ– p©id  zadan˜ typ (i kdyby byl redundantn¡).
+    ------------------------------------------------------------------------------------------------
+    procedure checktype (
+        psym       : in pentity)                 -- souvisej¡c¡ symbol
+                   return t_logical;             -- T-nalezen takov˜ typ
+    -- True, m -li v˜raz p©i©azen typ, se kter˜m souvis¡ zadan˜ symbol.
+    ------------------------------------------------------------------------------------------------
+    static gettypeinfo (
+        index      : in typeindex;               -- kolik t˜ typ chceme
+        typ        : out ptypeview;              -- typ
+        eli        : out typeindex;              -- indexy zdrojov˜ch typ–
+        eri        : out typeindex;              -- indexy zdrojov˜ch typ–
+        psym       : out pentity);               -- souvisej¡c¡ symbol
+    -- INDEX-t˜ typ uzlu v‡etnˆ dopl¤kov˜ch informac¡.
+    ------------------------------------------------------------------------------------------------
+    static gettypesym (
+        index      : in typeindex;               -- kolik t˜ typ chceme
+        psym       : out pentity);               -- souvisej¡c¡ symbol
+    -- Symbol souvisej¡c¡ s INDEX-t˜m typem uzlu.
+    ------------------------------------------------------------------------------------------------
+    static gettypeorigin (
+        index      : in typeindex;               -- kolik t˜ typ chceme
+        eli        : out typeindex;              -- indexy zdrojov˜ch typ–
+        eri        : out typeindex);             -- indexy zdrojov˜ch typ–
+    -- Zdrojov‚ typy souvisej¡c¡ s INDEX-t˜m typem uzlu.
+    ------------------------------------------------------------------------------------------------
+    static resolve (
+        index      : in typeindex);              -- kolik t˜ typ chceme
+    -- Zvol¡ INDEX-t˜ typ jako definitivn¡.
+    ------------------------------------------------------------------------------------------------
+    static isresolved return t_logical;
+    -- True, m -li uzel p©i©azen definitivn¡ typ.
+    ------------------------------------------------------------------------------------------------
+
+  protected
+
+    var
+      tlist        : ptypeviewlist;              -- seznam typ–
+      set0         : t_logical;                  -- ji‘ byl pou‘it nult˜ typ
+      el0          : typeindex;                  -- z ‡eho byl odvozen nult˜ typ (EXPNODE.T)
+      er0          : typeindex;                  -- z ‡eho byl odvozen nult˜ typ (EXPNODE.T)
+      psym0        : pentity;                    -- souvisej¡c¡ symbol
+      resolved     : t_logical;                  -- T-vyhodnoceny nejednozna‡n‚ typy
+
+    end expambiguous;
+
+  ----- %%TECH P©irozen˜ typ operand– --------------------------------------------------------------
+  -- Pro ka‘d˜ oper tor se vypo‡¡t v  tzv. p©irozen˜ typ operand–. P©i
+  -- generov n¡ se v¨echny operandy p©ed proveden¡m operace konvertuj¡ na
+  -- tento typ.
+  -- P©¡klady:
+  --   -- pro aritmetick‚ operat rory + - je p©irozen˜ typ operand– shodn˜ s
+  --      typem uzlu (v˜sledku)
+  --   -- pro rela‡n¡ oper tory < > je p©irozen˜ typ operand– stejn˜ jako
+  --      kdyby se prov dˆlo nap©¡klad s‡¡t n¡
+  --------------------------------------------------------------------------------------------------
+
+type
+  -- arita oper toru
+  expoperarity     = enum
+      eoa_1;                                     -- un rn¡ oper tor
+      eoa_2;                                     -- bin rn¡ oper tor
+      eoa_n;                                     -- n- rn¡ oper tor
+      end enum;
+
+----------------------------------------------------------------------------------------------------
+class public expnoper = extend expambiguous;
+-- Obecn˜ oper tor
+----------------------------------------------------------------------------------------------------
+
+    var
+      assign       : t_logical;                  -- T-p©i©azen¡
+      arity        : expoperarity;               -- arita oper toru
+
+    end expnoper;
+
+
+  ----- %%TECH -----------------------------------------------------------
+  -- Postup p©i p©id v n¡ nov˜ch bin rn¡ch oper tor–:
+  --   1. do EXPOPERTYPE p©idat identifik tor
+  --   2. informace o oper toru za©adit do EXPOPERINFO
+  --   3. jeho textovou reprezentaci za©adit do EXPOPERTXT
+  --   4. rozpozn n¡ oper toru podle lexik ln¡ho elementu za©adit
+  --      do LEXTOBINARYOPER
+  --   5. nov˜ oper tor zohlenit v p©ekladu zkr cen‚ho p©i©azen¡
+  --      (CX_EXPR.A_PRIKAZ) - zak zat nebo doplnit p©eklad prav‚ strany
+  --   6. doplnit souvisej¡c¡ pravidla do ©¡d¡c¡ch tabulek v CX_TYPE
+  --------------------------------------------------------------------------------------------------
+
+type
+  -- typy oper tor–
+  expopertype      = enum
+      op_none;
+      -- p©i©azen¡
+      op_assign;
+      -- aritmetick‚ oper tory
+      op_add; op_sub;
+      op_mul; op_div; op_idiv; op_imod;
+      op_shl; op_shr;
+      -- rela‡n¡ oper tory
+      -- %%TECH Pozor ! Na po©ad¡ deklarace rela‡n¡ch oper tor– je z visl˜
+      -- gener tor k¢du (resp. jeho intern¡ tabulky)
+      op_eq; op_ne; op_lt; op_le; op_gt; op_ge;
+      op_in; op_notin;
+      -- mno‘inov‚ oper tory
+      op_union; op_diff; op_isect;
+      -- ©etˆzcov‚ oper tory
+      op_concat;
+      -- logick‚ oper tory
+      op_and; op_or; op_xor; op_and_then; op_or_else;
+      -- bitov‚ oper tory
+      op_bitand; op_bitor; op_bitxor;
+      -- r–zn‚ dal¨¡ oper tory
+      op_op1 {; op_op2; op_op3; op_op4};
+      end enum;
+  expopertypeset = set of expopertype;
+
+var
+  -- textov  reprezentace bin rn¡ch oper tor– pro dump
+  expopertxt       : const array expopertype of t_char32str := [
+      for op_none     use '',
+      -- p©i©azen¡
+      for op_assign   use ':=',
+      -- aritmetick‚ oper tory
+      for op_add      use '+',
+      for op_sub      use '-',
+      for op_mul      use '*',
+      for op_div      use '/',
+      for op_idiv     use 'DIV',
+      for op_imod     use 'MOD',
+      for op_shl      use 'SHL',
+      for op_shr      use 'SHR',
+      -- rela‡n¡ oper tory
+      for op_eq       use '=',
+      for op_ne       use '<>',
+      for op_lt       use '<',
+      for op_le       use '<=',
+      for op_gt       use '>',
+      for op_ge       use '>=',
+      for op_in       use 'IN',
+      for op_notin    use 'NOT IN',
+      -- mno‘inov‚ oper tory
+      for op_union    use 'UNION',
+      for op_diff     use 'DIFF',
+      for op_isect    use 'INTERSECT',
+      -- ©etˆzcov‚ oper tory
+      for op_concat   use '&',
+      -- logick‚ oper tory
+      for op_and      use 'AND',
+      for op_or       use 'OR',
+      for op_xor      use 'XOR',
+      for op_and_then use 'AND THEN',
+      for op_or_else  use 'OR ELSE',
+      -- bitov‚ oper tory
+      for op_bitand   use 'BIT AND',
+      for op_bitor    use 'BIT OR',
+      for op_bitxor   use 'BIT XOR',
+      -- r–zn‚ dal¨¡ oper tory
+      for op_op1      use '::' {, op_op2, op_op3, op_op4}];
+
+  ----- %%TECH Priorita oper tor– ------------------------------------------------------------------
+  -- Tabulky priorit oper tor– maj¡ pouze pomocn˜ v˜znam a vyjad©uj¡
+  -- postaven¡ oper toru v hierarchii BNF. €¡slov n¡ priority je stejn‚
+  -- pro un rn¡ i bin rn¡ oper tory.
+  --   Pou‘¡vaj¡ se nap©. p©i sestavov n¡ zkr cen‚ho p©i©azen¡
+  -- (viz CX_PARSE.A_PRIKAZ).
+  --------------------------------------------------------------------------------------------------
+
+type
+  -- ¨¡©en¡ typu v˜sledku do podv˜raz– v top-down f z¡ch anal˜zy
+  typecontrol      = enum
+      tc_none;                                   -- typ dodan˜ shora d le ne¨¡©it
+      tc_left;                                   -- pouze do lev‚ho operandu
+      tc_right;                                  -- pouze do prav‚ho operandu
+      tc_both;                                   -- do obou operand–
+      tc_concat;                                 -- do obou operand–, podle pravidel pro z©etˆzen¡
+      end enum;
+
+  -- asociativita oper toru
+  expoperasoc      = enum
+      eoa_none;                                  -- neasociativn¡: a op b op c op d = ((a op b) op c) op d
+      eoa_full;                                  -- asociativn¡:   a op b op c = (a op b) op c = a op (b op c)
+      eoa_pfull;                                 -- p-asociativn¡: a op b op c op d = a op (b jin˜_op c) op d
+      end enum;
+  expoperasocset   = set of expoperasoc;
+
+  -- komutativita oper tor–
+  expopercom       = enum
+      eoc_none;                                  -- nekomutativn¡: a op b = a op b
+      eoc_full;                                  -- komutativn¡:   a op b = b op a
+      eoc_pfull;                                 -- p-komutativn¡: a op b op c = a op c op b
+      end enum;
+  expopercomset    = set of expopercom;
+
+type
+  -- informace o bin rn¡m oper toru
+  toperinfo        = record
+      pri          : t_unsigned;                 -- priorita
+      com          : expopercom;                 -- komutativita
+      asoc         : expoperasoc;                -- asociativita
+      tc           : typecontrol;                -- ¨¡©en¡ typu do podv˜raz–
+      oc           : toperclass;                 -- t©¡da operace
+      oop          : tooperator;                 -- odpov¡daj¡c¡ p©et¡‘iteln˜ oper tor
+      cmp          : tcmpoper;                   -- odpov¡daj¡c¡ porovn vac¡ operace
+      tdiff        : t_logical;                  -- mezi typem v˜sledku a typy operand– je
+                                                 -- podstatn˜ rozd¡l (viz CX_UTIL.X_RESOLVE)
+      end record;
+
+var
+  -- vlastnosti bin rn¡ch oper tor–
+  expoperinfo      : const array expopertype of toperinfo := [
+      for op_none      use [for pri use 0, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_none       , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
+      -- p©i©azen¡
+      for op_assign    use [for pri use 1, for com use eoc_none , for asoc use eoa_none , for tc use tc_right, for  oc use toc_assign     , for oop use oop_assign, for cmp use cmp_none, for tdiff use false],
+      -- aritmetick‚ oper tory
+      for op_add       use [for pri use 4, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_aritm      , for oop use oop_add   , for cmp use cmp_none, for tdiff use false],
+      for op_sub       use [for pri use 4, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both, for   oc use toc_aritm      , for oop use oop_sub   , for cmp use cmp_none, for tdiff use false],
+      for op_mul       use [for pri use 6, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_aritm      , for oop use oop_mul   , for cmp use cmp_none, for tdiff use false],
+      for op_div       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both, for   oc use toc_raritm     , for oop use oop_div   , for cmp use cmp_none, for tdiff use false],
+      for op_idiv      use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both, for   oc use toc_iaritm     , for oop use oop_idiv  , for cmp use cmp_none, for tdiff use false],
+      for op_imod      use [for pri use 6, for com use eoc_none , for asoc use eoa_none , for tc use tc_both, for   oc use toc_iaritm     , for oop use oop_imod  , for cmp use cmp_none, for tdiff use false],
+      for op_shl       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_left, for   oc use toc_iaritm     , for oop use oop_shl   , for cmp use cmp_none, for tdiff use false],
+      for op_shr       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_left, for   oc use toc_iaritm     , for oop use oop_shr   , for cmp use cmp_none, for tdiff use false],
+      -- rela‡n¡ oper tory
+      for op_eq        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_compare, for oop use oop_eq    , for cmp use cmp_eq  , for tdiff use true ],
+      for op_ne        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_compare, for oop use oop_ne    , for cmp use cmp_ne  , for tdiff use true ],
+      for op_lt        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_order  , for oop use oop_lt    , for cmp use cmp_lt  , for tdiff use true ],
+      for op_le        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_order  , for oop use oop_le    , for cmp use cmp_le  , for tdiff use true ],
+      for op_gt        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_order  , for oop use oop_gt    , for cmp use cmp_gt  , for tdiff use true ],
+      for op_ge        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_order  , for oop use oop_ge    , for cmp use cmp_ge  , for tdiff use true ],
+      for op_in        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_member , for oop use oop_none  , for cmp use cmp_none, for tdiff use true ],
+      for op_notin     use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_member , for oop use oop_none  , for cmp use cmp_none, for tdiff use true ],
+      -- mno‘inov‚ oper tory
+      for op_union     use [for pri use 4, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_set        , for oop use oop_add   , for cmp use cmp_none, for tdiff use false],
+      for op_diff      use [for pri use 4, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both, for   oc use toc_set        , for oop use oop_sub   , for cmp use cmp_none, for tdiff use false],
+      for op_isect     use [for pri use 6, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_set        , for oop use oop_mul   , for cmp use cmp_none, for tdiff use false],
+      -- ©etˆzcov‚ oper tory
+      for op_concat    use [for pri use 4, for com use eoc_none , for asoc use eoa_full , for tc use tc_concat, for oc use toc_concat     , for oop use oop_concat, for cmp use cmp_none, for tdiff use false],
+      -- logick‚ oper tory
+      for op_and       use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_logical    , for oop use oop_and   , for cmp use cmp_none, for tdiff use false],
+      for op_or        use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_logical    , for oop use oop_or    , for cmp use cmp_none, for tdiff use false],
+      for op_xor       use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_logical    , for oop use oop_xor   , for cmp use cmp_none, for tdiff use false],
+      for op_and_then  use [for pri use 2, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_logical    , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
+      for op_or_else   use [for pri use 2, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_logical    , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
+                       -- %%X/%%LANG Pro oper tory AND THEN a OR ELSE je
+                       -- typov  kontrola trochu jin  ne‘ pro AND a OR !
+                       -- Zohlednit v p©¡ru‡ce.
+      -- bitov‚ oper tory
+      for op_bitand    use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_bit        , for oop use oop_and   , for cmp use cmp_none, for tdiff use false],
+      for op_bitor     use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_bit        , for oop use oop_or    , for cmp use cmp_none, for tdiff use false],
+      for op_bitxor    use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_bit        , for oop use oop_xor   , for cmp use cmp_none, for tdiff use false],
+      -- r–zn‚ dal¨¡ oper tory
+      for op_op1       use [for pri use 7, for com use eoc_none , for asoc use eoa_none , for tc use tc_left, for   oc use toc_none       , for oop use oop_op1   , for cmp use cmp_none, for tdiff use false]];
+
+----------------------------------------------------------------------------------------------------
+class public expoper = extend expnoper;
+-- Oper tor
+----------------------------------------------------------------------------------------------------
+
+    var
+      oper         : expopertype;                -- typ oper toru
+
+    ------------------------------------------------------------------------------------------------
+    static setoper (
+        _oper      : in expopertype;        -- oper tor
+        _assign    : in t_logical);         -- T-p©i©azen¡
+    -- Dosad¡ do uzlu oper tor.
+    ------------------------------------------------------------------------------------------------
+    static split (
+        el         : out pexpnode;           -- podv˜razy
+        er         : out pexpnode);          -- podv˜razy
+    -- Oddˆl¡ podv˜razy od oper toru.
+    ------------------------------------------------------------------------------------------------
+    static join (
+        el         : in pexpnode;           -- podv˜razy
+        er         : in pexpnode);          -- podv˜razy
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    static get (
+        el      : out pexpnode;           -- podv˜razy
+        er      : out pexpnode);          -- podv˜razy
+    -- Vr t¡ podv˜razy oper toru.
+    ------------------------------------------------------------------------------------------------
+    end expoper;
+
+  ----- %%TECH -------------------------------------------------------------------------------------
+  -- Postup p©i p©id v n¡ nov˜ch un rn¡ch oper tor–:
+  --     viz obdobn˜ postup pro bin rn¡ oper tory
+  --------------------------------------------------------------------------------------------------
+type
+  -- typy oper tor–
+  expunarytype  = enum
+      un_none;
+      -- un rn¡ aritmetick‚ oper tory
+      un_plus; un_minus;
+      -- un rn¡ oper tory s nejvy¨¨¡ prioritou
+      un_not; un_abs; un_succ; un_pred;
+      -- bitov‚ un rn¡ oper tory
+      un_bitnot;
+      -- mno‘inov‚ un rn¡ oper tory
+      un_setnot;
+      end enum;
+  expunarytypeset  = set of expunarytype;
+
+var
+  -- textov  reprezentace un rn¡ch oper tor– pro dump
+  expunarytxt      : const array expunarytype of t_char32str := [
+      for un_none   use '',
+      -- un rn¡ aritmetick‚ oper tory
+      for un_plus   use 'UNARY +',
+      for un_minus  use 'UNARY -',
+      -- un rn¡ oper tory s nejvy¨¨¡ prioritou
+      for un_not    use 'NOT',
+      for un_abs    use 'ABS',
+      for un_succ   use 'SUCC',
+      for un_pred   use 'PRED',
+      -- bitov‚ un rn¡ oper tory
+      for un_bitnot use 'BIT NOT',
+      -- mno‘inov‚ un rn¡ oper tory
+      for un_setnot use 'SET NOT'];
+
+type      
+  -- informace o un rn¡m oper toru
+  tunaryinfo       = record
+      pri          : t_unsigned;                 -- priorita
+      oop          : tooperator;                 -- odpov¡daj¡c¡ p©et¡‘iteln˜ oper tor
+      end record;
+
+var
+  -- priorita un rn¡ch oper tor–
+  expunaryinfo     : const array expunarytype of tunaryinfo := [
+      for un_none      use [for pri use 0, for oop use oop_none     ],
+      -- un rn¡ aritmetick‚ oper tory
+      for un_plus      use [for pri use 5, for oop use oop_add      ],
+      for un_minus     use [for pri use 5, for oop use oop_sub      ],
+      -- un rn¡ oper tory s nejvy¨¨¡ prioritou
+      for un_not       use [for pri use 8, for oop use oop_not      ],
+      for un_abs       use [for pri use 8, for oop use oop_abs      ],
+      for un_succ      use [for pri use 8, for oop use oop_succ     ],
+      for un_pred      use [for pri use 8, for oop use oop_pred     ],
+      for un_bitnot    use [for pri use 8, for oop use oop_not      ],
+      for un_setnot    use [for pri use 8, for oop use oop_not      ]];
+
+----------------------------------------------------------------------------------------------------
+class public expunary = extend expnoper;
+-- Un rn¡ oper tor
+----------------------------------------------------------------------------------------------------
+
+    var
+      oper         : expunarytype;               -- typ oper toru
+
+    ------------------------------------------------------------------------------------------------
+    static setoper (
+        _oper      : in expunarytype;            -- oper tor
+        _assign    : in t_logical);              -- T-p©i©azen¡
+    -- Dosad¡ do uzlu oper tor.
+    ------------------------------------------------------------------------------------------------
+    static split (
+        el         : out pexpnode);              -- podv˜razy
+    -- Oddˆl¡ podv˜raz od oper toru.
+    ------------------------------------------------------------------------------------------------
+    static join (
+        el         : in pexpnode);               -- podv˜razy
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    static get (
+        el         : out pexpnode);              -- podv˜raz
+    -- Vr t¡ podv˜raz oper toru.
+    ------------------------------------------------------------------------------------------------
+    end expunary;
+
+----------------------------------------------------------------------------------------------------
+class public expcomponent = extend expnode;
+-- Komponenta
+----------------------------------------------------------------------------------------------------
+
+    var
+      id           : pentityident;               -- identifik tor komponenty
+      s            : cc_sym.tentitysearch;       -- informace o nalezen‚m symbolu
+
+    ------------------------------------------------------------------------------------------------
+    static setid (
+        _id        : in tentityident);           -- identifik tor
+    -- Dosad¡ do komponenty jej¡ identifik tor.
+    ------------------------------------------------------------------------------------------------
+    end expcomponent;
+
+----------------------------------------------------------------------------------------------------
+class public expimm = extend expnode;
+-- P©¡m  hodnota (konstanta)
+----------------------------------------------------------------------------------------------------
+
+    var
+      imm          : timm_value;                 -- hodnota
+      immkind      : timmentrykind;              -- druh p©¡m‚ hodnoty
+      linked       : linkstatus;                 -- p©¡m‚ hodnoty se nˆkdy t‚‘ linkuj¡...
+
+    end expimm;
+
+type    
+  -- druh rozsahu
+  exprangekind     = enum
+      erk_dynamic;                               -- dynamick˜ rozsah
+      erk_static;                                -- statick˜ rozsah
+      erk_single;                                -- rozsah typu 1..1 (jen const. meze)
+      erk_null;                                  -- pr zdn˜ rozsah (Null range)
+      end enum;
+  exprangekindset  = set of exprangekind;
+
+const
+  -- konstantn¡ rozsahy
+  erks_const       = exprangekindset:[erk_static,erk_single];
+
+----------------------------------------------------------------------------------------------------
+class public exprange = extend expambiguous;
+-- Rozsah
+----------------------------------------------------------------------------------------------------
+
+    var
+      rkind        : exprangekind;               -- druh rozsahu
+
+    ------------------------------------------------------------------------------------------------
+    static split (
+        el         : out pexpnode;               -- podv˜razy
+        er         : out pexpnode);              -- podv˜razy
+    -- Oddˆl¡ podv˜razy od oper toru.
+    ------------------------------------------------------------------------------------------------
+    static join (
+        el         : in pexpnode;                -- podv˜razy
+        er         : in pexpnode);               -- podv˜razy
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    static get (
+        el         : out pexpnode;               -- podv˜razy
+        er         : out pexpnode);              -- podv˜razy
+    -- Vr t¡ podv˜razy oper toru.
+    ------------------------------------------------------------------------------------------------
+    end exprange;
+
+----------------------------------------------------------------------------------------------------
+class public explist = extend expnode;
+-- Seznam v˜raz–
+----------------------------------------------------------------------------------------------------
+
+    var
+      qualified    : t_logical := true;          -- T-kvalifikovan˜ seznam, F-nekvalifikovan˜
+
+    ------------------------------------------------------------------------------------------------
+    static split (
+        el         : out pexpnode;               -- prefix
+        arglist    : out pexpitem);              -- seznam argument–
+    -- Oddˆl¡ prefix a argumenty.
+    ------------------------------------------------------------------------------------------------
+    static join (
+        el         : in pexpnode;                -- prefix
+        arglist    : in pexpitem);               -- seznam argument–
+    -- Slou‡¡ prefix a argumenty.
+    ------------------------------------------------------------------------------------------------
+    static get (
+        el         : out pexpnode;               -- prefix
+        arglist    : out pexpitem);              -- seznam argument–
+    -- Vr t¡ prefix a argumenty.
+    ------------------------------------------------------------------------------------------------
+    static getarglist (
+        arglist    : out pexpitem);              -- seznam argument–
+    -- Vr t¡ argumenty.
+    ------------------------------------------------------------------------------------------------
+    end explist;
+
+type
+  -- typ polo‘ky seznamu v˜raz–
+  expitemtype      = enum
+      ei_empty;                                  -- pozi‡n¡, implicitn¡
+      ei_expr;                                   -- pozi‡n¡, v˜raz
+      ei_ident;                                  -- kl¡‡ov , dan  identifik torem
+      ei_choice;                                 -- kl¡‡ov , dan  v˜bˆrem
+      ei_others;                                 -- kl¡‡ov , OTHERS
+      end enum;
+  expitemtypeset   = set of expitemtype;
+  
+----------------------------------------------------------------------------------------------------
+class public expitem = extend expnode;
+-- Polo‘ka seznamu v˜raz–
+----------------------------------------------------------------------------------------------------
+
+    var
+      itype        : expitemtype;                -- typ polo‘ky
+      id           : pentityident;               -- vazba polo‘ky
+      sym          : pentity;                    -- souvisej¡c¡ symbol (pro zjednodu¨en¡)
+
+    ------------------------------------------------------------------------------------------------
+    static setid (
+        _id        : in tentityident);           -- identifik tor
+    -- Dosad¡ do polo‘ky jej¡ identifik tor.
+    ------------------------------------------------------------------------------------------------
+    static split (
+        el         : out pexpnode;               -- podv˜razy
+        er         : out pexpnode);              -- podv˜razy
+    -- Oddˆl¡ podv˜razy od oper toru.
+    ------------------------------------------------------------------------------------------------
+    static join (
+        el         : in pexpnode;                -- podv˜razy
+        er         : in pexpnode);               -- podv˜razy
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    static get (
+        el         : out pexpnode;               -- podv˜razy
+        er         : out pexpnode);              -- podv˜razy
+    -- Vr t¡ podv˜razy oper toru.
+    ------------------------------------------------------------------------------------------------
+    end expitem;
+
+type
+  -- typ indexu (selektoru) pole
+  expindextype     = enum
+      eix_component;                             -- index ur‡uje komponentu
+      eix_slice;                                 -- index je ©ez
+      end enum;
+
+----------------------------------------------------------------------------------------------------
+class public expindex = extend expnode;
+-- Selektor pole
+----------------------------------------------------------------------------------------------------
+
+    var
+      itype        : expindextype;               -- typ indexu
+
+    ------------------------------------------------------------------------------------------------
+    static split (
+        el         : out pexpnode;               -- podv˜razy
+        er         : out pexpnode);              -- podv˜razy
+    -- Oddˆl¡ podv˜razy od oper toru.
+    ------------------------------------------------------------------------------------------------
+    static join (
+        el         : in pexpnode;                -- podv˜razy
+        er         : in pexpnode);               -- podv˜razy
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    static get (
+        el         : out pexpnode;               -- podv˜razy
+        er         : out pexpnode);              -- podv˜razy
+    -- Vr t¡ podv˜razy oper toru.
+    ------------------------------------------------------------------------------------------------
+    end expindex;
+
+----------------------------------------------------------------------------------------------------
+class public expref = extend expnode;
+-- reference
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static split (
+        el         : out pexpnode);              -- podv˜razy
+    -- Oddˆl¡ podv˜raz od oper toru.
+    ------------------------------------------------------------------------------------------------
+    static join (
+        el         : in pexpnode);               -- podv˜razy
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    static get (
+        el         : out pexpnode);              -- podv˜raz
+    -- Vr t¡ podv˜raz oper toru.
+    ------------------------------------------------------------------------------------------------
+    end expref;
+
+----------------------------------------------------------------------------------------------------
+class public expderef = extend expnode;
+-- dereference
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static split (
+        el         : out pexpnode);              -- podv˜razy
+    -- Oddˆl¡ podv˜raz od oper toru.
+    ------------------------------------------------------------------------------------------------
+    static join (
+        el         : in pexpnode);               -- podv˜razy
+    -- Slou‡¡ podv˜razy s oper torem.
+    ------------------------------------------------------------------------------------------------
+    static get (
+        el         : out pexpnode);              -- podv˜raz
+    -- Vr t¡ podv˜raz oper toru.
+    ------------------------------------------------------------------------------------------------
+    end expderef;
+
+----------------------------------------------------------------------------------------------------
+class public expattrib = extend explist;
+-- atribut
+----------------------------------------------------------------------------------------------------
+
+    var
+      aclass       : tattrclass;                 -- t©¡da atributu
+      atf          : tattrformal;                -- jazykem definovan˜ form ln¡ atribut
+      ata          : tattractual;                -- jazykem definovan˜ skute‡n˜ atribut
+      id           : pentityident;               -- identifik tor atributu
+      asym         : pentity_attribute;          -- souvisej¡c¡ atribut (pro zjednodu¨en¡)
+      xsym         : pentity;                    -- souvisej¡c¡ symbol - v˜sledek atributu
+
+    ------------------------------------------------------------------------------------------------
+    static setid (
+        _id        : in tentityident);           -- identifik tor
+    -- Dosad¡ identifik tor atributu.
+    ------------------------------------------------------------------------------------------------
+    end expattrib;
+
+----------------------------------------------------------------------------------------------------
+class public expaggregate = extend explist;
+-- agreg t
+----------------------------------------------------------------------------------------------------
+
+    var
+      imm          : timm_value;                 -- statick  ¨ablona agreg tu
+
+    end expaggregate;
+
+----------------------------------------------------------------------------------------------------
+class public expcallspec = extend explist;
+-- vol n¡ speci ln¡ metody
+----------------------------------------------------------------------------------------------------
+
+    var
+      spectype     : tspectype;                  -- kterou speci ln¡ metodu volat
+      spec         : pentity_special;            -- volan  spec. metoda, je-li staticky ur‡ena
+
+    end expcallspec;
+
+----------------------------------------------------------------------------------------------------
+class public expthis = extend expnode;
+-- THIS
+----------------------------------------------------------------------------------------------------
+
+    end expthis;
+
+type
+  -- CURRENT
+  tcurrentity      = enum
+      tce_entry;                                 -- speci ln¡ metoda ENTRY
+      tce_exit;                                  -- speci ln¡ metoda EXIT
+      tce_adjust;                                -- speci ln¡ metoda ADJUST
+      tce_procedure;                             -- procedura
+      tce_static;                                -- statick  metoda
+      tce_virtual;                               -- virtu ln¡ metoda
+      tce_override;                              -- p©et¡‘en¡ virtu ln¡ metody
+      tce_task;                                  -- task
+      tce_macro;                                 -- makro
+      tce_class;                                 -- t©¡da
+      tce_module;                                -- modul
+      tce_program;                               -- program
+      end enum;
+
+type
+  -- informace o entitˆ
+  tcurrentityinfo  = record
+      lex          : lexsym;                     -- odpov¡daj¡c¡ kl¡‡ov‚ slovo
+      etype        : tentitytype;                -- typ entity
+      end record;
+
+var
+  currentityinfo   : const array tcurrentity of tcurrentityinfo := [
+      for tce_entry      use [for lex use lex_entry     , for etype use et_special    ],
+      for tce_exit       use [for lex use lex_exit      , for etype use et_special    ],
+      for tce_adjust     use [for lex use lex_adjust    , for etype use et_special    ],
+      for tce_procedure  use [for lex use lex_procedure , for etype use et_procedure  ],
+      for tce_static     use [for lex use lex_static    , for etype use et_static     ],
+      for tce_virtual    use [for lex use lex_virtual   , for etype use et_virtual    ],
+      for tce_override   use [for lex use lex_override  , for etype use et_override   ],
+      for tce_task       use [for lex use lex_task      , for etype use et_task       ],
+      for tce_macro      use [for lex use lex_macro     , for etype use et_macro      ],
+      for tce_class      use [for lex use lex_class     , for etype use et_class      ],
+      for tce_module     use [for lex use lex_module    , for etype use et_module     ],
+      for tce_program    use [for lex use lex_program   , for etype use et_program    ]];
+
+----------------------------------------------------------------------------------------------------
+class public expcurrent = extend expnode;
+-- CURRENT
+----------------------------------------------------------------------------------------------------
+
+    var
+      spectype     : tspectype;                  -- kterou speci ln¡ metodu volat
+      entity       : tcurrentity;                -- vybran  entita
+
+    end expcurrent;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure newnode (
+    node           : out pexpnode;               -- uzel stromu
+    info           : in expinfo;                 -- informace o pr–bˆhu anal˜zy
+    ntype          : in nodetype);               -- typ uzlu
+-- Vytvo©en¡ nov‚ho uzlu stromu.
+----------------------------------------------------------------------------------------------------
+procedure newnodex (
+    node           : out pexpnode;               -- uzel stromu
+    info           : in expinfo;                 -- informace o pr–bˆhu anal˜zy
+    ntype          : in nodetype);               -- typ uzlu
+-- Jako NEWNODE, ale £rove¤ zpracov n¡ uzlu (EXPNODE.ZPRAC) nastav¡ na
+-- minimum.
+----------------------------------------------------------------------------------------------------
+procedure newtree (
+    node           : in out pexpnode;            -- uzel stromu
+    info           : in expinfo;                 -- informace o pr–bˆhu anal˜zy
+    ntype          : in nodetype);               -- typ uzlu
+-- Vytvo©en¡ nov‚ho podstromu.
+----------------------------------------------------------------------------------------------------
+procedure derivenode (
+    node           : out pexpnode;               -- uzel stromu                       
+    srcnode        : in pexpnode;                -- referen‡n¡ uzel                   
+    info           : in expinfo;                 -- informace o pr–bˆhu anal˜zy       
+    ntype          : in nodetype);               -- typ uzlu                          
+-- Podle dodan‚ho uzlu odvod¡ nov˜ uzel.                                      
+-- P©evezme typ, druh z©etˆzen¡, pozici a p©¡znaky. Dynamick‚ atributy se nep©eb¡raj¡.                                                               }
+----------------------------------------------------------------------------------------------------
+procedure lextobinaryoper (
+    lex            : in lexsym)                  -- lexik ln¡ symbol
+                   return expopertype;           -- odpov¡daj¡c¡ oper tor
+-- P©evede lexik ln¡ symbol na bin rn¡ oper tor
+----------------------------------------------------------------------------------------------------
+procedure lextounaryoper (
+    lex            : in lexsym)                  -- lexik ln¡ symbol
+                   return expunarytype;          -- odpov¡daj¡c¡ oper tor
+-- P©evede lexik ln¡ symbol na un rn¡ oper tor.
+----------------------------------------------------------------------------------------------------
+procedure dumptree (
+    expr_          : in pexpnode);               -- strom
+-- Dump stromu na obrazovku.
+----------------------------------------------------------------------------------------------------
+
+end cx_def;

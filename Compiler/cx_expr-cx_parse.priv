@@ -1,0 +1,1342 @@
+----------------------------------------------------------------------------------------------------
+module private cx_parse =
+-- P©eklada‡ Flexu.
+-- Syntaktick  anal˜za v˜razu.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 01.08.2001 : Vytvo©il.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure a_jvyraz : texprparseproc;
+-- Jednoduch˜ v˜raz.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure addoper (
+    expr           : in out pexpnode;            -- v˜raz
+    op             : in expopertype;             -- oper tor
+    assign         : in t_logical;               -- T-p©i©azen¡
+    pos            : in lexposblock;             -- pozice oper toru
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Do v˜razu dopln¡ bin rn¡ oper tor.
+----------------------------------------------------------------------------------------------------
+begin
+  -- zv˜¨it strom
+  newtree(expr,info,nt_operator);
+
+  -- dosadit oper tor
+  pexpoper(expr)^.setoper(op,assign);
+
+  -- pozice uzlu
+  expr^.setpos(pos);
+  end addoper;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure addunary (
+    expr           : in out pexpnode;            -- v˜raz
+    un             : in expunarytype;            -- oper tor
+    assign         : in t_logical;               -- T-p©i©azen¡
+    pos            : in lexposblock;             -- pozice oper toru
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Do v˜razu dopln¡ un rn¡ oper tor.                                          
+----------------------------------------------------------------------------------------------------
+begin
+  -- zv˜¨it strom 
+  newtree(expr,info,nt_unary);
+
+  -- dosadit oper tor 
+  pexpunary(expr)^.setoper(un,assign);
+
+  -- pozice uzlu 
+  expr^.setpos(pos);
+  end addunary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_komponenta : texprparseproc =
+-- Selektor komponenty.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol                            
+
+begin
+  -- identifik tor 
+  getlex(curr,lex);
+  case lex
+    -- identifik tor => komponenta 
+    when lex_id do
+        -- zv˜¨it strom
+        newtree(expr,info,nt_component);
+
+        -- dosadit identifik tor
+        pexpcomponent(expr)^.setid(getlexid()^);
+{
+    -- Ondra 16.7.2003 : Explicitn¡ vol n¡ speci ln¡ch metod zak z no.
+    -- ENTRY
+    when lex_entry do
+        -- zv˜¨it strom
+        newtree(expr,info,nt_callspec);
+
+        -- dosadit typ speci ln¡ metody
+        pexpcallspec(expr)^.spectype:=tst_entry;
+
+    -- EXIT
+    when lex_exit do
+        -- zv˜¨it strom
+        newtree(expr,info,nt_callspec);
+
+        -- dosadit typ speci ln¡ metody
+        pexpcallspec(expr)^.spectype:=tst_exit;
+
+    -- ADJUST
+    when lex_adjust do
+        -- zv˜¨it strom
+        newtree(expr,info,nt_callspec);
+
+        -- dosadit typ speci ln¡ metody
+        pexpcallspec(expr)^.spectype:=tst_adjust;
+}
+    -- nic jin‚ho nen¡ selektor
+    when others do
+        ce^.seterror({CCERR=}000108,ce_x_id);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+    end case;
+
+  -- pozice uzlu 
+  if expr^.sub<>nil
+    then expr^.loadpos(nps_begin,ll_prev);
+    else expr^.loadpos(nps_begin,ll_curr);
+    end if;
+  expr^.loadpos(nps_end,  ll_curr);
+  end a_komponenta;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_pole : texprparseproc =
+-- Selektor pole.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol                            
+
+begin
+  loop
+    -- vznikl nov˜ uzel 
+    newtree(expr,info,nt_index);
+
+    -- po‡ te‡n¡ pozice uzlu 
+    expr^.loadpos(nps_begin,ll_curr);
+
+    -- v˜bˆr 
+    a_vyber(curr,expr^.sub^.next,info);
+
+    -- koncov  pozice uzlu 
+    expr^.loadpos(nps_end,ll_curr);
+
+    -- ‡ rka nebo prav  hranat  z vorka 
+    until not checklex(curr,lex_comma);
+
+  -- prav  hranat  z vroka 
+  if followlex(curr,lex_rbra) then
+    ce^.seterror({CCERR=}000109,ce_x_rbra);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  end a_pole;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_deref : texprparseproc =
+-- Dereference.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol                            
+
+begin
+  -- vznikl nov˜ uzel 
+  newtree(expr,info,nt_deref);
+
+  -- Ondra 11.10.2001 : Poznamenat do jm‚na, ‘e se jm‚no bude dereferencovat
+  expr^.sub^.nflags+nodeflagset:[nf_dereference];
+
+  -- pozice
+  expr^.loadpos(nps_both,ll_curr);
+  end a_deref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_agregat : texprparseproc =
+-- Agreg t.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  last             : pexpitem;                   -- prvek agreg tu
+  choice           : pexpnode;                   -- v˜bˆr                                       
+  pozicni          : t_logical;                  -- T-jsou povoleny pozi‡n¡ parametry           
+
+begin
+  -- vznikl nov˜ uzel 
+  newtree(expr,info,nt_aggregate);
+  if expr^.sub=nil then pexplist(expr)^.qualified:=false; end if;
+
+  -- pozice 
+  expr^.loadpos(nps_begin,ll_curr);
+
+  -- %%TECH Pozor: Podv˜razy jsou uspo© d ny trochu nelogicky. Vazba FOR V˜bˆr USE V˜raz vytvo©¡ 
+  -- strom ve tvaru:                              
+  --                                                                          
+  --       o  EXPR  = NT_ITEM                                                  
+  --       |                                                                  
+  --       | SUB      SUB^.NEXT                                               
+  --       +--------+                                                         
+  --     V˜raz    V˜bˆr                                                       
+  --                                                                          
+  -- L‚pe se s t¡m pracuje v dal¨¡ anal˜ze, proto‘e V˜bˆr nen¡ v‘dy uveden.   
+
+  looklex(curr,lex);
+  if lex<>lex_rbra then
+    last:=nil;
+    pozicni:=true;
+    loop
+      -- nov˜ prvek agreg tu 
+      if last=nil
+        then
+          newnode(pexpnode(last),info,nt_item);
+          if pexplist(expr)^.qualified
+            then expr^.sub^.next:=last
+            else expr^.sub:=last;
+            end if;
+        else
+          newnode(last^.next,info,nt_item);
+          pexpnode(last):=last^.next;
+          end if;
+
+      -- mohlo by b˜t FOR 
+      if checklex(curr,lex_for)
+
+        -- FOR V˜bˆr USE / FOR OTHERS USE 
+        then
+          if checklex(curr,lex_others)
+
+            -- OTHERS 
+            then
+              -- typ slo‘ky 
+              last^.itype:=ei_others;
+
+            -- v˜bˆr 
+            else
+              -- typ slo‘ky 
+              last^.itype:=ei_choice;
+
+              -- v˜bˆr 
+              choice:=nil;
+              a_vyber(curr,choice,info);
+              end if;
+
+          -- USE 
+          if followlex(curr,lex_use) then
+            ce^.seterror({CCERR=}000110,ce_x_use);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            end if;
+
+          -- d le jsou povoleny jen kl¡‡ov‚ prvky 
+          pozicni:=false;
+
+        -- nen¡ 
+        else
+          -- typ slo‘ky 
+          last^.itype:=ei_expr;
+
+          -- jsou povoleny pozi‡n¡ prvky ? 
+          if not pozicni then
+            ce^.seterror({CCERR=}000111,ce_i_parorder);
+            ce^.sethint(hint_expr_positional_item);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+          end if;
+
+      -- hodnota slo‘ky (obecnˆ v˜bˆr) 
+      a_vyber(curr,last^.sub,info);
+
+      -- nezapomenout do v˜razu za©adit FOR V˜bˆr USE 
+      if last^.itype=ei_choice then last^.sub^.next:=choice; end if;
+
+      -- bylo to FOR OTHERS USE, nic dal¨¡ho nesm¡ n sledovat 
+      -- ‡ rka nebo prav  hranat  z vorka 
+      until (last^.itype=ei_others) or not checklex(curr,lex_comma);
+    end if;
+
+  -- prav  hranat  z vroka 
+  if followlex(curr,lex_rbra) then
+    ce^.seterror({CCERR=}000112,ce_x_rbra);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- pozice 
+  expr^.loadpos(nps_end,ll_curr);
+  end a_agregat;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_atribut : texprparseproc =
+-- Atribut.
+----------------------------------------------------------------------------------------------------
+with
+  cc_attr;
+  
+var
+  id               : pentityident;               -- identifik tor atributu
+
+begin
+  -- zv˜¨it strom
+  newtree(expr,info,nt_attrib);
+
+  -- po‡ te‡n¡ pozice
+  expr^.loadpos(nps_begin,ll_curr);
+
+  -- identifik tor atributu
+  a_attrid(curr,id);
+  pexpattrib(expr)^.setid(id^);
+
+{
+  -- parametry atributu 
+  if checklex(curr,lex_lpar) then
+    u_nimplemented(39);
+    end if;
+}
+  -- koncov  pozice uzlu 
+  expr^.loadpos(nps_end,ll_curr);
+  end a_atribut;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_list : texprparseproc =
+-- Seznam.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  lex2             : lexsym;                     -- lexik ln¡ symbol
+  last             : pexpitem;                   -- posledn¡ uzel v seznamu
+  pozicni          : t_logical;                  -- T-jsou povoleny pozi‡n¡ parametry
+  id               : pentityident;               -- identifik tor parametru
+
+begin
+  -- zv˜¨it strom 
+  newtree(expr,info,nt_list);
+
+  -- po‡ te‡n¡ pozice uzlu 
+  expr^.loadpos(nps_begin,ll_curr);
+
+  -- ze za‡ tku jsou dovoleny pozi‡n¡ parametry 
+  pozicni:=true;
+
+  last:=nil;
+  loop
+    -- dal¨¡ symbol 
+    getlex(curr,lex);
+
+    -- jestli‘e seznam neobsahuje v–bec nic (jen pr zdn‚ z vorky "()"), tak hned zkon‡it
+    if last=nil and then lex=lex_rpar then
+      return;
+      end if;
+
+    -- vznikl nov˜ uzel 
+    if last=nil
+      then
+        newnode(pexpnode(last),info,nt_item);
+        expr^.sub^.next:=last;
+      else
+        newnode(last^.next,info,nt_item);
+        pexpnode(last):=last^.next;
+        end if;
+
+    case lex
+      -- implicitn¡ hodnota
+      when lex_comma,lex_rpar do
+          -- jsou povoleny pozi‡n¡ parametry ?
+          if not pozicni then
+            ce^.seterror({CCERR=}000113,ce_i_parorder);
+            ce^.sethint(hint_expr_positional_par);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+          -- pozice uzlu
+          last^.loadpos(nps_both,ll_curr);
+
+          -- symbol vr tit zpˆt do vstupu
+          ungetlex;
+
+      -- FOR id USE
+      when lex_for do
+          -- po‡ te‡n¡ pozice uzlu
+          last^.loadpos(nps_begin,ll_curr);
+
+          -- identifik tor nebo OTHERS
+          getlex(curr,lex);
+          if lex not in lexsymset:[lex_others,lex_id] then
+            ce^.seterror({CCERR=}000114,ce_x_id_others);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+          if lex=lex_id then
+            id:=getlexid;
+            end if;
+
+          -- USE
+          getlex(curr,lex2);
+          if lex2<>lex_use then
+            ce^.seterror({CCERR=}000115,ce_x_use);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+          -- typ parametru
+          case lex
+            when lex_id do
+                last^.itype:=ei_ident;
+                last^.setid(id^);
+            when lex_others do last^.itype:=ei_others;
+            when others do verify(49,true);
+            end case;
+
+          -- v˜raz
+          a_vyraz(curr,last^.sub,info);
+
+          -- koncov  pozice parametru
+          last^.loadpos(nps_end,ll_curr);
+
+          -- po FOR OTHERS USE nesm¡ n sledovat dal¨¡ parametry
+          if lex=lex_others then
+            getlex(curr,lex);
+            if lex<>lex_rpar then
+              ce^.seterror({CCERR=}000116,ce_x_rpar);
+              ce^.sethint(hint_expr_last_par);
+              ce^.loadpos;
+              {%%RESUME ce^.raiseerror;}
+              ce^.resumeerror;
+              end if;
+            break;
+            end if;
+
+          -- d le nejsou povoleny pozi‡n¡ parametry
+          pozicni:=false;
+
+      -- v˜raz
+      when others do
+          -- symbol vr tit zpˆt do vstupu
+          ungetlex;
+
+          -- jsou povoleny pozi‡n¡ parametry ?
+          if not pozicni then
+            ce^.seterror({CCERR=}000117,ce_i_parorder);
+            ce^.sethint(hint_expr_positional_par);
+            ce^.loadpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+          -- typ parametru
+          last^.itype:=ei_expr;
+
+          -- po‡ te‡n¡ pozice uzlu
+          last^.loadpos(nps_begin,ll_curr);
+
+          -- v˜raz
+          a_vyraz(curr,last^.sub,info);
+
+          -- koncov  pozice parametru
+          last^.loadpos(nps_end,ll_curr);
+      end case;
+
+    -- bylo to FOR OTHERS USE, nic dal¨¡ho nesm¡ n sledovat
+    -- ‡ rka nebo prav  hranat  z vorka
+    until (last^.itype=ei_others) or not checklex(curr,lex_comma);
+
+  -- prav  z vorka 
+  if followlex(curr,lex_rpar) then
+    ce^.seterror({CCERR=}000118,ce_x_rpar);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- koncov  pozice uzlu 
+  expr^.loadpos(nps_end,ll_curr);
+  end a_list;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_selektor : texprparseproc =
+-- Selektor.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol                            
+
+begin
+  loop
+    -- p©e‡¡st ze vstupu lexik ln¡ symbol 
+    getlex(curr,lex);
+
+    case lex
+      -- selektor komponenty
+      when lex_dot      do a_komponenta(curr,expr,info);
+
+      -- selektor pole
+      when lex_lbra     do a_pole(curr,expr,info);
+
+      -- dereference
+      when lex_ptr      do a_deref(curr,expr,info);
+
+      -- atribut nebo kvalifikovan˜ agreg t
+      when lex_col      do
+          -- p©e‡¡st ze vstupu lexik ln¡ symbol
+          getlex(curr,lex);
+
+          if lex=lex_lbra
+            -- kvalifikovan˜ agreg t
+            then a_agregat(curr,expr,info)
+
+            -- mohl by to b˜t atribut
+            else
+              -- naposledy p©e‡ten˜ symbol vr tit do vstupu
+              ungetlex;
+
+              -- atribut
+              a_atribut(curr,expr,info);
+              end if;
+
+      -- seznam
+      when lex_lpar     do a_list(curr,expr,info);
+
+      -- cokoliv jin‚ho ji‘ nen¡ selektor
+      when others       do
+          ungetlex;
+          break;
+      end case;
+    end loop;
+  end a_selektor;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_current : texprparseproc =
+-- Vazba CURRENT.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  entity           : tcurrentity;                -- zvolen  entita
+
+begin
+  -- zv˜¨it strom
+  newtree(expr,info,nt_current);
+
+  -- po‡ te‡n¡ pozice
+  expr^.loadpos(nps_begin,ll_curr);
+
+  -- kl¡‡ov‚ slovo 
+  getlex(curr,lex);
+
+  -- vyhledat v tabulce entit 
+  entity:=entity:first;
+  while (entity<entity:last) and (currentityinfo[entity].lex<>lex) loop succ entity; end loop;
+  if currentityinfo[entity].lex<>lex then
+    ce^.seterror({CCERR=}000119,ce_x_current_selector);
+    ce^.loadpos;
+    ce^.resumeerror;
+    end if;
+
+  -- poznamenat entitu do uzlu 
+  pexpcurrent(expr)^.entity:=entity;
+
+  -- koncov  pozice uzlu 
+  expr^.loadpos(nps_end,ll_curr);
+  end a_current;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_jmeno =
+-- Z kladn¡ ‡len.
+----------------------------------------------------------------------------------------------------
+with
+  cx_imm;
+  
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol                            
+
+begin
+  -- %%OLD ve star‚ verzi se reference zpracov valy v r mci t‚to procedury    
+  -- ale to A) neodpov¡dalo BNF a B) zp–sobovalo konflikt v gramatice         
+  -- s deklarac¡ pointeru.                                                    
+
+  -- p©e‡¡st ze vstupu lexik ln¡ symbol 
+  getlex(curr,lex);
+
+  case lex
+    -- identifik tor nebo jm‚no speci ln¡ metody 
+    -- Ondra 16.7.2003 : Explicitn¡ vol n¡ speci ln¡ch metod zak z no.
+    when lex_id {, lex_entry, lex_exit, lex_adjust} do
+        -- naposledy p©e‡ten˜ symbol vr tit do vstupu
+        ungetlex;
+
+        -- je to vlastnˆ prvn¡ komponenta
+        a_komponenta(curr,expr,info);
+
+    -- liter l: cel‚ ‡¡slo
+    when lex_numi do
+        -- vznikl novy uzel
+        newnode(expr,info,nt_imm);
+        pexpimm(expr)^.immkind:=iek_integer_literal;
+
+        -- pozice uzlu
+        expr^.loadpos(nps_both,ll_curr);
+
+        -- ulozit konstantu
+        store_ordinal(pexpimm(expr)^.imm,getlexui{src.sfile^.lastval.ui});
+
+    -- liter l: re ln‚ ‡¡slo
+    when lex_numr do
+        -- vznikl novy uzel
+        newnode(expr,info,nt_imm);
+        pexpimm(expr)^.immkind:=iek_real_literal;
+
+        -- pozice uzlu
+        expr^.loadpos(nps_both,ll_curr);
+
+        -- ulozit konstantu
+        store_real(pexpimm(expr)^.imm,getlexur{src.sfile^.lastval.ur});
+
+    -- liter l: univerz ln¡ konstanta
+    when lex_nil do
+        -- vznikl novy uzel
+        newnode(expr,info,nt_imm);
+        pexpimm(expr)^.immkind:=iek_nil_literal;
+
+        -- pozice uzlu
+        expr^.loadpos(nps_both,ll_curr);
+
+        -- ulozit konstantu
+        store_nil(pexpimm(expr)^.imm);
+
+    -- liter l: znak
+    when lex_char do
+        -- vznikl novy uzel
+        newnode(expr,info,nt_imm);
+        pexpimm(expr)^.immkind:=iek_character_literal;
+
+        -- pozice uzlu
+        expr^.loadpos(nps_both,ll_curr);
+
+        -- ulozit konstantu
+        store_ordinal(pexpimm(expr)^.imm,getlexui{src.sfile^.lastval.ui});
+
+    -- znakov˜ agreg t
+    when lex_str do
+        -- vznikl novy uzel
+        newnode(expr,info,nt_imm);
+        pexpimm(expr)^.immkind:=iek_character_aggregate;
+
+        -- pozice uzlu
+        expr^.loadpos(nps_both,ll_curr);
+
+        -- ulozit konstantu
+        store_string(pexpimm(expr)^.imm,getlexstring{src.sfile^.lastval.pocet,src.sfile^.lastval.prvky});
+
+    -- metaliter l: true, false
+    when lex_meta_true, lex_meta_false do
+        -- vznikl novy uzel
+        newnode(expr,info,nt_imm);
+        pexpimm(expr)^.immkind:=iek_logical_metaliteral;
+
+        -- pozice uzlu
+        expr^.loadpos(nps_both,ll_curr);
+
+        -- ulozit konstantu
+        store_ordinal(pexpimm(expr)^.imm,unsigned_to_uniint((lex=lex_meta_true):ord));
+
+
+    -- THIS
+    when lex_this do
+        -- vznikl novy uzel
+        newnode(expr,info,nt_this);
+
+        -- pozice uzlu
+        expr^.loadpos(nps_both,ll_curr);
+
+    -- CURRENT
+    when lex_current do a_current(curr,expr,info);
+
+    -- agreg t
+    when lex_lbra do a_agregat(curr,expr,info);
+
+    -- ( v˜raz )
+    when lex_lpar do
+        -- v˜raz
+        a_vyraz(curr,expr,info);
+
+        -- prav  z vorka
+        getlex(curr,lex);
+        if lex<>lex_rpar then
+          ce^.seterror({CCERR=}000120,ce_x_rpar);
+          ce^.loadpos;
+          {%%RESUME ce^.raiseerror;}
+          ce^.resumeerror;
+          end if;
+
+        -- uz vorkov n¡
+        expr^.nflags:=nodeflagset:[nf_parenthesized];
+
+        --%%X pozice i se z vorkama
+
+    -- cokoliv jin‚ho je chyba
+    when others do
+        ce^.seterror({CCERR=}000121,ce_x_ex_jmeno);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+    end case;
+
+  -- selektor
+  a_selektor(curr,expr,info);
+
+  -- v˜raz je jm‚no 
+  expr^.nflags+nodeflagset:[nf_name];
+  end a_jmeno;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_cinitel : texprparseproc =
+-- €initel.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  lexun            : lexsym;                     -- lexik ln¡ symbol
+  pos              : lexposblock;                -- pozice oper toru
+  reflist          : pexpnode;                   -- seznam referenc¡                            
+
+begin
+  -- dal¨¡ symbol 
+  getlex(curr,lexun);
+
+  -- je tam un rn¡ oper tor 
+  if lexun in lexsymset:[lex_not,lex_abs,lex_succ,lex_pred]
+    then
+      -- pozice
+      getlexposall(pos,ll_curr);
+
+      -- dal¨¡ symbol 
+      getlex(curr,lex)
+    else
+      lex:=lexun;
+      end if;
+
+  -- reference 
+  reflist:=nil;
+  while lex=lex_ptr loop
+    -- zv˜¨it strom 
+    if reflist=nil
+      then
+        newnode(reflist,info,nt_ref);
+        expr:=reflist;
+      else
+        newnode(reflist^.sub,info,nt_ref);
+        reflist:=reflist^.sub;
+        end if;
+
+    -- pozice 
+    reflist^.loadpos(nps_both,ll_curr);
+
+    -- dal¨¡ symbol 
+    getlex(curr,lex);
+    end loop;
+
+  -- poslednˆ p©e‡ten˜ prvek vr tit zpˆt do vstupu 
+  ungetlex;
+
+  -- jm‚no 
+  if reflist=nil
+    then a_jmeno(curr,expr,info)
+    else
+      -- zpracovat jm‚no
+      a_jmeno(curr,reflist^.sub,info);
+
+      -- Ondra 18.9.2001 : Poznamenat do jm‚na, ‘e se jm‚no bude referencovat
+      reflist^.sub^.nflags+nodeflagset:[nf_reference];
+      end if;
+
+  -- doplnit un rn¡ oper tor 
+  if lexun in lexsymset:[lex_not,lex_abs,lex_succ,lex_pred] then
+    -- doplnit oper tor 
+    addunary(expr,lextounaryoper(lexun),false,pos,info);
+    end if;
+  end a_cinitel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_clen_chain (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpnode;            -- v˜raz
+    _op            : in expopertype;             -- oper tor
+    assign         : in t_logical;               -- T-p©i©azen¡
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Multiplika‡n¡ oper tor €initel.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  pos              : lexposblock;                -- pozice oper toru
+  op               : expopertype;
+
+begin
+  op:=_op;
+  while op in expopertypeset:[op_mul,op_div,op_idiv,op_imod,op_shl,op_shr] loop
+    -- doplnit oper tor 
+    getlexposall(pos,ll_curr);
+    addoper(expr,op,assign,pos,info);
+
+    -- ‡initel 
+    a_cinitel(curr,expr^.sub^.next,info);
+
+    -- aritmetick˜ oper tor 
+    getlex(curr,lex);
+    op:=lextobinaryoper(lex);
+    end loop;
+
+  -- naposledy p©e‡ten˜ symbol vr tit do vstupu 
+  ungetlex;
+  end a_clen_chain;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_clen : texprparseproc =
+-- €len.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- ‡initel
+  a_cinitel(curr,expr,info);
+
+  -- multiplika‡n¡ oper tor
+  getlex(curr,lex);
+
+  -- Multiplika‡n¡ oper tor €initel
+  a_clen_chain(curr,expr,lextobinaryoper(lex),false,info);
+  end a_clen;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_qclen : texprparseproc =
+-- Kvalifikovan˜ ‡len.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  pos              : lexposblock;                -- pozice oper toru
+
+begin
+  -- %%X tohle nen¡ je¨tˆ zcela jasn‚, zda to tak bude
+
+  -- ‡len
+  a_clen(curr,expr,info);
+
+  -- kvalifika‡n¡ oper tor
+  getlex(curr,lex);
+
+  if lex=lex_op1
+
+    -- je tam kvalifika‡n¡ oper tor 
+    then
+      -- doplnit oper tor 
+      getlexposall(pos,ll_curr);
+      addoper(expr,op_op1,false,pos,info);
+
+      -- ‡len 
+      a_clen(curr,expr^.sub^.next,info);
+
+    -- nen¡ tam kvalifika‡n¡ oper tor 
+    else
+      ungetlex;
+      end if;
+  end a_qclen;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_jvyraz_chain (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpnode;            -- v˜raz
+    _op            : in expopertype;             -- oper tor
+    assign         : in t_logical;               -- T-p©i©azen¡
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Adi‡n¡ oper tor Kvalifikovan˜ ‡len.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  pos              : lexposblock;                -- pozice oper toru
+  op               : expopertype;
+
+begin
+  op:=_op;
+  while op in expopertypeset:[op_add,op_sub,op_concat] loop
+    -- doplnit oper tor
+    getlexposall(pos,ll_curr);
+    addoper(expr,op,assign,pos,info);
+
+    -- kvalifikovan˜ ‡len
+    a_qclen(curr,expr^.sub^.next,info);
+
+    -- aritmetick˜ oper tor
+    getlex(curr,lex);
+    op:=lextobinaryoper(lex);
+    end loop;
+
+  -- naposledy p©e‡ten˜ symbol vr tit do vstupu
+  ungetlex;
+  end a_jvyraz_chain;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_jvyraz =
+-- Jednoduch˜ v˜raz.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  pos              : lexposblock;                -- pozice oper toru
+
+begin
+  -- un rn¡ oper tor, pokud existuje
+  getlex(curr,lex);
+
+  if lex in lexsymset:[lex_add,lex_sub]
+
+    -- je tam un rn¡ oper tor
+    then
+      -- doplnit oper tor
+      getlexposall(pos,ll_curr);
+      addunary(expr,lextounaryoper(lex),false,pos,info);
+
+      -- kvalifikovan˜ ‡len
+      a_qclen(curr,expr^.sub,info);
+
+    -- nen¡ tam un rn¡ oper tor
+    else
+      -- naposledy p©e‡ten˜ symbol vr tit do vstupu
+      ungetlex;
+
+      -- kvalifikovan˜ ‡len
+      a_qclen(curr,expr,info);
+      end if;
+
+  -- adi‡n¡ oper tor
+  getlex(curr,lex);
+
+  -- Adi‡n¡ oper tor €len
+  a_jvyraz_chain(curr,expr,lextobinaryoper(lex),false,info);
+  end a_jvyraz;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_vyber =
+-- V˜bˆr.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- v˜raz nebo rozsah
+  a_vyraz(curr,expr,info);
+
+  -- m–‘e to b˜t rozsah (©ez pole)
+  if checklex(curr,lex_ddot) then
+    -- %%X V˜raz mus¡ b˜t Jednoduch˜ v˜raz
+    --u_nimplemented(35);
+
+    -- zv˜¨it strom
+    newtree(expr,info,nt_range);
+
+    -- pozice uzlu
+    expr^.loadpos(nps_both,ll_curr);
+
+    -- jednoduch˜ v˜raz
+    a_jvyraz(curr,expr^.sub^.next,info);
+    end if;
+  end a_vyber;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_rozsah =
+-- Rozsah.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- jednoduch˜ v˜raz 
+  a_jvyraz(curr,expr,info);
+
+  -- dal¨¡ symbol 
+  getlex(curr,lex);
+  if lex=lex_ddot
+
+    -- je tam rozsah
+    then
+      -- zv˜¨it strom
+      newtree(expr,info,nt_range);
+
+      -- pozice uzlu
+      expr^.loadpos(nps_both,ll_curr);
+
+      -- jednoduch˜ v˜raz
+      a_jvyraz(curr,expr^.sub^.next,info);
+
+    -- nen¡, symbol se n s net˜kal
+    else
+      ungetlex;
+      end if;
+  end a_rozsah;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_relace : texprparseproc =
+-- Relace.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  lex2             : lexsym;                     -- n sleduj¡c¡ lexik ln¡ symbol
+  pos              : lexposblock;                -- pozice oper toru
+
+begin
+  -- jednoduch˜ v˜raz
+  a_jvyraz(curr,expr,info);
+
+  -- rela‡n¡ oper tor
+  getlex(curr,lex);
+
+  -- rela‡n¡ oper tor
+  if lex in lexsymset:[lex_eq,lex_ne,lex_lt,lex_le,lex_gt,lex_ge] then
+    -- doplnit oper tor
+    getlexposall(pos,ll_curr);
+    addoper(expr,lextobinaryoper(lex),false,pos,info);
+
+    -- jednoduch˜ v˜raz
+    a_jvyraz(curr,expr^.sub^.next,info);
+
+  -- mno‘inov˜ rela‡n¡ oper tor
+  elsif lex in lexsymset:[lex_in,lex_not] then
+    -- za‡ tek oper toru 
+    getlexpos(pos.b,ll_curr,false);
+
+    -- po NOT mus¡ n sledovat IN 
+    if lex=lex_not then
+      getlex(curr,lex2);
+      if lex2<>lex_in then
+        ce^.seterror({CCERR=}000122,ce_x_in);
+        ce^.loadpos;
+        {%%RESUME ce^.raiseerror;}
+        ce^.resumeerror;
+        end if;
+      end if;
+
+    -- konec oper toru
+    getlexpos(pos.e,ll_curr,true);
+
+    -- doplnit oper tor
+    addoper(expr,lextobinaryoper(lex),false,pos,info);
+
+    -- rozsah/mno‘ina
+    a_rozsah(curr,expr^.sub^.next,info);
+
+  -- cokoliv jin‚ho n s nezaj¡m 
+  else
+    ungetlex;
+    end if;
+  end a_relace;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_vyraz_chain (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    expr           : in out pexpnode;            -- v˜raz
+    _lex           : in lexsym;                  -- lexik ln¡ symbol
+    assign         : in t_logical;               -- T-p©i©azen¡
+    info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
+-- Logick˜ oper tor Relace.
+----------------------------------------------------------------------------------------------------
+-- %%TECH Na rozd¡l od obdobn˜ch procedur A_*_CHAIN se zde nep©ed v  rovnou
+-- oper tor ale jen lexik ln¡ symbol. V procedur ch A_VYRAZ a A_PRIKAZ odpad 
+-- rozpozn v n¡ AND od AND THEN a OR od OR ELSE.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  lex2             : lexsym;                     -- n sleduj¡c¡ lexik ln¡ symbol                
+  lexoper          : lexsym;                     -- oper tor                                    
+  op               : expopertype;                -- oper tor                                    
+  pos              : lexposblock;                -- pozice oper toru                            
+
+begin
+  lex:=_lex;
+  lexoper:=lex_nul;
+  while lex in lexsymset:[lex_and,lex_or,lex_xor] loop
+
+    -- pozice oper toru 
+    getlexposall(pos,ll_curr);
+
+    -- mohlo by to b˜t AND THEN 
+    if lex=lex_and then
+      getlex(curr,lex2);
+      if lex2=lex_then
+        then
+          getlexpos(pos.e,ll_curr,true);
+          lex:=lex2
+        else
+          ungetlex;
+          end if;
+
+    -- nebo OR ELSE
+    elsif lex=lex_or then
+      getlex(curr,lex2);
+      if lex2=lex_else
+        then
+          getlexpos(pos.e,ll_curr,true);
+          lex:=lex2
+        else
+          ungetlex;
+          end if;
+      end if;
+
+    if lexoper=lex_nul
+      -- je to prvn¡ oper tor v ©adˆ
+      then
+        -- zapamatovat si ho
+        lexoper:=lex;
+
+        -- odvodit oper tor
+        op:=lextobinaryoper(lex);
+
+      -- je to dal¨¡ oper tor
+      else
+        -- oper tor mus¡ b˜t st le stejn˜
+        if lex<>lexoper then
+          ce^.seterror({CCERR=}000123,ce_i_operator);
+          --%%TODO(LIB) ce^.sethint(formats2(hint_expr_a_and_b_or_c,nptostr(expopertxt,ord(op)),nptostr(expopertxt,ord(lextobinaryoper(lex)))));
+          if lex in lexsymset:[lex_then,lex_else]
+            then ce^.loadpos2
+            else ce^.loadpos;
+            end if;
+          {%%RESUME ce^.raiseerror;}
+          ce^.resumeerror;
+          end if;
+        end if;
+
+    -- doplnit oper tor
+    addoper(expr,op,assign,pos,info);
+
+    -- relace
+    a_relace(curr,expr^.sub^.next,info);
+
+    -- p©e‡¡st ze vstupu lexik ln¡ symbol
+    getlex(curr,lex);
+    end loop;
+
+  -- naposledy p©e‡ten˜ symbol vr tit do vstupu
+  ungetlex;
+  end a_vyraz_chain;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_vyraz =
+-- V˜raz.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- relace
+  a_relace(curr,expr,info);
+
+  -- logick˜ oper tor
+  getlex(curr,lex);
+
+  -- Logick˜ oper tor Relace
+  a_vyraz_chain(curr,expr,lex,false,info);
+  end a_vyraz;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_prikaz =
+-- P©¡kaz.
+----------------------------------------------------------------------------------------------------
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  un               : expunarytype;               -- un rn¡ oper tor
+  op               : expopertype;                -- bin rn¡ oper tor
+  upos             : lexposblock;                -- pozice un rn¡ho oper toru
+  opos             : lexposblock;                -- pozice bin rn¡ho oper toru
+
+begin
+  un:=un_none;
+  op:=op_none;
+
+  -- dal¨¡ symbol
+  getlex(curr,lex);
+
+  -- mohl by to b˜t un rn¡ oper tor
+  un:=lextounaryoper(lex);
+  if un=un_none
+    -- nebyl to un rn¡ oper tor, vr tit zpˆt
+    then ungetlex
+
+    -- byl to un rn¡ oper tor, zjistit jeho pozici
+    else getlexposall(upos,ll_curr);
+    end if;
+
+  -- jm‚no 
+  a_jmeno(curr,expr,info);
+
+  -- dal¨¡ symbol 
+  getlex(curr,lex);
+
+  -- zde bych sice mohl rozpozn vat AND od AND THEN a OR od OR ELSE          
+  -- ale je to zbyte‡n‚, A_VYRAZ_CHAIN, kam oboj¡ spad , si to rozhodne sama 
+
+  -- mohl by to b˜t bin rn¡ oper tor 
+  if lex in lexsymset:[lex_else,lex_then]
+    -- LEXTOBINARYOPER by LEX_ELSE a LEX_THEN ¨patnˆ pochopil
+    -- jak OR ELSE resp. AND THEN => zbavit se jich zvl ¨Ÿ
+    then op:=op_none
+    else op:=lextobinaryoper(lex);
+    end if;
+  if op=op_none then
+    ungetlex;
+    end if;
+
+  -- mus¡ b˜t uveden alespo¤ un rn¡ nebo bin rn¡ oper tor
+{%%TECH Ano, ale ne kdy‘ je to zrovna vol n¡ procedury.
+  takov˜ p©¡pad rozli¨¡m a‘ ve form ln¡ kontrole
+
+  if (un=un_none) and (op=op_none) then
+    ce^.seterror({CCERR=}000124,ce_x_assign);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+}
+  -- p©i©azen¡ sou‡asnˆ s un rn¡m oper torem je nep©¡pustn‚
+  if (op=op_assign) and (un<>un_none) then
+    ce^.seterror({CCERR=}000125,ce_i_operator);
+    ce^.loadpos;
+    ce^.sethint(hint_expr_unary_and_assign);
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- ve zkr cen‚m p©i©azen¡ jsou nep©¡pustn‚ oper tory [ NOT ] IN
+  -- %%LANG/%%X Je k tomu d–vod ?
+  -- V‘dyŸ t©eba "B in [false]"
+  -- d v  docela dobr˜ smysl
+  if op in expopertypeset:[op_in,op_notin] then
+    ce^.seterror({CCERR=}000126,ce_i_operator);
+    ce^.sethint(hint_expr_not_in_not_allowed);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  -- nyn¡ ji‘ m me jm‚no, un rn¡ a bin rn¡ oper tor
+
+  -- doplnit un rn¡ oper tor, m -li prioritu vy¨¨¡ ne‘ bin rn¡ oper tor
+  if (un<>un_none) and (op<>op_none) and (expunaryinfo[un].pri>expoperinfo[op].pri) then
+    addunary(expr,un,true,upos,info);
+    end if;
+
+  -- p©elo‘it zbytek v˜razu 
+  -- %%TECH tohle by se mo‘n  dalo vy©e¨it nˆjak l‚pe tabulkou 
+  case op
+    -- oper tor nebyl uveden 
+    when op_none do { nic nedˆlat };
+
+    -- p©i©azen¡
+    when op_assign do
+        -- doplnit oper tor
+        getlexposall(opos,ll_curr);
+        addoper(expr,op_assign,true,opos,info);
+
+        -- v˜raz
+        a_vyraz(curr,expr^.sub^.next,info);
+
+    -- adi‡n¡ oper tory
+    when op_add, op_sub, op_concat do
+        a_jvyraz_chain(curr,expr,op,true,info);
+
+    -- multiplika‡n¡ oper tory
+    when op_mul, op_div, op_idiv, op_imod, op_shl, op_shr do
+        a_clen_chain(curr,expr,op,true,info);
+
+    -- rela‡n¡ oper tory
+    when op_eq, op_ne, op_lt, op_le, op_gt, op_ge do
+        -- doplnit oper tor
+        getlexposall(opos,ll_curr);
+        addoper(expr,op,true,opos,info);
+
+        -- jednoduch˜ v˜raz
+        a_jvyraz(curr,expr^.sub^.next,info);
+
+    -- logick‚ oper tory
+    -- AND THEN a OR ELSE zde nerozpozn v m, a‘ v A_VYRAZ_CHAIN
+    when op_and, op_or, op_xor {, op_andthen, op_orelse} do
+        a_vyraz_chain(curr,expr,lex,true,info);
+
+    -- r–zn‚ dal¨¡ oper tory
+    when op_op1 do
+        -- doplnit oper tor
+        getlexposall(opos,ll_curr);
+        addoper(expr,op_op1,true,opos,info);
+
+        -- ‡len
+        a_clen(curr,expr^.sub^.next,info);
+
+    when others do verify(13,true);
+    end case;
+
+  -- doplnit un rn¡ oper tor s ni‘¨¡ prioritou
+  if (un<>un_none) and ((op=op_none) or (expunaryinfo[un].pri<expoperinfo[op].pri)) then
+    addunary(expr,un,true,upos,info);
+    end if;
+  end a_prikaz;
+
+
+
+end cx_parse;

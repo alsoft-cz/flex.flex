@@ -1,0 +1,105 @@
+---------------------------------------------------------------------------------------------------
+module private memory =
+-- Flex Run-time Library
+-- Memory Manager
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+with
+  synchronization;
+
+#separate private blocks;
+#separate private chains;
+#separate private heap;
+#separate private system_heap;
+#separate private system_pages;
+
+var
+--%%TODO threadvar 
+    actual_thread_heap : p_rtl_memheap := nil;
+
+var
+    systemheap     : system_heap.c_rtl_systemmemheap;
+    systempages    : system_pages.c_rtl_systemmempages;
+
+const
+    largeblocksize : t_rtl_native_unsigned       = 64*1024;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_alloc =
+-- allocate memory
+----------------------------------------------------------------------------------------------------
+begin
+  if (actual_thread_heap=nil) then
+    if size>=largeblocksize then
+      systempages.memmgr_alloc({num}0,addr,size,nil);
+    else
+      systemheap.memmgr_alloc({num}0,addr,size,nil);
+      end if;
+  else
+    actual_thread_heap^.memmgr_alloc({num}0,addr,size,nil);
+    end if;
+  end rtl_alloc;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_adjust =
+-- allocate memory
+----------------------------------------------------------------------------------------------------
+var
+  header       : p_rtl_memmgr_header;
+begin
+  if addr=nil then
+    rtl_alloc({num,}addr,size);
+  else
+    header:=adr2hdr(addr);
+    header^.dealocator^.memmgr_adjust({num}0,addr,size);
+    end if;
+{%%TODO catch
+  when others do
+    raise memory_corrupt_error;}
+  end rtl_adjust;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_free =
+-- free memory
+----------------------------------------------------------------------------------------------------
+var
+  header       : p_rtl_memmgr_header;
+begin
+  if addr=nil then 
+    return;
+    end if;
+  header:=adr2hdr(addr);
+  header^.dealocator^.memmgr_free({num}0,addr,nil);
+  addr:=nil;
+{%%TODO catch
+  when others do
+    raise memory_corrupt_error;}
+  end rtl_free;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_validate_heap =
+----------------------------------------------------------------------------------------------------
+begin
+  systemheap.memmgr_validate;
+  end rtl_validate_heap;
+{
+----------------------------------------------------------------------------------------------------
+entry =
+----------------------------------------------------------------------------------------------------
+begin
+  end entry;
+
+----------------------------------------------------------------------------------------------------
+exit =
+----------------------------------------------------------------------------------------------------
+begin
+  end exit;
+}
+---- Compiler magic --------------------------------------------------------------------------------
+#pragma assign(alloc,rtl_alloc);
+#pragma assign(realloc,rtl_adjust);
+#pragma assign(free,rtl_free);
+----------------------------------------------------------------------------------------------------
+
+end memory;
