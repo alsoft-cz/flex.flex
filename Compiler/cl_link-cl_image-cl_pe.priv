@@ -857,7 +857,9 @@ class private linkimage_pe =
       ilookupsize  : t_unsigned32;               -- velikost
       iname        : p_unsigned8array;           -- Hint/Name Table
       inamesize    : t_unsigned32;               -- velikost
-      os           : p_output_stream;            -- output stream
+      os           : p_stream_binary_writer;     -- output stream
+      os_b         : aliased c_stream_binary_writer;     -- output stream
+      os_f         : p_output_stream;            -- output stream
 
       -- promenne pro export
       sexport      : tpesectheader;              -- sekce: exporty
@@ -898,18 +900,21 @@ class private linkimage_pe =
         end if;
 
       -- z¡skat output stream
-      os:=f.get_output_stream;
+      os_f:=f.get_output_stream;
+      os_f^.set_lazy_buffer(true);
+      os_b.init_writer(os_f);
+      os:=^os_b;
 
       -- ulo‘it stub
-      os^.write(stub);
+      os^.write_unchecked(stub);
 
       -- signatura
-      os^.write(pesign);
+      os^.write_unchecked(pesign);
 
       -- %%X Zobecnit - parametrizovat vlastnosti EXE 
 
       -- COFF hlavi‡ka
-      coff_ofs:=os^.get_output_written;
+      os^.get_flow(t_offset(coff_ofs));
       coff.machine:=IMAGE_FILE_MACHINE_I386;
       coff.sectioncount:=0;
       coff.datetime:=$3E36B801{%%TODO(LIB) getdatim};
@@ -939,10 +944,10 @@ class private linkimage_pe =
         coff.flags:=coff.flags or IMAGE_FILE_DLL;
         end if;
       
-      os^.write(coff);
+      os^.write_unchecked(coff);
 
       -- PE hlavi‡ka
-      pehdr_ofs:=os^.get_output_written;
+      os^.get_flow(t_offset(pehdr_ofs));
       pehdr.magic:=magic_pe32;
       pehdr.linkerver.major:=linkver_major;
       pehdr.linkerver.minor:=linkver_minor;
@@ -954,13 +959,13 @@ class private linkimage_pe =
         pehdr.entrypoint:=unicode_addr_to_unsigned(resolver.getentrypoint)-base;
       pehdr.codebase  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_code))-base;
       pehdr.database  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_metadata))-base;
-      os^.write(pehdr);
+      os^.write_unchecked(pehdr);
 
       -- image base
-      os^.write(base);
+      os^.write_unchecked(base);
 
       -- Windows Specific Header
-      winhdr_ofs:=os^.get_output_written;
+      os^.get_flow(t_offset(winhdr_ofs));
       winhdr.sectalign:=sectalign;
       winhdr.filealign:=filealign;
       winhdr.osver.major:=1;
@@ -984,18 +989,19 @@ class private linkimage_pe =
       winhdr.heap.reserve_size:=1024*1024;
       winhdr.heap.commit_size:=4*1024;
       winhdr.dircount:=16;
-      os^.write(winhdr);
+      os^.write_unchecked(winhdr);
 
       -- Data Directory
-      dir_ofs:=os^.get_output_written;
-      os^.write(dir);
+      os^.get_flow(t_offset(dir_ofs));
+
+      os^.write_unchecked(dir);
 
       -- prvn¡ voln  RVA
       maxrva:=0;
 
       -- sekce: k¢d
       if resolver.checkseg(tseg_code) then
-        scode_ofs:=os^.get_output_written;
+        os^.get_flow(t_offset(scode_ofs));
         scode.name           :={%OFF}'.text'\0\0\0{%ON};
         scode.virtualsize    :=((pehdr.codetotal+sectalign-1) div sectalign)*sectalign;
         scode.virtualaddr    :=pehdr.codebase;
@@ -1005,7 +1011,7 @@ class private linkimage_pe =
                           --or IMAGE_SCN_MEM_SHARED %%X
                             or IMAGE_SCN_MEM_EXECUTE
                             or IMAGE_SCN_MEM_READ;
-        os^.write(scode);
+        os^.write_unchecked(scode);
 
       #if debug2 then;
         #if codeview then;
@@ -1021,7 +1027,7 @@ class private linkimage_pe =
 
       -- sekce: deskriptory typ–
       if resolver.checkseg(tseg_metadata) then
-        smetadata_ofs:=os^.get_output_written;
+        os^.get_flow(t_offset(smetadata_ofs));
         smetadata.name       :={%OFF}'METADATA'{%ON};
         smetadata.virtualsize:=get_seg_virtualsize(tseg_metadata); 
         smetadata.virtualaddr:=get_seg_virtualaddr(tseg_metadata);
@@ -1029,7 +1035,7 @@ class private linkimage_pe =
         smetadata.dataptr    :=0;
         smetadata.flags      :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ;
-        os^.write(smetadata);
+        os^.write_unchecked(smetadata);
 
       #if debug2 then;
         #if codeview then;
@@ -1045,7 +1051,7 @@ class private linkimage_pe =
 
       -- sekce: konstanty
       if resolver.checkseg(tseg_const) then
-        sconst_ofs:=os^.get_output_written;
+        os^.get_flow(t_offset(sconst_ofs));
         sconst.name          :={%OFF}'.const'\0\0{%ON};
         sconst.virtualsize   :=get_seg_virtualsize(tseg_const); 
         sconst.virtualaddr   :=get_seg_virtualaddr(tseg_const);
@@ -1053,7 +1059,7 @@ class private linkimage_pe =
         sconst.dataptr       :=0;
         sconst.flags         :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ;
-        os^.write(sconst);
+        os^.write_unchecked(sconst);
 
       #if debug2 then;
         #if codeview then;
@@ -1069,7 +1075,7 @@ class private linkimage_pe =
 
       -- sekce: inicializovan  data
       if resolver.checkseg(tseg_init) then
-        sinit_ofs:=os^.get_output_written;
+        os^.get_flow(t_offset(sinit_ofs));
         sinit.name           :={%OFF}'.data'\0\0\0{%ON};
         sinit.virtualsize    :=get_seg_virtualsize(tseg_init); 
         sinit.virtualaddr    :=get_seg_virtualaddr(tseg_init);
@@ -1078,7 +1084,7 @@ class private linkimage_pe =
         sinit.flags          :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ
                             or IMAGE_SCN_MEM_WRITE;
-        os^.write(sinit);
+        os^.write_unchecked(sinit);
 
       #if debug2 then;
         #if codeview then;
@@ -1094,7 +1100,7 @@ class private linkimage_pe =
 
       -- sekce: neinicializovan  data
       if resolver.checkseg(tseg_data) then
-        sdata_ofs:=os^.get_output_written;
+        os^.get_flow(t_offset(sdata_ofs));
         sdata.name           :={%OFF}'.bss'\0\0\0\0{%ON};
         sdata.virtualsize    :=get_seg_virtualsize(tseg_data); 
         sdata.virtualaddr    :=get_seg_virtualaddr(tseg_data);
@@ -1103,7 +1109,7 @@ class private linkimage_pe =
         sdata.flags          :=IMAGE_SCN_CNT_UNINITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ
                             or IMAGE_SCN_MEM_WRITE;
-        os^.write(sdata);
+        os^.write_unchecked(sdata);
 
       #if debug2 then;
         #if codeview then;
@@ -1128,7 +1134,7 @@ class private linkimage_pe =
     #end if;
 
       -- sekce: Import Address Table (povinn‚)
-      sicode_ofs:=os^.get_output_written;
+      os^.get_flow(t_offset(sicode_ofs));
       sicode.name            :={%OFF}'.icode'\0\0{%ON};
       sicode.virtualsize     :=get_seg_virtualsize(tseg_import); 
       sicode.virtualaddr     :=get_seg_virtualaddr(tseg_import);
@@ -1137,12 +1143,12 @@ class private linkimage_pe =
       sicode.flags           :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ
                             or IMAGE_SCN_MEM_WRITE;
-      os^.write(sicode);
+      os^.write_unchecked(sicode);
       succ coff.sectioncount;
       maxrva:=max_unsigned(maxrva,((sicode.virtualaddr+sicode.virtualsize+sectalign-1) div sectalign)*sectalign);
 
       -- sekce: importy (povinn‚)
-      simport_ofs:=os^.get_output_written;
+      os^.get_flow(t_offset(simport_ofs));
       simport.name           :={%OFF}'.idata'\0\0{%ON};
       simport.virtualsize    :=0;
       simport.virtualaddr    :=maxrva;
@@ -1151,7 +1157,7 @@ class private linkimage_pe =
       simport.flags          :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ
                             or IMAGE_SCN_MEM_WRITE;
-      os^.write(simport);
+      os^.write_unchecked(simport);
       succ coff.sectioncount;
 
       -- sestavit importn¡ tabulky
@@ -1165,7 +1171,7 @@ class private linkimage_pe =
 
       -- nepovinne
       if library then
-        sexport_ofs:=os^.get_output_written;
+        os^.get_flow(t_offset(sexport_ofs));
         sexport.name           :={%OFF}'.edata'\0\0{%ON};
         sexport.virtualsize    :=0;
         sexport.virtualaddr    :=maxrva;
@@ -1175,7 +1181,7 @@ class private linkimage_pe =
                               or IMAGE_SCN_MEM_READ
                               or IMAGE_SCN_MEM_READ;
                               
-        os^.write(sexport);
+        os^.write_unchecked(sexport);
         succ coff.sectioncount;
 
         -- sestavit exportni tabulky
@@ -1187,7 +1193,7 @@ class private linkimage_pe =
         end if;
 
       -- sekce: relokace (povinn‚)
-      srelo_ofs:=os^.get_output_written;
+      os^.get_flow(t_offset(srelo_ofs));
       srelo.name             :={%OFF}'.reloc'\0\0{%ON};
       srelo.virtualsize      :=0;
       srelo.virtualaddr      :=maxrva;
@@ -1197,7 +1203,7 @@ class private linkimage_pe =
                             or IMAGE_SCN_MEM_DISCARDABLE
                             or IMAGE_SCN_MEM_READ
                            {or IMAGE_SCN_MEM_WRITE};
-      os^.write(srelo);
+      os^.write_unchecked(srelo);
       succ coff.sectioncount;
 
       -- mame nejake relokacni informace ?
@@ -1215,7 +1221,7 @@ class private linkimage_pe =
       if debug_info<>nil then
         -- sekce pro infomace o debug informacich 
         -- sekce: debug 
-        sdebug_ofs             :=os^.get_output_written;
+        os^.get_flow(t_offset(sdebug_ofs));
         sdebug.name            :={%OFF}'.ddir'\0\0\0{%ON};
         sdebug.virtualsize     :=sectalign{0};
         sdebug.virtualaddr     :=maxrva;
@@ -1223,7 +1229,7 @@ class private linkimage_pe =
         sdebug.dataptr         :=0;
         sdebug.flags           :=IMAGE_SCN_CNT_INITIALIZED_DATA
                               or IMAGE_SCN_MEM_READ;
-        os^.write(sdebug);
+        os^.write_unchecked(sdebug);
      
         succ coff.sectioncount;
         maxrva:=max_unsigned(maxrva,((sdebug.virtualaddr+sdebug.virtualsize+sectalign-1) div sectalign)*sectalign);
@@ -1235,51 +1241,51 @@ class private linkimage_pe =
 
       -- zarovnat soubor
       falign(os,filealign);
-      winhdr.hdrsize:=os^.get_output_written;
+      os^.get_flow(t_offset(winhdr.hdrsize));
 
       -- k¢d
       if resolver.checkseg(tseg_code) then
-        scode.dataptr:=os^.get_output_written;
+        os^.get_flow(t_offset(scode.dataptr));
         resolver.writesegment(tseg_code,os);
         falign(os,filealign);
         end if;
 
       -- deskriptory typ–
       if resolver.checkseg(tseg_metadata) then
-        smetadata.dataptr:=os^.get_output_written;
+        os^.get_flow(t_offset(smetadata.dataptr));
         resolver.writesegment(tseg_metadata,os);
         falign(os,filealign);
         end if;
 
       -- konstanty
       if resolver.checkseg(tseg_const) then
-        sconst.dataptr:=os^.get_output_written;
+        os^.get_flow(t_offset(sconst.dataptr));
         resolver.writesegment(tseg_const,os);
         falign(os,filealign);
         end if;
 
       -- inicializovan  data
       if resolver.checkseg(tseg_init) then
-        sinit.dataptr:=os^.get_output_written;
+        os^.get_flow(t_offset(sinit.dataptr));
         resolver.writesegment(tseg_init,os);
         falign(os,filealign);
         end if;
 
       -- neinicializovan  data
-      sdata.dataptr:=os^.get_output_written;
+      os^.get_flow(t_offset(sdata.dataptr));
 
       -- importn¡ tabulky (1)
-      sicode.dataptr:=os^.get_output_written;
+      os^.get_flow(t_offset(sicode.dataptr));
       sicode.datasize:=((ilookupsize+filealign-1) div filealign)*filealign;
-      os^.writex(ilookup^,ilookupsize);
+      os^.write_unchecked_part(ilookup^,ilookupsize);
       falign(os,filealign);
 
       -- importn¡ tabulky (2)
-      simport.dataptr:=os^.get_output_written;
+      os^.get_flow(t_offset(simport.dataptr));
       simport.datasize:=((idirsize+ilookupsize+inamesize+filealign-1) div filealign)*filealign;
-      os^.writex(idir^,idirsize);
-      os^.writex(ilookup^,ilookupsize);
-      os^.writex(iname^,inamesize);
+      os^.write_unchecked_part(idir^,idirsize);
+      os^.write_unchecked_part(ilookup^,ilookupsize);
+      os^.write_unchecked_part(iname^,inamesize);
       falign(os,filealign);
 
       dir.import.rva:=simport.virtualaddr;
@@ -1287,13 +1293,13 @@ class private linkimage_pe =
 
       -- exportni tabulky
       if library then
-        sexport.dataptr:=os^.get_output_written;
+        os^.get_flow(t_offset(sexport.dataptr));
         sexport.datasize:=((tpeedirentry:size+eaddrsize+enameptrssize+eordinalssize+enamessize+filealign-1) div filealign)*filealign;
-        os^.writex(edir,tpeedirentry:size);
-        os^.writex(eaddr^,eaddrsize);
-        os^.writex(enameptrs^,enameptrssize);
-        os^.writex(eordinals^,eordinalssize);
-        os^.writex(enames^,enamessize);
+        os^.write_unchecked_part(edir,tpeedirentry:size);
+        os^.write_unchecked_part(eaddr^,eaddrsize);
+        os^.write_unchecked_part(enameptrs^,enameptrssize);
+        os^.write_unchecked_part(eordinals^,eordinalssize);
+        os^.write_unchecked_part(enames^,enamessize);
 
         falign(os,filealign);
 
@@ -1303,15 +1309,15 @@ class private linkimage_pe =
         end if;
       
       -- relokace
-      srelo.dataptr:=os^.get_output_written;
+      os^.get_flow(t_offset(srelo.dataptr));
       srelo.datasize:=relocdatasize;
       
       if reloctable<>nil then    
         for i in reloctable^:range loop
-         os^.writex(reloctable^[i].pagerva,reloctable^[i].pagerva:size);
-         os^.writex(reloctable^[i].blocksize,reloctable^[i].blocksize:size);
+         os^.write_unchecked_part(reloctable^[i].pagerva,reloctable^[i].pagerva:size);
+         os^.write_unchecked_part(reloctable^[i].blocksize,reloctable^[i].blocksize:size);
          for k in reloctable^[i].typeandoffset^:range loop
-          os^.writex(reloctable^[i].typeandoffset^[k],reloctable^[i].typeandoffset^[k]:size);
+          os^.write_unchecked_part(reloctable^[i].typeandoffset^[k],reloctable^[i].typeandoffset^[k]:size);
           end loop;
          end loop;
         end if;
@@ -1324,11 +1330,11 @@ class private linkimage_pe =
     #if debug2 then;
       #if codeview then;
       if debug_info<>nil and debug_mode=tdit_codeview then
-        sdebug.dataptr:=os^.get_output_written;
+        os^.get_flow(t_offset(sdebug.dataptr));
         sdebug.datasize:=filealign;
 
         -- ulozime informace o debug informacich 
-        os^.writex(p_codeview(debug_info)^.pe_dir_entry,p_codeview(debug_info)^.pe_dir_entry:size);
+        os^.write_unchecked_part(p_codeview(debug_info)^.pe_dir_entry,p_codeview(debug_info)^.pe_dir_entry:size);
         falign(os,filealign);
 
         dir.debuginfo.rva:=sdebug.virtualaddr;{sdebug.dataptr;}
@@ -1340,8 +1346,10 @@ class private linkimage_pe =
       -- zarovnat cel˜ soubor na velikost sekce
       --falign(os,sectalign); {%%X potenci ln¡ chyba, ne ? }
 
+      os_b.flush;
+
       -- output stream u‘ nebude pot©eba
-      discard os; {%%X}
+      discard os_f; {%%X}
 
       -- opravit offset PE hlavi‡ky zapsan˜ ve stubu
       ofs:=stub:size;

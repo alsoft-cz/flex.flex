@@ -38,11 +38,12 @@ type
       locker       : t_rtl_critical;
       listnext     : p_task_header;
       listprev     : p_task_header;
+      TIBusrval    : t_task_sysTIBuservalue;
       knownstart   : t_rtl_logical;
       taskpooled   : t_rtl_logical;
       logicalswitch: t_rtl_logical;
       isrunning    : t_rtl_logical;
-      TIBusrval    : t_task_sysTIBuservalue;
+      dllmain      : t_rtl_logical;
       flexreserve  : array 0..15 of t_rtl_native_unsigned;
       userreserve  : array 0..15 of t_rtl_native_unsigned;
       end record;
@@ -379,10 +380,11 @@ type
   t_task_starter = record
       selfptr      : t_rtl_pointer;
       userdata     : p_rtl_unchecked;
-      task_entry : p_rtl_task_entry;
-      taskheader : p_task_header;
+      task_entry   : p_rtl_task_entry;
+      taskheader   : p_task_header;
       suspended    : t_rtl_logical;
       wait_event   : t_rtl_event;
+      wait         : t_rtl_logical;
       end record;
   p_task_starter = ^t_task_starter for machine_pointer use true;
 
@@ -392,15 +394,19 @@ type
 procedure task_entry_internal:t_rtl_thread_entry_win32= 
 ----------------------------------------------------------------------------------------------------
 var
+    _starter       : p_task_starter;
     stacpy         : t_task_starter;
     taskheader     : p_task_header;
     sys_except_handler : aliased t_rtl_exceptions_handler;
     unhandledx     : t_rtl_except_row;
+
 begin
-  stacpy:=p_task_starter(starter)^;
+  _starter:=p_task_starter(starter);
+  stacpy:=_starter^;
+  discard _starter;
   taskheader:=stacpy.taskheader;
   rtl_task_exception_initialize(taskheader,^sys_except_handler);
-  rtl_init_task_header(true,true,taskheader);
+  rtl_init_task_header(true,stacpy.wait,taskheader);
 
   --vytvorit prvni exception frame
   begin
@@ -415,7 +421,9 @@ begin
       end;
 
     -- allow parent run
-    rtl_event_set(stacpy.wait_event);
+    if stacpy.wait then
+      rtl_event_set(stacpy.wait_event);
+      end if;
   
     --suspend if need
     if stacpy.suspended then
@@ -473,43 +481,56 @@ begin
 procedure rtl_start_task =
 ----------------------------------------------------------------------------------------------------
 var
-  starter          : aliased t_task_starter;
+  starter          : p_task_starter;
   i                : DWORD;
-  taskheader     : p_task_header;
+  taskheader       : p_task_header;
+  thistaskheader   : p_task_header;
 
 begin 
+  thistaskheader:=rtl_get_current_task();
   new taskheader;
-  starter.selfptr:=selfptr;
-  starter.userdata:=userdata;
-  starter.task_entry:=task_entry;
-  starter.taskheader:=taskheader;
-  starter.suspended:=suspended;
+  new starter;
+  starter^.selfptr:=selfptr;
+  starter^.userdata:=userdata;
+  starter^.task_entry:=task_entry;
+  starter^.taskheader:=taskheader;
+  starter^.suspended:=suspended;
   rtl_ref_create_local(taskheader^.self_ref,taskheader,^rtl_ref_collector_discard,t_rtl_ref_ns_simple);
   rtl_get_current_task_ref(taskheader^.parent_ref);
   if task_ref<>nil then
     rtl_ref_local_to_local(taskheader^.self_ref,task_ref^);
     end if;
   taskheader^.ostask.priority:=priority;
-  rtl_event_new(starter.wait_event);
-  starter.taskheader^.ostask.taskhandle:=CreateThread(nil,64*1024{%%TODO remove when dynamic stack}*8{},^task_entry_internal,^starter,STACK_SIZE_PARAM_IS_A_RESERVATION,taskheader^.ostask.taskid);
+  
+  if not thistaskheader^.dllmain then
+    rtl_event_new(starter^.wait_event);
+    starter^.wait:=true;
+  else
+    starter^.wait:=false;
+    end if;
+
+  starter^.taskheader^.ostask.taskhandle:=CreateThread(nil,64*1024{%%TODO remove when dynamic stack}*8{},^task_entry_internal,starter,STACK_SIZE_PARAM_IS_A_RESERVATION,taskheader^.ostask.taskid);
   if taskheader^.ostask.taskhandle=0 then
     discard taskheader;
-    rtl_event_discard(starter.wait_event);
+    if not thistaskheader^.dllmain then
+      rtl_event_discard(starter^.wait_event);
+      end if;
     raise tasking_error;
     end if;
-  rtl_event_wait(starter.wait_event);
-  rtl_event_discard(starter.wait_event);
+
+  if not thistaskheader^.dllmain then
+    rtl_event_wait(starter^.wait_event);
+    rtl_event_discard(starter^.wait_event);
+    end if;
   end rtl_start_task;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_register_task =
+procedure rtl_register_task_internal(
+    topstackspace  : t_rtl_pointer;
+    dllmain        : t_rtl_logical)=
 ----------------------------------------------------------------------------------------------------
-#if #environment compiler_version;='4.0.3.8' then;
-with rtl_init;
-#end if;
-
 var
   taskheader       : p_task_header;
   tibvalptr        : ^ t_rtl_native_unsigned;
@@ -527,9 +548,6 @@ begin
     TBIPrev^.value:=taskheader^.TIBusrval.value;
     taskheader^.TIBusrval.prev:=TBIPrev;
   else
-    #if #environment compiler_version;='4.0.3.8' then;
-    rtl_early_runtime_initialize;
-    #end if;
     new taskheader;
     rtl_ref_create_local(taskheader^.self_ref,taskheader,^rtl_ref_collector_discard,t_rtl_ref_ns_simple);
     taskheader^.TIBusrval.prev:=nil;
@@ -538,6 +556,7 @@ begin
       end if;
     end if;
 
+  taskheader^.dllmain:=dllmain;
   if unknown then
     -- inicializovat
     rtl_task_exception_initialize(taskheader,p_rtl_exceptions_handler(topstackspace));
@@ -559,20 +578,35 @@ begin
       mov    fs:[t_winnt_tib.aruserpointer],eax
       #end asm;
     end if;
+  end rtl_register_task_internal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_register_task =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_register_task_internal(topstackspace,false);
   end rtl_register_task;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_register_task_dll =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_register_task_internal(topstackspace,true);
+  end rtl_register_task_dll;
 
 -- compiler magic
 #pragma assign(register_task,rtl_register_task);
+#pragma assign(register_task_dll,rtl_register_task_dll);
 
 
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_unregister_task =
 ----------------------------------------------------------------------------------------------------
-#if #environment compiler_version;='4.0.3.8' then;
-with rtl_init;
-#end if;
-
 var
   taskheader       : p_task_header;
   tibval           : t_rtl_native_unsigned;
@@ -600,9 +634,6 @@ begin
     rtl_critical_discard(taskheader^.locker);
     rtl_task_exception_finalize(taskheader);
     discard taskheader;
-#if #environment compiler_version;='4.0.3.8' then;
-    rtl_late_runtime_finalize;
-#end if;
     end if;
   #syntax asm;
     --restore prev value

@@ -1,4 +1,4 @@
-----------------------------------------------------------------------------------------------------
+        ----------------------------------------------------------------------------------------------------
 module private cl_codeview =
 -- P©eklada‡ Flexu.
 -- Gener tor CodeView debug informac¡.
@@ -426,23 +426,49 @@ begin
 
       -- jedna se o lokalni, automatickou promennou na stacku ?
       if lalignsym^.tentity=s_bprel32 then
-        -- pokud je zadan, najdeme typ promenne
-        if (lalignsym^._var_^.typ.getutype=nil) or
-           not (get_codeview_type_container(lalignsym^._var_^.typ.getutype,_typebase,lalignsym^.typ)) then
+        -- skryt˜ [this] parametr
+        if lalignsym^.thissymbol
+          then
+            -- typ
+            {%%vasekk(ENTRYTHIS) nˆkde to schrast¡ na segmentation fault, nev¡m pro‡, nev¡m kde... :-(
+                                 typ je zat¡m p©i dumpov n¡ nastaven na (void *)
+            if (lalignsym^._var_^.typ.getutype=nil)
+            or else not get_codeview_type_container(lalignsym^._var_^.typ.getutype,_typebase,lalignsym^.typ)
+              then
+                -- udelame z toho void
+                lalignsym^.typ:=nil;
+                end if;
 
-          -- udelame z toho void
-          lalignsym^.typ:=nil;
-          end if;
+            -- pokusime najit referencni typ
+            if lalignsym^.typ<>nil and then lalignsym^.typ^.reference<>nil then
+              lalignsym^.typ:=lalignsym^.typ^.reference;
+              end if;
+            }
 
-        -- u paramteru predavanych odkazem se pokusime najit referencni typ
-        if (lalignsym^._var_^.etype=et_param) and (pentity_param(lalignsym^._var_)^.pass<>pp_value) and
-           (lalignsym^.typ<>nil) and (lalignsym^.typ^.reference<>nil) then
-          lalignsym^.typ:=lalignsym^.typ^.reference;
-          end if;
+            -- jm‚no symbolu a index
+            lalignsym^.name:='this';
+            lalignsym^.index:=codeview_symbol_type_code[lalignsym^.tentity];
 
-        -- jmeno symbolu a index
-        if lalignsym^._var_^.id=nil then lalignsym^.name:='' else lalignsym^.name:=entityident_to_name(lalignsym^._var_^.id^); end if;
-        lalignsym^.index:=codeview_symbol_type_code[lalignsym^.tentity];
+          -- lok ln¡ promˆnn 
+          else
+            -- pokud je zadan, najdeme typ promenne
+            if (lalignsym^._var_^.typ.getutype=nil) or
+              not (get_codeview_type_container(lalignsym^._var_^.typ.getutype,_typebase,lalignsym^.typ)) then
+
+              -- udelame z toho void
+              lalignsym^.typ:=nil;
+              end if;
+
+            -- u paramteru predavanych odkazem se pokusime najit referencni typ
+            if (lalignsym^._var_^.etype=et_param) and (pentity_param(lalignsym^._var_)^.pass<>pp_value) and
+               (lalignsym^.typ<>nil) and (lalignsym^.typ^.reference<>nil) then
+              lalignsym^.typ:=lalignsym^.typ^.reference;
+              end if;
+
+            -- jmeno symbolu a index
+            if lalignsym^._var_^.id=nil then lalignsym^.name:='' else lalignsym^.name:=entityident_to_name(lalignsym^._var_^.id^); end if;
+            lalignsym^.index:=codeview_symbol_type_code[lalignsym^.tentity];
+            end if;
 
       -- jedna se o globalni nebo lokalni promennou modulu ?
       elsif lalignsym^.tentity in t_codeview_symbol_type_set:[s_gdata32,s_ldata32] then
@@ -860,11 +886,17 @@ var
             __lalignsym^.indextype:=__lalignsym^.typ^.indextype;
             end if;
 
-          -- lokalni promenna
+          -- lokalni promenna, nebo [this]
           if __lalignsym^.tentity=s_bprel32 then
             -- pricteme velikost tohoto symbolu
             __size:=__size+13+__lalignsym^.name:length;
 
+            -- pro [this] parametr je¨tˆ dal¨¡ 4 byty
+{%%vasekk(ENTRYTHIS) a co wrapper?!?
+            if __lalignsym^._var_=nil
+              then __size:=__size+4;
+              end if;
+}
             -- a zarovname na modulo 4
             __size:=((__size+3) div 4)*4;
 
@@ -1003,8 +1035,24 @@ var
             -- zmena statusu
             _lalignsym^.status:=tcvs_dump;
 
-            -- lokalni promenna
+            -- lokalni promenna nebo [this] parametr
             if _lalignsym^.tentity=s_bprel32 then
+              -- [this] parametr
+              if _lalignsym^.thissymbol then
+                -- delka symbolu bez informace o delce v‡etnˆ dumpu wrapperu, zarovname na modulo 4
+                {%%vasekk(ENTRYTHIS) a co wrapper?!?
+                symbolsize:=_lalignsym^.name:length+17;
+                symbolsize:=(((symbolsize+3) div 4) * 4) - 2;
+
+                -- dump hlavi‡ky wrapperu
+                advanced.low_level.unchecked_memory_access.memory_copy(symbolsize,__buffer^[__offset],2); __offset:=__offset+2;
+                advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[s_entrythis],__buffer^[__offset],2); __offset:=__offset+2;
+                }
+                
+                -- %%vasekk(ENTRYTHIS) [this] generuju jako (void *), zat¡m...
+                _lalignsym^.indextype:=$0403;
+                end if;
+
               -- delka symbolu bez informace o delce, zarovname na modulo 4
               symbolsize:=_lalignsym^.name:length+13;
               symbolsize:=(((symbolsize+3) div 4) * 4) - 2;
@@ -1531,7 +1579,7 @@ class private t_codeview =
     -- Zaregistruje code segment prekladace.
     ----------------------------------------------------------------------------------------------
     static add_type (
-        _type      : in pentity_type             -- pointer na objekt prekladace
+        _type      : in pentity                  -- pointer na objekt prekladace
         );
     -- Zaregistruje typ.
     ----------------------------------------------------------------------------------------------
@@ -1542,6 +1590,14 @@ class private t_codeview =
         _cvalign   : in p_codeview_alignsym      -- rodicovsky kod
         );
     -- Zaregistruje lokalni promennou.
+    ----------------------------------------------------------------------------------------------
+    static add_this_parameter (
+        _alignsym  : in pentity_value;           -- pointer na objekt prekladace
+        _addr      : in t_longint;               -- adresa promenne relativne vuci EBP
+        _cvmodule  : in p_codeview_module;       -- rodicovsky modul
+        _cvalign   : in p_codeview_alignsym      -- rodicovsky kod
+        );
+    -- Zaregistruje [this] parametr metody.
     ----------------------------------------------------------------------------------------------
     static add_variable (
         _alignsym  : in pentity_value;           -- pointer na objekt prekladace
@@ -1829,6 +1885,47 @@ class private t_codeview =
 
 
     ------------------------------------------------------------------------------------------------
+    static add_this_parameter =
+    -- Zaregistruje [this] parametr metody.
+    ------------------------------------------------------------------------------------------------
+    var
+      alignsym     : p_codeview_alignsym;        -- codeview alignsym objekt
+
+    begin
+      -- pokud neni kam promennou zaregistrovat, tak to delat nebudeme
+      if _cvmodule=nil then return; end if;
+
+      -- vytvorime objekt modulu
+      new alignsym;
+
+      -- inicializace
+      alignsym^._var_:=_alignsym;
+      alignsym^.status:=tcvs_init;
+      alignsym^._segment_:=tseg_code;                -- !!! neobecne, pouze pro stavajici Flex !!!
+      alignsym^.offset:=_addr;
+      alignsym^.tentity:=s_bprel32;
+      alignsym^.thissymbol:=true;
+
+      -- zaradime do seznamu..
+      if _cvalign=nil then
+        -- ..lokalnich symbolu modulu
+        alignsym^.prev:=_cvmodule^.last_alignsym;
+        if _cvmodule^.last_alignsym<>nil then _cvmodule^.last_alignsym^.next:=alignsym; end if;
+        _cvmodule^.last_alignsym:=alignsym;
+        if _cvmodule^.first_alignsym=nil then _cvmodule^.first_alignsym:=alignsym; end if;
+      else
+        -- ..ve stromu lokalnich symbolu
+        alignsym^.prev:=_cvalign^.last_child;
+        if _cvalign^.last_child<>nil then _cvalign^.last_child^.next:=alignsym; end if;
+        _cvalign^.last_child:=alignsym;
+        if _cvalign^.first_child=nil then _cvalign^.first_child:=alignsym; end if;
+        alignsym^.parent:=_cvalign;
+        end if;
+      end add_this_parameter;
+
+
+
+    ------------------------------------------------------------------------------------------------
     static add_variable =
     -- Zaregistruje promennou modulu.
     ------------------------------------------------------------------------------------------------
@@ -1978,9 +2075,9 @@ class private t_codeview =
       -- symbol je pr vˆ analyzov n
       _symbol^.debugstat:=as_analyzing;
 
-      -- typ
-      if (_symbol^.etype=et_type) then
-        add_type(pentity_type(_symbol));
+      -- typ, t©¡da
+      if _symbol^.etype in tentitytypeset:[et_type,et_class] then
+        add_type(_symbol);
         end if;
 
       -- modul
@@ -1996,6 +2093,12 @@ class private t_codeview =
         codeinst:=picodegen_subprog(pentity_code(_symbol)^.codegen)^.ifirst;
         while codeinst<>nil loop
           add_code(pentity_code(_symbol),codeinst,xcvmodule,xcvalign);
+
+          -- pro metody registrovat skryt˜ parametr [this]
+          if _symbol^.etype in tentitytypeset:[et_special,et_static,et_virtual,et_override] then
+            -- registrovat [this] s typem t©¡dy
+            add_this_parameter(_symbol^.context.entity,codeinst^.profile.thisofs,xcvmodule,xcvalign);
+            end if;
 
           -- zaregistrovat parametry modulu
           if codeinst^.profile.par<>nil then

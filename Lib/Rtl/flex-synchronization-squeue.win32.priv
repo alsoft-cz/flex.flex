@@ -51,6 +51,11 @@ begin
           rtl_critisem_unlock_all(squeue.trynext);
           end if;
         rtl_critisem_unlock(squeue.counter);
+      else
+        -- reknu vsem co cekaji na prazdnou frontu
+        if btrynext then
+          rtl_critical_unlock(squeue.waitempty);
+          end if;
         end if;
 
     -- odemknu
@@ -108,6 +113,7 @@ begin
     if squeue.lcounter=1 then
       -- povolim dalsimu tasku cteni
       if btrynext then
+        rtl_critical_lock(squeue.waitempty);
         rtl_critisem_unlock_all(squeue.trynext);
         end if;
       rtl_critisem_unlock(squeue.counter);
@@ -508,6 +514,7 @@ begin
       rtl_critisem_new_owned(squeue.critical.counter,1,1);
       rtl_critical_new(squeue.critical.lock);
       rtl_critisem_new_owned(squeue.critical.trynext,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
+      rtl_critical_new(squeue.critical.waitempty);
       squeue.critical.lcounter:=0;
     end case;
   end rtl_squeue_new;
@@ -580,31 +587,9 @@ begin
       result:=false;
     when rtl_cst_waitable do
       result:=false;
-      -- cas
-      timeout:=milisec;
-      if milisec>0 then
-        start:=GetTickCount();
+      if rtl_critical_try_lock(squeue.critical.waitempty,milisec) then
+        rtl_critical_unlock(squeue.critical.waitempty);
+        result:=true;
         end if;
-
-      -- dokud nebude prazdna nebo dokud timeout
-      while (squeue.critical.counter.lock_count>0) loop
-        if not rtl_critisem_try_lock(squeue.critical.trynext,milisec) then
-          return;
-          end if;
-        if squeue.critical.counter.lock_count<=0 then
-          result:=true;
-          rtl_critisem_unlock_all(squeue.critical.trynext);
-          return;
-          end if;
-        rtl_critisem_unlock_all(squeue.critical.trynext);
-        if milisec>0 then 
-          elapsed:=GetTickCount()-start;
-          timeout - t_rtl_timeout(elapsed);
-          if timeout<1 then 
-            return;
-            end if;
-          end if;
-        end loop;
-      result:=true;
     end case;
   end rtl_squeue_wait_empty;

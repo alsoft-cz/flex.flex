@@ -4,11 +4,39 @@ module private messages =
 -- Flex Run-time Library
 -- Copyright (C) 1999-2003 A && L soft
 ----------------------------------------------------------------------------------------------------
+with
+  references,
+  synchronization;
+
+type
+  t_rtl_queue = record
+    style          : t_rtl_queue_style;
+    fifo           : t_rtl_squeue for position use #environment target_machine_bits; div 8;
+    heap           : t_rtl_sset   for position use #environment target_machine_bits; div 8;
+    end record;
+
+
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_queue_create =
 ----------------------------------------------------------------------------------------------------
+var
+    qu             : p_rtl_queue;
+
 begin
+  new qu;
+  rtl_ref_create_local(que,qu,^rtl_ref_collector_discard,t_rtl_ref_ns_simple);
+  qu^.style:=style;
+  case style
+    when rtl_queue_style_blocking_fifo do
+      rtl_squeue_new(qu^.fifo,rtl_cst_critical,^rtl_ref_collector_discard);
+    when rtl_queue_style_nonblocking_fifo do
+      rtl_squeue_new(qu^.fifo,rtl_cst_nonblocking,^rtl_ref_collector_discard);
+    when rtl_queue_style_blocking_heap do
+      rtl_sset_new(qu^.heap,rtl_cst_critical,^rtl_ref_collector_discard);
+    when rtl_queue_style_nonblocking_heap do
+      rtl_sset_new(qu^.heap,rtl_cst_nonblocking,^rtl_ref_collector_discard);
+    end case;
   end rtl_queue_create;
 
 
@@ -16,7 +44,25 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_queue_discard =
 ----------------------------------------------------------------------------------------------------
+var
+    qu             : p_rtl_queue;
+
 begin
+  qu:=p_rtl_queue(rtl_ref_derefrence(que));
+  if qu=nil then
+    raise messages_abandoned_queue_error;
+    end if;
+
+  case qu^.style
+    when rtl_queue_style_blocking_fifo,rtl_queue_style_nonblocking_fifo do
+      rtl_squeue_discard(qu^.fifo);
+    when rtl_queue_style_blocking_heap,rtl_queue_style_nonblocking_heap do
+      rtl_sset_discard(qu^.heap);
+    end case;
+
+  rtl_ref_local_disconnect_data(que);
+  rtl_ref_discard_local(que);
+  discard qu;
   end rtl_queue_discard;
 
 
@@ -24,15 +70,46 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_message_create =
 ----------------------------------------------------------------------------------------------------
+with
+    memory,tags.types;
+
+var
+    desc           : p_desc_type;
+
 begin
+  desc:=p_desc_type(mtag:unchecked);
+  rtl_alloc(t_rtl_pointer(msg:unchecked),desc^.size);
+  msg^.mtag:=mtag;
+  rtl_ref_local_to_local(recipient,msg^.recipient);
+  rtl_ref_local_to_local(replyto,msg^.replyto);
   end rtl_message_create;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_message_discard =
+----------------------------------------------------------------------------------------------------
+with
+    memory;
+
+begin
+  rtl_ref_discard_local(msg^.recipient);
+  rtl_ref_discard_local(msg^.replyto);
+  rtl_free(t_rtl_pointer(msg));
+  end rtl_message_discard;
 
 
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_message_answer =
 ----------------------------------------------------------------------------------------------------
+var
+    newmsg         : p_rtl_message;
+
 begin
+  rtl_message_create(mtag,msg^.replyto,msg^.recipient,newmsg);
+  rtl_message_discard(msg);
+  msg:=newmsg;
   end rtl_message_answer;
 
 
@@ -40,24 +117,46 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_message_send =
 ----------------------------------------------------------------------------------------------------
+var
+    qu             : p_rtl_queue;
+
 begin
+  qu:=p_rtl_queue(rtl_ref_derefrence(msg^.recipient));
+  if qu=nil then
+    raise messages_abandoned_queue_error;
+    end if;
+
+  case qu^.style
+    when rtl_queue_style_blocking_fifo,rtl_queue_style_nonblocking_fifo do
+      rtl_squeue_append(qu^.fifo,msg);
+    when rtl_queue_style_blocking_heap,rtl_queue_style_nonblocking_heap do
+      rtl_sset_append(qu^.heap,msg);
+    end case;
   end rtl_message_send;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_message_discard =
-----------------------------------------------------------------------------------------------------
-begin
-  end rtl_message_discard;
 
 
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_message_try_accept =
 ----------------------------------------------------------------------------------------------------
+var
+    qu             : p_rtl_queue;
+    iterator       : t_rtl_sset_iterator;
+
 begin
+  qu:=p_rtl_queue(rtl_ref_derefrence(recipient));
+  if qu=nil then
+    raise messages_abandoned_queue_error;
+    end if;
+
+  case qu^.style
+    when rtl_queue_style_blocking_fifo,rtl_queue_style_nonblocking_fifo do
+      result:=rtl_squeue_try_draw_out(qu^.fifo,t_rtl_pointer(msg:unchecked),milisec);
+    when rtl_queue_style_blocking_heap,rtl_queue_style_nonblocking_heap do
+      result:=rtl_sset_try_start(qu^.heap,iterator,t_rtl_pointer(msg:unchecked),milisec);
+    end case;
   end rtl_message_try_accept;
+
 
 
 ----------------------------------------------------------------------------------------------------

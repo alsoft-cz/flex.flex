@@ -374,10 +374,11 @@ class private linkresolver_ia32 =
 
 
     ------------------------------------------------------------------------------------------------
-    static build_class_descriptor_interfaces (
+    static build_prepare_class_descriptor_interfaces (
         interface  : in p_class_interface;       -- interface t©¡dy
         addr       : in out c_address_aligner_32) = -- p©idˆlova‡ adres
     -- Do deskriptoru typu dosad¡ informace o interfacech.
+    -- € st 1: p©¡prava tabulky interfac–.
     ------------------------------------------------------------------------------------------------
     with
       standard.classes.lists;
@@ -393,6 +394,12 @@ class private linkresolver_ia32 =
       -- vypo‡¡tat absolutn¡ adresu tabulky interfac–, bude se hodit
       itable_addr:=get_itable_addr(interface^.codegen);
 
+      -- poznamenat adresu tabulky interfac– pro nep©¡m˜ p©¡stup
+      p_desc_class(picodegen_interface(interface^.codegen)^.desc)^.itable:=itable_addr;
+
+      -- zapamatovat si relokaci pro generov n¡ EXE
+      add_relocation(picodegen_interface(interface^.codegen)^.desc_addr+t_desc_class.itable:position);
+
       -- p©ipravit iter tor
       pentity_type(interface^.refclass.getcentity)^.interfaces^.get_exposed_interfaces(it);
 
@@ -402,22 +409,55 @@ class private linkresolver_ia32 =
           ref_iface: t_ref_interface;            -- polo‘ka tabulky interfac–
 
         begin
-          -- doplnit tag t©¡dy-interfacu
-          set_tag(itable_addr,
-                  ref_iface.class_tag,
-                  picodegen_interface(exposed_iface^.refclass.getcentity^.codegen));
+          -- P©esunuto do jin‚ f ze. V t‚to dobˆ je¨tˆ nejsou k dispozici fake tagy interfac–.
+          -- -- doplnit tag t©¡dy-interfacu
+          -- set_tag(itable_addr,
+          --         ref_iface.class_tag,
+          --         picodegen_interface(exposed_iface^.codegen));
 
           -- doplnit offset instance interfaceu v r mci nad©azen‚ instance
           ref_iface.offset:=unidata_addr_to_imm32(pentity_var(exposed_iface^.instance.getcentity)^.addr);
 
           -- p©idat novou polo‘ku do tabulky interfac–
           picodegen_interface(interface^.codegen)^.itable^ & ref_iface;
+          verify({VERIFY=}001006,picodegen_interface(interface^.codegen)^.itable^:length<>exposed_iface^.interface_index);
           end declare;
         end loop;
 
       -- velikost tabulky interfac– zapo‡¡tat do celkov‚ho sou‡tu velikost¡ komponent deskriptoru
       addr.register_size(get_itable_size(interface^.codegen));
-      end build_class_descriptor_interfaces;
+      end build_prepare_class_descriptor_interfaces;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static build_finalize_class_descriptor_interfaces (
+        interface  : in p_class_interface) =     -- interface t©¡dy
+    -- Do deskriptoru typu dosad¡ informace o interfacech.
+    -- € st 2: doplnˆn¡ tag– interfac–.
+    ------------------------------------------------------------------------------------------------
+    with
+      standard.classes.lists;
+
+    var
+      it           : c_list_iterator;            -- iter tor p©es rozhran¡ t©¡dy
+      exposed_iface: p_class_interface;          -- exposovan˜ interface
+      ref_index    : t_unsigned;
+
+    begin
+      verify({VERIFY=}001004,picodegen_interface(interface^.codegen)^.itable=nil);
+
+      -- p©ipravit iter tor
+      pentity_type(interface^.refclass.getcentity)^.interfaces^.get_exposed_interfaces(it);
+
+      -- pro ka‘d˜ exposovan˜ interface vygenerovat z znam do tabulky interfac–
+      while it.get(exposed_iface) loop
+        -- doplnit tag t©¡dy-interfacu
+        set_tag(p_desc_class(picodegen_interface(interface^.codegen)^.desc)^.itable,
+                picodegen_interface(interface^.codegen)^.itable^[exposed_iface^.interface_index].class_tag,
+                picodegen_interface(exposed_iface^.codegen));
+        end loop;
+      end build_finalize_class_descriptor_interfaces;
 
 
 
@@ -495,7 +535,7 @@ class private linkresolver_ia32 =
 
           -- dosadit adresy interfac–
           if not is_exposed and then pentity_type(interface^.refclass.getcentity)^.interfaces^.exposed_interfaces>0 then
-            build_class_descriptor_interfaces(interface,addr);
+            build_prepare_class_descriptor_interfaces(interface,addr);
             end if;
 
           -- nyn¡ je ji‘ velikost v¨ech slo‘ek deskriptoru zapo‡¡tan , m–‘eme posunout adresu
@@ -522,21 +562,27 @@ class private linkresolver_ia32 =
 
       ----- zpracovat v¨echny exposovan‚ interfacy -----
       declare var
-        it         : c_list_iterator;            -- iter tor p©es rozhran¡ t©¡dy
+        it            : c_list_iterator;         -- iter tor p©es rozhran¡ t©¡dy
+        exposed_iface : p_class_interface;       -- exposovan˜ interface
 
       begin
         -- p©ipravit iter tor
         pclass^.interfaces^.get_exposed_interfaces(it);
 
         -- zpracovat v¨echny exposovan‚ interfacy
-        while it.get(interface) loop
+        while it.get(exposed_iface) loop
           -- alokovat ©¡d¡c¡ strukturu deskriptoru
-          new_codegen(interface,true);
+          new_codegen(exposed_iface,true);
 
           -- sestavit deskriptor
-          build_all(interface,true);
+          build_all(exposed_iface,true);
           end loop;
         end declare;
+
+      ---- do nativn¡ho rozhran¡ dosadit vypo‡ten‚ tagy interfac– ----
+      if pclass^.interfaces^.exposed_interfaces>0 then
+        build_finalize_class_descriptor_interfaces(interface);
+        end if;
       end build_class_descriptor;
 
 
@@ -1132,7 +1178,7 @@ class private linkresolver_ia32 =
           cpu^.immtobinary(imm,ptyp,bin^,binsize);
 
           -- zapsat
-          os^.writex(bin^,unidata_size_to_unsigned(binsize));
+          os^.write_unchecked_part(bin^,unidata_size_to_unsigned(binsize));
 
           -- vypo‡¡tat d‚lku zarovn n¡
           if full
@@ -1163,7 +1209,7 @@ class private linkresolver_ia32 =
         -- Zap¡¨e do v˜stupn¡ho streamu pot©ebn‚ zarovn n¡
         --------------------------------------------------------------------------------------------
           if size mod dalign<>0 then 
-            os^.writex(fill_nops,dalign-(size mod dalign)); 
+            os^.write_unchecked_part(fill_nops,dalign-(size mod dalign)); 
             end if;
           #end write_padding;
 
@@ -1174,7 +1220,7 @@ class private linkresolver_ia32 =
         -- Zap¡¨e do v˜stupn¡ho streamu data a pot©ebn‚ zarovn n¡
         --------------------------------------------------------------------------------------------
           -- zapsat
-          os^.writex(data,size);
+          os^.write_unchecked_part(data,size);
 
           -- zarovnat
           write_padding(size);
@@ -1195,7 +1241,7 @@ class private linkresolver_ia32 =
             end if;
 
           -- zapsat deskriptor 
-          os^.writex(codegen^.desc^,codegen^.desc_size{%%TODO(COMPATIBILITY) codegen^.desc^:size});
+          os^.write_unchecked_part(codegen^.desc^,codegen^.desc_size{%%TODO(COMPATIBILITY) codegen^.desc^:size});
           size+codegen^.desc_size;
           end write_desc_entity_base;
 
@@ -1215,14 +1261,14 @@ class private linkresolver_ia32 =
 
           -- n sleduje virtu ln¡ tabulka
           if codegen^.vtable<>nil then
-            os^.writex(codegen^.vtable^,get_vtable_size(codegen));
+            os^.write_unchecked_part(codegen^.vtable^,get_vtable_size(codegen));
                        {%%TODO(COMPATIBILITY) codegen^.vtable^:size);}
             size+get_vtable_size(codegen);
             end if;
 
           -- a tabulka interfac– 
           if codegen^.itable<>nil then
-            os^.writex(codegen^.itable^,get_itable_size(codegen));
+            os^.write_unchecked_part(codegen^.itable^,get_itable_size(codegen));
             size+get_itable_size(codegen);
             end if;
 
@@ -1266,11 +1312,11 @@ class private linkresolver_ia32 =
               -- zapsat v¨echny instance
               loop
                 -- zapsat instrukce
-                os^.writex(p^.c^[p^.c^:first],p^.c^:length);
+                os^.write_unchecked_part(p^.c^[p^.c^:first],p^.c^:length);
 
                 -- zarovnat
                 if p^.c^:length mod calign<>0 then 
-                  os^.writex(fill_nops,calign-(p^.c^:length mod calign)); 
+                  os^.write_unchecked_part(fill_nops,calign-(p^.c^:length mod calign)); 
                   end if;
 
                 -- dal¨¡ instance

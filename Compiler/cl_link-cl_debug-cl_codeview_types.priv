@@ -146,7 +146,7 @@ begin
   _container:=nil;
 
   -- mame k dispozici informaci o debugu?
-  if (_type<>nil) and (_type^.debuginfo<>nil) then
+  if _type<>nil and then _type^.debuginfo<>nil then
     _container:=_type^.debuginfo;
     result:=true;
     return;
@@ -1176,6 +1176,13 @@ begin
 
     -- a mame u ni definovany typ ?
     if (item_type<>nil) and (get_codeview_type_container(item_type,_base,cv_item)) then
+      -- zjistit, zda se jedn  o metodu
+      if item^.etype in tentitytypeset:[et_special,et_static,et_virtual,et_override] then
+        -- p©edat informace specifick‚ pro metodu
+        p_codeview_type_proc(cv_item^.desc)^.method:=true;
+        p_codeview_type_proc(cv_item^.desc)^.enclosing_class:=_my;
+        end if;
+
       -- vygenerujeme popis typu polozky
       generate_codeview_type(item_type,cv_item^.typ,cv_item^.primitive,cv_item^.desc,cv_item,_base);
 
@@ -1543,12 +1550,68 @@ var
   paramtype        : pentity_type;               -- typ parametru
   srch             : tentitysearch;
 
+    ------------------------------------------------------------------------------------------------
+    procedure generate_st_this (
+        _c_cv_type : in out p_codeview_type;     -- codeview typ t©¡dy
+        _desc      : out p_codeview_type0) =
+    -- Vygeneruje popis skryt‚ho [this] parametru metody jako referenci na t©¡du metody.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- pokud jeste neni reference, musime ji vytvorit -
+      if _c_cv_type^.reference=nil then
+        -- alokujeme pamet pro popis typu
+        new cv_paramtype;
+        cv_paramtype^.status:=tcvs_build;
+        cv_paramtype^.typ:=lf_pointer;
+        cv_paramtype^.primitive:=false;
+
+        -- vytvorime popis pointeru a inicializujeme
+        new p_codeview_type_pointer(cv_paramtype^.desc);
+        p_codeview_type_pointer(cv_paramtype^.desc)^.status:=tcvs_build;
+
+        -- poznamen me si na t©¡du ji‘ existuj¡c¡ referenci
+        _c_cv_type^.reference:=cv_paramtype;
+
+        -- vyplnime zname veci
+        p_codeview_type_pointer(cv_paramtype^.desc)^.typ:=_c_cv_type;
+        p_codeview_type_pointer(cv_paramtype^.desc)^.ptrtype:=cpp_near32bit;
+        p_codeview_type_pointer(cv_paramtype^.desc)^.ptrmode:=cpm_reference;
+        p_codeview_type_pointer(cv_paramtype^.desc)^.isflat32:=true;
+        p_codeview_type_pointer(cv_paramtype^.desc)^.volatile:=false;
+        p_codeview_type_pointer(cv_paramtype^.desc)^.ptrconst:=false;
+        p_codeview_type_pointer(cv_paramtype^.desc)^.unaligned:=true;
+        p_codeview_type_pointer(cv_paramtype^.desc)^.restrict:=false;
+
+      else
+        -- reference na typ jiz existuje
+        cv_paramtype:=_c_cv_type^.reference;
+        end if;
+
+      -- alokujeme pamet pro popis argumentu [this]
+      new param;
+
+      -- vyplnime co vime
+      param^.typ:=cv_paramtype;
+
+      -- zaradime [this] argument do seznamu na za‡ tek
+      param^.next:=p_codeview_type_proc(_desc)^.first_argument;
+      if p_codeview_type_proc(_desc)^.first_argument<>nil then p_codeview_type_proc(_desc)^.first_argument^.prev:=param; end if;
+      p_codeview_type_proc(_desc)^.first_argument:=param;
+      if p_codeview_type_proc(_desc)^.last_argument=nil then p_codeview_type_proc(_desc)^.last_argument:=param; end if;
+      end generate_st_this;
+
+
 begin
   -- vytvorime popis recordu a inicializujeme
   new p_codeview_type_proc(_desc);
   p_codeview_type_proc(_desc)^.status:=tcvs_building;
   _primitive:=false;
-  _leaf:=lf_procedure;
+
+  if p_codeview_type_proc(_desc)^.method
+    then _leaf:=lf_mfunction;
+    else _leaf:=lf_procedure;
+    end if;
+
   _my^.status:=tcvs_building;
 
   -- projdeme seznam parametru
@@ -1632,6 +1695,12 @@ begin
     srch.find_et_next;
     end loop;
 
+  -- jedn  se o metodu
+  if p_codeview_type_proc(_desc)^.method then
+    -- vygenerovat popis typu skryt‚ho [this] parametru
+    generate_st_this(p_codeview_type_proc(_desc)^.enclosing_class,_desc);
+    end if;
+
   -- vyplnime jeste co vime - typ volani...
   case get_call_conv(pentity(_type)^)
     when icc_default do
@@ -1710,6 +1779,164 @@ var
   attr             : t_mod_word;
   b3               : t_unsigned8;
 
+
+    ------------------------------------------------------------------------------------------------
+    procedure dump_lf_method (
+        _my        : in p_codeview_type;
+        _base      : in out t_codeview_type_table) =
+    -- Dump metody.
+    ------------------------------------------------------------------------------------------------
+    var
+      arglistdump      : p_codeview_type_dump;
+      arglistindex     : t_longint;
+      arg              : p_codeview_type_argitem;-- paramater metody
+      attrib           : t_longint;              -- atribut pointeru (pro parametry p©ed van‚ odkazem)
+
+    begin                                                                                                           
+      -- abysme ho nahodou nedumpnuli rekurzivne                                                                    
+      _my^.status:=tcvs_dumping;                                                                                    
+      arglistindex:=register_codeview_dump(_base,arglistdump);                                                      
+      _my^.indextype:=register_codeview_dump(_base,mydump);                                                         
+      _my^.leaf:=codeview_type_type_code[_my^.typ];                                                                 
+                                                                                                                    
+      -- projedeme vsechny paramatery, spocitame je a nechame vygenerovat                                           
+      p_codeview_type_proc(_my^.desc)^.parms:=0;                                                                    
+      arg:=p_codeview_type_proc(_my^.desc)^.first_argument;                                                         
+
+      -- prvn¡ parametr je skryt˜ parametr [this], p©esko‡it (?)
+      arg:=arg^.next;
+      
+      while arg<>nil loop                                                                                           
+        -- udelame dump typu indexu                                                                                 
+        dump_codeview_type(arg^.typ,_base);                                                                         
+        if arg^.typ^.status<tcvs_dumping then                                                                       
+          -- co ted s tim ?                                                                                         
+          unimplemented({UNIMP=}000261);                                                                            
+          end if;                                                                                                   
+                                                                                                                    
+        -- dalsi paramater                                                                                          
+        p_codeview_type_proc(_my^.desc)^.parms:=p_codeview_type_proc(_my^.desc)^.parms+1;                           
+        arg:=arg^.next;                                                                                             
+        end loop;                                                                                                   
+                                                                                                                    
+      -- alokace mista                                                                                              
+      buffer_size:=8+(p_codeview_type_proc(_my^.desc)^.parms*4);                                                    
+      new buffer range buffer_size;                                                                                 
+                                                                                                                    
+      size:=buffer_size-2;                                                                                          
+      memory_copy(size,buffer^[0],2);                                                                               
+      memory_copy(codeview_type_type_code[lf_arglist],buffer^[2],2);                                                
+      memory_copy(p_codeview_type_proc(_my^.desc)^.parms,buffer^[4],4);                                             
+      size:=8;                                                                                                      
+                                                                                                                    
+      -- projedeme vsechny paramatery, spocitame je a nechame vygenerovat                                           
+      arg:=p_codeview_type_proc(_my^.desc)^.first_argument;                                                         
+
+      -- prvn¡ parametr je skryt˜ parametr [this], dumpneme ho jako referenci
+      buffer_size:=12;
+      size:=buffer_size;
+
+      -- zakodujeme attributy - !!! mama na to nadefinovany konstanty !!!
+      attrib:=0;
+      case p_codeview_type_pointer(arg^.typ^.desc)^.ptrtype
+        when cpp_near           do attrib:=attrib;
+        when cpp_far            do attrib:=attrib+1;
+        when cpp_huge           do attrib:=attrib+2;
+        when cpp_basedonsegment do attrib:=attrib+3;
+        when cpp_basedonvalue   do attrib:=attrib+4;
+        when cpp_basedonsegmentofvalue  do attrib:=attrib+5;
+        when cpp_basedonaddress do attrib:=attrib+6;
+        when cpp_basedonsegmentofaddress do attrib:=attrib+7;
+        when cpp_basedontype    do attrib:=attrib+8;
+        when cpp_basedonself    do attrib:=attrib+9;
+        when cpp_near32bit      do attrib:=attrib+10;
+        when cpp_far32bit       do attrib:=attrib+11;
+        when cpp_64bit          do attrib:=attrib+12;
+        end case;
+
+      case p_codeview_type_pointer(arg^.typ^.desc)^.ptrmode
+        when cpm_pointer             do attrib:=attrib+$00000000;
+        when cpm_reference           do attrib:=attrib+$00000020;
+        when cpm_pointertodatamember do attrib:=attrib+$00000040;
+        when cpm_pointertomethod     do attrib:=attrib+$00000060;
+        end case;
+
+      if p_codeview_type_pointer(arg^.typ^.desc)^.isflat32 then attrib:=attrib+$00000100; end if;
+      if p_codeview_type_pointer(arg^.typ^.desc)^.volatile then attrib:=attrib+$00000200; end if;
+      if p_codeview_type_pointer(arg^.typ^.desc)^.ptrconst then attrib:=attrib+$00000400; end if;
+      if p_codeview_type_pointer(arg^.typ^.desc)^.unaligned then attrib:=attrib+$00000800; end if;
+      if p_codeview_type_pointer(arg^.typ^.desc)^.restrict then attrib:=attrib+$00001000; end if;
+      p_codeview_type_pointer(arg^.typ^.desc)^.attr:=attrib;
+
+      -- alokace mista
+      new buffer range buffer_size;
+
+      -- vlastni dump
+      size:=size-2;
+      memory_copy(size,buffer^[0],2);
+      memory_copy(arg^.typ^.leaf,buffer^[2],2);
+      memory_copy(arg^.typ^.indextype,buffer^[4],4);
+      memory_copy(p_codeview_type_pointer(arg^.typ^.desc)^.attr,buffer^[8],4);
+
+      -- aktualizujeme hodnoty dump informaci
+      set_codeview_dump(buffer,buffer_size,mydump,_base);
+
+      -- znena statusu na finalni
+      arg^.status:=tcvs_dump;
+
+      -- n sleduj¡c¡ argument
+      arg:=arg^.next;
+
+      while arg<>nil loop                                                                                           
+        memory_copy(arg^.typ^.indextype,buffer^[size],4);                                                           
+        size:=size+4;                                                                                               
+                                                                                                                    
+        -- dalsi paramater                                                                                          
+        arg:=arg^.next;                                                                                             
+        end loop;                                                                                                   
+                                                                                                                    
+      -- aktualizujeme hodnoty dump informaci                                                                       
+      set_codeview_dump(buffer,buffer_size,arglistdump,_base);                                                      
+                                                                                                                    
+      -- dump typu vysledku                                                                                         
+      if p_codeview_type_proc(_my^.desc)^.cv_result<>nil then                                                       
+        dump_codeview_type(p_codeview_type_proc(_my^.desc)^.cv_result,_base);                                       
+        if p_codeview_type_proc(_my^.desc)^.cv_result^.status<tcvs_dumping then                                     
+          -- co ted s tim ?                                                                                         
+          unimplemented({UNIMP=}000262);                                                                            
+          end if;                                                                                                   
+        p_codeview_type_proc(_my^.desc)^.rvtype:=p_codeview_type_proc(_my^.desc)^.cv_result^.indextype;             
+      else                                                                                                          
+        -- procedura bez navratoveho typu vraci void                                                                
+        p_codeview_type_proc(_my^.desc)^.rvtype:=t_longint(codeview_type_type_code[lf_t_void]);                     
+        end if;                                                                                                     
+
+      -- dump attributu                                                                                             
+      p_codeview_type_proc(_my^.desc)^.call:=codeview_type_proc_call[p_codeview_type_proc(_my^.desc)^.cv_call];     
+                                                                                                                    
+      -- dump informaci o procedure                                                                                 
+      buffer_size:=28;                                                                                              
+      size:=buffer_size-2;                                                                                          
+      new buffer range buffer_size;                                                                                 
+                                                                                                                    
+      memory_copy(size,buffer^[0],2);                                                                               
+      memory_copy(_my^.leaf,buffer^[2],2);                                                                          
+      memory_copy(p_codeview_type_proc(_my^.desc)^.rvtype,buffer^[4],4);                                            
+      memory_copy(p_codeview_type_proc(_my^.desc)^.enclosing_class^.leaf,buffer^[8],4);
+--      memory_copy( ,buffer^[12],4);
+      memory_copy(p_codeview_type_proc(_my^.desc)^.call,buffer^[16],1);                                              
+      memory_copy(p_codeview_type_proc(_my^.desc)^.parms,buffer^[18],2);                                            
+      memory_copy(arglistindex,buffer^[12],4);                                                                      
+      -- thisadjust, 4B. Co to je a k cemu?
+                                                                                                                    
+      -- aktualizujeme hodnoty dump informaci                                                                       
+      set_codeview_dump(buffer,buffer_size,mydump,_base);                                                           
+
+      -- znena statusu na finalni                                                                                   
+      _my^.status:=tcvs_dump;                                                                                       
+      end dump_lf_method;                                                                                        
+
+
 begin
   -- abysme ho nahodou nedumpnuli rekurzivne
   _my^.status:=tcvs_dumping;
@@ -1727,6 +1954,9 @@ begin
   while ri<>nil loop
     -- zjistime informace o polozce recordu
     member:=p_codeview_type_member(ri^.fielddesc);
+
+-- nen¡ to metoda
+if member^.typ^.typ<>lf_procedure then
 
     -- udelame jeji dump, aby dostala prideleny index
     dump_codeview_type(member^.typ,_base);
@@ -1747,7 +1977,7 @@ begin
     buffer_size:=buffer_size+9+member^.name:length;
     size:=buffer_size;
     buffer_size:=((buffer_size+3) div 4) * 4;
-
+end if;
     -- dalsi polozka v recordu
     ri:=ri^.prev;
     end loop;
@@ -1757,6 +1987,9 @@ begin
     -- zjistime informace o polozce recordu
     member:=p_codeview_type_member(ri^.fielddesc);
     -- member^.name:=lowcasestr(member^.name);
+
+-- nen¡ to metoda
+if member^.typ^.typ<>lf_procedure then
 
     -- udelame jeji dump, aby dostala prideleny index
     dump_codeview_type(member^.typ,_base);
@@ -1776,6 +2009,7 @@ begin
     buffer_size:=buffer_size+9+member^.name:length;
     size:=buffer_size;
     buffer_size:=((buffer_size+3) div 4) * 4;
+end if;
 
     -- dalsi polozka v recordu
     ri:=ri^.next;
@@ -1812,6 +2046,10 @@ begin
     -- a delame dump az na prvni vlastni polozku
 --A    while ri<>p_codeview_type_record(_my^.desc)^.first_field loop
     while ri<>nil loop --A
+
+-- nen¡ to metoda
+if member^.typ^.typ<>lf_procedure then
+
       -- dump informaci o polozce
       memory_copy(codeview_type_type_code[lf_member],buffer^[size],2);
       size:=size+2;
@@ -1854,12 +2092,18 @@ begin
       -- dalsi polozka v recordu
       p_codeview_type_record(_my^.desc)^.count:=p_codeview_type_record(_my^.desc)^.count+1;
 --A      ri:=ri^.next;
+end if;
+
       ri:=ri^.prev; --A
       end loop;
     end if;
 
   ri:=p_codeview_type_record(_my^.desc)^.first_field;
   while ri<>nil loop
+
+-- nen¡ to metoda
+if member^.typ^.typ<>lf_procedure then
+
     -- dump informaci o polozce
     memory_copy(codeview_type_type_code[lf_member],buffer^[size],2);
     size:=size+2;
@@ -1901,6 +2145,8 @@ begin
 
     -- dalsi polozka v recordu
     p_codeview_type_record(_my^.desc)^.count:=p_codeview_type_record(_my^.desc)^.count+1;
+end if;
+
     ri:=ri^.next;
     end loop;
 
@@ -1952,6 +2198,18 @@ begin
 
   -- znena statusu na finalni
   _my^.status:=tcvs_dump;
+
+-- m me u‘ cv index typu; pro t©¡dy prov‚st dump metod
+ri:=p_codeview_type_record(_my^.desc)^.first_field;
+while ri<>nil loop
+-- je to metoda
+if member^.typ^.typ=lf_procedure then
+  -- dumpnout metodu
+  dump_lf_method(member^.typ,_base);
+  end if;
+  ri:=ri^.next;
+  end loop;
+
   end dump_lf_structure;
 
 

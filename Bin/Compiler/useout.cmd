@@ -1,0 +1,1 @@
+copy /Y out\fcc.exe in\fcc.exe 
