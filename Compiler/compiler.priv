@@ -40,18 +40,23 @@ class private c_flex_compiler =
       cc_def.cc_env,
       cc_def.cc_codes,
       cc_base.cc_text,
-      cp_cpu.cp_ia32,
       cp_os.cp_win32,
+      cp_os.cp_cli,
+      cp_cpu.cp_ia32,
+      cp_cpu.cp_cli,
       cg_gen.cg_ia32,
       cg_gen.cg_ia32.ci_gen,
+      cg_gen.cg_cli,
+      cg_gen.cg_cli.ci_gen,
       cl_link.cl_image.cl_pe,
-      cl_link.cl_resolver.cl_ia32;
+      cl_link.cl_resolver.cl_ia32,
+      cl_link.cl_resolver.cl_cli;
 
     var
       listing      : ^cc_base.cc_listing;        -- listing
 
 
-    
+
     ------------------------------------------------------------------------------------------------
     static build_file_name (
         directory  : in t_text_name;
@@ -91,7 +96,6 @@ class private c_flex_compiler =
         else
           name.compose_name(result);
           end if;
-
       end build_file_name;
      
     
@@ -122,15 +126,19 @@ class private c_flex_compiler =
       begin
         ----- (0) opsat do listing^. konfiguraci překladu ------------------------------------------
         listing^.start_section(listing^.tls_setup);
+        listing^.write_header_item('Source code:',src_name);
+        listing^.write_header_item('Partition type:',t_partition_type_txt[part_type]);
+        listing^.write_header_item('Listing:',lst_name);
+        listing^.write_header_item('OS family:',get_os_family_name);
+        listing^.write_header_item('OS type:',get_os_type_name);
+        listing^.write_header_item('OS subsystem:',get_os_subsystem_name);
+        listing^.write_header_item('CPU architecture:',get_cpu_architecture_name);
         
 
         ----- (1) překlad  -------------------------------------------------------------------------
 
         -- poznamenat do listing^. začátek překladu
         listing^.start_section(listing^.tls_compilation);
-        listing^.write_header_item('Partition type:',t_partition_type_txt[part_type]);
-        listing^.write_header_item('Source code:',src_name);
-        listing^.write_header_item('Listing:',lst_name);
         listing^.write_header_item('Date and time of compilation:',calendar.composed_datim_to_string(provider.get_datetime));
         listing^.end_header;
         time_start:=provider.get_machine_uptime;
@@ -189,7 +197,11 @@ class private c_flex_compiler =
         listing^.start_section(listing^.tls_code_generation);
 
         -- generování kódu
-        cg_gen.cg_ia32.ci_gen.i_codegen(compi);
+        case env_target_system.machine_architecture
+          when tma_ia32 do cg_gen.cg_ia32.ci_gen.i_generate_code(compi);
+          when tma_ia64 do unimplemented({UNIMP=}000349);
+          when tma_cli  do cg_gen.cg_cli.ci_gen.i_generate_code(compi);
+          end case;
 
         -- konec, pokud nastala nějaká chyba
         if ce^.testerror then
@@ -209,12 +221,42 @@ class private c_flex_compiler =
           listing^.start_section(listing^.tls_linking);
 
           -- připravit vyhodnocovač
-          new resolver tag cl_link.cl_resolver.cl_ia32.c_link_resolver_ia32_win32:tag;
-          cl_link.cl_resolver.cl_ia32.p_link_resolver_ia32_win32(resolver)^.init(compi,cc_def.cc_var.os^.getimagebase(compi^),4096,4096,32{16},4);
+          case env_target_system.os_family
+            -- Win32
+            when tos_win32 do
+                case env_target_system.machine_architecture
+                  -- IA-32
+                  when tma_ia32 do
+                      new resolver tag cl_link.cl_resolver.cl_ia32.c_link_resolver_ia32_win32:tag;
+                      cl_link.cl_resolver.cl_ia32.p_link_resolver_ia32_win32(resolver)^.init(compi,cc_def.cc_var.os^.getimagebase(compi^),4096,4096,32{16},4);
+
+                  -- IA-64
+                  when tma_ia64 do
+                      unimplemented({UNIMP=}000348);
+
+                  when others do verify({VERIFY=}001494);
+                  end case;
+
+            -- CLI
+            when tos_cli do
+                new resolver tag cl_link.cl_resolver.cl_cli.c_link_resolver_cli:tag;
+
+            -- Unix
+            when tos_unix do 
+                unimplemented({UNIMP=}000347);
+            end case;
 
           -- připravit image-specifickou část
-          new image_specific tag cl_link.cl_image.cl_pe.c_link_resolver_image_specific_pe:tag;
-          cl_link.cl_image.cl_pe.p_link_resolver_image_specific_pe(image_specific)^.init(cc_def.cc_var.os^.getimagebase(compi^));
+          case env_target_system.os_family
+            -- Win32 nebo CLI => PE
+            when tos_win32,tos_cli do 
+                new image_specific tag cl_link.cl_image.cl_pe.c_link_resolver_image_specific_pe:tag;
+                cl_link.cl_image.cl_pe.p_link_resolver_image_specific_pe(image_specific)^.init(cc_def.cc_var.os^.getimagebase(compi^));
+
+            -- Unix => ELF
+            when tos_unix do 
+                unimplemented({UNIMP=}000346);
+            end case;
 
           -- provést vlastní linkování
           l_link(compi,resolver^,image_specific^);
@@ -242,9 +284,19 @@ class private c_flex_compiler =
               when others do verify({VERIFY=}000668,true);
               end case;
 
+            -- zvolit formát výstupního souboru
+            case env_target_system.os_family
+              -- Win32 nebo CLI => PE
+              when tos_win32,tos_cli do 
+                  new image tag cl_link.cl_image.cl_pe.c_link_image_pe:tag;
+                  cl_link.cl_image.cl_pe.p_link_image_pe(image)^.init(image_name^);
+
+              -- Unix => ELF
+              when tos_unix do 
+                  unimplemented({UNIMP=}000345);
+              end case;
+
             -- sestavit výstupní soubor
-            new image tag cl_link.cl_image.cl_pe.c_link_image_pe:tag;
-            cl_link.cl_image.cl_pe.p_link_image_pe(image)^.init(image_name^);
             l_build_image(compi,resolver^,image_specific^,image^);
 
             -- konec, pokud nastala nějaká chyba
@@ -262,7 +314,7 @@ class private c_flex_compiler =
             listing^.write_header_item('Created image:',image_name^);
 
           leave
-            discard image;            
+            discard image;
             end declare;
 
         leave
@@ -474,9 +526,16 @@ class private c_flex_compiler =
       env_compiler.c_ver:=c_ver;
       
       -- nastavit parametry cílové platformy
-      -- %%TODO(PLATFORM) - podle nastavene platformy v sysdesc alokovat spravny objekt pro dany OS a CPU
-      new cpu tag cp_cpu.cp_ia32.ci_cpuspecific:tag;
-      new os tag cp_os.cp_win32.cp_osspecific:tag;
+      case env_target_system.machine_architecture
+        when tma_ia32  do new cpu tag cp_cpu.cp_ia32.c_cpu_specific_ia32:tag;
+        when tma_ia64  do unimplemented({UNIMP=}000330);
+        when tma_cli   do new cpu tag cp_cpu.cp_cli.c_cpu_specific_cli:tag;
+        end case;
+      case env_target_system.os_family
+        when tos_win32 do new os tag cp_os.cp_win32.c_os_specific_win32:tag;
+        when tos_unix  do unimplemented({UNIMP=}000331);
+        when tos_cli   do new os tag cp_os.cp_cli.c_os_specific_cli:tag;
+        end case;
 
       -- inicializovat environment proměnné
       cc_def.cc_env.env_init_var;
@@ -492,10 +551,9 @@ class private c_flex_compiler =
       cc_lex;
 
     begin
-      -- zvolit platformu
+      -- zvolit implicitní platformu
       env_compiler:=env_compiler_default;
-      env_target_system:=sdbase_list[tos_win32];   -- default
---    sysdesc.os_subsystem_type:=os_subsystem_console; --sdbase_win32 ma default sybsystem_console
+      env_target_system:=env_system_list[tos_win32]; -- %%TODO(PORTABILITY) Zobecnit!
 
       -- inicializovat seznam jmen použitých souborů
       new cc_var.used_files;

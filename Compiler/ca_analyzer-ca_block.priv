@@ -130,7 +130,51 @@ procedure a_block_goto (
 -- příkaz GOTO
 ----------------------------------------------------------------------------------------------------
 begin
-  -- nic nedělat
+  ----- %%TECH Způsob rozlišení skoku mimo aktuání blok --------------------------------------------
+  -- Pro generování kódu příkazu skoku je rozhodující, zda se jedná o skok uvnitř aktuálního bloku
+  -- nebo skok mimo, do nadřazeného bloku, což s sebou nese potřebu provést případné po cestě
+  -- ležící finalizace a další operace.
+  --
+  -- V rámci globální analýzy se provádí i číslování úrovní vnoření jednotlivých uzlů. Tento
+  -- mechanismus lze ovšem pro rozlišení ne/lokálního skoku použít pouze z části. Pro plné využití
+  -- by bylo nutné předsunout číslování do některé z předcházejících fází zpracování příkazů.
+  -- V situaci, kdy před globální analýzou předchází optimalizace příkazů, by to znamenalo přidat
+  -- další, obecně zbytečný průchod zpracování.
+  --
+  -- Z tohoto pohledu je v dané situaci výhodnější použít komplikovanější způsob rozlišení. Nižší
+  -- efektivita je vzhledem k nefrekventovanosti GOTO v reálných aplikacích nezajímavá.
+  --
+  -- Vlastní rozlišení probíhá takto:
+  --   1. jestliže je v cílovém návěští vyplněna úroveň vnoření (tj. <> 0), rozhodne se podle ní
+  --      stejně jako ve zpracování BREAK,
+  --   2. je-li úroveň vnoření nulová a návěští je umístěno ve stejné sekvenci příkazů jako GOTO,
+  --      což lze zatím zjistit jen ručním trasováním sekvence, je skok lokální,
+  --   3. v ostatních případech se jedná o nelokální skok.
+  --------------------------------------------------------------------------------------------------
+  
+  -- je už u návěští známa úroveň vnoření?
+  if bl^.plabel^.level<>0
+
+    -- ano => určit ne/lokálnost skoku je jednoduché 
+    then 
+      bl^.loc_outer:=bl^.blevel<>bl^.plabel^.level;
+
+    -- ne => musí se to vypočítat složitěji
+    else
+      declare var
+        p          : pblnode;
+
+      begin
+        -- zjistit, jestli návěští patří do stejné sekvence příkazů
+        p:=bl^.next;
+        while p<>nil and then p<>bl^.plabel^.bl.getcblock loop
+          p:=p^.next;
+          end loop;
+
+        -- našlo-li se, je to lokální skok, jinak určitě nelokální
+        bl^.loc_outer:=p=nil;
+        end declare;
+      end if;
   end a_block_goto;
 
 
@@ -262,7 +306,7 @@ var
             else
               declare var
                 x_org_tag : pexpnode; 
-              
+
               begin
                 -- alokovat pracovní proměnnou a vyměnit výraz v příkazu
                 make_temp_copy(xinfo,bl^.xtag,x_org_tag,x_tag);
@@ -271,7 +315,7 @@ var
                 add_assign(binfo,xinfo,bl^.bprolog,x_tag,x_org_tag);
                 end declare;
               end if;
-          
+
         -- použít bázový typ pointeru
         else
           -- sestavit výraz reprezentující tag bázového typu pointeru
@@ -279,7 +323,7 @@ var
                    x_make_component_type(curr,xinfo,base.getctype)
                    );
           end if;
-      
+
       -- podle tagu nastavit velikost alokované paměti
       if bl^.xrange=nil and x_tag<>nil then
         declare var
@@ -338,7 +382,7 @@ begin
 
       ----- (1) Rozhodnout, jestli není potřeba pracovní proměnná -----
       choose_temp_or_org(xinfo,for x_org_var use x_org_var,for x_temp_var use x_temp_var);
-      
+
       ----- (2) Vypočítat a zkontrolovat tag, upravit RANGE -----
       prepare_tag_and_range(binfo,xinfo,x_tag);
 
@@ -445,13 +489,36 @@ begin
 
   -- v NEW je explicitně specifikován TAG => může mít metody INIT nebo ENTRY
   elsif bl^.xtag<>nil then
-    unimplementedx({UNIMP=}000195,bl^.pos[bp_begin]);
+    --unimplementedx({UNIMP=}000195,bl^.pos[bp_begin]);
+    declare var
+      binfo        : blinfo;                     -- kontext
+      xinfo        : expinfo;                    -- kontext
+      x_org_var    : pexpnode;                   -- výraz reprezentující původní proměnnou
+      x_temp_var   : pexpnode;                   -- výraz reprezentující pracovní proměnná
+      x_tag        : pexpnode;                   -- výraz reprezentující tag
+
+    begin
+      -- připravit kontexty
+      a_prepare_info(binfo,xinfo);
+
+      ----- (1) Rozhodnout, jestli není potřeba pracovní proměnná -----
+      choose_temp_or_org(xinfo,for x_org_var use x_org_var,for x_temp_var use x_temp_var);
+
+      ----- (2) Vypočítat a zkontrolovat tag, upravit RANGE -----
+      prepare_tag_and_range(binfo,xinfo,x_tag);
+
+      ----- (3) Inicializovat instanci -----
+      ca_analyzer.ca_type.a_type_nonclass_entry_internal(curr,^prefix_deref,x_temp_var,base.getctype,bl^.bepilog,binfo,xinfo,bl^.xrange,x_tag,x_temp_var);
+
+      ----- (4) Pracovní proměnnou přiřadit do cílové -----
+      add_assign(binfo,xinfo,bl^.bepilog,for x_to use x_org_var,for x_from use x_temp_var);
+      end declare;
 
   -- obsahuje třídu nebo má speciální metodu INIT ?
   -- Ondra 1.7.2003 : Příznak komplexní inicializace se nově nenastavuje v případě, kdy není
   -- k dispozici @INIT ale jen @ENTRY, takže se musí potřeba volání @ENTRY testovat zvlášť
   elsif base.getutype<>nil and then (base.getctype^.tinit=ti_complex
-  or (t_contains_class(base.getctype^) and base.getctype^.stable[tst_entry].isset))
+  or a_find_special_method(base.getctype^,tst_entry)<>nil)
 --  elsif base.getutype<>nil and then base.getctype^.tinit=ti_complex
 --  and then (t_contains_class(base.getctype^) or base.getctype^.stable[tst_init].isset)
   -- => potom je alokace o něco složitější
@@ -462,12 +529,13 @@ begin
       porgvar      : pexpnode;                   -- původní proměnná
       ptempvar     : pentity_var;                -- pracovní proměnná
       crange       : texecuterange;              -- rozsah provádění
+      srange       : pentity_type;               -- typ rozsahu bázového typu
       typ          : pentity_type;               -- popis bázového typu pointeru 
       prangehighvar : pentity_var;               -- pracovní proměnná pro rozsah
       prangelowvar : pentity_var;                -- pracovní proměnná pro rozsah
 
     begin
-      verify({VERIFY=}000589,not base.getctype^.stable[tst_init].isset and not base.getctype^.stable[tst_entry].isset);
+      verify({VERIFY=}000589,a_find_special_method(base.getctype^,tst_init)=nil and a_find_special_method(base.getctype^,tst_entry)=nil);
 
       -- připravit kontexty
       a_prepare_info(binfo,xinfo);
@@ -479,77 +547,84 @@ begin
       porgvar:=bl^.xvar;
       bl^.xvar:=x_make_component_var(curr,xinfo,ptempvar);
 
-      -- zkráceny pointer na popis bázového typu
+      -- zkrácený pointer na popis bázového typu
       typ:=base.getutype;
 
-      -- pro pole a string musíme zajistit rozsah inicializace
-      if typ^.stype in dts_index then
-        -- unconstrained type - inicializace dána rozsahem
-        if bl^.xrange<>nil and typ^.stype in dts_unconstrained then
-          -- založit pracovní proměnnou
-          a_create_temp_var(curr,prangehighvar,bl^.xrange^.t.getctype);
+      -- pro string se inicializační metody NEVOLAJÍ, protože string vznikne prázdný
+      if typ^.stype not in dts_string then
+        -- pro pole musíme zajistit rozsah inicializace
+        if typ^.stype in dts_index then
+          -- unconstrained type - inicializace dána rozsahem
+          if bl^.xrange<>nil and typ^.stype in dts_unconstrained then
+            -- založit pracovní proměnnou
+            a_create_temp_var(curr,prangehighvar,bl^.xrange^.t.getctype);
 
-          -- vypočítat velikost
-          a_list_append(bl^.bprolog,
-            b_make_cmd(curr,binfo,
-              x_make_op_assign(curr,xinfo,
-                x_make_component_var(curr,xinfo,prangehighvar),
-                bl^.xrange
+            -- vypočítat velikost
+            a_list_append(bl^.bprolog,
+              b_make_cmd(curr,binfo,
+                x_make_op_assign(curr,xinfo,
+                  x_make_component_var(curr,xinfo,prangehighvar),
+                  bl^.xrange
+                  )
+                )
+              );
+
+            -- update rozsahu
+            bl^.xrange:=x_make_component_var(curr,xinfo,prangehighvar);
+
+            -- unconstrained pole - velikost inicializace dána rozsahem 0..RANGE-1
+            if typ^.stype=dt_uarray then 
+              -- dolní mez zpracovávaného rozsahu
+              crange.low:=x_make_imm_uniint(curr,xinfo,ui_0);
+
+              -- horní mez zpracovávaného rozsahu
+              crange.high:=x_make_op_unary(curr,xinfo,un_pred,
+                x_make_component_var(curr,xinfo,prangehighvar)
+                );
+
+            -- unconstrained string - velikost inicializace dána rozsahem 1..RANGE
+            elsif typ^.stype=dt_ustring then
+              -- dolní mez zpracovávaného rozsahu
+              crange.low:=x_make_imm_uniint(curr,xinfo,ui_1);
+
+              -- horní mez zpracovávaného rozsahu
+              crange.high:=x_make_component_var(curr,xinfo,prangehighvar);
+              end if;
+
+          -- string a array - velikost inicializace dána rozsahem lval..hval
+          elsif bl^.xrange=nil and (typ^.stype=dt_array or typ^.stype=dt_string) then  
+            -- zjistit rozsah bázového typu
+            srange:=typ^.srange.getctype;
+
+            -- dolní mez zpracovávaného rozsahu
+            crange.low:=x_make_imm_uniint(curr,xinfo,srange^.lval);
+
+            -- horní mez zpracovávaného rozsahu
+            crange.high:=x_make_imm_uniint(curr,xinfo,srange^.hval);
+            end if;
+          end if;
+
+        -- zavolat metodu INIT
+        if a_find_special_method(base.getctype^,tst_init)<>nil then
+          a_list_append(bl^.bepilog,
+            a_type_make_call(curr,binfo,xinfo,tst_init,base.getctype^,crange,
+              x_make_deref(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar)
                 )
               )
             );
-
-          -- update rozsahu
-          bl^.xrange:=x_make_component_var(curr,xinfo,prangehighvar);
-
-          -- unconstrained pole - velikost inicializace dána rozsahem 0..RANGE-1
-          if typ^.stype=dt_uarray then 
-            -- dolní mez zpracovávaného rozsahu
-            crange.low:=x_make_imm_uniint(curr,xinfo,ui_0);
-
-            -- horní mez zpracovávaného rozsahu
-            crange.high:=x_make_op_unary(curr,xinfo,un_pred,
-              x_make_component_var(curr,xinfo,prangehighvar)
-              );
-
-          -- unconstrained string - velikost inicializace dána rozsahem 1..RANGE
-          elsif typ^.stype=dt_ustring then
-            -- dolní mez zpracovávaného rozsahu
-            crange.low:=x_make_imm_uniint(curr,xinfo,ui_1);
-
-            -- horní mez zpracovávaného rozsahu
-            crange.high:=x_make_component_var(curr,xinfo,prangehighvar);
             end if;
 
-        -- string a array - velikost inicializace dána rozsahem lval..hval
-        elsif bl^.xrange=nil and (typ^.stype=dt_array or typ^.stype=dt_string) then  
-          -- dolní mez zpracovávaného rozsahu
-          crange.low:=x_make_imm_uniint(curr,xinfo,typ^.lval);
-
-          -- horní mez zpracovávaného rozsahu
-          crange.high:=x_make_imm_uniint(curr,xinfo,typ^.hval);
+        -- zavolat metodu ENTRY
+        if a_find_special_method(base.getctype^,tst_entry)<>nil then
+          a_list_append(bl^.bepilog,
+            a_type_make_call(curr,binfo,xinfo,tst_entry,base.getctype^,crange,
+              x_make_deref(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar)
+                )
+              )
+            );
           end if;
-        end if;
-
-    -- zavolat metodu INIT
-    if base.getctype^.stable[tst_init].isset then
-      a_list_append(bl^.bepilog,
-        a_type_make_call(curr,binfo,xinfo,tst_init,base.getctype^,crange,
-          x_make_deref(curr,xinfo,
-            x_make_component_var(curr,xinfo,ptempvar)
-            )
-          )
-        );
-        end if;
-
-    if base.getctype^.stable[tst_entry].isset then
-      a_list_append(bl^.bepilog,
-        a_type_make_call(curr,binfo,xinfo,tst_entry,base.getctype^,crange,
-          x_make_deref(curr,xinfo,
-            x_make_component_var(curr,xinfo,ptempvar)
-            )
-          )
-        );
         end if;
 
       -- Proměnná := Instance
@@ -582,16 +657,18 @@ var
 
 var
   base             : typeview;                   -- bázový typ pointeru
+  base_type        : pentity_type;               -- a jeho entita
 
 begin
   -- zjistit bázový typ pointeru
   base:=bl^.xvar^.t.getbase(curr);
+  base_type:=base.getutype;
 
   -- analyzovat bázový typ
-  if base.getutype<>nil then
+  if base_type<>nil then
     if base.isclass
-      then ca_analyzer.ca_analyze.a_entity(base.getctype)
-      else a_type(base.getctype);
+      then ca_analyzer.ca_analyze.a_entity(base_type)
+      else a_type(base_type);
       end if;
     end if;
 
@@ -605,7 +682,7 @@ begin
 
     begin  
       -- inicializovat manipulátor se skrytými složkami
-      hidden_fields.set_context(sym_primary_context(base.getctype^));
+      hidden_fields.set_context(sym_primary_context(base_type^));
 
       -- připravit kontexty
       a_prepare_info(binfo,xinfo);
@@ -644,10 +721,146 @@ begin
               x_make_deref(curr,xinfo,
                 x_make_component_var(curr,xinfo,ptempvar)
                 ),
-              nil
+              nil,nil,nil,nil
               )
             ),
           nulllist
+          )
+        );
+      end declare;
+   
+  -- je to nějaký indexovaný typ (tzn. bude se volat přímo speciální metoda se specifikací rozsahu?)
+  elsif base_type<>nil and then base_type^.stype in dts_index
+  -- a má bázový typ definovanou metodu EXIT?
+  and then a_find_special_method(base_type^,tst_exit)<>nil then
+    declare var
+      binfo        : blinfo;                     -- kontext
+      xinfo        : expinfo;                    -- kontext
+      srange       : pentity_type;               -- typ rozsahu
+      crange       : texecuterange;              -- specifikace rozsahu
+      ptempvar     : pentity_var;                -- pracovní proměnná
+
+    begin
+      -- připravit kontexty
+      a_prepare_info(binfo,xinfo);
+
+      -- založit pracovní proměnnou
+      a_create_temp_var(curr,ptempvar,bl^.xvar^.t.getctype);
+
+      -- Instance := Proměnná
+      a_list_append(bl^.bprolog,
+        b_make_cmd(curr,binfo,
+          x_make_op_assign(curr,xinfo,
+            x_make_component_var(curr,xinfo,ptempvar),
+            bl^.xvar)
+          )
+        );
+
+      -- zjistit rozsah podle typu
+      -- unconstrained pole - velikost inicializace dána rozsahem 0..RANGE-1
+      if base_type^.stype=dt_uarray then
+        -- dolní mez zpracovávaného rozsahu
+        crange.low:=x_make_imm_uniint(curr,xinfo,ui_0);
+
+        -- horní mez zpracovávaného rozsahu
+        crange.high:=x_make_op_unary(curr,xinfo,un_pred,
+          x_make_attribute(curr,xinfo,atc_dynamic,atf_size,ata_array_length,inttype_size,
+            x_make_deref(curr,xinfo,
+              x_make_component_var(curr,xinfo,ptempvar)
+              )
+            )
+          );
+
+      -- unconstrained string - velikost inicializace dána rozsahem 1..RANGE
+      elsif base_type^.stype=dt_ustring then
+        -- dolní mez zpracovávaného rozsahu
+        crange.low:=x_make_imm_uniint(curr,xinfo,ui_1);
+
+        -- horní mez zpracovávaného rozsahu
+        crange.high:=
+            x_make_attribute(curr,xinfo,atc_dynamic,atf_length,ata_string_length,inttype_size,
+              x_make_deref(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar)
+                )
+              )
+
+      -- string a array - velikost inicializace dána rozsahem lval..hval
+      elsif base_type^.stype=dt_array or base_type^.stype=dt_string then
+        -- zjistit rozsah bázového typu
+        srange:=base_type^.srange.getctype;
+
+        -- dolní mez zpracovávaného rozsahu
+        crange.low:=x_make_imm_uniint(curr,xinfo,srange^.lval);
+
+        -- horní mez zpracovávaného rozsahu
+        crange.high:=x_make_imm_uniint(curr,xinfo,srange^.hval);
+
+      else verify({VERIFY=}001470,true);
+        end if;
+
+      -- if Instance<>nil then
+      --   Instance^.EXIT(crange);
+      --   end if;
+      a_list_append(bl^.bprolog,
+        b_make_if(curr,binfo,
+          b_make_list(
+            b_make_if_cond(curr,binfo,
+              x_make_op_ne(curr,xinfo,
+                x_make_component_var(curr,xinfo,ptempvar),
+                x_make_imm_nil(curr,xinfo,bl^.xvar^.t.getctype)
+                ),
+              b_make_list(
+                a_type_make_call(curr,binfo,xinfo,tst_exit,base_type^,crange,
+                  x_make_deref(curr,xinfo,
+                    x_make_component_var(curr,xinfo,ptempvar)
+                    )
+                  ),
+                nil
+                )
+              ),
+            nil
+            )
+          )
+        );
+      end declare;
+
+  -- je to jiný typ, u kterého budeme volat EXIT? (pro UNCHECKED pointery bez bázového typu se nevolá)
+  elsif base_type<>nil then
+  -- %%TODO provádět jenom pro složené typy (?)
+  -- %%TODO a jenom pro CLASS pointery nebo pointery na objekt, který má EXIT metodu
+    declare var
+      binfo        : blinfo;                     -- kontext
+      xinfo        : expinfo;                    -- kontext
+
+    begin
+      -- připravit kontexty
+      a_prepare_info(binfo,xinfo);
+
+      -- if Instance<>nil then
+      --  Instance^.EXIT
+      --  end if;
+      a_list_append(bl^.bprolog,
+        b_make_if(curr,binfo,
+          b_make_list(
+            b_make_if_cond(curr,binfo,
+              x_make_op_ne(curr,xinfo,
+                bl^.xvar,
+                x_make_imm_nil(curr,xinfo,bl^.xvar^.t.getctype)
+                ),
+              b_make_list(
+                b_make_cmd(curr,binfo,
+                  x_make_call_spec(curr,xinfo,tst_exit,nil,
+                    x_make_deref(curr,xinfo,bl^.xvar),
+                    nil,
+                    nil,
+                    nil,nil
+                    )
+                  ),
+                nil
+                )
+              ),
+            nil
+            )
           )
         );
       end declare;
@@ -1117,7 +1330,8 @@ procedure a_block_label (
 -- návěští
 ----------------------------------------------------------------------------------------------------
 begin
-  -- nic nedělat
+  -- poznamenat úroveň vnoření
+  bl^.plabel^.level:=blcontext.blevel;
   end a_block_label;
 
 

@@ -92,7 +92,7 @@ begin
       -- přímo uvedená hodnota => přiřadit do pracovní proměnné
       when io_reg, io_imm, io_cc do
           -- alokovat pracovní proměnnou
-          i_gen_load_value_to_temporary(inst,info,context,op);
+          i_gen_load_value_to_temporary(inst,info,context,op,true);
           verify({VERIFY=}000875,op.optype<>io_mem);
 
           -- načíst adresu do registru
@@ -242,7 +242,7 @@ begin
 
       -- z dodaných informací o run-time atributech nás zajímají jen ty, které nejsou efektivně
       -- uložené v adrese
-      for rta in rta_modes:range loop      
+      for rta in rta_modes:range loop
         if i_rta_get_effective_mode(rta,rta_modes)<>rtm_stored_in_address
           -- atribut efektivně uložený mimo adresu => ok, použít dodaný mód
           then op.set_rta_mode(rta,rta_modes[rta]);
@@ -1015,7 +1015,7 @@ begin
           else
             -- rozšíření operandu
             if context.rsize>op.size then
-              verify({VERIFY=}001052,op.edtype not in edts_ordinal);
+              --verify({VERIFY=}001052,op.edtype not in edts_ordinal);
               verify({VERIFY=}001053,context.rsign and orgtyp=nil);
 
               declare var
@@ -1027,7 +1027,7 @@ begin
                 vysl.adjust_size(context.rsize);
 
                 -- rozšířit
-                if context.rsign and then orgtyp^.stype=dt_signed
+                if context.rsign and then (orgtyp^.stype=dt_signed and op.edtype in edts_ordinal)
                   -- znaménkově
                   then addii(inst,info,ii_movsx,vysl,op,op0)
                   -- neznaménkově
@@ -1362,7 +1362,32 @@ begin
 
   case op.optype
     -- přímá hodnota
-    when io_imm do -- nic nedělat
+    when io_imm do
+        -- chceme i immediate hodnoty?
+        if load_always then
+          declare var
+            optemp   : c_operand;                  -- temporary proměnná
+
+          begin
+            -- alokovat temporary proměnnou
+            optemp.create_temporary(inst,info,op.edtype,op.size);
+
+            -- přesunout
+            if op.size=4
+              then
+                addii(inst,info,ii_mov,optemp,op,op0);
+              else
+                i_gen_move_static(inst,info,context,op,optemp,op.size)
+                end if;
+
+            -- předat výsledek
+            op.replace(info,context,optemp);
+
+          leave
+            -- uvolnit mezivýsledek
+            optemp.free(info,context);
+            end declare;
+          end if;
 
     -- registr
     when io_reg do
@@ -1820,7 +1845,7 @@ procedure i_gen_simple_op =
 -- přes pracovní registr.
 ----------------------------------------------------------------------------------------------------
 begin
-  if op1.optype=io_mem and op2.optype=io_mem
+  if op2.optype=io_mem
 
     -- paměť => vzít přes registr
     then
@@ -1919,9 +1944,6 @@ procedure copyblock (
 -- Zkopíruje jeden blok dat délky BYTES z adresy OPDST na adresu OPSRC.
 -- Pro kopírování využívá registry z množiny AVAILREGS.
 ----------------------------------------------------------------------------------------------------
-with
-  standard.console;
-
 var
   opsrc            : c_operand;                  -- cílový operand
   opdst            : c_operand;                  -- zdrojový operand
@@ -2460,6 +2482,7 @@ procedure i_gen_block_op =
 -- Předpokládá se, že se pole nepřekrývají.
 -- Předpokládá se (kvůli optimalizaci), že jsou pole zarovnána na hranici 4B.
 -- OPSRC1, OPSRC2 a OPDST musí být typu IO_MEM s redukovaným počtem registrů (= <=1).
+-- Pokud [genopfunc] potřebuje nějaké registry, je třeba jejich počet předat v [reservedregs].
 ----------------------------------------------------------------------------------------------------
 with
   standard.numerics;
@@ -2476,12 +2499,44 @@ begin
   i_reg_get_available(context,availregs);
 
   -- algoritmus se volí podle počtu (skutečně) volných registrů
-  if size<=min_unsigned(ismallobject,max_unsigned(1,i_reg_get_count(availregs,4))*4*2-1)
+  if size<=min_unsigned(ismallobject,max_unsigned(1,i_reg_get_count(availregs,4)-reservedregs)*4*2-1)
 
     -- pokud máme dost registrů, nemusíme se zatěžovat s cyklem
     then
-      -- rezervovat volné registry (nebo aspoň jeden)
-      i_reg_reserve_available(inst,info,context,opsrc1.get_all_uni_registers+opsrc2.get_all_uni_registers+opdst.get_all_uni_registers,availregs,1,size mod 4>0);
+      -- rezervovat volné registry (nebo aspoň jeden), vyhradit [reservedregs] registrů pro [genopfunc]
+      declare
+
+        var
+          reserve: t_unsigned32;
+
+          ------------------------------------------------------------------------------------------
+          procedure get_set return iuniregset =
+          ------------------------------------------------------------------------------------------
+          with
+            advanced,
+            advanced.low_level,
+            advanced.low_level.bit_operations;
+
+          begin
+            for xuni in iunireg loop
+              if xuni in opsrc1.get_all_uni_registers 
+              or xuni in opsrc2.get_all_uni_registers 
+              or xuni in opdst.get_all_uni_registers  then
+                bit_set(result,t_bit_index(xuni:ord));
+
+              -- chceme ještě nějaký registr rezervovat pro [genopfunc] ?
+              elsif reserve>0 then
+                pred reserve;
+                bit_set(result,t_bit_index(xuni:ord));
+                end if;
+              end loop;
+            end get_set;
+
+      begin
+        reserve:=reservedregs;
+        i_reg_reserve_available(inst,info,context,get_set{opsrc1.get_all_uni_registers+opsrc2.get_all_uni_registers+opdst.get_all_uni_registers},availregs,1,size mod 4>0);
+        verify({VERIFY=}001495,reserve<>0);
+        end declare;
 
       -- zpracovat blok
       workblock(inst,info,context,opdst,opsrc1,opsrc2,availregs,size,genopfunc);
@@ -2503,6 +2558,9 @@ begin
         -- rezervovat volné registry (nebo aspoň jeden)
         declare
 
+          var
+            reserve: t_unsigned32;
+
           ------------------------------------------------------------------------------------------
           procedure get_set return iuniregset =
           ------------------------------------------------------------------------------------------
@@ -2518,12 +2576,19 @@ begin
               or xuni in opdst.get_all_uni_registers 
               or xuni=iregtouni[opindex.reg.reg] then
                 bit_set(result,t_bit_index(xuni:ord));
+
+              -- chceme ještě nějaký registr rezervovat pro [genopfunc] ?
+              elsif reserve>0 then
+                pred reserve;
+                bit_set(result,t_bit_index(xuni:ord));
                 end if;
               end loop;
             end get_set;
 
         begin
+          reserve:=reservedregs;
           i_reg_reserve_available(inst,info,context,get_set{%%TODO(SET)getopregs(opsrc)+getopregs(opdst)+iuniregset:[iregtouni[opindex.reg.reg]]},availregs,1,size mod 4>0);
+          verify({VERIFY=}001496,reserve<>0);
           end declare;
 
         -- spočítat inkrement v jednom průchodu
@@ -3040,6 +3105,7 @@ var
         addii(inst,info,ii_mov,opdst,op_0,op0);
         end if;
       end fillzsmall;
+
 begin
   -- zbývá zkopírovat celé pole
   remaining_size:=size;
@@ -3068,7 +3134,8 @@ begin
         opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
 
         -- do EAX dát nulu
-        addii(inst,info,ii_mov,opeax,op_0,op0);
+        --addii(inst,info,ii_mov,opeax,op_0,op0);
+        addii(inst,info,ii_xor,opeax,opeax,op0);
 
         -- do ECX dát počet čtveřic
         declare var
@@ -3144,7 +3211,8 @@ begin
   opeax.create_use_register(inst,info,context,edt_unsigned,ir_eax);
 
   -- do EAX dát nulu
-  addii(inst,info,ii_mov,opeax,op_0,op0);
+  --addii(inst,info,ii_mov,opeax,op_0,op0);
+  addii(inst,info,ii_xor,opeax,opeax,op0);
 
   -- není velikost příznivě malá ?
   addii(inst,info,ii_cmp,opsize,op_3,op0);

@@ -271,7 +271,7 @@ begin
 
   -- jen pro indexovani retezce
   verify({VERIFY=}000990,el^.t.stype not in dts_string);
-  
+
   -- je treba generovat runtime kontrolu?
   if rch_index_string in expr.get_run_checks(rchcl_gen) then
     -- alokuj navesti
@@ -303,6 +303,81 @@ begin
 
     end if;
  end i_gen_index_string_check;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_index_array_check =
+-- generovani runtime kontroly rozsahu indexovani pole
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podvýrazy
+  er               : pexpnode;                   -- podvýrazy
+  postexcept       : itarget;                    -- po vyjimce
+  preexcept        : itarget;
+
+begin
+  -- oddělit podvýrazy
+  expr.get(el,er);
+
+  -- jen pro indexovani
+  verify({VERIFY=}001497,expr.ntype<>nt_index);
+
+  -- jen pro indexovani pole
+  verify({VERIFY=}001498,el^.t.stype not in dts_array);
+
+  -- urcite je treba generovat runtime kontrolu
+  verify({VERIFY=}001500,rch_index_array not in expr.get_run_checks(rchcl_gen));
+
+  -- alokuj navesti
+  newtarget(info,postexcept);
+  newtarget(info,preexcept);
+
+  -- kontrola dolní meze, pokud je potřeba (není-li konstantní)
+  if er^.ntype<>nt_imm then
+    declare var
+      op_first         : c_operand;              -- dolní mez pole
+
+    begin
+      -- vytvoř operand
+      op_first.create_imm(edt_unsigned,0,first);
+
+      -- zkontroluj dolni mez
+      addii(inst,info,ii_cmp,index,op_first,op0);
+    leave
+      -- zruš operand
+      op_first.free(info,context);
+      end declare;
+
+    -- pokud nesouhlasi, skoc na vyjimku
+    addjump(inst,info,context,ic_b,preexcept);
+    end if;
+
+  -- :last nemůže být konstanta
+  verify({VERIFY=}001499,last.optype=io_imm);
+
+  -- pokud je potřeba, tak nahraj index do registru
+  if index.optype not in t_operand_type_set:[io_imm,io_reg] then
+    i_gen_load_value_to_register(inst,info,context,er^.t.getutype,index);
+    end if;
+
+  -- zkontroluj horni mez
+  addii(inst,info,ii_cmp,last,index,op0);
+
+  -- pokud last vetsi nebo rovno indexu preskoc generovani vyjimky
+  addjump(inst,info,context,ic_ae,postexcept);
+
+  -- nastav adresu odskoku [preexcept] pred generovani vyjimky
+  settarget(info,preexcept,getaddr(inst));
+
+  -- vygeneruj vyjimku
+  if not cfg_no_runtime then
+    addcallrtl(inst,info,context,rtl_handle_constraint_error);
+    end if;
+
+  -- nastav adresu odskoku [postexcept] za generovani vyjimky
+  settarget(info,postexcept,getaddr(inst));
+  end i_gen_index_array_check;
 
 
 ----------------------------------------------------------------------------------------------------

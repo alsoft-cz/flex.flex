@@ -31,8 +31,7 @@ procedure a_make_subprogram (
     range_call     : in t_logical;               -- procedura volána na určený rozsah
     pproc          : out pentity_subprogram;     -- vytvořená procedura
     pproc_context  : out tcontext) =             -- kontext vytvořené procedury
--- Vytvoří proceduru s jedním in out parametrem zadaného typu a pripadne dvema paramtery udávajici
--- rozsah.
+-- Vytvoří proceduru s jedním in out parametrem zadaného typu a případně dvěma parametry udávajícími rozsah.
 ----------------------------------------------------------------------------------------------------
 var
   pproctyp         : pentity_type;               -- typ procedury
@@ -77,14 +76,22 @@ begin
   -- doplnit základní údaje
   pproctyp^.tkind:=tk_singular;
   pproctyp^.stype:=dt_procedure;
-  pproctyp^.parcount:=1;
+  if range_call
+    then pproctyp^.parcount:=3;
+    else pproctyp^.parcount:=1;
+    end if;
 
   -- asociovat s procedurou
   pproc^.typ.settype(pproctyp);
 
   -- predame jako parametr analyzovany symbol
-  add_param(id_param,pm_inout,pp_ref,^typ);
+  add_param(id_param,pm_inout,pp_class,^typ);
 
+  -- speciální metody vždy potřebují ten typ otagovaný, ale zase bez jakýchkoli dalších rt atributů
+  pparam^.rta_avail:=rtattribset:[rta_tag];
+  pparam^.rta_used:=rtattribset:[rta_tag];
+  pparam^.rta_fixed:=true;
+    
   -- u stringu a pole se bude predavat rozsah inicializace
   if range_call then 
     -- predame jako parametr dolni mez provadeni
@@ -102,7 +109,7 @@ begin
 
   -- překládá se rovnou část PRIVATE
   pproc_context.region^.vsect:=etv_private;
-  
+
   -- vygenerovat podle parametrů lokální proměnné
   p_genlocvar(pproc^);
   end a_make_subprogram;
@@ -145,6 +152,9 @@ begin
   -- určit typ objektu, ke kterému se metoda vztahuje
   pproc^.specobj:=tso_type;
 
+  -- uložit typ speciální metody
+  pproc^.spectype:=tst;
+
   -- zařadit do tabulky speciálních metod
   typ.stable[tst].setentity(pproc);
 
@@ -162,9 +172,8 @@ begin
   -- asociovat s procedurou
   pproc^.bl.setblock(bl);
 
-
   -- zavolat odpovídající metodu předka
-  if ancestor and typ.ancestor.isset and pentity_type(typ.ancestor.getcentity)^.stable[tst].isset then
+  if ancestor and typ.ancestor.isset and a_find_special_method(pentity_type(typ.ancestor.getcentity)^,tst)<>nil then
     -- v jakém rozsahu inicializujeme předka?
     get_index_type_range(pproc_context,xinfo,pentity_type(typ.ancestor.getcentity),crange);
 
@@ -236,7 +245,7 @@ begin
     b_make_cmd(curr,binfo,
       x_make_call_spec(curr,xinfo,tst_entry,nil,
         prefix^(curr,data,ptyp,xinfo),
-        nil
+        nil,nil,nil,nil
         )
       )
     );
@@ -327,7 +336,108 @@ begin
   --     [csf_interface],
   --     );
   end a_type_interface_entry;
-  
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_type_nonclass_entry_internal =
+-- Inicializace instance netřídního typu a volání INIT+ENTRY.
+----------------------------------------------------------------------------------------------------
+with
+  cc_def.cc_unitype;
+
+var
+  crange           : texecuterange;
+  has_init         : t_logical;
+  has_entry        : t_logical;
+
+begin
+  verify({VERIFY=}001441,ptyp^.etype=et_class);
+
+  -- pro string se speciální metody nevolají, protože vznikne prázdný
+  if ptyp^.stype in dts_string then
+    return;
+    end if;
+
+  -- pokud je to nějaký indexovaný typ, musíme zjistit rozsah provádění
+  if ptyp^.stype in dts_index
+    then
+      -- zjistit rozsah provádění: buď z xrange, ze staticky známého typu, nebo dynamicky z tagu
+      if x_range<>nil
+        then
+          -- explicitní rozsah=>stačí ho použít
+          if x_range^.ntype=nt_range then
+            -- rozsah => dány obě meze
+            verify({VERIFY=}001472,x_range^.sub=nil or else x_range^.sub^.next=nil);
+            pexprange(x_range)^.get(crange.low,crange.high);
+
+          -- jinak je dolní mez nula nebo jedna podle toho, jestli je to string nebo pole
+          elsif ptyp^.stype in dts_string then
+            -- řetězec => dolní mez = 1
+            crange.low:=x_make_imm_uniint(curr,xinfo,ui_1);
+            crange.high:=x_range;
+
+          elsif ptyp^.stype in dts_array then
+            -- pole => dolní mez = 0, horní mez = xrange-1
+            crange.low:=x_make_imm_uniint(curr,xinfo,ui_0);
+            crange.high:=x_make_op_unary(curr,xinfo,un_pred,x_range);
+
+          else
+            verify({VERIFY=}001483,true);
+            end if;
+
+        else
+          -- musíme zjistit rozsah z typu či tagu
+          if x_tag<>nil
+            then
+              -- explicitně dodaný tag => určit jako dynamický atribut
+              crange.low:=x_make_attribute(curr,xinfo,atc_dynamic,atf_designated,ata_designated_first,inttype_size,x_tag);
+              crange.high:=x_make_attribute(curr,xinfo,atc_dynamic,atf_designated,ata_designated_last,inttype_size,x_tag);
+
+            else
+              -- známe staticky typ, rozsah zjistíme z něj
+              get_index_type_range(curr,xinfo,ptyp,crange);
+              end if;
+          end if;
+
+      -- Instance.INIT
+      a_list_append(list,
+        b_make_cmd(curr,binfo,
+          x_make_call_spec(curr,xinfo,tst_init,nil,x_tag,nil,instance,crange.low,crange.high
+            )
+          )
+        );
+
+      -- Instance.ENTRY
+      a_list_append(list,
+        b_make_cmd(curr,binfo,
+          x_make_call_spec(curr,xinfo,tst_entry,nil,x_tag,nil,instance,crange.low,crange.high
+            )
+          )
+        );
+
+    -- není to indexovaný typ, normální volání INIT i ENTRY
+    else
+      verify({VERIFY=}001484,x_range=nil);
+
+      -- Instance.INIT
+      a_list_append(list,
+        b_make_cmd(curr,binfo,
+          x_make_call_spec(curr,xinfo,tst_init,nil,x_tag,nil,instance,nil,nil
+            )
+          )
+        );
+
+      -- Instance.ENTRY
+      a_list_append(list,
+        b_make_cmd(curr,binfo,
+          x_make_call_spec(curr,xinfo,tst_entry,nil,x_tag,nil,instance,nil,nil
+            )
+          )
+        );
+      end if;
+  end a_type_nonclass_entry_internal;
+
 
 
 ----------------------------------------------------------------------------------------------------
@@ -358,7 +468,7 @@ begin
       b_make_cmd(curr,binfo,
         x_make_call_spec(curr,xinfo,tst_exit,nil,
           prefix^(curr,data,ptyp,xinfo),
-          nil
+          nil,nil,nil,nil
           )
         ),
       nil
@@ -384,7 +494,7 @@ begin
       b_make_cmd(curr,binfo,
         x_make_call_spec(curr,xinfo,spec,nil,
           prefix^(curr,data,ptyp,xinfo),
-          nil
+          nil,nil,nil,nil
           )
         )
       );
@@ -444,7 +554,7 @@ begin
         -- pokud obsahuje třídu a příslušnou metodu, zavolat ji (pokud neobsahuje třídu, ale
         -- má příslušnou metodu, není nutné ji volat, protože stejně obsahuje jen přiřazení
         -- počáteční hodnoty, které jsme provedli před chvílí (mimo tuto proceduru).
-        elsif t_contains_class(ptyp^) and ptyp^.stable[tst].isset then
+        elsif (t_contains_class(ptyp^) and ptyp^.stable[tst].isset) or (a_find_special_method(ptyp^,tst)<>nil) then
           -- rozsah působení metody
           get_index_type_range(pproc_context,xinfo,ptyp,crange);
 
@@ -592,7 +702,7 @@ begin
           -- pokud obsahuje třídu a příslušnou metodu, zavolat ji (pokud neobsahuje třídu, ale
           -- má příslušnou metodu, není nutné ji volat, protože stejně obsahuje jen přiřazení
           -- počáteční hodnoty, které jsme provedli před chvílí.
-          elsif t_contains_class(ptyp^) and ptyp^.stable[tst].isset then
+          elsif t_contains_class(ptyp^) and a_find_special_method(ptyp,tst) then
             -- Instance.Item:entry()
             a_list_append(bl^.sub,
               a_type_make_call(pproc_context,binfo,xinfo,tst,ptyp^,
@@ -679,7 +789,7 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure a_type_array (
+procedure a_type_indexed (
     typ            : in out tentity_type;        -- analyzovaný symbol
     tst            : in tspectype) =             -- typ speciální metody
 -- Vygeneruje pro zadaný typ požadovanou speciální metodu.
@@ -698,9 +808,10 @@ var
   for_var_context  : tcontext;                   -- kontext řídící proměnné cyklu
   range_low        : pentity_var;                -- spodni mez rozsahu 
   range_high       : pentity_var;                -- horni mez rozsahu 
+  crange           : texecuterange;
 
 begin
-  verify({VERIFY=}000566,typ.stype not in tdatatypeset:[dt_array,dt_uarray]);
+  verify({VERIFY=}000566,typ.stype not in tdatatypeset:[dt_array,dt_uarray,dt_string,dt_ustring]);
 
   -- připravit speciální metodu
   a_type_prepare(typ,tst,false,binfo,xinfo,pproc,pproc_context,data.pvar,bl,initvars);
@@ -708,7 +819,7 @@ begin
   -- zjistit si bázový typ pole
   ptyp:=typ.base.getctype;
 
-{ Tohle za nás již udělalo [a_type_array_resolve_complex].
+{ Tohle za nás již udělalo [a_type_indexed_resolve_complex].
   -- analyzovat bázový typ pole
   if ptyp^.stype<>dt_class then
     a_type(ptyp);
@@ -727,7 +838,7 @@ begin
 
   -- dohledat proměnnou odpovídající dolní a horní mezi rozsahu
   a_find_executing_range(pproc_context,range_low,range_high);
-  
+
   -- vygenerujeme variantu s explicitně uvedeným rozsahem...
   if range_low<>nil then
     -- for @I in range_low..range_high loop
@@ -748,39 +859,59 @@ begin
   a_list_append(bl^.sub,blfor);
 
   -- zavolat speciální metodu
-  a_make_action_on_prefix(pproc,for_loop_context,ptyp,tst,blfor^.sub,^a_make_prefix_array,data,binfo,xinfo);
+  if tst=tst_init
+    then
+      -- INIT se řeší speciálním způsobem, neboť pro běžné typy se nevolá (a [a_make_action_on_prefix] ho odmítne zavolat)
+      -- pro třídy INIT vůbec neexistuje
+      if ptyp^.stype<>dt_class then
+        -- rozsah působení metody
+        get_index_type_range(for_loop_context,xinfo,ptyp,crange);
+
+        -- Instance.Item:INIT()
+        a_list_append(blfor^.sub,
+          a_type_make_call(for_loop_context,binfo,xinfo,tst_init,ptyp^,crange,
+            a_make_prefix_array(for_loop_context,data,ptyp,xinfo)
+            )
+          );
+        end if;
+
+    else
+      -- všechny ostatní speciální metody se provádějí standardním způsobem
+      a_make_action_on_prefix(pproc,for_loop_context,ptyp,tst,blfor^.sub,^a_make_prefix_array,data,binfo,xinfo);
+      end if;
 
   --unimplemented({UNIMP=}000199);
 
   -- konec deklarace metody
   d_end_internal(pproc^,true);
-  end a_type_array;
+  end a_type_indexed;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure a_type_array_resolve_complex (
+procedure a_type_indexed_resolve_complex (
     typ            : in out tentity_type) =      -- analyzovaný symbol
--- Vyhodnotí, zda je potřeba pro zadaný typ komplexní inicializace.
--- Při té příležitosti současně analyzuje bázový typ pole.
+-- Vyhodnotí, zda je potřeba pro zadaný indexovatelný typ komplexní inicializace.
+-- Při té příležitosti současně analyzuje bázový typ tohoto pole či řetězce.
 ----------------------------------------------------------------------------------------------------
 var
-  pbase             : pentity_type;               -- typ báze pole
+  pbase             : pentity_type;               -- typ báze pole/řetězce
 
 begin
-  -- zjistit si bázový typ pole
+  -- zjistit si bázový typ pole/řetězce
   pbase:=typ.base.getctype;
-{
-  -- analyzovat bázový typ pole
-  a_entity_out_of_order(pbase);{  if pbase^.stype<>dt_class then
+
+  -- analyzovat bázový typ pole/řetězce
+  a_entity_out_of_order(pbase);
+  {  if pbase^.stype<>dt_class then
     a_type(pbase);
     end if;}
-}
-  -- komplexní inicializaci se provádí v případě, že má typ pole nebo jeho báze počáteční hodnotu
-  if typ.init.isset or {typ.base.getctype}pbase{}^.init.isset then
+
+  -- komplexní inicializaci se provádí v případě, že má typ pole/řetězce nebo jeho báze počáteční hodnotu
+  if typ.init.isset or {typ.base.getctype}pbase{}^.init.isset or pbase^.tinit=ti_complex then
     typ.tinit:=ti_complex;
     end if;
-  end a_type_array_resolve_complex;
+  end a_type_indexed_resolve_complex;
 
 
 
@@ -859,16 +990,19 @@ begin
     -- pole, neomezené pole
     when dt_array, dt_uarray do
         -- vyhodnotit, jestli je pro tento typ požadována komplexní inicializace
-        a_type_array_resolve_complex(typ^);
+        a_type_indexed_resolve_complex(typ^);
 
         -- vygenerovat speciální metody
-        generate_special_methods(a_type_array);
+        generate_special_methods(a_type_indexed);
 
     -- řetězec, neomezený řetězec
     when dt_string, dt_ustring do
         -- neobsahuje typ náhodou třídu ?
         if t_contains_class(typ^) then 
-          write_line(sym_get_qid(^typ^));
+          -- vyhodnotit, jestli je pro tento typ požadována komplexní inicializace
+          a_type_indexed_resolve_complex(typ^);
+
+          generate_special_methods(a_type_indexed);
 
           --unimplemented({UNIMP=}000200);
       {
@@ -935,20 +1069,29 @@ var
   x_param          : pexpitem;
   srch             : tentitysearch;
   typ_context      : tcontext;
+  spec_method      : pentity_special;
+  method_context   : tcontext;
 
 begin
-  verify({VERIFY=}000562,not typ.stable[tst].isset);
+  -- najít volanou speciální metodu
+  spec_method:=a_find_special_method(typ,tst);
+  verify({VERIFY=}000562,spec_method=nil);
 
   -- pro zjednodušení si sestavit kontext typu
   typ_context:=sym_primary_context(typ);
+
+  --verify({VERIFY=}001473,instance=nil);
 
   -- budou nějaké parametry ?
   if instance<>nil
 
     -- hodnotu máme k dispozici => dohledat parametr
     then
-      -- dohledat parametr
-      srch.find_local_all(sym_primary_context(pentity_special(typ.stable[tst].getcentity)^.typ.getctype^),id_int_param);
+      -- context pro hledání parametrů
+      method_context:=sym_primary_context(spec_method^.typ.getctype^);
+
+      -- dohledat parametry
+      srch.find_local_all(method_context,id_int_param);
       verify({VERIFY=}000579,(srch.psym=nil) or (srch.psym^.etype<>et_param));
 
       -- sestavit výraz
@@ -957,7 +1100,7 @@ begin
       -- u stringu a pole jeste predame rozsah inicializace (pokud je očekáván)
       if typ.stype in dts_index then
         -- dohledat spodní mez
-        srch.find_local_all(sym_primary_context(pentity_special(typ.stable[tst].getcentity)^.typ.getctype^),id_int_low);
+        srch.find_local_all(method_context,id_int_low);
 
 		-- pokud existuje spodní mez musí bt hledaného typu a musí existovat i horní mez
 		if srch.psym<>nil then
@@ -970,7 +1113,7 @@ begin
             );
 
           -- dohledat horní mez
-          srch.find_local_all(sym_primary_context(pentity_special(typ.stable[tst].getcentity)^.typ.getctype^),id_int_high);
+          srch.find_local_all(method_context,id_int_high);
           verify({VERIFY=}000735,(srch.psym=nil) or (srch.psym^.etype<>et_param));
 
           -- sestavit výraz
@@ -988,9 +1131,9 @@ begin
 
   -- sestavit příkaz
   result:=b_make_cmd(typ_context,binfo,
-    x_make_call_spec(typ_context,xinfo,tst,pentity_special(typ.stable[tst].getcentity),
+    x_make_call_spec(typ_context,xinfo,tst,spec_method,
       prefix,
-      x_param
+      x_param,nil,crange.low,crange.high
       )
     );
   end a_type_make_call_qualified;

@@ -131,8 +131,8 @@ label
 
       -- provést typovou kontrolu se správným typem 
       case expr^.concatkind
-        -- substring nebo subpole 
-        when nck_substring, nck_subarray do a_type(curr,expr,ptyp,info);
+        -- substring, subpole, množina
+        when nck_substring, nck_subarray, nck_set do a_type(curr,expr,ptyp,info);
 
         -- komponenta
         when nck_component do a_type(curr,expr,ptyp.getbase(curr),info);
@@ -164,12 +164,12 @@ begin
       x_check_assign(curr,el,info);
 
       -- typová kontrola pravého operandu 
-      if expr^.oper<>op_concat
+      if expoperinfo[expr^.oper].tc<>tc_concat {expr^.oper not in ops_aggregate_composition}
 
         -- pro většinu operátorů je to triviální 
         then a_type(curr,er,el^.t,info)
 
-        -- pro zřetězení je to o dost složitější 
+        -- pro operace kompozice agregátu je to o dost složitější 
         else c_type(curr,er,el^.t,info);
         end if;
 
@@ -209,7 +209,7 @@ begin
       end if;
 
   -- povedla se typová kontrola podvýrazů ? 
-  if (el^.zprac<ep_type) or (er^.zprac<ep_type) then goto k1; end if;
+  if el^.zprac<ep_type or er^.zprac<ep_type then goto k1; end if;
 
   -- typová kontrola úspěšně dokončena 
   expr^.zprac:=ep_type;
@@ -897,7 +897,8 @@ with
   cc_sym,
   cx_phase;
   
-label k1;
+label 
+  k1;
 
 var
   el               : pexpnode;                   -- podvýraz
@@ -911,33 +912,88 @@ var
   srch             : tentitysearch;              -- složka recordu
 
 begin
-  -- oddělit prefix a argumenty 
+  -- oddělit prefix a argumenty
   expr^.split(el,arglist);
 
   ---- nejdřív určit typ celého agregátu ----
   if expr^.t.tview=tview_aggregate
 
-    -- typ není určen 
+    -- typ není určen
     then
       verify({VERIFY=}000245,el<>nil);
 
       --- z kontextu je znám agregátní typ => použít ho ---
       if t_is_sts(ptyp,dts_aggregate) then
         expr^.t:=ptyp;
-
+      {  
+        expr^.akind:=x_get_aggregate_kind(expr^.t);
+      }
       --- z kontextu je znám ordinální typ => použít jako bázi množiny ---
       elsif t_is_sts(ptyp,dts_ordinal) then
-        unimplemented({UNIMP=}000087);
+        t_create_uniarray(curr,expr^.t,ptyp.getctype);
+        --unimplemented({UNIMP=}000087);
 
       --- z kontextu není k dispozici rozumný typ => vymyslet množinu ---
       else
-        unimplemented({UNIMP=}000077);
+        -- prolézt všechny prvky množiny a nalézt první ordinální typ
+        declare var
+          first_u  : pentity_type;
+          first    : pentity_type;
+          er       : pexpitem;
+
+        begin
+          er:=arglist;
+          while er<>nil loop
+            -- je-li to nepoziční složka, nemůže to být množina
+            if er^.itype<>ei_expr then
+              ce^.seterror({CCERR=}000683,ce_aggregate_no_type);
+              expr^.errpos;
+              ce^.resumeerror;
+              end if;
+
+            -- zpracovat všechny možné typy uzlu
+            for eri in 0..er^.sub^.gettypecount-1 loop
+              declare var
+                ert : ptypeview;                 -- [eri]-tý typ podvýrazu
+
+              begin
+                -- získat typ
+                er^.sub^.gettype(eri,ert);
+
+                -- první konkrétní ordinální typ => zapamatovat
+                if first=nil and t_is_sts(ert^,dts_ordinal) then
+                  first:=ert^.getctype;
+
+                -- první univerzální ordinální typ => zapamatovat
+                elsif first_u=nil and t_is_sts(ert^,dts_u_ordinal*dts_unitype) then
+                  first_u:=ert^.getctype;
+                  end if;
+                end declare;
+              end loop;
+
+            -- další prvek
+            er:=er^.next;
+            end loop;
+          
+          -- zvolit typ množiny (přednost má neuniverzální typ)
+          if first<>nil then t_create_uniarray(curr,expr^.t,first);
+          elsif first_u<>nil then t_create_uniarray(curr,expr^.t,first_u);
+          else
+            ce^.seterror({CCERR=}000684,ce_aggregate_no_type);
+            expr^.errpos;
+            ce^.resumeerror;
+            end if;
+          end declare;
         end if;
 
       vyhodnoceno:=true;
 
     -- typ je určen
     else
+      -- Univerzální pole dále očekáváme pouze ve smyslu množiny. Pokud se tento ty zde někdy
+      -- vyskytne, bude se to muset přepracovat - napříkald doplnit nějaký význam agregátu.
+      verify({VERIFY=}001474,t_is_stype(expr^.t,dt_uniarray));
+      
       -- typová kontrola prefixu
       a_type(curr,el,nulltype,info);
       vyhodnoceno:=el^.zprac>=ep_type;
@@ -1053,15 +1109,6 @@ begin
                 x_phase_prev(curr,xer,ctyp,eu_use,info);
                 vyhodnoceno:=vyhodnoceno and (xer^.zprac>=ep_type);
 
-                --unimplemented({UNIMP=}000092);
-
-                -- formální kontrola
-
-                -- typová kontrola
-
-                --a_type(curr,xer,ctyp,info);
-                --vyhodnoceno:=vyhodnoceno and (xer^.zprac>=ep_type);
-
             -- OTHERS
             when ei_others do { nic nedělat };
 
@@ -1079,8 +1126,8 @@ begin
           x:=pexpitem(x^.next);
           end loop;
 
-    -- množina
-    when dt_set do
+    -- množina, univerzální pole
+    when dt_set,dt_uniarray do
         -- typ složky je typ báze množiny
         xtyp:=expr^.t.getbase(curr);
 

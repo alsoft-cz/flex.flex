@@ -1036,113 +1036,115 @@ class private c_link_resolver_image_specific_pe =
         return; 
         end if;
 
-      -- spočítat knihovny
-      libcount:=0;
-      lookupcount:=0;
-      namelen:=0;
-      for i in import.list^:range loop
-        declare var
-          import_info : pimportinfo;             -- importní informace aktuální entity
+      begin
+        -- spočítat knihovny
+        libcount:=0;
+        lookupcount:=0;
+        namelen:=0;
+        for i in import.list^:range loop
+          declare var
+            import_info : pimportinfo;             -- importní informace aktuální entity
 
-        begin
-          -- pro zjednodušení si zjistit importní informace aktuální entity
-          import_info:=get_import_info(import.list^[i],^resolver.aux_registry);
-      
-          -- změna knihovny, započítat
-          if i=import.list^:first or else pimportinfo(get_import_info(import.list^[i-1],^resolver.aux_registry))^.libname^<>import_info^.libname^ then
-            -- započítat délku jména knihovny (zarovnání 2)
-            namelen+((import_info^.libname^:length+{\0}1+{pad}1) div 2)*2;
+          begin
+            -- pro zjednodušení si zjistit importní informace aktuální entity
+            import_info:=get_import_info(import.list^[i],^resolver.aux_registry);
+        
+            -- změna knihovny, započítat
+            if i=import.list^:first or else pimportinfo(get_import_info(import.list^[i-1],^resolver.aux_registry))^.libname^<>import_info^.libname^ then
+              -- započítat délku jména knihovny (zarovnání 2)
+              namelen+((import_info^.libname^:length+{\0}1+{pad}1) div 2)*2;
 
-            -- další knihovna
-            succ libcount;
+              -- další knihovna
+              succ libcount;
 
-            -- prázdný lookup záznam
-            if i>import.list^:first then succ lookupcount; end if;
-            end if;
+              -- prázdný lookup záznam
+              if i>import.list^:first then succ lookupcount; end if;
+              end if;
 
-          -- započítat délku jména (zarovnání 2)
-          namelen+{hint}2+((import_info^.extname^:length+{\0}1+{pad}1) div 2)*2;
-          end declare;
+            -- započítat délku jména (zarovnání 2)
+            namelen+{hint}2+((import_info^.extname^:length+{\0}1+{pad}1) div 2)*2;
+            end declare;
 
-        -- započítat lookup záznam
+          -- započítat lookup záznam
+          succ lookupcount;
+          end loop;
+
+        -- započítat mezery na konci seznamů
+        succ libcount;
         succ lookupcount;
-        end loop;
 
-      -- započítat mezery na konci seznamů
-      succ libcount;
-      succ lookupcount;
+        -- alokovat paměť
+        idirsize:=tpeidirentry:size*libcount;
+        new dir range libcount;
+        ilookupsize:=tpeilookupentry:size*lookupcount;
+        new lookup range lookupcount;
+        inamesize:=namelen;
+        new name range namelen;
 
-      -- alokovat paměť
-      idirsize:=tpeidirentry:size*libcount;
-      new dir range libcount;
-      ilookupsize:=tpeilookupentry:size*lookupcount;
-      new lookup range lookupcount;
-      inamesize:=namelen;
-      new name range namelen;
+        -- sestavit tabulky
+        lindex:=0;
+        pindex:=0;
+        nindex:=0;
+        pbase:=unicode_addr_to_unsigned(base_metadata)-imagebase+libcount*tpeidirentry:size;
+        nbase:=pbase+tpeilookupentry:size*lookupcount;
+        for i in import.list^:range loop 
+          declare var
+            import_info : pimportinfo;             -- importní informace aktuální entity
+            
+          begin  
+            -- pro zjednodušení si zjistit importní informace aktuální entity
+            import_info:=get_import_info(import.list^[i],^resolver.aux_registry);
 
-      -- sestavit tabulky
-      lindex:=0;
-      pindex:=0;
-      nindex:=0;
-      pbase:=unicode_addr_to_unsigned(base_metadata)-imagebase+libcount*tpeidirentry:size;
-      nbase:=pbase+tpeilookupentry:size*lookupcount;
-      for i in import.list^:range loop 
-        declare var
-          import_info : pimportinfo;             -- importní informace aktuální entity
-          
-        begin  
-          -- pro zjednodušení si zjistit importní informace aktuální entity
-          import_info:=get_import_info(import.list^[i],^resolver.aux_registry);
+            -- změnila se knihovna, vygenerovat pro ni záznam
+            if i=import.list^:first or pimportinfo(get_import_info(import.list^[i-1],^resolver.aux_registry))^.libname^<>import_info^.libname^ then
+              -- mezera za předchozí knihovnou v LOOKUP
+              if i>import.list^:first then succ pindex; end if;
 
-          -- změnila se knihovna, vygenerovat pro ni záznam
-          if i=import.list^:first or pimportinfo(get_import_info(import.list^[i-1],^resolver.aux_registry))^.libname^<>import_info^.libname^ then
-            -- mezera za předchozí knihovnou v LOOKUP
-            if i>import.list^:first then succ pindex; end if;
+              -- deskriptor knihovny
+              dir^[lindex].ilt :=pbase+pindex*tpeilookupentry:size;
+              dir^[lindex].name:=nbase+nindex;
+              dir^[lindex].iat :=unicode_addr_to_unsigned(base_table)-imagebase+pindex*tpeilookupentry:size;
 
-            -- deskriptor knihovny
-            dir^[lindex].ilt :=pbase+pindex*tpeilookupentry:size;
-            dir^[lindex].name:=nbase+nindex;
-            dir^[lindex].iat :=unicode_addr_to_unsigned(base_table)-imagebase+pindex*tpeilookupentry:size;
+              -- doplnit jméno knihovny
+              add_name(import_info^.libname^);
 
-            -- doplnit jméno knihovny
-            add_name(import_info^.libname^);
+              -- další knihovna
+              succ lindex;
+              end if;
 
-            -- další knihovna
-            succ lindex;
-            end if;
+            -- deskriptor procedury
+            lookup^[pindex].addr:=nbase+nindex;
 
-          -- deskriptor procedury
-          lookup^[pindex].addr:=nbase+nindex;
+            -- hint: 0
+            nindex+2;
 
-          -- hint: 0
-          nindex+2;
+            -- doplnit jméno procedury
+            add_name(import_info^.extname^);
+            end declare;
 
-          -- doplnit jméno procedury
-          add_name(import_info^.extname^);
-          end declare;
+          -- další procedura
+          succ pindex;
+          end loop;
 
-        -- další procedura
-        succ pindex;
-        end loop;
+      commit
+        verify({VERIFY=}001345,dir   =nil and then idirsize   <>0);
+        verify({VERIFY=}001346,lookup=nil and then ilookupsize<>0);
+        verify({VERIFY=}001347,name  =nil and then inamesize  <>0);
 
-    commit
-      verify({VERIFY=}001345,dir   =nil and then idirsize   <>0);
-      verify({VERIFY=}001346,lookup=nil and then ilookupsize<>0);
-      verify({VERIFY=}001347,name  =nil and then inamesize  <>0);
+        -- zapsat data sekce importní tabulky
+        section_table.write_unchecked(lookup^);
 
-      -- zapsat data sekce importní tabulky
-      section_table.write_unchecked(lookup^);
+        -- zapsat data sekce importních metadat
+        section_metadata.write_unchecked(dir^);
+        section_metadata.write_unchecked(lookup^);
+        section_metadata.write_unchecked(name^);
 
-      -- zapsat data sekce importních metadat
-      section_metadata.write_unchecked(dir^);
-      section_metadata.write_unchecked(lookup^);
-      section_metadata.write_unchecked(name^);
-
-    leave
-      -- uvolnit pracovní paměť
-      discard dir;
-      discard lookup;
-      discard name;
+      leave
+        -- uvolnit pracovní paměť
+        discard dir;
+        discard lookup;
+        discard name;
+        end;
       end build_import_table_and_metadata;
 
 
@@ -1235,82 +1237,86 @@ class private c_link_resolver_image_specific_pe =
 
     begin
       -- osetrit vstup. parametry
-      if export.count<=0 or export.list=nil then return; end if;
+      if export.count<=0 or export.list=nil then 
+        return; 
+        end if;
 
-      -- pocet exportu
-      expnum:=export.count;
+      begin
+        -- pocet exportu
+        expnum:=export.count;
 
-      -- suma velikosti exportnich jmen
-      expnameslength:=0;
-      for i in export.list^:range loop
-        -- započítat délku vlastního jméno a koncovou nulu
-        expnameslength+pexportinfo(get_export_info(export.list^[i]))^.export_name^:length+1;
-        end loop;
+        -- suma velikosti exportnich jmen
+        expnameslength:=0;
+        for i in export.list^:range loop
+          -- započítat délku vlastního jméno a koncovou nulu
+          expnameslength+pexportinfo(get_export_info(export.list^[i]))^.export_name^:length+1;
+          end loop;
 
-      expnameslength+dllname:length+1;
+        expnameslength+dllname:length+1;
 
-      dir.exportflags:=0;
-      dir.datetime:=0;
-      dir.majver:=0;
-      dir.minver:=0;
-      dir.namerva:=0;
-      dir.ordbase:=1;
-      dir.addrtblentrs:=expnum;
-      dir.numnameptr:=expnum;
+        dir.exportflags:=0;
+        dir.datetime:=0;
+        dir.majver:=0;
+        dir.minver:=0;
+        dir.namerva:=0;
+        dir.ordbase:=1;
+        dir.addrtblentrs:=expnum;
+        dir.numnameptr:=expnum;
 
-      new addr range expnum;
-      addrsize:=tpeeaddrentry:size*expnum;
+        new addr range expnum;
+        addrsize:=tpeeaddrentry:size*expnum;
 
-      new ordinals range expnum;
-      ordinalssize:=tpeeordentry:size*expnum;
+        new ordinals range expnum;
+        ordinalssize:=tpeeordentry:size*expnum;
 
-      new nameptrs range expnum;
-      nameptrssize:=tpeenameptrentry:size*expnum;
+        new nameptrs range expnum;
+        nameptrssize:=tpeenameptrentry:size*expnum;
 
-      new names range expnameslength;
-      namessize:=expnameslength;
+        new names range expnameslength;
+        namessize:=expnameslength;
 
-      dir.expaddrtblrva:=unicode_addr_to_unsigned(base_addr)-imagebase+tpeedirentry:size;
-      dir.nameptrrva:=dir.expaddrtblrva+addrsize;
-      dir.ordtblrva:=dir.nameptrrva+nameptrssize;
-      n:=0;
+        dir.expaddrtblrva:=unicode_addr_to_unsigned(base_addr)-imagebase+tpeedirentry:size;
+        dir.nameptrrva:=dir.expaddrtblrva+addrsize;
+        dir.ordtblrva:=dir.nameptrrva+nameptrssize;
+        n:=0;
 
-      -- jmeno dllka
-      dir.namerva:=dir.ordtblrva+ordinalssize;
-      add_name(dllname,names,n);
+        -- jmeno dllka
+        dir.namerva:=dir.ordtblrva+ordinalssize;
+        add_name(dllname,names,n);
 
-      for i in export.list^:range loop
-        -- export address table
-        addr^[i-1]:=i_get_entity_instance_address(export.list^[i])-imagebase;
+        for i in export.list^:range loop
+          -- export address table
+          addr^[i-1]:=i_get_entity_instance_address(export.list^[i])-imagebase;
 
-        -- name ptr table and names
-        nameptrs^[i-1]:=dir.ordtblrva+ordinalssize+n;
-        add_name(pexportinfo(get_export_info(export.list^[i]))^.export_name^,names,n);
+          -- name ptr table and names
+          nameptrs^[i-1]:=dir.ordtblrva+ordinalssize+n;
+          add_name(pexportinfo(get_export_info(export.list^[i]))^.export_name^,names,n);
 
-        -- ord table
-        ordinals^[i-1]:=i;
-        ordinals^[i-1]-1; {%%TODO(DYNAMIC_CHECK) záplata kvůli rozsahu i od 1 do N }
-        end loop;
+          -- ord table
+          ordinals^[i-1]:=i;
+          ordinals^[i-1]-1; {%%TODO(DYNAMIC_CHECK) záplata kvůli rozsahu i od 1 do N }
+          end loop;
 
-    commit
-      verify({VERIFY=}001348,addr    =nil and then addrsize    <>0);
-      verify({VERIFY=}001349,nameptrs=nil and then nameptrssize<>0);
-      verify({VERIFY=}001350,ordinals=nil and then ordinalssize<>0);
-      verify({VERIFY=}001351,names   =nil and then namessize   <>0);
+      commit
+        verify({VERIFY=}001348,addr    =nil and then addrsize    <>0);
+        verify({VERIFY=}001349,nameptrs=nil and then nameptrssize<>0);
+        verify({VERIFY=}001350,ordinals=nil and then ordinalssize<>0);
+        verify({VERIFY=}001351,names   =nil and then namessize   <>0);
 
-      -- zapsat data sekce exportních metadat
-      section.write_unchecked(dir);
-      section.write_unchecked(addr^);
-      section.write_unchecked(nameptrs^);
-      section.write_unchecked(ordinals^);
-      section.write_unchecked(names^);
+        -- zapsat data sekce exportních metadat
+        section.write_unchecked(dir);
+        section.write_unchecked(addr^);
+        section.write_unchecked(nameptrs^);
+        section.write_unchecked(ordinals^);
+        section.write_unchecked(names^);
 
-    leave
-      -- uvolnit pracovní paměť
-      discard addr;
-      discard nameptrs;
-      discard ordinals;
-      discard names;
+      leave
+        -- uvolnit pracovní paměť
+        discard addr;
+        discard nameptrs;
+        discard ordinals;
+        discard names;
+        end;
       end build_export_metadata;
 
 
@@ -1349,122 +1355,126 @@ class private c_link_resolver_image_specific_pe =
 
     begin
       -- prazdny seznam relokaci?
-      if relocaddrs:length=0 then return; end if;
-
-      -- zjisti kolik ze to 4-kilovych fixup bloku budeme mit
-      declare var
-        tempaddr   : t_unsigned;
+      if relocaddrs:length=0 then 
+        return; 
+        end if;
 
       begin
-        -- alespon jeden 4K fixup blok
-        fixupblocks:=1;
-  
-        -- inicalizuj tempaddr prvni adresou
-        tempaddr:=relocaddrs[1].address;
-        
-        -- projed vsechny adresy
-        for i in relocaddrs:range loop
-          if relocaddrs[i].address-tempaddr>=4096 then
-            tempaddr:=relocaddrs[i].address;
-            
-            -- incrementuj pocet fixup bloku kazdych 4096 bytu
-            succ fixupblocks;
-            end if;
-          end loop;
-        end declare;
-
-      -- alokuj pamet pro zjisteny pocet 4-kilovych bloku
-      new fixups range fixupblocks;
-
-      -- projed vsechny adresy a vygeneruj relokacni informace
-      declare var
-        blockindex : t_unsigned := 0;
-        blockrelocs: t_unsigned;
-        checkrelocs: t_unsigned;                 
-        i          : t_unsigned;
-
-      begin
-        i:=relocaddrs:first;
-        while i<=relocaddrs:length loop
-          verify({VERIFY=}001352,not (blockindex<fixupblocks));
-
-          -- do hlavicky bloku uloz page rva, 
-          fixups^[blockindex].pagerva:=relocaddrs[i].address-imagebase;
-
-          -- zjisti pocet jednotlivych relokaci v tomto bloku
-          declare var
-            k    : t_unsigned;
-          begin
-            k:=i;
-            while k<=relocaddrs:length and then relocaddrs[k].address-relocaddrs[i].address<4096 loop 
-              succ k;
-              end loop;
-            blockrelocs:=k-i;
-            end declare;
-
-          -- alokuj pole typeandoffset poctem jednotlicych relokaci zjistenym v predchozim kroku
-          new fixups^[blockindex].typeandoffset range blockrelocs;
-
-          -- napln typeandoffset jednotlivymi relokacemi
-          declare var
-            k    : t_unsigned;
-          begin
-            k:=i;
-            while k<=relocaddrs:length and then relocaddrs[k].address-relocaddrs[i].address<4096 loop 
-              -- hornich 4 bitu udava typ relokace, zbylych 12 offset od fixups^[blockindex].pagerva
-              fixups^[blockindex].typeandoffset^[k-i]:=t_mod_unsigned16(relocaddrs[k].address-relocaddrs[i].address);
-              case relocaddrs[k].disposition
-                when trd_absolute do fixups^[blockindex].typeandoffset^[k-i] or (absrel_code shl 12);
-                when trd_relative do fixups^[blockindex].typeandoffset^[k-i] or (relrel_code shl 12);
-                end case;
-              succ k;
-              
-              -- kontrolni promenna
-              succ checkrelocs;
-              end loop;
-            i:=k;
-            end declare;
-
-          -- uloz velikost hlavicky bloku a vsech relokaci v bloku do hlavicky 4-K bloku
-          fixups^[blockindex].blocksize:=fixups^[blockindex].pagerva:size+fixups^[blockindex].blocksize:size+blockrelocs*t_mod_unsigned16:size;
-          
-          -- pricist velikost bloku k celkove velikosti PE relokacnich informaci
-          relocdatasize+fixups^[blockindex].blocksize;
-
-          -- dalsi block
-          succ blockindex;      
-          end loop;
-
-        -- pokud checkrelocs se nebude rovnat poctu adres v seznamu relokaci, je chyba v algoritmu teto funkce
-        verify({VERIFY=}001353,checkrelocs<>relocaddrs:length);
-        end declare;
-      
-    commit
-      -- zapsat data sekce relokací
-      for i in fixups^:range loop
-        section.write_unchecked(fixups^[i].pagerva);
-        section.write_unchecked(fixups^[i].blocksize);
-        section.write_unchecked(fixups^[i].typeandoffset^);
-        --for j in fixups^[i].typeandoffset^:range loop
-        --  section.write_unchecked_part(fixups^[i].typeandoffset^[j],fixups^[i].typeandoffset^[j]:size);
-        --  end loop;
-        end loop;
-    
-      -- koncová nula, je-li požadována
-      if null_term then
+        -- zjisti kolik ze to 4-kilovych fixup bloku budeme mit
         declare var
-          zero     : tperva;
+          tempaddr   : t_unsigned;
+
         begin
-          section.write_unchecked(zero);
-          end declare;
-        end if;  
+          -- alespon jeden 4K fixup blok
+          fixupblocks:=1;
     
-    leave
-      -- uvolnit paměť
-      for i in fixups^:range loop
-        discard fixups^[i].typeandoffset;
-        end loop;
-      discard fixups;
+          -- inicalizuj tempaddr prvni adresou
+          tempaddr:=relocaddrs[1].address;
+          
+          -- projed vsechny adresy
+          for i in relocaddrs:range loop
+            if relocaddrs[i].address-tempaddr>=4096 then
+              tempaddr:=relocaddrs[i].address;
+              
+              -- incrementuj pocet fixup bloku kazdych 4096 bytu
+              succ fixupblocks;
+              end if;
+            end loop;
+          end declare;
+
+        -- alokuj pamet pro zjisteny pocet 4-kilovych bloku
+        new fixups range fixupblocks;
+
+        -- projed vsechny adresy a vygeneruj relokacni informace
+        declare var
+          blockindex : t_unsigned := 0;
+          blockrelocs: t_unsigned;
+          checkrelocs: t_unsigned;                 
+          i          : t_unsigned;
+
+        begin
+          i:=relocaddrs:first;
+          while i<=relocaddrs:length loop
+            verify({VERIFY=}001352,not (blockindex<fixupblocks));
+
+            -- do hlavicky bloku uloz page rva, 
+            fixups^[blockindex].pagerva:=relocaddrs[i].address-imagebase;
+
+            -- zjisti pocet jednotlivych relokaci v tomto bloku
+            declare var
+              k    : t_unsigned;
+            begin
+              k:=i;
+              while k<=relocaddrs:length and then relocaddrs[k].address-relocaddrs[i].address<4096 loop 
+                succ k;
+                end loop;
+              blockrelocs:=k-i;
+              end declare;
+
+            -- alokuj pole typeandoffset poctem jednotlicych relokaci zjistenym v predchozim kroku
+            new fixups^[blockindex].typeandoffset range blockrelocs;
+
+            -- napln typeandoffset jednotlivymi relokacemi
+            declare var
+              k    : t_unsigned;
+            begin
+              k:=i;
+              while k<=relocaddrs:length and then relocaddrs[k].address-relocaddrs[i].address<4096 loop 
+                -- hornich 4 bitu udava typ relokace, zbylych 12 offset od fixups^[blockindex].pagerva
+                fixups^[blockindex].typeandoffset^[k-i]:=t_mod_unsigned16(relocaddrs[k].address-relocaddrs[i].address);
+                case relocaddrs[k].disposition
+                  when trd_absolute do fixups^[blockindex].typeandoffset^[k-i] or (absrel_code shl 12);
+                  when trd_relative do fixups^[blockindex].typeandoffset^[k-i] or (relrel_code shl 12);
+                  end case;
+                succ k;
+
+                -- kontrolni promenna
+                succ checkrelocs;
+                end loop;
+              i:=k;
+              end declare;
+
+            -- uloz velikost hlavicky bloku a vsech relokaci v bloku do hlavicky 4-K bloku
+            fixups^[blockindex].blocksize:=fixups^[blockindex].pagerva:size+fixups^[blockindex].blocksize:size+blockrelocs*t_mod_unsigned16:size;
+
+            -- pricist velikost bloku k celkove velikosti PE relokacnich informaci
+            relocdatasize+fixups^[blockindex].blocksize;
+
+            -- dalsi block
+            succ blockindex;      
+            end loop;
+
+          -- pokud checkrelocs se nebude rovnat poctu adres v seznamu relokaci, je chyba v algoritmu teto funkce
+          verify({VERIFY=}001353,checkrelocs<>relocaddrs:length);
+          end declare;
+        
+      commit
+        -- zapsat data sekce relokací
+        for i in fixups^:range loop
+          section.write_unchecked(fixups^[i].pagerva);
+          section.write_unchecked(fixups^[i].blocksize);
+          section.write_unchecked(fixups^[i].typeandoffset^);
+          --for j in fixups^[i].typeandoffset^:range loop
+          --  section.write_unchecked_part(fixups^[i].typeandoffset^[j],fixups^[i].typeandoffset^[j]:size);
+          --  end loop;
+          end loop;
+      
+        -- koncová nula, je-li požadována
+        if null_term then
+          declare var
+            zero     : tperva;
+          begin
+            section.write_unchecked(zero);
+            end declare;
+          end if;  
+      
+      leave
+        -- uvolnit paměť
+        for i in fixups^:range loop
+          discard fixups^[i].typeandoffset;
+          end loop;
+        discard fixups;
+        end;
       end build_relocations_internal;
 
 
@@ -1489,7 +1499,9 @@ class private c_link_resolver_image_specific_pe =
 
     begin
       -- načíst první seznam
-      if not relo_it.get(relocations,compi) then return end if;
+      if not relo_it.get(relocations,compi) then 
+        return;
+        end if;
       
       -- uložit originální image base tohoto modulu
       section.write_unchecked(imagebase);

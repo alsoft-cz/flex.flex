@@ -1823,6 +1823,7 @@ procedure i_gen_imm (
 ----------------------------------------------------------------------------------------------------
 var
   edtype           : t_elementary_data_type;     -- elementární datový typ přímé hodnoty
+
 begin
   -- určit elementární datový typ přímé hodnoty
   edtype:=edtype_from_expr(expr);
@@ -2319,7 +2320,6 @@ begin
   ---- (3) zpracovat argumenty ----
   i_gen_call_subprogram_parameters(inst,info,context,expr,pproc,call,pinst,ptyp,params_size);
 
-
   ---- (4) uložit pointer na instanci a načíst adresu procedury ----
   declare var
     nclass         : nodeclass;                  -- převzatá/určená třída jména procedury
@@ -2728,13 +2728,23 @@ var
   lval             : timm32;                     -- dolní mez pole
   size             : timm32;                     -- velikost prvku
   newcontext       : iexprcontext;               -- kontext podvýrazů
+  check_array      : t_logical;                  -- je třeba kontrolovat index do dynamického pole?
 
 begin
   -- podvýrazy
   expr^.get(el,er);
 
+  -- dolní mez pole nebo řetězce
+  lval:=uniint_to_imm32(el^.t.getctype^.srange.getctype^.lval);
+
+  -- je to unconstrained pole, u kterého se bude kontrolovat index?
+  check_array:=el^.t.stype=dt_uarray and then rch_index_array in expr^.get_run_checks(rchcl_gen);
+
   -- vygenerovat levý podvýraz
-  i_newcontext(context,newcontext,lm_gen,nil);
+  if check_array
+    then i_newcontext(context,newcontext,lm_addr_attr,nil);
+    else i_newcontext(context,newcontext,lm_gen,nil);
+    end if;
   i_load(inst,info,newcontext,context,el,op1);
   verify({VERIFY=}000106,op1.optype<>io_mem);
 
@@ -2747,35 +2757,52 @@ begin
   op1.refresh(inst,info,context);
   op2.refresh(inst,info,context);
 
+  -- unconstrained array?
+  if check_array then
+    declare var
+      last_op      : c_operand;
+      subcontext   : iexprcontext;
+
+    begin
+      -- načíst :LAST
+      i_rta_load(inst,info,context,op1,rta_last,last_op);
+
+      -- behova kontrola mezi indexu pole
+      i_gen_index_array_check(inst,info,context,expr^,lval,last_op,op2);
+    leave
+      -- zrusit
+      last_op.free(info,context);
+      end declare;
+
+    -- a pak přejít z adresy na vlastní hodnotu
+    i_gen_load_address_to_register_with_dereference(inst,info,context,op1);
+    op1.transform_imm_or_reg_to_mem(edtype_from_expr(expr),value_size_from_expr(expr));
+
   -- string?
-  if el^.t.stype in dts_string then
+  elsif el^.t.stype in dts_string then
     declare var
       length_op    : c_operand;
-    
+
     begin
       -- nacist :length
       i_rta_load(inst,info,context,op1,rta_length,length_op);
-      
+
       -- behova kontrola mezi indexu retezce
       i_gen_index_string_check(inst,info,context,expr^,length_op,op2);
-    
     leave
       -- zrusit
       length_op.free(info,context);
       end declare;
     end if;
 
-  -- dolní mez pole nebo řetězce
-  lval:=uniint_to_imm32(el^.t.getctype^.srange.getctype^.lval);
-
   -- velikost prvku
   size:=unidata_size_to_imm32(el^.t.getctype^.base.getctype^.size);
 
   -- základ výsledku
   vysl.clone(inst,info,context,op1);
+  verify({VERIFY=}000490,vysl.optype<>io_mem);
   vysl.adjust_edtype(edtype_from_expr(expr));
   vysl.adjust_size(value_size_from_expr(expr));
-  verify({VERIFY=}000490,vysl.optype<>io_mem);
   -- Pozor: nutný předpoklad pro správné ošetření IO_CC
 
   -- sestavit výslednou adresu
@@ -3179,6 +3206,46 @@ procedure i_gen_attrib (
       optag.free(info,context);
       end load_rtattrib_direct_from_tag;
 
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure load_using_rtl (
+        rtl_proc   : in t_rtl_entity;
+        vysl       : out c_operand) =
+    -- Načte nějaký parametr z dodaného tagu pomocí funkce RTL knihovny.
+    ------------------------------------------------------------------------------------------------
+    var
+      newcontext   : iexprcontext;               -- kontext podvýrazů
+      optag        : c_operand;                  -- operand reprezentující adresu podvýrazu
+
+    begin
+      -- načíst adresu proměnné
+      i_newcontext(context,newcontext,lm_gen,nil);
+      i_load(inst,info,newcontext,context,expr^.sub,optag);
+
+      -- rezervovat místo na stacku pro návratovou hodnotu
+      i_gen_stack_top_reserve(inst,info,context,4);
+
+      -- nemáme instanci, zjišťujeme přímo z tagu, místo ní předáme prostě NIL
+      addii(inst,info,ii_push,op_0,op0,op0);
+
+      -- uložit :tag na stack
+      addii(inst,info,ii_push,optag,op0,op0);
+
+      -- zavolat RTL funkci
+      addcallrtl(inst,info,context,rtl_proc,for save_regs use true);
+
+      -- registr pro výsledek
+      vysl.create_new_register(inst,info,context,edt_unsigned,4);
+
+      -- odebrat výsledek ze stacku
+      addii(inst,info,ii_pop,vysl,op0,op0);
+    leave
+      -- uvolnit operand
+      optag.free(info,context);
+      end load_using_rtl;
+
+
 var
   op1              : c_operand;                  -- operand 1
   op2              : c_operand;                  -- operand 2
@@ -3261,8 +3328,16 @@ begin
               i_newcontext(context,newcontext,lm_gen,nil);
               i_load(inst,info,newcontext,context,expr^.sub,vysl);
 
-          -- :designated:size 
+          -- :designated:size
           when ata_designated_size do load_rtattrib_direct_from_tag(rta_size,vysl);
+
+          -- :designated:first
+          when ata_designated_first do load_using_rtl(rtl_get_first_from_tag,vysl);
+
+          -- :designated:last
+          when ata_designated_last do load_using_rtl(rtl_get_last_from_tag,vysl);
+                                      --load_rtattrib(rta_last,vysl);
+                                      --load_rtattrib_direct_from_tag(rta_last,vysl);
 
           when others do verify({VERIFY=}000282,true);--u_nimplemented(59);
           end case;
@@ -3425,6 +3500,31 @@ procedure i_gen_callspec (
     vysl           : out c_operand) =            -- výsledek
 -- Generování kódu volání speciální metody.
 ----------------------------------------------------------------------------------------------------
+
+  --------------------------------------------------------------------------------------------------
+  procedure load_range =
+  -- Uloží na zásobník rozsah provádění speciální metody, pokud byl dodán
+  --------------------------------------------------------------------------------------------------
+  var
+    newcontext : iexprcontext;   -- kontext výrazu
+    opnone1    : c_operand;      -- prázdný výsledek
+    opnone2    : c_operand;      -- prázdný výsledek
+
+  begin
+    -- pokud máme rozsah provádění, uložit na zásobník
+    if expr^.range_low<>nil then
+      -- uložit rozsah provádění
+      i_newcontext(context,newcontext,lm_push_value,inttype_size);
+      i_load(inst,info,newcontext,context,expr^.range_low,opnone1);
+      i_newcontext(context,newcontext,lm_push_value,inttype_size);
+      i_load(inst,info,newcontext,context,expr^.range_high,opnone2);
+      end if;
+  leave
+    -- uvolnit operandy
+    opnone1.free(info,context);
+    opnone2.free(info,context);
+    end load_range;
+
 var
   el               : pexpnode;                   -- instance třídy (je-li to metoda třídy)
   arglist          : pexpitem;                   -- seznam parametrů
@@ -3446,21 +3546,74 @@ begin
     -- ne => vybrat metodu podle tagu instance třídy/modulu
     else
       verify({VERIFY=}000582,(el=nil) or (arglist<>nil));
+      verify({VERIFY=}001479,(expr^.range_low=nil) xor (expr^.range_high=nil));
 
       case el^.nclass
-        -- podvýraz je instance třídy
+        -- podvýraz je proměnná
         when nc_var     do
-            verify({VERIFY=}000583,not el^.t.isclass);
+            --verify({VERIFY=}000583,not el^.t.isclass);
 
             declare var
-              opnone     : c_operand;            -- prázdný výsledek
-              newcontext : iexprcontext;         -- kontext výrazu
+              opnone1    : c_operand;            -- prázdný výsledek
+              opnone2    : c_operand;            -- prázdný výsledek
+
             begin
-              -- adresu instance uložit na stack
-              i_newcontext(context,newcontext,lm_push_addr,nil);
-              i_load(inst,info,newcontext,context,el,opnone);
+              -- byla zadána odděleně instance+tag, nebo rovnou proměnná (otagovaná) ?
+              if expr^.explicit_inst<>nil
+                then
+                  declare var
+                    newcontext : iexprcontext;   -- kontext výrazu
+
+                  begin
+                    verify({VERIFY=}001482,expr^.spec<>nil);
+
+                    -- uložit dodaný tag
+                    i_newcontext(context,newcontext,lm_push_value,inttype_tag);
+                    i_load(inst,info,newcontext,context,el,opnone1);
+
+                    -- uložit adresu instance
+                    i_newcontext(context,newcontext,lm_push_value,{expr^.explicit_inst^.t.getctype}inttype_machine_pointer);
+                    i_load(inst,info,newcontext,context,expr^.explicit_inst,opnone2);
+
+                    -- uložit rozsah provádění
+                    load_range;
+                    end declare;
+
+                else
+                  declare var
+                    newcontext : iexprcontext;
+                    opaddr     : c_operand;
+
+                  begin
+                    -- pokud nemá tag, nemůže mít žádnou spec. metodu
+                    if rta_tag not in el^.rta_avail then
+                      return;
+                      end if;
+
+                    -- uložit tag (z instance):
+                    -- načíst adresu instance
+                    i_newcontext(context,newcontext,i_get_load_mode_by_requested_rta(el,rta_tag),nil);
+                    i_load(inst,info,newcontext,context,el,opaddr);
+
+                    -- načíst z ní tag na zásobník
+                    i_rta_push(inst,info,context,opaddr,rta_tag);
+
+                    -- uložit adresu instance na zásobník
+                    i_newcontext(context,newcontext,lm_push_addr,inttype_machine_pointer);
+                    i_load(inst,info,newcontext,context,el,opnone1);
+
+                    -- uložit rozsah provádění
+                    load_range;
+
+                  leave
+                    -- uvolnit operandy
+                    opaddr.free(info,context);
+                    end declare;
+                  end if;
             leave
-              opnone.free(info,context);
+              -- uvolnit operandy
+              opnone2.free(info,context);
+              opnone1.free(info,context);
               end declare;
 
             -- zavolat speciální metodu
@@ -3468,7 +3621,7 @@ begin
 
               -- a to první dostupnou
               then
-                i_dispatch_special(inst,info,context,expr^.spectype);
+                i_dispatch_special(inst,info,context,expr^.spectype,expr^.range_low<>nil);
 
               -- jinak tu pevně určenou
               else
@@ -3491,6 +3644,35 @@ begin
         -- podvýraz je modul
         when nc_module  do
             unimplemented({UNIMP=}000194);
+
+        -- podvýraz je tag
+        when nc_tag, nc_value do
+            declare var
+              opnone1    : c_operand;            -- prázdný výsledek
+              opnone2    : c_operand;            -- prázdný výsledek
+              newcontext : iexprcontext;         -- kontext výrazu
+
+            begin
+              verify({VERIFY=}001467,expr^.explicit_inst=nil or expr^.spec<>nil);
+              --verify({VERIFY=}001468,el^....popisuje vyraz typu tag);
+
+              -- uložit tag na zásobník
+              i_newcontext(context,newcontext,lm_push_value,inttype_tag);
+              i_load(inst,info,newcontext,context,el,opnone1);
+
+              -- uložit adresu instance na zásobník
+              i_newcontext(context,newcontext,lm_push_value,inttype_machine_pointer);
+              i_load(inst,info,newcontext,context,expr^.explicit_inst,opnone2);
+
+              -- uložit rozsah provádění
+              load_range;
+            leave
+              opnone2.free(info,context);
+              opnone1.free(info,context);
+              end declare;
+
+            -- zavolat speciální metodu podle tagu
+            i_dispatch_special(inst,info,context,expr^.spectype,expr^.range_low<>nil);
 
         when others do verify({VERIFY=}000809,true);
         end case;
@@ -4081,6 +4263,7 @@ begin
   ---- ordinální typy obecně ----
   -- < <= > >= <> =
   osetss(opertab,[op_lt,op_le,op_gt,op_ge,op_ne,op_eq],dts_ordinal,^i_gen_op_compare_ordinal);
+  osets1(opertab,[op_lt,op_le,op_gt,op_ge,op_ne,op_eq],dt_unilogical,^i_gen_op_compare_ordinal);
 
 
   ---- fixed-point relation operations ----

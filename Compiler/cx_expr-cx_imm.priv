@@ -84,35 +84,27 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure store_string =
 -- Uloží do přímé hodnoty znakový agregát.
--- (Nealokuje paměť, jen převezme pointer).
 ----------------------------------------------------------------------------------------------------
-type
-  tmpointer        = ^unchecked for machine_pointer use true;
-  tupointer        = record
-      ptr          : tmpointer;
-    #if #environment compiler_version;='4.0.3.14' then;
-      rta_last     : unsigned 32;
-    #else;
-      rta_tag      : tag;
-    #end if;
-      end record;
+with
+  advanced.low_level.unchecked_memory_access;
 
-  --%%TODO(SLICE) krutobrutální záplata
-  paliasedlexaggregate = ^string of aliased plexaggregate^:base;
+var
+  str_data         : p_unsigned8array;
+  size             : t_unsigned;
 
 begin
   imm.ic:=ic_condensed;
   imm.citems.len:=str^:length;
   imm.citems.isize:=str^:base:size;
 
-  --%%TODO(SLICE) krutobrutální záplata
-  tupointer(imm.citems.items:unchecked).ptr     :=^paliasedlexaggregate(str)^[1]:unchecked;
-#if #environment compiler_version;='4.0.3.14' then;
-  tupointer(imm.citems.items:unchecked).rta_last:=str^:length;
-#else;
-  tupointer(imm.citems.items:unchecked).rta_tag :=str^:tag;
-#end if;
-  --imm.citems.items:=^str^[1..str^:length]:unchecked;
+  -- okopíruj do nového pole (%%TODO(SLICE) záplata)
+  size:=imm.citems.isize*imm.citems.len;
+  new str_data range size;
+  memory_copy(str^[1],str_data^,size);
+  imm.citems.items:=str_data;
+
+  -- zaregistruj do globalniho gc
+  c_garbage_collector.get_instance^.register_memblock(str_data);
   end store_string;
 
 
@@ -518,7 +510,7 @@ procedure load_sysstr =
 ----------------------------------------------------------------------------------------------------
 with
   standard.numerics;
-  
+
 var
   i                : t_unsigned;
   j                : t_unsigned;
@@ -920,42 +912,70 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure imm_isnil =
+procedure imm_is_nil =
 -- True, je-li přímá hodnota NIL nebo NIL-ekvivalentní.
 ----------------------------------------------------------------------------------------------------
 begin
   case imm.ic
     when ic_ordinal   do result:=imm.ui=ui_nil;
-    when ic_real      do result:=imm.ur=ur_nil;
+    when ic_real      do result:=unireal_eq(imm.ur,ur_nil);
     when ic_nil       do result:=true;
     when ic_condensed do result:=imm.citems.len=0;
-    when ic_array     do result:=(imm.aitems^.list=nil or else imm.aitems^.list^:length=0) and then imm_isnil(imm.aitems^.othersval);
-    {%%X doplnit: LEN<>0 AND THEN imm_isnil(libovolna slozka) }
-    when ic_record    do result:=(imm.ritems^.list=nil or else imm.ritems^.list^:length=0) and then imm_isnil(imm.ritems^.othersval);
+    when ic_array     do result:=(imm.aitems^.list=nil or else imm.aitems^.list^:length=0) and then imm_is_nil(imm.aitems^.othersval);
+    {%%X doplnit: LEN<>0 AND THEN imm_is_nil(libovolna slozka) }
+    when ic_record    do result:=(imm.ritems^.list=nil or else imm.ritems^.list^:length=0) and then imm_is_nil(imm.ritems^.othersval);
     when ic_set       do result:=imm.sitems^.list=nil or else imm.sitems^.list^:length=0;
-    {%%X doplnit: LEN<>0 AND THEN imm_isnil(libovolna slozka) }
+    {%%X doplnit: LEN<>0 AND THEN imm_is_nil(libovolna slozka) }
 --  when ic_relo      do result:=false;
     when others       do verify({VERIFY=}000261,true);
     end case;
-  end imm_isnil;
+  end imm_is_nil;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure imm_isfullset =
+procedure imm_is_full_set =
 -- True, je-li přímá hodnota ekvivalentní úplné množině.                      
 ----------------------------------------------------------------------------------------------------
 begin
   case imm.ic
+    -- množina -> zkontrolovat
     when ic_set         do
         result:=imm.sitems^.list<>nil
                 and then imm.sitems^.list^:length=1
-                and then imm.sitems^.list^[1].lval=ptyp^.base.getctype()^.lval
-                and then imm.sitems^.list^[1].hval=ptyp^.base.getctype()^.hval;
+                and then imm.sitems^.list^[1].lval=ptyp^.base.getctype^.lval
+                and then imm.sitems^.list^[1].hval=ptyp^.base.getctype^.hval;
+
+    -- NIL -> prázdná množina, výsledek zřejmý
     when ic_nil         do result:=false;
+
+    -- ordinální hodnota -> chápat jako jednoprvkovou množinu
+    when ic_ordinal     do
+        verify({VERIFY=}001469,not ordinal_as_set);
+        result:=imm.ui=ptyp^.base.getctype^.lval and imm.ui=ptyp^.base.getctype^.hval;
+
     when others         do verify({VERIFY=}000454,true);
     end case;
-  end imm_isfullset;
+  end imm_is_full_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_ordinal_to_set (
+    context        : in tcontext;                -- aktuální kontext
+    A              : in out timm_value) =        -- prvek, posléze množina
+-- Je-li [A] prvek množiny, změní ho na množinu.
+----------------------------------------------------------------------------------------------------
+var
+  ui               : tuniint;
+
+begin
+  if A.ic=ic_ordinal then
+    ui:=A.ui;
+    store_set(A);
+    store_set_item(context,A,ui,false);
+    end if;
+  end imm_ordinal_to_set;
 
 
 
@@ -964,23 +984,37 @@ procedure imm_union =
 -- Sjednocení dvou množin.
 ----------------------------------------------------------------------------------------------------
 begin
-  verify({VERIFY=}000455,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil]);
+  -- předně prvek množiny na levé straně zkonvertovat na množinu, ať je zbytek procedury jednodušší
+  imm_ordinal_to_set(context,A);
+
+  -- interní kontrola
+  verify({VERIFY=}000455,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil,ic_ordinal]);
 
   -- vpravo je NIL => nic nedělat
-  if imm_isnil(B) then return; end if;
+  if imm_is_nil(B) then return; end if;
 
   -- z NIL vlevo udělat množinu
   if A.ic=ic_nil then
     store_set(A);
     end if;
 
-  -- prvky z B zahrnout do A
-  for i in B.sitems^.list^:range loop
-    if B.sitems^.list^[i].lval=B.sitems^.list^[i].hval
-      then store_set_item(context,A,B.sitems^.list^[i].lval,false)
-      else store_set_items_range(context,A,B.sitems^.list^[i].lval,B.sitems^.list^[i].hval,false);
+  -- v B může být množina nebo jen jednotlivý prvek
+  if B.ic=ic_ordinal
+    
+    -- je to prvek
+    then
+      store_set_item(context,A,B.ui,false);
+
+    -- je to množina
+    else
+      -- prvky z B zahrnout do A
+      for i in B.sitems^.list^:range loop
+        if B.sitems^.list^[i].lval=B.sitems^.list^[i].hval
+          then store_set_item(context,A,B.sitems^.list^[i].lval,false)
+          else store_set_items_range(context,A,B.sitems^.list^[i].lval,B.sitems^.list^[i].hval,false);
+          end if;
+        end loop;
       end if;
-    end loop;
   end imm_union;
 
 
@@ -990,18 +1024,32 @@ procedure imm_diff =
 -- Rozdíl dvou množin.
 ----------------------------------------------------------------------------------------------------
 begin
-  verify({VERIFY=}000458,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil]);
+  -- předně prvek množiny na levé straně zkonvertovat na množinu, ať je zbytek procedury jednodušší
+  imm_ordinal_to_set(context,A);
+
+  -- interní kontrola
+  verify({VERIFY=}000458,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil,ic_ordinal]);
 
   -- na jedné straně je NIL => nic nedělat
-  if imm_isnil(A) or imm_isnil(B) then return; end if;
+  if imm_is_nil(A) or imm_is_nil(B) then return; end if;
 
-  -- prvky z B odstranit z A
-  for i in B.sitems^.list^:range loop
-    if B.sitems^.list^[i].lval=B.sitems^.list^[i].hval
-      then cx_set.choice_remove_single(A.sitems^,B.sitems^.list^[i].lval)
-      else cx_set.choice_remove_range(A.sitems^,B.sitems^.list^[i].lval,B.sitems^.list^[i].hval);
+  -- v B může být množina nebo jen jednotlivý prvek
+  if B.ic=ic_ordinal
+    
+    -- je to prvek
+    then
+      cx_set.choice_remove_single(A.sitems^,B.ui);
+
+    -- je to množina
+    else
+      -- prvky z B odstranit z A
+      for i in B.sitems^.list^:range loop
+        if B.sitems^.list^[i].lval=B.sitems^.list^[i].hval
+          then cx_set.choice_remove_single(A.sitems^,B.sitems^.list^[i].lval)
+          else cx_set.choice_remove_range(A.sitems^,B.sitems^.list^[i].lval,B.sitems^.list^[i].hval);
+          end if;
+        end loop;
       end if;
-    end loop;
   end imm_diff;
 
 
@@ -1010,66 +1058,112 @@ begin
 procedure imm_isect =
 -- Průnik dvou množin.
 ----------------------------------------------------------------------------------------------------
-var
-    i              : t_unsigned;
-    j              : t_unsigned;
-    tmp            : tuniint;
-
 begin
-  verify({VERIFY=}001293,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil]);
+  -- předně prvek množiny na levé straně zkonvertovat na množinu, ať je zbytek procedury jednodušší
+  imm_ordinal_to_set(context,A);
+
+  -- interní kontrola
+  verify({VERIFY=}001293,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil,ic_ordinal]);
 
   -- na jedné straně je NIL => výsledek je prázdná množina
-  if imm_isnil(A) or imm_isnil(B) then
+  if imm_is_nil(A) or imm_is_nil(B) then
     store_set(A);
     return;
     end if;
 
-  -- procházím oba seznamy intervalů a odřezávám z A ty části, které nejsou v B
-  i:=1;
-  j:=1;
-  while i<=A.sitems^.list^:length loop
-    -- najdi první podinterval z množiny B, který není před začátkem tohoto podintervalu
-    while j<=B.sitems^.list^:length and then B.sitems^.list^[j].hval<A.sitems^.list^[i].lval loop
-      succ j;
-      end loop;
+  -- v B může být množina nebo jen jednotlivý prvek
+  if B.ic=ic_ordinal
+    
+    -- je to prvek
+    then
+      -- patří B do množiny A ?
+      if imm_member(B,A)
 
-    -- Jaký je vzájemný vztah podintervalů?
-    if j>B.sitems^.list^:length or else B.sitems^.list^[j].lval>A.sitems^.list^[i].hval
-      then
-        -- podinterval z A vůbec v B není => z A ho musíme odstranit
-        if A.sitems^.list^[i].lval=A.sitems^.list^[i].hval
-          then cx_set.choice_remove_single(A.sitems^,A.sitems^.list^[i].lval)
-          else cx_set.choice_remove_range(A.sitems^,A.sitems^.list^[i].lval,A.sitems^.list^[i].hval);
+        -- ano => výsledek je množina obsahující A
+        then
+          store_set(A);
+          store_set_item(context,A,B.ui,false);
+
+        -- ne => výsledek je prázdná množina
+        else
+          store_set(A);
           end if;
 
-      else
-        -- podintervaly se alespoň částečně překrývají => upravit?
+    -- je to množina
+    else
+      declare var
+        i          : t_unsigned;
+        j          : t_unsigned;
+        tmp        : tuniint;
 
-        -- zkontrolovat levý okraj
-        if B.sitems^.list^[j].lval>A.sitems^.list^[i].lval then
-          -- interval v B začíná později => posunout levý okraj
-          A.sitems^.list^[i].lval:=B.sitems^.list^[j].lval;
-          end if;
+      begin
+        -- procházím oba seznamy intervalů a odřezávám z A ty části, které nejsou v B
+        i:=1;
+        j:=1;
+        while i<=A.sitems^.list^:length loop
+          -- najdi první podinterval z množiny B, který není před začátkem tohoto podintervalu
+          while j<=B.sitems^.list^:length and then B.sitems^.list^[j].hval<A.sitems^.list^[i].lval loop
+            succ j;
+            end loop;
 
-        -- zkontrolovat pravý okraj
-        if B.sitems^.list^[j].hval<A.sitems^.list^[i].hval then
-          -- interval v B končí dřív => upravit pravý okraj
-          -- pozor finta: abychom nemuseli řešit spoustu speciálních případů, prostě tenhle interval
-          -- rozdělíme na dva -- ten shodný s B a zbytek. Shodný s B je OK, takže normálně pokračujeme
-          -- zbytkem.
-          tmp:=A.sitems^.list^[i].hval;
-          A.sitems^.list^[i].hval:=B.sitems^.list^[j].hval;
-          if A.sitems^.list^[i].hval+ui_2=tmp
-            then store_set_item(context,A,tmp,false)
-            else store_set_items_range(context,A,A.sitems^.list^[i].hval+ui_2,tmp,false);
-            end if;
-          end if;
+          -- Jaký je vzájemný vztah podintervalů?
+          if j>B.sitems^.list^:length or else B.sitems^.list^[j].lval>A.sitems^.list^[i].hval
 
-        -- pokračovat dalším intervalem
-        succ i;
-        end if;
-    end loop;
+            -- podinterval z A vůbec v B není => z A ho musíme odstranit
+            then
+              if A.sitems^.list^[i].lval=A.sitems^.list^[i].hval
+                then cx_set.choice_remove_single(A.sitems^,A.sitems^.list^[i].lval)
+                else cx_set.choice_remove_range(A.sitems^,A.sitems^.list^[i].lval,A.sitems^.list^[i].hval);
+                end if;
+
+            -- podintervaly se alespoň částečně překrývají => upravit?
+            else
+              -- zkontrolovat levý okraj
+              if B.sitems^.list^[j].lval>A.sitems^.list^[i].lval then
+                -- interval v B začíná později => posunout levý okraj
+                A.sitems^.list^[i].lval:=B.sitems^.list^[j].lval;
+                end if;
+
+              -- zkontrolovat pravý okraj
+              if B.sitems^.list^[j].hval<A.sitems^.list^[i].hval then
+                -- interval v B končí dřív => upravit pravý okraj
+                -- pozor finta: abychom nemuseli řešit spoustu speciálních případů, prostě tenhle interval
+                -- rozdělíme na dva -- ten shodný s B a zbytek. Shodný s B je OK, takže normálně pokračujeme
+                -- zbytkem.
+                tmp:=A.sitems^.list^[i].hval;
+                A.sitems^.list^[i].hval:=B.sitems^.list^[j].hval;
+                if A.sitems^.list^[i].hval+ui_2=tmp
+                  then store_set_item(context,A,tmp,false)
+                  else store_set_items_range(context,A,A.sitems^.list^[i].hval+ui_2,tmp,false);
+                  end if;
+                end if;
+
+              -- pokračovat dalším intervalem
+              succ i;
+              end if;
+          end loop;
+        end declare;
+      end if;
   end imm_isect;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_member =
+-- True, je-li prvek A členem množiny B.
+----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}001466,A.ic<>ic_ordinal or B.ic not in timmclassset:[ic_set,ic_nil]);
+
+  -- B je prázdná množina => výsledek je jasný
+  if imm_is_nil(B) then
+    result:=false;
+    return;
+    end if;
+
+  -- zjistit, jestli A leží v B
+  result:=cx_set.choice_range_is_in(A.ui,A.ui,B.sitems^);
+  end imm_member;
 
 
 
@@ -1088,7 +1182,7 @@ with
     begin
       case imm.ic
         when ic_ordinal   do cmp:=imm.ui=ui_nil;
-        when ic_real      do cmp:=imm.ur=ur_nil;
+        when ic_real      do cmp:=unireal_eq(imm.ur,ur_nil);
         when ic_condensed do cmp:=imm.citems.len=0;
         when ic_array     do unimplemented({UNIMP=}000108);--cmp:=(imm2.aitems^.len=0) and (imm2.aitems^.othersval
         when ic_record    do unimplemented({UNIMP=}000109);--cmp:=imm2.ritems^.
@@ -1299,8 +1393,8 @@ begin
   -- reálné -- reálné
   elsif (imm1.ic=ic_real) and (imm2.ic=ic_real) then
     case oper
-      when cmp_eq do cmp:=imm1.ur=imm2.ur;
-      when cmp_ne do cmp:=imm1.ur<>imm2.ur;
+      when cmp_eq do cmp:=unireal_eq(imm1.ur,imm2.ur);
+      when cmp_ne do cmp:=unireal_ne(imm1.ur,imm2.ur);
       when cmp_lt do cmp:=imm1.ur<imm2.ur;
       when cmp_le do cmp:=imm1.ur<=imm2.ur;
       when cmp_gt do cmp:=imm1.ur>imm2.ur;

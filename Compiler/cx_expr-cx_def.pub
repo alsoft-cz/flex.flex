@@ -281,6 +281,7 @@ type
       nc_message;                                -- zpráva
       nc_type;                                   -- typ
       nc_tag;                                    -- tag typu
+      nc_overload;                               -- přetížení (dosud nevyhodnocené)
       end enum;
   nodeclassset     = set of nodeclass;
 
@@ -297,7 +298,8 @@ var
       for nc_proc      use 'proc',
       for nc_message   use 'message',
       for nc_type      use 'type',
-      for nc_tag       use 'tag']; 
+      for nc_tag       use 'tag',
+      for nc_overload  use 'overload']; 
 {%ON}
 
 const
@@ -369,11 +371,14 @@ type
   -- ve složce CONCATKIND. Výpočet je podobný průběhu typové kontroly &.
   --------------------------------------------------------------------------------------------------
 
+  { %%X Identifikátor [nodeconcatkind] už není úplně výstižný, co nějaké [t_aggregate_composition_item_category] ? }
+
   -- způsob zřetězení uzlu vzhledem k typu
   nodeconcatkind     = enum
       nck_unknown;                               -- neví se
       nck_substring;                             -- podřetězec
       nck_subarray;                              -- podpole
+      nck_set;                                   -- množina
       nck_component;                             -- komponenta
       end enum;                                  
   nodeconcatkindset  = set of nodeconcatkind;
@@ -383,6 +388,7 @@ var
       for nck_unknown   use 'unknown',
       for nck_substring use 'substring',
       for nck_subarray  use 'subarray',
+      for nck_set       use 'set',
       for nck_component use 'component'];
 
 type
@@ -761,6 +767,10 @@ type
       end enum;
   expopertypeset = set of expopertype;
 
+const
+  -- operátory představující operaci kompozice agregátu
+  ops_aggregate_composition = expopertypeset:[op_concat,op_union,op_diff,op_isect];
+
 var
   -- textová reprezentace binárních operátorů pro dump
   expopertxt       : const array expopertype of t_char32str := [
@@ -892,49 +902,49 @@ type
 var
   -- vlastnosti binárních operátorů
   expoperinfo      : const array expopertype of toperinfo := [
-      for op_none      use [for pri use 0, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_none       , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
+      for op_none      use [for pri use 0, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_none       , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
       -- přiřazení
-      for op_assign    use [for pri use 1, for com use eoc_none , for asoc use eoa_none , for tc use tc_right, for  oc use toc_assign     , for oop use oop_assign, for cmp use cmp_none, for tdiff use false],
+      for op_assign    use [for pri use 1, for com use eoc_none , for asoc use eoa_none , for tc use tc_right, for oc use toc_assign     , for oop use oop_assign, for cmp use cmp_none, for tdiff use false],
       -- aritmetické operátory
-      for op_add       use [for pri use 4, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_aritm      , for oop use oop_add   , for cmp use cmp_none, for tdiff use false],
-      for op_sub       use [for pri use 4, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both, for   oc use toc_aritm      , for oop use oop_sub   , for cmp use cmp_none, for tdiff use false],
-      for op_mul       use [for pri use 6, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_aritm      , for oop use oop_mul   , for cmp use cmp_none, for tdiff use false],
-      for op_div       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both, for   oc use toc_raritm     , for oop use oop_div   , for cmp use cmp_none, for tdiff use false],
-      for op_idiv      use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both, for   oc use toc_iaritm     , for oop use oop_idiv  , for cmp use cmp_none, for tdiff use false],
-      for op_imod      use [for pri use 6, for com use eoc_none , for asoc use eoa_none , for tc use tc_both, for   oc use toc_iaritm     , for oop use oop_imod  , for cmp use cmp_none, for tdiff use false],
+      for op_add       use [for pri use 4, for com use eoc_full , for asoc use eoa_full , for tc use tc_both,  for oc use toc_aritm      , for oop use oop_add   , for cmp use cmp_none, for tdiff use false],
+      for op_sub       use [for pri use 4, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both,  for oc use toc_aritm      , for oop use oop_sub   , for cmp use cmp_none, for tdiff use false],
+      for op_mul       use [for pri use 6, for com use eoc_full , for asoc use eoa_full , for tc use tc_both,  for oc use toc_aritm      , for oop use oop_mul   , for cmp use cmp_none, for tdiff use false],
+      for op_div       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both,  for oc use toc_raritm     , for oop use oop_div   , for cmp use cmp_none, for tdiff use false],
+      for op_idiv      use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_left,  for oc use toc_iaritm     , for oop use oop_idiv  , for cmp use cmp_none, for tdiff use false],
+      for op_imod      use [for pri use 6, for com use eoc_none , for asoc use eoa_none , for tc use tc_left,  for oc use toc_iaritm     , for oop use oop_imod  , for cmp use cmp_none, for tdiff use false],
       -- shifty
-      for op_shl       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_left, for   oc use toc_shift      , for oop use oop_shl   , for cmp use cmp_none, for tdiff use false],
-      for op_shr       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_left, for   oc use toc_shift      , for oop use oop_shr   , for cmp use cmp_none, for tdiff use false],
+      for op_shl       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_left,  for oc use toc_shift      , for oop use oop_shl   , for cmp use cmp_none, for tdiff use false],
+      for op_shr       use [for pri use 6, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_left,  for oc use toc_shift      , for oop use oop_shr   , for cmp use cmp_none, for tdiff use false],
       -- relační operátory
-      for op_eq        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_compare, for oop use oop_eq    , for cmp use cmp_eq  , for tdiff use true ],
-      for op_ne        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_compare, for oop use oop_ne    , for cmp use cmp_ne  , for tdiff use true ],
-      for op_lt        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_order  , for oop use oop_lt    , for cmp use cmp_lt  , for tdiff use true ],
-      for op_le        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_order  , for oop use oop_le    , for cmp use cmp_le  , for tdiff use true ],
-      for op_gt        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_order  , for oop use oop_gt    , for cmp use cmp_gt  , for tdiff use true ],
-      for op_ge        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_order  , for oop use oop_ge    , for cmp use cmp_ge  , for tdiff use true ],
-      for op_in        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_member , for oop use oop_none  , for cmp use cmp_none, for tdiff use true ],
-      for op_notin     use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_rel_member , for oop use oop_none  , for cmp use cmp_none, for tdiff use true ],
+      for op_eq        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_rel_compare, for oop use oop_eq    , for cmp use cmp_eq  , for tdiff use true ],
+      for op_ne        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_rel_compare, for oop use oop_ne    , for cmp use cmp_ne  , for tdiff use true ],
+      for op_lt        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_rel_order  , for oop use oop_lt    , for cmp use cmp_lt  , for tdiff use true ],
+      for op_le        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_rel_order  , for oop use oop_le    , for cmp use cmp_le  , for tdiff use true ],
+      for op_gt        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_rel_order  , for oop use oop_gt    , for cmp use cmp_gt  , for tdiff use true ],
+      for op_ge        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_rel_order  , for oop use oop_ge    , for cmp use cmp_ge  , for tdiff use true ],
+      for op_in        use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_rel_member , for oop use oop_none  , for cmp use cmp_none, for tdiff use true ],
+      for op_notin     use [for pri use 3, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_rel_member , for oop use oop_none  , for cmp use cmp_none, for tdiff use true ],
       -- množinové operátory
-      for op_union     use [for pri use 4, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_set        , for oop use oop_add   , for cmp use cmp_none, for tdiff use false],
-      for op_diff      use [for pri use 4, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_both, for   oc use toc_set        , for oop use oop_sub   , for cmp use cmp_none, for tdiff use false],
-      for op_isect     use [for pri use 6, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_set        , for oop use oop_mul   , for cmp use cmp_none, for tdiff use false],
+      for op_union     use [for pri use 4, for com use eoc_full , for asoc use eoa_full , for tc use tc_concat,for oc use toc_set        , for oop use oop_add   , for cmp use cmp_none, for tdiff use false],
+      for op_diff      use [for pri use 4, for com use eoc_pfull, for asoc use eoa_pfull, for tc use tc_concat,for oc use toc_set        , for oop use oop_sub   , for cmp use cmp_none, for tdiff use false],
+      for op_isect     use [for pri use 6, for com use eoc_full , for asoc use eoa_full , for tc use tc_concat,for oc use toc_set        , for oop use oop_mul   , for cmp use cmp_none, for tdiff use false],
       -- řetězcové operátory
-      for op_concat    use [for pri use 4, for com use eoc_none , for asoc use eoa_full , for tc use tc_concat, for oc use toc_concat     , for oop use oop_concat, for cmp use cmp_none, for tdiff use false],
+      for op_concat    use [for pri use 4, for com use eoc_none , for asoc use eoa_full , for tc use tc_concat,for oc use toc_concat     , for oop use oop_concat, for cmp use cmp_none, for tdiff use false],
       -- logické operátory
-      for op_and       use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_logical    , for oop use oop_and   , for cmp use cmp_none, for tdiff use false],
-      for op_or        use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_logical    , for oop use oop_or    , for cmp use cmp_none, for tdiff use false],
-      for op_xor       use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_logical    , for oop use oop_xor   , for cmp use cmp_none, for tdiff use false],
-      for op_and_then  use [for pri use 2, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_logical    , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
-      for op_or_else   use [for pri use 2, for com use eoc_none , for asoc use eoa_none , for tc use tc_none, for   oc use toc_logical    , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
+      for op_and       use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both,  for oc use toc_logical    , for oop use oop_and   , for cmp use cmp_none, for tdiff use false],
+      for op_or        use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both,  for oc use toc_logical    , for oop use oop_or    , for cmp use cmp_none, for tdiff use false],
+      for op_xor       use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both,  for oc use toc_logical    , for oop use oop_xor   , for cmp use cmp_none, for tdiff use false],
+      for op_and_then  use [for pri use 2, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_logical    , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
+      for op_or_else   use [for pri use 2, for com use eoc_none , for asoc use eoa_none , for tc use tc_none,  for oc use toc_logical    , for oop use oop_none  , for cmp use cmp_none, for tdiff use false],
                        -- %%X/%%LANG Pro operátory AND THEN a OR ELSE je
                        -- typová kontrola trochu jiná než pro AND a OR !
                        -- Zohlednit v příručce.
       -- bitové operátory
-      for op_bitand    use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_bit        , for oop use oop_and   , for cmp use cmp_none, for tdiff use false],
-      for op_bitor     use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_bit        , for oop use oop_or    , for cmp use cmp_none, for tdiff use false],
-      for op_bitxor    use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both, for   oc use toc_bit        , for oop use oop_xor   , for cmp use cmp_none, for tdiff use false],
+      for op_bitand    use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both,  for oc use toc_bit        , for oop use oop_and   , for cmp use cmp_none, for tdiff use false],
+      for op_bitor     use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both,  for oc use toc_bit        , for oop use oop_or    , for cmp use cmp_none, for tdiff use false],
+      for op_bitxor    use [for pri use 2, for com use eoc_full , for asoc use eoa_full , for tc use tc_both,  for oc use toc_bit        , for oop use oop_xor   , for cmp use cmp_none, for tdiff use false],
       -- různé další operátory
-      for op_op1       use [for pri use 7, for com use eoc_none , for asoc use eoa_none , for tc use tc_left, for   oc use toc_none       , for oop use oop_op1   , for cmp use cmp_none, for tdiff use false]];
+      for op_op1       use [for pri use 7, for com use eoc_none , for asoc use eoa_none , for tc use tc_left,  for oc use toc_none       , for oop use oop_op1   , for cmp use cmp_none, for tdiff use false]];
 
 ----------------------------------------------------------------------------------------------------
 class public expoper = extend expnoper;
@@ -1080,7 +1090,6 @@ class public expcomponent = extend expunary0;
     var
       id           : pentityident;               -- identifikátor komponenty
       s            : cc_sym.tentitysearch;       -- informace o nalezeném symbolu
-      splitted_next: pexpitem;                   -- hodnota next před oddělením (použito pro uložení parametrů) %%X viz [cx_expr.cx_form.a_form_list]
 
     ------------------------------------------------------------------------------------------------
     static setid (
@@ -1362,16 +1371,28 @@ class public expattrib = extend explist;
         _id        : in tentityident);           -- identifikátor
     -- Dosadí identifikátor atributu.
     ------------------------------------------------------------------------------------------------
+
     end expattrib;
 
-
-
+{
+type
+  -- druh agregátu
+  t_aggregate_kind =
+      ak_record;                                 -- record
+      ak_string;                                 -- řetězec
+      ak_array;                                  -- pole (sem spadá též uniarray při zřetězení řetězců)
+      ak_set;                                    -- množina (sem spadá též uniarray coby množina)
+      end enum;
+}
 ----------------------------------------------------------------------------------------------------
 class public expaggregate = extend explist;
 -- Agregát.
 ----------------------------------------------------------------------------------------------------
 
     var
+{
+      akind        : t_aggregate_kind;           -- druh agregátu pro snadnější rozlišení nejednoznačných případů
+}
       imm          : timm_value;                 -- statická šablona agregátu
 
     end expaggregate;
@@ -1395,6 +1416,9 @@ class public expcallspec = extend explist;
     var
       spectype     : tspectype;                  -- kterou speciální metodu volat
       spec         : pentity_special;            -- volaná spec. metoda, je-li staticky určena
+      explicit_inst: pexpnode;                   -- instance, na kterou se má metoda aplikovat, implicitně [nil]: na dodanou
+      range_low    : pexpnode;                   -- dolní mez rozsahu provádění (pro indexované typy)
+      range_high   : pexpnode;                   -- horní mez rozsahu provádění (pro indexované typy)
 
     end expcallspec;
 

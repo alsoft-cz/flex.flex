@@ -63,10 +63,16 @@ const
   --------------------------------------------------------------------------------------------------
   begin
     #syntax asm;
+
+#if #environment compiler_version;='4.0.5.2' then;
       -- class address
       mov    eax,[esp+4]
       -- load :TAG
       mov    eax,[eax]
+#else;
+      -- load :TAG
+      mov    eax,[esp+8]
+#end if;
       -- load ^<special>
   @2: mov    edx,[eax+ptr_offset]
       cmp    edx,0
@@ -120,6 +126,80 @@ const
   #for rtl_name   use; rtl_call_rollback
   #for ptr_offset use; t_desc_type.spec_rollback
   #end generate_rtl_call_special_method_priv;
+-- Calls the ROLLBACK method.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+#template generate_rtl_call_indexed_special_method_priv (
+    rtl_name,                                    -- desired name of the [rtl_call_*] method
+    ptr_offset);                                 -- offset of the pointer to the method within the
+                                                 -- type descritor
+-- Generates a [rtl_call_indexed_*] method used to call the appropriate special method of indexed types.
+----------------------------------------------------------------------------------------------------
+
+  --------------------------------------------------------------------------------------------------
+  procedure rtl_name =
+  -- Calls the <special> method.
+  --------------------------------------------------------------------------------------------------
+  begin
+    #syntax asm;
+      -- load TAG
+      mov    eax,[esp+$10]
+      -- load ^<special>
+  @2: mov    edx,[eax+ptr_offset]
+      cmp    edx,0
+      je     @1
+      -- call <special>
+      jmp    edx
+  @1: -- load parent :TAG
+      mov    eax,[eax+t_desc_type.ancestor_tag]
+      -- don't care about non-tagged types
+      cmp    eax,0
+      jne    @2
+      #end asm;
+    end rtl_name;
+
+  #end generate_rtl_call_indexed_special_method_priv;
+
+
+
+----------------------------------------------------------------------------------------------------
+#expand generate_rtl_call_indexed_special_method_priv;
+  #for rtl_name   use; rtl_call_indexed_init
+  #for ptr_offset use; t_desc_type.spec_init
+  #end generate_rtl_call_indexed_special_method_priv;
+-- Calls the INIT method.
+----------------------------------------------------------------------------------------------------
+#expand generate_rtl_call_indexed_special_method_priv;
+  #for rtl_name   use; rtl_call_indexed_entry
+  #for ptr_offset use; t_desc_type.spec_entry
+  #end generate_rtl_call_indexed_special_method_priv;
+-- Calls the ENTRY method.
+----------------------------------------------------------------------------------------------------
+#expand generate_rtl_call_indexed_special_method_priv;
+  #for rtl_name   use; rtl_call_indexed_exit
+  #for ptr_offset use; t_desc_type.spec_exit
+  #end generate_rtl_call_indexed_special_method_priv;
+-- Calls the EXIT method.
+----------------------------------------------------------------------------------------------------
+#expand generate_rtl_call_indexed_special_method_priv;
+  #for rtl_name   use; rtl_call_indexed_adjust
+  #for ptr_offset use; t_desc_type.spec_adjust
+  #end generate_rtl_call_indexed_special_method_priv;
+-- Calls the ADJUST method.
+----------------------------------------------------------------------------------------------------
+#expand generate_rtl_call_indexed_special_method_priv;
+  #for rtl_name   use; rtl_call_indexed_commit
+  #for ptr_offset use; t_desc_type.spec_commit
+  #end generate_rtl_call_indexed_special_method_priv;
+-- Calls the COMMIT method.
+----------------------------------------------------------------------------------------------------
+#expand generate_rtl_call_indexed_special_method_priv;
+  #for rtl_name   use; rtl_call_indexed_rollback
+  #for ptr_offset use; t_desc_type.spec_rollback
+  #end generate_rtl_call_indexed_special_method_priv;
 -- Calls the ROLLBACK method.
 ----------------------------------------------------------------------------------------------------
 
@@ -266,11 +346,36 @@ procedure rtl_get_last_from_tag =
 -- manager.                               
 ----------------------------------------------------------------------------------------------------
 begin
+#if #environment compiler_version;<>'4.0.5.2' then;
+  -- Act according to the data type described by the tag
+  case p_desc_type(data_tag:unchecked)^.dtype
+    -- unconstrained string/array: determine from the memory manager
+    when dt_ustring,dt_uarray do
+       -- determine the size of the data
+       result:=rtl_get_size_from_tag(data_ptr,data_tag);
+
+       -- compute last from size
+       compute_last_from_size;
+
+    -- constrained string/array -- look up in the type definition
+    when dt_string,dt_array do
+      declare var
+        prange_desc : p_desc_type_ordinal;
+
+      begin
+        prange_desc:=p_desc_type_ordinal(p_desc_type_indexed(data_tag:unchecked)^.range_tag:unchecked);
+        result:=prange_desc^.last;
+        end declare;
+
+    when others do raise type_error;
+    end case;
+#else;
   -- determine the size of the data
   result:=rtl_get_size_from_tag(data_ptr,data_tag);
 
   -- compute last from size
   compute_last_from_size;
+#end if;
   end rtl_get_last_from_tag;
 
 
@@ -286,6 +391,36 @@ begin
   -- compute last from size
   compute_last_from_size;
   end rtl_get_last_from_tag_direct;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_first_from_tag =
+-- Determines the dynamic :first attribute of the data specified by [data_ptr] using its :tag 
+-- [data_tag].
+----------------------------------------------------------------------------------------------------
+begin
+  -- Act according to the data type described by the tag
+  case p_desc_type(data_tag:unchecked)^.dtype
+    -- string, unconstrained string -- always 1
+    when dt_string, dt_ustring do result:=1;
+
+    -- unconstrained array -- always 0
+    when dt_uarray do result:=0;
+
+    -- constrained array -- look up in the type definition
+    when dt_array do
+      declare var
+        prange_desc : p_desc_type_ordinal;
+
+      begin
+        prange_desc:=p_desc_type_ordinal(p_desc_type_indexed(data_tag:unchecked)^.range_tag:unchecked);
+        result:=prange_desc^.first;
+        end declare;
+
+    when others do raise type_error;
+    end case;
+  end rtl_get_first_from_tag;
 
 
 
@@ -306,7 +441,13 @@ begin
     mov    <t_rtl_tag> [eax+t_rtl_internal_class_layout.class_tag],edx
 
     -- call @init and @entry
+#if #environment compiler_version;<>'4.0.5.2' then;
+    push   edx
+#end if;
     push   eax
+#if #environment compiler_version;<>'4.0.5.2' then;
+    push   edx
+#end if;
     push   eax
     call   rtl_call_init
     call   rtl_call_entry
@@ -336,6 +477,9 @@ begin
     jz     @1
 
     -- call @exit
+#if #environment compiler_version;<>'4.0.5.2' then;
+    push   <t_rtl_unsigned32>[eax]
+#end if;
     push   eax
     call   rtl_call_exit
 
@@ -380,7 +524,13 @@ begin
 
     -- call @init and @entry
     push   eax
+#if #environment compiler_version;<>'4.0.5.2' then;
+    push   edx
+#end if;
     push   eax
+#if #environment compiler_version;<>'4.0.5.2' then;
+    push   edx
+#end if;
     push   eax
     call   rtl_call_init
     call   rtl_call_entry
@@ -395,9 +545,47 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_setup_instance =
+-- Sets up an instance of a type specified by the given tag. Used during task variable initialization.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- %%TODO(TASKVAR)
+  #syntax asm;
+    -- pointer to the instance
+    mov    eax,instance
+
+    -- tag of the created instance
+    mov    edx,class_tag
+
+    -- is it a class?
+    cmp    <t_entity_code>[edx+t_desc_entity.etype],et_class
+    jne    @1
+
+    -- yes=>initialize it as a class
+    push   eax
+    push   edx
+    call   rtl_setup_class_instance
+    jmp    @3
+
+@1:
+    -- no, it is not a class=>initialize it with a binary copy, if some data was given
+    -- were we given any initialization data?
+    mov    esi, init_value
+    test   esi, esi
+    jz     @2
+
+    -- yes=>clone it into the new instance
+    mov    ecx,<t_rtl_unsigned32>[edx+t_desc_type.size]
+    cld
+    mov    edi,eax
+    rep    movsb
+    --%%TODO optimization (->movsd)
+
+@2:
+    push   class_tag
+    push   instance
+    call   rtl_call_init
+
+@3:
+    #end asm;
   end rtl_setup_instance;
 
 
@@ -413,9 +601,25 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_finalize_instance =
+-- Finalizes an instance of a type specified by the given tag. Used during task variable finalization.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- %%TODO(TASKVAR)
+  #syntax asm;
+    -- pointer to the instance
+    mov    eax,instance
+
+    -- tag of the finalized instance
+    mov    edx,class_tag
+
+    -- is it a class?
+    cmp    <t_entity_code>[edx+t_desc_entity.etype],et_class
+    jne    @1
+
+    -- yes=>finalize it as a class
+    push   eax
+    call   rtl_finalize_class_instance
+@1:
+    #end asm;
   end rtl_finalize_instance;
 
 
@@ -427,6 +631,12 @@ begin
 #pragma assign(call_adjust             ,flex.tags.types.rtl_call_adjust             );
 #pragma assign(call_rollback           ,flex.tags.types.rtl_call_rollback           );
 #pragma assign(call_commit             ,flex.tags.types.rtl_call_commit             );
+#pragma assign(call_indexed_init       ,flex.tags.types.rtl_call_indexed_init       );
+#pragma assign(call_indexed_entry      ,flex.tags.types.rtl_call_indexed_entry      );
+#pragma assign(call_indexed_exit       ,flex.tags.types.rtl_call_indexed_exit       );
+#pragma assign(call_indexed_adjust     ,flex.tags.types.rtl_call_indexed_adjust     );
+#pragma assign(call_indexed_rollback   ,flex.tags.types.rtl_call_indexed_rollback   );
+#pragma assign(call_indexed_commit     ,flex.tags.types.rtl_call_indexed_commit     );
 #pragma assign(ancestor_init           ,flex.tags.types.rtl_ancestor_init           );
 #pragma assign(ancestor_entry          ,flex.tags.types.rtl_ancestor_entry          );
 #pragma assign(ancestor_exit           ,flex.tags.types.rtl_ancestor_exit           );
@@ -437,6 +647,7 @@ begin
 #pragma assign(get_size_from_tag_direct,flex.tags.types.rtl_get_size_from_tag_direct);
 #pragma assign(get_last_from_tag       ,flex.tags.types.rtl_get_last_from_tag       );
 #pragma assign(get_last_from_tag_direct,flex.tags.types.rtl_get_last_from_tag_direct);
+#pragma assign(get_first_from_tag      ,flex.tags.types.rtl_get_first_from_tag      );
 #pragma assign(setup_interface_instance,flex.tags.types.rtl_setup_interface_instance);
 ----------------------------------------------------------------------------------------------------
 

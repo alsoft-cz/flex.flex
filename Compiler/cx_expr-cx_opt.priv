@@ -460,6 +460,83 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure a_opt_reorder_components (
+    expr           : in out pexpoper) =          -- výraz
+-- Přerovná komponenty na konec (za agregáty).
+----------------------------------------------------------------------------------------------------
+var
+  af               : pexpnode;                   -- první agregátní uzel
+  al               : pexpnode;                   -- poslední agregátní uzel
+  cf               : pexpnode;                   -- první komponentní uzel
+  cl               : pexpnode;                   -- poslední komponentní uzel
+  x                : pexpnode;
+  y                : pexpnode;
+
+begin
+  af:=nil; al:=nil;
+  cf:=nil; cl:=nil;
+  x:=expr^.sub;
+
+  -- přeskočit počáteční konstantu
+  if expoperinfo[expr^.oper].com=eoc_pfull and x<>nil and x^.concatkind=nck_component then
+    af:=x;
+    al:=x;
+    x:=x^.next;
+    al^.next:=nil;
+    end if;
+
+  -- přerovnat
+  while x<>nil loop
+    -- vyřadit ze seznamu
+    y:=x^.next;
+    x^.next:=nil;
+
+    -- zařadit
+    if x^.concatkind=nck_component
+      -- do seznamu komponent
+      then
+        if cl<>nil
+          then cl^.next:=x
+          else cf:=x;
+          end if;
+        cl:=x;
+
+      -- do seznamu agregátů
+      else
+        if al<>nil
+          then al^.next:=x
+          else af:=x;
+          end if;
+        al:=x;
+        end if;
+
+    -- další operand
+    x:=y;
+    end loop;
+
+  -- sestavit
+  expr^.sub:=af;
+  if cf<>nil then
+    if expoperinfo[expr^.oper].com=eoc_pfull and (af<>nil and then af^.concatkind=nck_component)
+
+      -- komponenty zařadit za úvodní komponentu
+      then
+        cl^.next:=af^.next;
+        af^.next:=cf;
+
+      -- komponenty zařadit na konec
+      else
+        if al<>nil
+          then al^.next:=cf
+          else expr^.sub:=cf;
+          end if;
+        end if;
+    end if;
+  end a_opt_reorder_components;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure a_opt_oper_iaritm : toperopt =
 -- Celočíselné aritmetické operace.
 ----------------------------------------------------------------------------------------------------
@@ -2072,11 +2149,11 @@ label
         -- sjednocení množin
         when op_union do
             -- S + [] --> S
-            if imm_isnil(pexpimm(er)^.imm) then
+            if er^.concatkind<>nck_component and imm_is_nil(pexpimm(er)^.imm) then
               newexpr:=el;
 
             -- S + EXPR:type:full --> S:type:full
-            elsif imm_isfullset(pexpimm(er)^.imm,expr^.t.getctype) then
+            elsif imm_is_full_set(pexpimm(er)^.imm,expr^.t.getctype,for ordinal_as_set use true) then
               newexpr:=er;
               all:=true;
               end if;
@@ -2087,7 +2164,7 @@ label
               -- const - S
               then
                 -- [] - S --> []
-                if imm_isnil(pexpimm(el)^.imm) then
+                if el^.concatkind<>nck_component and imm_is_nil(pexpimm(el)^.imm) then
                   newexpr:=el;
                   all:=true;
 
@@ -2098,10 +2175,11 @@ label
               -- S - const
               else
                 -- S - [] --> S
-                if imm_isnil(pexpimm(er)^.imm) then
+                if er^.concatkind<>nck_component and imm_is_nil(pexpimm(er)^.imm) then
                   newexpr:=el;
+
                 -- S - EXPR:type:full --> []
-                elsif imm_isfullset(pexpimm(er)^.imm,expr^.t.getctype) then
+                elsif imm_is_full_set(pexpimm(er)^.imm,expr^.t.getctype,for ordinal_as_set use true) then
                   x_add_imm(pexpimm(newexpr),er,info,false);
                   store_set(pexpimm(newexpr)^.imm);
                   all:=true;
@@ -2111,7 +2189,7 @@ label
         -- průnik množin
         when op_isect do
             -- S * [] --> []
-            if imm_isnil(pexpimm(er)^.imm) then
+            if er^.concatkind<>nck_component and imm_is_nil(pexpimm(er)^.imm) then
               newexpr:=er;
               all:=true;
 
@@ -2119,7 +2197,7 @@ label
               newexpr^.nflags-nodeflagset:[nf_const];
 
             -- S * EXPR:type:full --> S
-            elsif imm_isfullset(pexpimm(er)^.imm,expr^.t.getctype) then
+            elsif imm_is_full_set(pexpimm(er)^.imm,expr^.t.getctype,for ordinal_as_set use true) then
               newexpr:=el;
               end if;
 
@@ -2147,11 +2225,12 @@ begin
   -- povedla se optimalizace všech operandů ?
   if not all then return; end if;
 
-  -- přerovnat konstantní operandy (p-)komutativních
+  -- přerovnat konstantní a komponentní operandy (p-)komutativních
   -- a (p-)asociativních operandů
   if (expoperinfo[expr^.oper].com in expopercomset:[eoc_full,eoc_pfull])
   and (expoperinfo[expr^.oper].asoc in expoperasocset:[eoa_full,eoa_pfull]) then
     a_opt_reorder_imm(expr);
+    a_opt_reorder_components(expr);
     end if;
 
   -- vyhodnotit konstantní operandy
@@ -2195,7 +2274,7 @@ begin
               when op_union do imm_union(curr,pexpimm(node)^.imm,pexpimm(er)^.imm);
 
               -- rozdíl množin
-              when op_diff  do imm_diff(pexpimm(node)^.imm,pexpimm(er)^.imm);
+              when op_diff  do imm_diff(curr,pexpimm(node)^.imm,pexpimm(er)^.imm);
 
               -- průnik množin
               when op_isect do imm_isect(curr,pexpimm(node)^.imm,pexpimm(er)^.imm);
@@ -3274,10 +3353,14 @@ begin
           -- :first
           when ata_string_first, ata_array_first do x_addui(pexpimm(newexpr),expr,el^.t.getrange(curr).getlval,info);
           when ata_ord_first     do x_addui(pexpimm(newexpr),expr,el^.t.getlval,info);
+          when ata_fixed_first   do x_addur(pexpimm(newexpr),expr,el^.t.get_fxplow(),info);
+          when ata_float_first   do x_addur(pexpimm(newexpr),expr,el^.t.get_fplow(),info);
 
           -- :last
           when ata_string_last, ata_array_last do x_addui(pexpimm(newexpr),expr,el^.t.getrange(curr).gethval,info);
           when ata_ord_last      do x_addui(pexpimm(newexpr),expr,el^.t.gethval,info);
+          when ata_fixed_last    do x_addur(pexpimm(newexpr),expr,el^.t.get_fxphigh(),info);
+          when ata_float_last    do x_addur(pexpimm(newexpr),expr,el^.t.get_fphigh(),info);
 
           -- :ord
           when ata_ord_ord       do
@@ -3299,6 +3382,7 @@ begin
           when ata_message_tag   do { ponechat beze změny };
 
           -- :range
+          when ata_ord_range     do { ponechat beze změny };
           when ata_array_range   do { ponechat beze změny };
           when ata_string_range  do { ponechat beze změny };
 
@@ -3326,6 +3410,31 @@ begin
 
           -- :unchecked
        -- when ata_var_unchecked do { ponechat beze změny };
+
+          -- :delta = :epsilon (fixed-point)
+          when ata_fixed_delta,ata_fixed_epsilon do
+              x_addur(pexpimm(newexpr),expr,el^.t.get_fxpdelta(),info);
+
+          -- :delta (floating-point)
+          when ata_float_delta do
+              x_addur(pexpimm(newexpr),expr,el^.t.get_fpdelta(),info);
+
+          -- :epsilon (floating-point)
+          when ata_float_epsilon do
+              x_addur(pexpimm(newexpr),expr,el^.t.get_fpepsilon(),info);
+
+          -- :inverse_delta
+          when ata_fixed_inverse_delta do x_addui(pexpimm(newexpr),expr,el^.t.get_fxp_inv_delta(),info);
+          when ata_float_inverse_delta do x_addur(pexpimm(newexpr),expr,unireal_inverse(el^.t.get_fpdelta()),info);
+
+          -- :positive_infinity
+          when ata_float_positive_inf do x_addur(pexpimm(newexpr),expr,el^.t.get_fpposinf(),info);
+
+          -- :negative_infinity
+          when ata_float_negative_inf do x_addur(pexpimm(newexpr),expr,el^.t.get_fpneginf(),info);
+
+          -- :not_a_number
+          when ata_float_not_a_number do x_addur(pexpimm(newexpr),expr,el^.t.get_fpnan(),info);
 
           when others do verify({VERIFY=}000115,true);
           end case;
@@ -3888,7 +3997,7 @@ begin
           end loop;
 
     -- množina
-    when dt_set do
+    when dt_set,dt_uniarray do
         -- vypočítat typ složky
         xtyp:=expr^.t.getbase(curr);
 

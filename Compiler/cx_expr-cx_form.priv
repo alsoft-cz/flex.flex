@@ -433,12 +433,18 @@ begin
   argt.init(curr,param^.typ.getctype);
 
   -- ověřit kompatibilitu typů
-  ok:=t_get_compatibility_level(curr,{toc_param_class}oclass,false,argt,typ)>=tcl_static_identical;
+  declare var
+    level          : tcomplevel;
+  begin
+    -- vypočítat úroveň kompatibility
+    level:=t_get_compatibility_level(curr,{toc_param_class}oclass,false,argt,typ);
 
-catch
-  when others do
-      expr^.errpos;
-      raise;
+    -- ověřit požadovanou úroveň
+    ok:=level>=tcl_static_identical or (t_is_sts(expr^.t,dts_unitype) and level=tcl_convertible);
+    end declare;
+
+rollback
+  expr^.errpos;
   end checkparam;
 
 
@@ -556,12 +562,22 @@ begin
                 rest.init(curr,def_unilogical);
                 expr^.addtype(rest,eli,eri,nil);
 
+            -- univerzální pole of typ levého operandu
+            when trt_uniarray_el do 
+                t_create_uniarray(curr,rest,el^.t.getctype);
+                expr^.addtype(rest,eli,eri,nil);
+
+            -- univerzální pole of typ pravého operandu
+            when trt_uniarray_er do
+                t_create_uniarray(curr,rest,er^.t.getctype);
+                expr^.addtype(rest,eli,eri,nil);
+
             when others do verify({VERIFY=}000221,true);
             end case;
           end if;
 
         -- hledat přetížený operátor (je-li to přetížitelný operátor... 
-        if (oop<>oop_none)
+        if oop<>oop_none
         -- ... a alespoň jeden operand je neuniverzálního typu) 
         and not (t_is_sts(elt^,dts_unitype) and t_is_sts(ert^,dts_unitype)) then
           -- %%X Tenhle algoritmus je až na drobnosti stejný, 
@@ -1491,6 +1507,249 @@ begin
   end a_form_this;
 
 
+        
+----------------------------------------------------------------------------------------------------
+procedure create_this (
+    curr           : in tcontext;                -- překládaný prvek
+    expr           : in pexpcomponent;           -- výraz
+    info           : in expinfo) =               -- informace o průběhu analýzy
+-- Coby EXPR^.SUB doplní uzel reprezentující THIS.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vznikl novy uzel 
+  newnode(expr^.sub,info,nt_this);
+
+  -- formální kontrola 
+  a_form_this(curr,pexpthis(expr^.sub),info);
+  end create_this;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure resolve_subprogram_nclass (
+    curr           : in tcontext;                -- překládaný prvek
+    expr           : in pexpcomponent;           -- výraz
+    info           : in expinfo) =               -- informace o průběhu analýzy
+-- Vyhodnotí třídu uzlu výrazu pro zadanou komponentu typu podprogram.
+----------------------------------------------------------------------------------------------------
+var
+  pproc    : pentity_subprogram;         -- procedura (pro zjednodušení)
+
+begin
+  -- pro zjednodušení
+  pproc:=pentity_procedure(expr^.s.psym);
+
+  -- typ výrazu
+  expr^.settype(curr,pproc^.typ.getutype);
+
+  -- třída uzlu se určí podle způsobu předávání a dostupnosti instance
+  case pproc^.instance
+    -- nepředávat => třída: procedura
+    when tip_none     do expr^.nclass:=nc_proc;
+
+    -- volitelně => třída: procedura
+    when tip_optional do
+        -- třída: procedura
+        expr^.nclass:=nc_proc;
+
+        -- pokud nemáme explicitně uvedenu instanci
+        -- a je-li to v třídě, tak doplnit THIS
+        if expr^.sub=nil and sym_check_container(curr.entity,et_class) then
+          create_this(curr,expr,info);
+          end if;
+
+    -- předávat => třída: procedura nebo nic podle dostupnosti instance
+    when tip_pass,tip_dispatch do
+        -- rozhodnout se podle podvýrazu
+        -- podvýraz není, nejsme v třídě ?
+        if expr^.sub=nil then
+          -- je to v třídě ?
+          if sym_check_container(curr.entity,et_class)
+
+            -- ano => třída: procedura + doplnit THIS
+            then
+              expr^.nclass:=nc_proc;
+              create_this(curr,expr,info);
+
+            -- ne => třída: nic
+            else
+              expr^.nclass:=nc_none;
+              end if;
+
+        -- podvýraz je proměnná => máme instanci => třída: procedura
+        elsif expr^.sub^.nclass in ncs_value then 
+          expr^.nclass:=nc_proc;
+
+        -- podvýraz je, ale není to proměnná => třída: nic
+        else
+          expr^.nclass:=nc_none;
+          end if;
+
+    when others do verify({VERIFY=}000378,true);
+    end case;
+  end resolve_subprogram_nclass;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_form_overloaded_call (
+    curr           : in tcontext;                -- překládaný prvek
+    expr           : in out pexplist;            -- výraz
+    info           : in expinfo) =               -- informace o průběhu analýzy
+-- Formální analýza volání přetížení.
+----------------------------------------------------------------------------------------------------
+var
+  srch             : tentitysearch;              -- hledátko pro přetížené procedury
+  found            : pentity_subprogram;         -- podprogram, který nejlépe vyhovuje parametrům
+  el               : pexpcomponent;              -- levý podvýraz - přetížení
+  arglist          : pexpitem;                   -- pravý podvýraz - seznam argumentů
+
+begin
+  -- získat podvýrazy pro zjednodušení
+  expr^.get(el,arglist);
+
+  -- prohledat všechny přetížené procedury
+  srch.find_id_first(curr,el^.id);
+  while srch.psym<>nil loop
+
+    -- prohledat všechny přetížené procedury
+    for i in pentity_overload0(srch.psym)^.table^:range loop
+      declare var
+        pdesc      : poverloaddesc;              -- popis přetížení
+        pproc      : pentity_subprogram;         -- přetížená procedura
+        ptyp       : pentity_type;               -- typ procedury
+        ok         : t_logical;                  -- je typ OK?
+        a_param    : pexpnode;                   -- předávaný (skutečný) parametr
+        a_typ      : ptypeview;                  -- a jeho typ
+        f_param    : pentity_param;              -- formální parametr
+        srch_par   : tentitysearch;              -- hledátko pro formální parametry
+        at_index   : t_unsigned;                 -- proměnná cyklu přes typy
+        at_count   : t_unsigned;                 -- počet typů skutečného parametru
+
+      begin
+        -- popis přetížené procedury 
+        pdesc:=^pentity_overload0(srch.psym)^.table^[i];
+
+        -- přetížená procedura 
+        pproc:=pentity_subprogram(pdesc^.psym.getcentity);
+
+        -- typ procedury
+        ptyp:=pproc^.typ.getctype;
+
+        -- zkontrolovat kompatibilitu parametrů
+        ok:=true;
+        a_param:=arglist;
+        srch_par.find_et_first(ptyp,rc_primary,et_param,tesearchflagset:[]);
+        while srch_par.psym<>nil loop
+          -- sedí počet parametrů?
+          if a_param=nil then
+            -- ne => tato implementace nevyhovuje
+            ok:=false;
+            break;
+            end if;
+          
+          -- kontrolovaný formální parametr
+          f_param:=pentity_param(srch_par.psym);
+
+          -- nebyla již procedura jednou úspěšně zpracována ?  -- %%TODO?????? %%X ????????????????
+          --if not expr^.checktype(pproc) then
+            -- kontrola parametru: alespoň jeden z typů aktuálního parametru musí být kompatibilní
+            -- s příslušným formálním parametrem
+
+            -- iterace přes všechny typy aktuálního parametru
+            at_count:=a_param^.gettypecount;
+            at_index:=0;
+            while at_index<at_count loop
+              -- typ parametru
+              a_param^.gettype(at_index,a_typ);
+
+              -- kontrola parametru
+              checkparam(curr,f_param,a_param,a_typ^,ok);
+
+              -- parametr odpovídá, OK, můžeme jít na další
+              if ok then
+                break;
+                end if;
+
+              -- další typ
+              succ at_index;
+              end loop;
+
+            -- nalezli jsme alespoň jeden vyhovující typ?
+            if not ok then 
+              -- ne => tato implementace neodpovídá
+              break;
+              end if;
+            --end if;
+
+          -- OK, tento parametr odpovídá, jdeme zkontrolovat další
+          srch_par.find_et_next;
+          a_param:=a_param^.next;
+          end loop;
+
+        -- musely být vyčerpány všechny parametry
+        ok and a_param=nil;
+
+        -- nalezli jsme odpovídající implementaci?
+        if ok then
+          -- ano => hurá
+          if found<>nil then
+            -- ale my už něco našli předtím => chyba
+            ce^.seterror({CCERR=}000675,ce_overload_ambiguous);
+            ce^.setparam(entityident_to_string(el^.id^));
+            expr^.errpos;
+            ce^.resumeerror;
+            end if;
+
+          -- uložit nalezenou implementaci
+          found:=pproc;
+          end if;
+        end declare;
+      end loop;
+
+    -- zkusit další proceduru
+    srch.find_id_next;
+    end loop;
+
+  -- nalezli jsme vyhovující implementaci??
+  if found=nil then
+    -- ne => ohlaš chybu
+    ce^.seterror({CCERR=}000674,ce_overload_no_match);
+    ce^.setparam(entityident_to_string(el^.id^));
+    expr^.errpos;
+    ce^.resumeerror;
+    end if;
+
+  -- levý podvýraz změnit do podoby procedury
+  el^.s.set_entity(found);
+
+  -- určit správnou paměťovou třídu
+  resolve_subprogram_nclass(curr,el,info);
+
+  -- provést formální kontrolu celého volání
+  a_form_call(curr,expr,info);
+
+{
+  -- všechno je OK
+
+  -- změnit typ uzlu 
+  expr^.ntype:=nt_call;
+
+  -- třída: procedura
+  expr^.nclass:=nc_proc;
+
+  -- typ výsledku
+  expr^.settype(curr,found^.typ.getutype);
+
+  -- kterou implementaci jsme zvolili?
+  el^.s.set_entity(found);
+
+  -- formální kontrola úspěšně dokončena
+  expr^.zprac:=ep_form;
+}
+  end a_form_overloaded_call;
+
+
 
 ----------------------------------------------------------------------------------------------------
 procedure a_form_component_finalize (
@@ -1500,21 +1759,8 @@ procedure a_form_component_finalize (
 -- Dokončení formální kontroly komponenty.
 ----------------------------------------------------------------------------------------------------
 
-    ------------------------------------------------------------------------------------------------
-    procedure create_this =
-    -- Coby EXPR^.SUB doplní uzel reprezentující THIS.
-    ------------------------------------------------------------------------------------------------
-    begin
-      -- vznikl novy uzel 
-      newnode(expr^.sub,info,nt_this);
-
-      -- formální kontrola 
-      a_form_this(curr,pexpthis(expr^.sub),info);
-      end create_this;
-
 var
   ptyp             : pentity_type;               -- typ proměnné                                
-  pproc            : pentity_subprogram;         -- procedura (pro zjednodušení)
 
 begin
   -- zkontrolovat bezpečnostní úrovně
@@ -1552,7 +1798,7 @@ begin
           expr^.nclass:=nc_var;
 
           -- doplnit THIS
-          create_this;
+          create_this(curr,expr,info);
 
         -- složka typu
         elsif (expr^.sub<>nil) and (expr^.sub^.nclass=nc_type)
@@ -1627,57 +1873,8 @@ begin
 
     -- procedura, metoda
     when et_procedure, et_static, et_virtual do
-        -- pro zjednodušení
-        pproc:=pentity_procedure(expr^.s.psym);
-
-        -- typ výrazu
-        expr^.settype(curr,pproc^.typ.getutype);
-
-        -- třída uzlu se určí podle způsobu předávání a dostupnosti instance
-        case pproc^.instance
-          -- nepředávat => třída: procedura
-          when tip_none     do expr^.nclass:=nc_proc;
-
-          -- volitelně => třída: procedura
-          when tip_optional do
-              -- třída: procedura
-              expr^.nclass:=nc_proc;
-
-              -- pokud nemáme explicitně uvedenu instanci
-              -- a je-li to v třídě, tak doplnit THIS
-              if expr^.sub=nil and sym_check_container(curr.entity,et_class) then
-                create_this;
-                end if;
-
-          -- předávat => třída: procedura nebo nic podle dostupnosti instance
-          when tip_pass,tip_dispatch do
-              -- rozhodnout se podle podvýrazu
-              -- podvýraz není, nejsme v třídě ?
-              if expr^.sub=nil then
-                -- je to v třídě ?
-                if sym_check_container(curr.entity,et_class)
-
-                  -- ano => třída: procedura + doplnit THIS
-                  then
-                    expr^.nclass:=nc_proc;
-                    create_this;
-
-                  -- ne => třída: nic
-                  else
-                    expr^.nclass:=nc_none;
-                    end if;
-
-              -- podvýraz je proměnná => máme instanci => třída: procedura
-              elsif expr^.sub^.nclass in ncs_value then 
-                expr^.nclass:=nc_proc;
-
-              -- podvýraz je, ale není to proměnná => třída: nic
-              else
-                expr^.nclass:=nc_none;
-                end if;
-
-          when others do verify({VERIFY=}000378,true);
-          end case;
+        -- určit třídu výrazu
+        resolve_subprogram_nclass(curr,expr,info);
 
         -- formální kontrola úspěšně dokončena
         expr^.zprac:=ep_form;
@@ -1688,7 +1885,7 @@ begin
         and (nf_top not in expr^.nflags or info.kind not in eks_subprogram)
         -- Ondra 18.9.2001 : Pouze pokud nechceme referenci na proceduru
         and nf_reference not in expr^.nflags)
-        -- Ondra 11.10.2001 : Nebo pokud se výsledek bude dereferencovat }
+        -- Ondra 11.10.2001 : Nebo pokud se výsledek bude dereferencovat
         or nf_dereference in expr^.nflags) then
           -- zvýšit strom
           newtree(pexpnode(expr),info,nt_call);
@@ -1728,142 +1925,20 @@ begin
 
     -- přetížení
     when et_overload do
-        declare var
-          poverload: pentity_overload;           -- příslušně typovaný [expr^.s.psym]
-          srch     : tentitysearch;              -- hledátko pro přetížené procedury
-          pdesc    : poverloaddesc;              -- popis přetížení
-          a_param  : pexpnode;                   -- předávaný (skutečný) parametr
-          at       : ptypeview;                  -- a jeho typ
-          f_param  : pentity_param;              -- formální parametr
-          ft       : ptypeview;                  -- a jeho typ
-          srch_par : tentitysearch;              -- hledátko pro formální parametry
-          ok       : t_logical;                  -- je typ OK?
-          at_idx   : t_unsigned;                 -- proměnná cyklu přes typy
-          at_cnt   : t_unsigned;                 -- počet typů skutečného parametru
-          found    : pentity_subprogram;         -- nalezená implementující procedura
-          prestype : pentity_type;               -- typ výsledku
+        -- třída: dosud nevyhodnocené přetížení
+        expr^.nclass:=nc_overload;
+       
+        -- formální kontrola úspěšně dokončena
+        expr^.zprac:=ep_form;
+        
+        -- doplnit implicitní volání
+        if nf_name in expr^.nflags or nf_dereference in expr^.nflags then
+          -- zvýšit strom
+          newtree(pexpnode(expr),info,nt_call);
 
-        begin
-          -- hledat implementaci přetížené funkce
-          poverload:=pentity_overload(expr^.s.psym);
-
-          -- prohledat všechny přetížené procedury
-          srch.find_id_first(curr,expr^.id);
-          while srch.psym<>nil loop
-
-            -- prohledat všechny přetížené procedury
-            for i in pentity_overload0(srch.psym)^.table^:range loop
-              -- popis přetížené procedury 
-              pdesc:=^pentity_overload0(srch.psym)^.table^[i];
-
-              -- přetížená procedura 
-              pproc:=pentity_subprogram(pdesc^.psym.getcentity);
-
-              -- typ procedury
-              ptyp:=pproc^.typ.getctype;
-
-              -- zkontrolovat kompatibilitu parametrů
-              ok:=true;
-              a_param:=expr^.splitted_next;
-              srch_par.find_et_first(ptyp,rc_primary,et_param,tesearchflagset:[]);
-              while srch_par.psym<>nil loop
-                -- sedí počet parametrů?
-                if a_param=nil then
-                  -- ne => tato implementace nevyhovuje
-                  ok:=false;
-                  break;
-                  end if;
-                
-                -- kontrolovaný formální parametr
-                f_param:=pentity_param(srch_par.psym);
-
-                -- nebyla již procedura jednou úspěšně zpracována ?  -- %%TODO?????? %%X ????????????????
-                --if not expr^.checktype(pproc) then
-                  -- kontrola parametru: alespoň jeden z typů aktuálního parametru musí být kompatibilní
-                  -- s příslušným formálním parametrem
-
-                  -- iterace přes všechny typy aktuálního parametru
-                  at_cnt:=a_param^.gettypecount;
-                  at_idx:=0;
-                  while at_idx<at_cnt loop
-                    -- typ parametru
-                    a_param^.gettype(at_idx,at);
-
-                    -- kontrola parametru
-                    checkparam(curr,f_param,a_param,at^,ok);
-
-                    -- parametr odpovídá, OK, můžeme jít na další
-                    if ok then
-                      break;
-                      end if;
-
-                    -- další typ
-                    succ at_idx;
-                    end loop;
-
-                  -- nalezli jsme alespoň jeden vyhovující typ?
-                  if not ok then 
-                    -- ne => tato implementace neodpovídá
-                    break;
-                    end if;
-                  --end if;
-
-                -- OK, tento parametr odpovídá, jdeme zkontrolovat další
-                srch_par.find_et_next;
-                a_param:=a_param^.next;
-                end loop;
-
-              -- sedí počet parametrů?
-              if a_param<>nil then
-                -- ne => tato implementace nevyhovuje
-                ok:=false;
-                end if;
-
-              -- nalezli jsme odpovídající implementaci?
-              if ok then
-                -- ano => hurá
-                if found<>nil then
-                  -- ale my už něco našli předtím => chyba
-                  ce^.seterror({CCERR=}000675,cc_codes.ce_ambiguous_call);
-                  ce^.setparam(entityident_to_string(expr^.id^));
-                  expr^.errpos;
-                  {%%RESUME ce^.raiseerror;}
-                  ce^.resumeerror;
-                  end if;
-
-                -- uložit nalezenou implementaci
-                found:=pproc;
-                end if;
-              end loop;
-
-            -- zkusit další proceduru
-            srch.find_id_next;
-            end loop;
-
-          -- nalezli jsme vyhovující implementaci??
-          if found=nil then
-            -- ne => ohlaš chybu
-            ce^.seterror({CCERR=}000674,cc_codes.ce_no_such_overload);
-            ce^.setparam(entityident_to_string(expr^.id^));
-            expr^.errpos;
-            {%%RESUME ce^.raiseerror;}
-            ce^.resumeerror;
-            end if;
-
-          -- všechno je OK
-
-          -- třída: procedura
-          expr^.nclass:=nc_proc;
-
-          -- typ výsledku
-          expr^.settype(curr,found^.typ.getutype);
-
-          -- kterou implementaci jsme zvolili?
-          expr^.s.set_entity(found);
-
-          -- formální kontrola úspěšně dokončena
-          expr^.zprac:=ep_form;
-          end declare;
+          -- formální kontrola volání přetížení
+          a_form_overloaded_call(curr,pexpnode(expr),info);
+          end if;
 
     -- speciální metoda
 
@@ -2295,12 +2370,6 @@ begin
     x:=pexpitem(x^.next);
     end loop;
 
-  -- %%X Tohle je tak trochu ošklivá záplata, jenže pokud prefix popisuje přetížení, _potřebuji_
-  --     znát parametry, jenže expr^.split mi je odříznul a expr^.join se dá zavolat až po a_form.
-  if el^:tag=expcomponent:tag then
-    pexpcomponent(el)^.splitted_next:=arglist;
-    end if;
-
   -- formální kontrola řídícího výrazu 
   a_form(curr,el,info);
   vyhodnoceno:=vyhodnoceno and el^.zprac>=ep_form;
@@ -2338,6 +2407,9 @@ begin
 
     -- adresa procedury --> volání procedury
     when nc_proc do a_form_call(curr,expr,info);
+
+    -- přetížení --> volání přetížení
+    when nc_overload do a_form_overloaded_call(curr,expr,info);
 
     -- adresa proměnné --> chyba
     when nc_var do
@@ -3142,13 +3214,17 @@ begin
         -- :first
         when atf_first            do check:=ct(dts_ordinal,etd_full,ata_ord_first   ,tt_sub   ,nc_value)
                                          or ct(dts_array,  etd_full,ata_array_first ,tt_range ,nc_value)
-                                         or ct(dts_string, etd_full,ata_string_first,tt_range ,nc_value);
+                                         or ct(dts_string, etd_full,ata_string_first,tt_range ,nc_value)
+                                         or ct(dts_float,  etd_full,ata_float_first ,tt_sub   ,nc_value)
+                                         or ct(dts_fixed,  etd_full,ata_fixed_first ,tt_sub   ,nc_value);
 
         -- :last
         when atf_last             do check:=cd(rta_last           ,ata_expr_last   ,tt_range ,nc_value)
                                          or ct(dts_ordinal,etd_full,ata_ord_last    ,tt_sub   ,nc_value)
                                          or ct(dts_array,  etd_full,ata_array_last  ,tt_range ,nc_value)
-                                         or ct(dts_string, etd_full,ata_string_last ,tt_range ,nc_value);
+                                         or ct(dts_string, etd_full,ata_string_last ,tt_range ,nc_value)
+                                         or ct(dts_float,  etd_full,ata_float_last  ,tt_sub   ,nc_value)
+                                         or ct(dts_fixed,  etd_full,ata_fixed_last  ,tt_sub   ,nc_value);
 
         -- :range {%%TODO(RTATTRIB) :length }
         when atf_range            do check:=ct (       dts_ordinal,etd_full         ,ata_ord_range                ,tt_sub          ,nc_type)
@@ -3231,12 +3307,50 @@ begin
             or else (is_of_type_view(ttypeviewset:[tview_partial]) and then set_attribute(ata_type_size      ,atc_static ,tt_uniint,nc_value))
             or else (is_attribute   (atf_designated,atc_dynamic)   and then set_attribute(ata_designated_size,atc_dynamic,tt_size,nc_value));
 
+        -- :delta (= min d, so that d from T and 1+d>1)
+        when atf_delta do
+            check:= (is_of_type(dts_fixed) and then set_attribute(ata_fixed_delta,atc_static,tt_sub,nc_value))
+            or else (is_of_type(dts_float) and then set_attribute(ata_float_delta,atc_static,tt_sub,nc_value));
+
+        -- :inverse_delta (= 1/T:delta)
+        when atf_inverse_delta do
+            ----- %%TECH: T:inverse_delta ----------------------------------------------
+            -- Rational number (fixed-point type in Flex) is defined by
+            --      p
+            -- r = ---  , where p is from Z  and q is from N
+            --      q
+            --
+            -- One can easily see that fixed-point:inverse_delta=q.
+            -- So, naturally, fixed-point:inverse_delta is of universal integer type
+            -- (precisely, it should be unsigned, though), unlike floating-point:inverse_delta,
+            -- which is better described by a real value.
+            ----------------------------------------------------------------------------------------
+            check:= (is_of_type(dts_fixed) and then set_attribute(ata_fixed_inverse_delta,atc_static,tt_uniint,nc_value))
+            or else (is_of_type(dts_float) and then set_attribute(ata_float_inverse_delta,atc_static,tt_sub,nc_value));
+
+        -- :epsilon (= min e, so that e from T and e>0)
+        when atf_epsilon do
+            check:= (is_of_type(dts_fixed) and then set_attribute(ata_fixed_epsilon,atc_static,tt_sub,nc_value))
+            or else (is_of_type(dts_float) and then set_attribute(ata_float_epsilon,atc_static,tt_sub,nc_value));
+
+        -- :positive_infinity
+        when atf_positive_inf do
+            check:=is_of_type(dts_float) and then set_attribute(ata_float_positive_inf,atc_static,tt_sub,nc_value);
+
+        -- :negative_infinity
+        when atf_negative_inf do
+            check:=is_of_type(dts_float) and then set_attribute(ata_float_negative_inf,atc_static,tt_sub,nc_value);
+
+        -- :not_a_number
+        when atf_not_a_number do
+            check:=is_of_type(dts_float) and then set_attribute(ata_float_not_a_number,atc_static,tt_sub,nc_value);
+
         -- :as_ancestor
         when atf_as_ancestor do 
             -- :as_ancestor je povoleno pouze ve formě "this:as_ancestor"
             check:= expr^.sub^:tag=expthis:tag and then set_attribute(ata_expr_as_ancestor,atc_static,tt_ancestor,expr^.sub^.nclass);
 
-        when others               do verify({VERIFY=}000114,true);
+        when others do verify({VERIFY=}000114);
         end case;
 
       -- jak dopadla kontrola?
@@ -3421,7 +3535,7 @@ begin
     x^.join(xel,xer);
 
     -- podvýraz musí být hodnota 
-    if (xel<>nil) and (xel^.zprac>=ep_form) then checkclass(curr,xel,ncs{ncs_value},ce_i_expr,info); end if;
+    if xel<>nil and xel^.zprac>=ep_form then checkclass(curr,xel,ncs{ncs_value},ce_i_expr,info); end if;
 
     -- %%TECH Formální kontrolu výběru nemohu v této fázi provádět, protože by
     -- se mohlo jednat o identifikátor složky recordu a v tuto chvíli ještě   
@@ -3629,7 +3743,7 @@ catch
       expr^.erroneous:=true;
 
       -- znovu vyvolat vyjímku
-      if not node_catch_resume_error(catch_mode,expr^.ntype) then raise;end if;
+      if not node_catch_resume_error(catch_mode,expr^.ntype) then raise; end if;
   end a_form;
 
 

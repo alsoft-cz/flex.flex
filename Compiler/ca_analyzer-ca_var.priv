@@ -11,6 +11,7 @@ with
   cc_base,
   cc_base.cc_sym,
   cc_base.cc_type,
+  cc_base.cc_rtl,
   cc_attr,
   cx_expr.cx_make,
   cb_block,
@@ -41,52 +42,129 @@ begin
   -- pro zjednodušení si zjistit typ proměnné
   ptyp:=pvar^.typ.getutype;
 
-  -- je k dispozici inicializační metoda pro tento typ ?
-  if ptyp<>nil and then ptyp^.tinit=ti_complex {ptyp^.stable[tst_init].isset and ((ptyp^.stype in dts_component) or (ptyp^.derive=td_private_extension))}
-
-    -- ano => použít
+  -- způsob inicializace se liší podle toho, jestli to je tasková proměnná
+  if pvar^.mclass=mc_task
     then
-      verify({VERIFY=}000571,not ptyp^.stable[tst_init].isset);
+      declare var
+        pproc      : pentity_procedure;
+        x_param    : pexpnode;
+        srch       : tentitysearch;
+        exp_init   : pexpnode;
 
-      -- u indexovaného typu zjistime rozsah
-      get_index_type_range(curr,xinfo,ptyp,crange);
+      begin
+        -- RTL funkce
+        rtl_get_entity(rtl_alloc_task_var_id,pproc);
 
-      -- tohle by se stávat nemělo
-      if ptyp^.stype in dts_unconstrained then
-        verify({VERIFY=}000739,true);
-        end if;
+        -- 1. parametr - typetag: in t_rtl_tag
+        srch.find_et_first(pentity_type(pproc^.typ.getctype),rc_primary,et_param,[]);
+        x_param:=x_make_param(curr,xinfo,
+                   x_make_attribute(curr,xinfo,atc_static,atf_tag,ata_type_tag,inttype_tag,
+                     x_make_component_type(curr,xinfo,ptyp)),
+                   pentity_param(srch.psym)
+                   );
 
-      -- zavolat metodu
-      a_list_append(list,
-        a_type_make_call(curr,binfo,xinfo,tst_init,ptyp^,crange,
-          x_make_component_var(curr,xinfo,pvar)
-          )
-        );
+        -- 2. parametr - task_varid: out ref t_task_var_id
+        srch.find_et_next;
+        x_param^.next:=x_make_param(curr,xinfo,
+                         x_make_task_var_slot(curr,xinfo,
+                           x_make_component_var(curr,xinfo,pvar),
+                           pentity_param(srch.psym)^.typ.getctype),
+                         pentity_param(srch.psym)
+                         );
 
-    -- ne => přímo přiřadit počáteční hodnotu
+        -- 3. parametr - initvalue: in p_init_taskvar_value
+        -- máme nějakou počáteční hodnotu?
+        -- pokud ano=>někam si ji uložíme a předáme si na ni pointer v parametru initvalue
+        if pvar^.init.isset then
+          -- počáteční hodnota u proměnné
+          exp_init:=x_make_imm(curr,xinfo,pvar^.typ.getutype,pvar^.init.getimm^,iek_imm);
+
+        elsif pvar^.typ.isset and pvar^.typ.getctype^.init.isset then
+          -- počáteční hodnota u typu
+          exp_init:=x_make_imm(curr,xinfo,pvar^.typ.getutype,pvar^.typ.getctype^.init.getimm^,iek_imm);
+
+        -- jinak je initvalue nastaveno na nil
+        else
+          exp_init:=x_make_imm_nil(curr,xinfo,ptyp);
+          end if;
+
+        -- nastavit parametr
+        srch.find_et_next;
+        x_param^.next^.next:=x_make_param(curr,xinfo,
+                               exp_init,
+                               pentity_param(srch.psym)
+                               );
+
+        -- 4. parametr - inheritable: in t_rtl_logical:=false
+        srch.find_et_next;
+        x_param^.next^.next^.next:=x_make_param(curr,xinfo,
+                                     x_make_imm_nil(curr,xinfo,pentity_type(srch.psym)),
+                                     pentity_param(srch.psym)
+                                     );
+
+        -- 5. parametr - immediate: in t_rtl_logical:=false
+        srch.find_et_next;
+        x_param^.next^.next^.next^.next:=x_make_param(curr,xinfo,
+                                           x_make_imm_nil(curr,xinfo,pentity_type(srch.psym)),
+                                           pentity_param(srch.psym)
+                                           );
+
+        -- samotny prikaz volani RTL funkce
+        a_list_append(list,
+          b_make_cmd(curr,binfo,
+            x_make_call_rtl(curr,xinfo,rtl_alloc_task_var_id,x_param))
+          );
+        end declare;
+
+    -- není to tasková proměnná
     else
-      -- má proměnná počáteční hodnotu ?
-      if pvar^.init.isset then
-        x_imm:=x_make_imm(curr,xinfo,pvar^.typ.getutype,pvar^.init.getimm^,iek_imm)
+      -- je k dispozici inicializační metoda pro tento typ ?
+      if ptyp<>nil and then ptyp^.tinit=ti_complex {ptyp^.stable[tst_init].isset and ((ptyp^.stype in dts_component) or (ptyp^.derive=td_private_extension))}
 
-      -- má typ proměnné počáteční hodnotu ?
-      elsif pvar^.typ.isset and pvar^.typ.getctype^.init.isset then
-        x_imm:=x_make_imm(curr,xinfo,pvar^.typ.getutype,pvar^.typ.getctype^.init.getimm^,iek_imm);
+        -- ano => použít
+        then
+          verify({VERIFY=}000571,a_find_special_method(ptyp^,tst_init)=nil);
 
-      -- inicializovat na NIL
-      else
-        x_imm:=x_make_imm_nil(curr,xinfo,pvar^.typ.getutype);
-        end if;
+          -- u indexovaného typu zjistime rozsah
+          get_index_type_range(curr,xinfo,ptyp,crange);
 
-      -- PVAR := IMM
-      a_list_append(list,
-        b_make_cmd(curr,binfo,
-          x_make_op_assign(curr,xinfo,
-            x_make_component_var(curr,xinfo,pvar),
-            x_imm
-            )
-          )
-        );
+          -- tohle by se stávat nemělo
+          if ptyp^.stype in dts_unconstrained then
+            verify({VERIFY=}000739,true);
+            end if;
+
+          -- zavolat metodu
+          a_list_append(list,
+            a_type_make_call(curr,binfo,xinfo,tst_init,ptyp^,crange,
+              x_make_component_var(curr,xinfo,pvar)
+              )
+            );
+
+        -- ne => přímo přiřadit počáteční hodnotu
+        else
+          -- má proměnná počáteční hodnotu ?
+          if pvar^.init.isset then
+            x_imm:=x_make_imm(curr,xinfo,pvar^.typ.getutype,pvar^.init.getimm^,iek_imm)
+
+          -- má typ proměnné počáteční hodnotu ?
+          elsif pvar^.typ.isset and pvar^.typ.getctype^.init.isset then
+            x_imm:=x_make_imm(curr,xinfo,pvar^.typ.getutype,pvar^.typ.getctype^.init.getimm^,iek_imm);
+
+          -- inicializovat na NIL
+          else
+            x_imm:=x_make_imm_nil(curr,xinfo,pvar^.typ.getutype);
+            end if;
+
+          -- PVAR := IMM
+          a_list_append(list,
+            b_make_cmd(curr,binfo,
+              x_make_op_assign(curr,xinfo,
+                x_make_component_var(curr,xinfo,pvar),
+                x_imm
+                )
+              )
+            );
+          end if;
       end if;
   end traceop_init;
 
@@ -147,7 +225,7 @@ begin
 
     -- ne => volat požadovanou obalující speciální metodu typu
     else
-      verify({VERIFY=}000572,not t_contains_class(ptyp^) or not ptyp^.stable[tst].isset);
+      verify({VERIFY=}000572,not t_contains_class(ptyp^) or a_find_special_method(ptyp^,tst)=nil);
 
       -- u indexovaného typu zjistime rozsah
       get_index_type_range(curr,xinfo,ptyp,crange);
@@ -174,11 +252,16 @@ procedure traceop_entry : ttraceop =
 ----------------------------------------------------------------------------------------------------
 begin
   -- nereprezentuje náhodou proměnná instanci interfacu ?
-  if pvar^.vimplements=vi_interface
+  if pvar^.vimplements=vi_interface then
     -- instance interfaců se řeší trochu jinak
-    then a_type_interface_entry(curr,{^prefix_var,pvar,}pentity_type(pvar^.context.entity)^.interfaces^.find_interface(pvar^.typ.getctype),list,binfo,xinfo);
-    -- všechny ostatní případy ošetřit standardním způsobem
-    else traceop_call_special(curr,list,binfo,xinfo,pvar,tst_entry);
+    a_type_interface_entry(curr,{^prefix_var,pvar,}pentity_type(pvar^.context.entity)^.interfaces^.find_interface(pvar^.typ.getctype),list,binfo,xinfo);
+
+  -- na taskové proměnné se volá entry v každém tasku speciálním způsobem, tady ne
+  elsif pvar^.mclass=mc_task then
+    ;-- pro task nedělat nic
+
+  -- všechny ostatní případy ošetřit standardním způsobem
+  else traceop_call_special(curr,list,binfo,xinfo,pvar,tst_entry);
     end if;
   end traceop_entry;
 
@@ -200,8 +283,35 @@ procedure traceop_exit : ttraceop =
 -- Volání EXIT proměnné.
 ----------------------------------------------------------------------------------------------------
 begin
+  -- je to TASK proměnná?
+  if pvar^.mclass=mc_task then
+    declare var
+      srch         : tentitysearch;
+      pproc        : pentity_procedure;
+      x_param      : pexpnode;
+
+    begin
+      -- RTL funkce
+      rtl_get_entity(rtl_free_task_var_id,pproc);
+
+      -- parametr
+      srch.find_et_first(pentity_type(pproc^.typ.getctype),rc_primary,et_param,[]);
+      x_param:=x_make_param(curr,xinfo,
+                 x_make_task_var_slot(curr,xinfo,
+                   x_make_component_var(curr,xinfo,pvar{entity}{srch.psym}),
+                   pentity_param(srch.psym)^.typ.getctype),
+                 pentity_param(srch.psym)
+                 );
+
+      -- samotny prikaz volani RTL funkce
+      a_list_append(list,
+        b_make_cmd(curr,binfo,
+          x_make_call_rtl(curr,xinfo,rtl_free_task_var_id,x_param))
+        );
+      end declare;
+
   -- parametry se (nikdy) neexitují
-  if pvar^.vimplements<>vi_parameter then
+  elsif pvar^.vimplements<>vi_parameter then
     traceop_call_special(curr,list,binfo,xinfo,pvar,tst_exit);
     end if;
   end traceop_exit;
@@ -224,7 +334,10 @@ procedure traceop_adjust : ttraceop =
 -- Volání ADJUST proměnné.
 ----------------------------------------------------------------------------------------------------
 begin
-  traceop_call_special(curr,list,binfo,xinfo,pvar,tst_adjust);
+  -- taskové proměnné se neadjustují
+  if pvar^.mclass<>mc_task then
+    traceop_call_special(curr,list,binfo,xinfo,pvar,tst_adjust);
+    end if;
   end traceop_adjust;
 
 
@@ -246,7 +359,10 @@ procedure traceop_rollback : ttraceop =
 -- Volání ROLLBACK proměnné.
 ----------------------------------------------------------------------------------------------------
 begin
-  traceop_call_special(curr,list,binfo,xinfo,pvar,tst_rollback);
+  -- taskové proměnné se nerollbackují
+  if pvar^.mclass<>mc_task then
+    traceop_call_special(curr,list,binfo,xinfo,pvar,tst_rollback);
+    end if;
   end traceop_rollback;
 
 
@@ -267,7 +383,10 @@ procedure traceop_commit : ttraceop =
 -- Volání COMMIT proměnné.
 ----------------------------------------------------------------------------------------------------
 begin
-  traceop_call_special(curr,list,binfo,xinfo,pvar,tst_commit);
+  -- taskové proměnné se necommitují
+  if pvar^.mclass<>mc_task then
+    traceop_call_special(curr,list,binfo,xinfo,pvar,tst_commit);
+    end if;
   end traceop_commit;
 
 
@@ -280,159 +399,6 @@ procedure tracecheck_commit =
 begin
   result:=mclass in psym^.tra_var_cache[tst_commit];
   end tracecheck_commit;
-
-
-
-----------------------------------------------------------------------------------------------------
---!!! tohle je uplne blbe, ma to byt jinde
-procedure a_init_task_var (
-    curr           : in tcontext;                -- kontext
-    list           : in out bllist) =            -- kam se budou příkazy ukládat      
--- Volani RTL funkce pro ziskani handle task promenne
-----------------------------------------------------------------------------------------------------
-with 
-  cc_def.cc_unitype,
-  cd_decl.cd_create,
-  cc_base.cc_attr,
-  cc_base.cc_rtl;
-
-var   
-  xinfo        : expinfo;
-  binfo        : blinfo; 
-  entity       : pentity;
-  region       : pregion;
-  srch         : tentitysearch;
-  pproc        : pentity_procedure;
-  x_param      : pexpnode;
-
-begin
-  entity:=curr.region^.entities.first;
-  while entity<>nil loop
-    --if entity^.id<>nil then debug_dump('a_init_task_var - '&entityident_to_string(entity^.id^)) end if;
-    if entity^.etype=et_var and then pentity_var(entity)^.mclass=mc_task then
-      -- připravit kontexty
-      a_prepare_info(binfo,xinfo);
-
-      -- RTL funkce
-      rtl_get_entity(rtl_alloc_task_var_id,pproc);
-
-      -- 1. parametr - 
-      srch.find_et_first(pentity_type(pproc^.typ.getctype),rc_primary,et_param,[]);
-      x_param:=x_make_param(curr,xinfo,
-                 x_make_attribute(curr,xinfo,atc_static,atf_tag,ata_type_tag,inttype_tag,
-                   x_make_component_type(curr,xinfo,pentity_var(entity)^.typ.getctype)),
-                 pentity_param(srch.psym)
-                 );
-
-      -- 2. parametr
-      srch.find_et_next;
-      x_param^.next:=x_make_param(curr,xinfo,
-                       x_make_task_var_slot(curr,xinfo,
-                         x_make_component_var(curr,xinfo,entity),
-                         pentity_param(srch.psym)^.typ.getctype),
-                       pentity_param(srch.psym)
-                       );
-
-      -- 3. parametr
-      srch.find_et_next;
-      x_param^.next^.next:=x_make_param(curr,xinfo,
-                             x_make_imm_nil(curr,xinfo,pentity_type(srch.psym)),
-                             pentity_param(srch.psym)
-                             );
-
-      -- 4. parametr
-      srch.find_et_next;
-      x_param^.next^.next^.next:=x_make_param(curr,xinfo,
-                                   x_make_imm_nil(curr,xinfo,pentity_type(srch.psym)),
-                                   pentity_param(srch.psym)
-                                   );
-
-      -- 5. parametr
-      srch.find_et_next;
-      x_param^.next^.next^.next^.next:=x_make_param(curr,xinfo,
-                                         x_make_imm_nil(curr,xinfo,pentity_type(srch.psym)),
-                                         pentity_param(srch.psym)
-                                         );
-
-      -- samotny prikaz volani RTL funkce
-      a_list_append(list,
-        b_make_cmd(curr,binfo,
-          x_make_call_rtl(curr,xinfo,rtl_alloc_task_var_id,x_param))
-        );
-      end if;
-
-    entity:=entity^.next;
-    end loop;
-
-  region:=curr.region^.regions.first;
-  while region<>nil loop
-    -- protrasovat
-    a_init_task_var(sym_build_context(curr.entity,region),list);
-    -- další region
-    region:=region^.next;
-    end loop;
-  end a_init_task_var;
-    
-
-
-----------------------------------------------------------------------------------------------------
---!!! tohle je uplne blbe, ma to byt jinde
-procedure a_exit_task_var (
-    curr           : in tcontext;                 -- kontext
-    list           : in out bllist) =            -- kam se budou příkazy ukládat      
--- Volani RTL funkce pro uvolneni task promenne
-----------------------------------------------------------------------------------------------------
-with 
-  cc_def.cc_unitype,
-  cd_decl.cd_create,
-  cc_base.cc_attr,
-  cc_base.cc_rtl;
-
-var   
-  xinfo        : expinfo;
-  binfo        : blinfo; 
-  entity       : pentity;
-  region       : pregion;
-  srch         : tentitysearch;
-  pproc        : pentity_procedure;
-  x_param      : pexpnode;
-
-begin
-  entity:=curr.region^.entities.first;
-  while entity<>nil loop
-    if entity^.etype=et_var and then pentity_var(entity)^.mclass=mc_task then
-      -- připravit kontexty
-      a_prepare_info(binfo,xinfo);
-
-      -- RTL funkce
-      rtl_get_entity(rtl_free_task_var_id,pproc);
-
-      -- parametr
-      srch.find_et_first(pentity_type(pproc^.typ.getctype),rc_primary,et_param,[]);
-      x_param:=x_make_param(curr,xinfo,
-                 x_make_task_var_slot(curr,xinfo,
-                   x_make_component_var(curr,xinfo,entity{srch.psym}),
-                   pentity_param(srch.psym)^.typ.getctype),
-                 pentity_param(srch.psym)
-                 );
-
-      -- samotny prikaz volani RTL funkce
-      a_list_append(list,
-        b_make_cmd(curr,binfo,
-          x_make_call_rtl(curr,xinfo,rtl_free_task_var_id,x_param))
-        );
-    end if;
-  entity:=entity^.next;
-  end loop;
-
-  region:=curr.region^.regions.first;
-  while region<>nil loop
-    -- protrasovat
-    a_exit_task_var(sym_build_context(curr.entity,region),list);
-    -- další region
-    region:=region^.next;
-    end loop;
-  end a_exit_task_var;
 
 
 
@@ -512,7 +478,7 @@ begin
 
     -- rekurzivně trasovat podprogramy
     if recursive and ((psym^.etype in ets_subprogram and check^(psym,mclass))
-    or (mclass=mc_static and psym^.etype=et_class and check^(psym,mclass))) then
+    or (mclass=mc_static{ in mcs_global} and psym^.etype=et_class and check^(psym,mclass))) then
       trace(sym_primary_context(psym^),list,binfo,xinfo,mclass,recursive,classonly,op,check);
       end if;
 
@@ -556,12 +522,6 @@ procedure a_var_init =
 -- MCLASS=MC_STATIC jsou ostatní proměnné inicializované loaderem).
 ----------------------------------------------------------------------------------------------------
 begin
-  -- task proměnná ?
-  --!!! tohle je uplne blbe, ma to byt jinde
-  if mclass=mc_task then
-    a_init_task_var(curr,list);
-    end if;
-
   trace(curr,list,binfo,xinfo,mclass,recursive,classonly,^traceop_init,^tracecheck_init);
   end a_var_init;
 
@@ -582,12 +542,6 @@ procedure a_var_exit =
 -- Vygeneruje příkazy na volání EXIT proměnných.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- task proměnná ?
-  --!!! tohle je uplne blbe, ma to byt jinde
-  if mclass=mc_task then
-    a_exit_task_var(curr,list)
-    end if;
-
   trace(curr,list,binfo,xinfo,mclass,recursive,true,^traceop_exit,^tracecheck_exit);
   end a_var_exit;
 

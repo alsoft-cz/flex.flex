@@ -56,10 +56,16 @@ const
   ui_unichar_last  = [for tuniint:first..tuniint:first+tunichar:size-1 use $FF,for others use 0];
 
   -- malá reálná čísla
-  ur_minus_1       = [for negative use true,  for mantissa use ui_1, for exponent use ui_0];
-  ur_0             = [for negative use false, for mantissa use ui_0, for exponent use ui_0];
-  ur_1             = [for negative use false, for mantissa use ui_1, for exponent use ui_0];
-  ur_10            = [for negative use false, for mantissa use ui_5, for exponent use ui_1];
+  ur_minus_1       = [for form use urf_normal, for negative use true,  for mantissa use ui_1, for exponent use ui_0];
+  ur_minus_0       = [for form use urf_zero,   for negative use true,  for mantissa use ui_0, for exponent use ui_0];
+  ur_0             = [for form use urf_zero,   for negative use false, for mantissa use ui_0, for exponent use ui_0];
+  ur_1             = [for form use urf_normal, for negative use false, for mantissa use ui_1, for exponent use ui_0];
+  ur_10            = [for form use urf_normal, for negative use false, for mantissa use ui_5, for exponent use ui_1];
+
+  -- významná reálná čísla
+  ur_minus_inf     = [for form use urf_infinity,     for negative use true,  for mantissa use ui_0, for exponent use ui_0];
+  ur_inf           = [for form use urf_infinity,     for negative use false, for mantissa use ui_0, for exponent use ui_0];
+  ur_nan           = [for form use urf_not_a_number, for negative use false, for mantissa use ui_0, for exponent use ui_0];
 
   -- významné adresy
   uda_0            = tunidata_addr(0);
@@ -389,7 +395,8 @@ procedure uniint_load =
 -- UI := VAL
 ----------------------------------------------------------------------------------------------------
 const
-  uniint_dwords    = (uniint_precision div 8 div 4);
+  uniint_bytes     = uniint_precision div 8;
+  uniint_dwords    = uniint_bytes     div 4;
 
 begin
 #if size:size=4 then;
@@ -414,14 +421,14 @@ begin
 
 @copy:
     -- zkopírovat základ
-    rep        movsd
+    mov        ecx,size
+    rep        movsb
 
     -- vyplnit znaménkem
-    mov        ecx,uniint_dwords
+    mov        ecx,uniint_bytes
     mov        ebx,size
-    shr        ebx,<t_unsigned8>2
     sub        ecx,ebx
-    rep        stosd
+    rep        stosb
 
     -- a konec
     jmp        @end
@@ -2148,6 +2155,17 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure uniint_xor =
+-- [a] xor [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a;
+  uniint_xor_assign(result,b);
+  end uniint_xor;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure uniint_neg =
 -- - A
 ----------------------------------------------------------------------------------------------------
@@ -2954,12 +2972,36 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure unireal_round =
--- Zaokrouhlit [ur] na nejbližší celé číslo.
+-- Round [ur] to nearest integer.
 ----------------------------------------------------------------------------------------------------
+label
+  std;
+
 var
   ceil             : t_logical;
 
 begin
+  -- solve special cases
+  case ur.form
+    -- normal form
+    when urf_normal,urf_zero do goto std;
+
+    -- infinity
+    when urf_infinity do
+        -- +/- maxint
+        if ur.negative
+          then result:=ui_first;
+          else result:=ui_last;
+          end if;
+
+    -- not a number
+    when urf_not_a_number do
+        -- hmm, maybe 0?
+        result:=ui_0;
+    end case;
+  return;
+
+std:
   -- shift mantissa to get exponent 0
   if ur.exponent<ui_0
     -- right shift
@@ -2990,14 +3032,37 @@ procedure unireal_store_fixed =
 -- Stores binary value of fixed-point type.
 ----------------------------------------------------------------------------------------------------
 begin
-  uniint_store(unireal_round(ur*uniint_to_unireal(inv_delta)),val,size);
+  case ur.form
+    -- normal form
+    when urf_normal do
+        uniint_store(unireal_round(ur*uniint_to_unireal(inv_delta)),val,size);
+
+    -- zero, nan
+    when urf_zero,urf_not_a_number do
+        uniint_store(ui_0,val,size);
+
+    -- infinity
+    when urf_infinity do
+        -- +/- infinity
+        if ur.negative
+          then uniint_store(ui_first,val,size);
+          else uniint_store(ui_last,val,size);
+          end if;
+    end case;
   end unireal_store_fixed;
 
 
 
-----------------------------------------------------------------------------------------------------
-procedure unireal_store_float =
--- Stores binary value of float-point type.
+----- %TECH: Floating-point values format table ----------------------------------------------------
+-- Beware: unlike in case of single and double precision,
+-- the extended precision significand _does_ include the implicit
+-- integer bit (allways set).
+-- The table below is set to confirm Intel documentation:
+-- Pentium Processor Family Developer's Manual, chapt. 6, page 23;
+-- so it does not really tells the number of physically used bits
+-- of significand, but number of "precision" bits, though.
+-- So, for single and double precision, decrement [signif_bits]
+-- field value by 1 to get the real length of significand.
 ----------------------------------------------------------------------------------------------------
 type
   t_float_precision = enum
@@ -3014,7 +3079,7 @@ type
     end enum;
 
 const
-  fpars_tab        : array t_float_precision,t_float_parameter of t_signed32 =
+  fpars_tab        : array t_float_precision,t_float_parameter of t_signed =
                    [for single_prec   use [32, 24,  8,   127],
                     for double_prec   use [64, 53, 11,  1023],
                     for extended_prec use [80, 64, 15, 16383]];
@@ -3022,10 +3087,6 @@ const
 #template sign_index(float_prec);
   (fpars_tab[(float_prec),bits]-1)
   #end sign_index;
-
-#template exponent_index(float_prec);
-  (fpars_tab[(float_prec),signif_bits])
-  #end exponent_index;
 
 #template bitsize(float_prec);
   (fpars_tab[(float_prec),bits])
@@ -3051,6 +3112,98 @@ const
   (fpars_tab[(float_prec),exp_max])
   #end exponent_bias;
 
+
+
+----- %TECH: floating-point non-standard forms -----------------------------------------------------
+-- Internal binary representations of
+-- +/- zero
+-- +/- infinity
+-- +/- nan (signaling/quiet)
+-- for dumping/fetching single, double and extended precision special values.
+-- Note that (accordingly to Pentium Processor Family Developer's Manual,
+-- chapt. 7, pages 5 and 6) all values with biased exponent bits all 1
+-- are NaNs whereas those with significand bits all 0 are infinities.
+-- Moreover, 2 types of NaNs are distinguished by the FPU --- signaling and quiet.
+-- This can be done by testing the most significant bit of the significand
+-- (except for extended precision, where the second MSb has to be tested).
+-- When 0, the NaN is signaling, otherwise quiet. See PPFDM, 7-5 and 7-6.
+----------------------------------------------------------------------------------------------------
+
+type
+  t_float_special  = enum
+    fp_zero;
+    fp_inf;
+    fp_nan_sig;
+    fp_nan_quiet;
+    end enum;
+
+const
+  fpspec_tab       : array t_float_special,t_logical,t_float_precision of tuniint = [
+  for fp_zero use [
+    -- +0
+    for false use [
+      ui_0,
+      ui_0,
+      ui_0 ],
+
+    -- -0
+    for true use [
+      [$00,$00,$00,$80, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$00,$80, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$00,$00,$00,$80, for others use $00] ] ],
+  
+  for fp_inf use [
+    -- +inf
+    for false use [
+      [$00,$00,$80,$7f, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$f0,$7f, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$00,$80,$ff,$7f, for others use $00] ],
+
+    -- -inf
+    for true use [
+      [$00,$00,$80,$ff, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$f0,$ff, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$00,$80,$ff,$ff, for others use $00] ] ],
+
+  for fp_nan_sig use [
+    -- +nan (first signaling)
+    for false use [
+      [$01,$00,$80,$7f, for others use $00],
+      [$01,$00,$00,$00,$00,$00,$f0,$7f, for others use $00],
+      [$01,$00,$00,$00,$00,$00,$00,$80,$ff,$7f, for others use $00] ],
+
+    -- -nan (last signaling)
+    for true use [
+      [$01,$00,$80,$ff, for others use $00],
+      [$01,$00,$00,$00,$00,$00,$f0,$ff, for others use $00],
+      [$01,$00,$00,$00,$00,$00,$00,$80,$ff,$ff, for others use $00] ] ],
+
+  for fp_nan_quiet use [
+    -- +nan (first quiet)
+    for false use [
+      [$00,$00,$c0,$7f, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$f8,$7f, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$00,$c0,$ff,$7f, for others use $00] ],
+
+    for true use [
+    -- -nan (last quiet)
+      [$00,$00,$c0,$ff, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$f8,$ff, for others use $00],
+      [$00,$00,$00,$00,$00,$00,$00,$c0,$ff,$ff, for others use $00] ] ] ];
+
+#template fpspecial_value(kind,neg,float_prec);
+  (fpspec_tab[(kind),(neg),(float_prec)])
+  #end fpspecial_value;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_store_float =
+-- Stores binary value of float-point type.
+----------------------------------------------------------------------------------------------------
+label
+  store;
+
 var
   mask             : tuniint;                    -- bit mask
   deltab           : t_signed32;                 -- bit width difference
@@ -3061,19 +3214,35 @@ var
 begin
   -- set desired precision
   case size
-      when  4 do     prec:=  single_prec;
-      when  8 do     prec:=  double_prec;
-      when 10 do     prec:=extended_prec;
-      -- unexpected type size
-      when others do verify({VERIFY=}001399,true);
+    when  4 do     prec:=  single_prec;
+    when  8 do     prec:=  double_prec;
+    when 10 do     prec:=extended_prec;
+
+    -- unexpected type size
+    when others do verify({VERIFY=}001399,true);
     end case;
 
-  -- handle 0.0
-  if ur=ur_0 then
-    -- 0.0 will be stored
-    return;
-    end if;
+  -- handle special cases
+  case ur.form
+    -- zero
+    when urf_zero do
+        buffer:=fpspecial_value(fp_zero,ur.negative,prec);
+        goto store;
 
+    -- infinity
+    when urf_infinity do
+        buffer:=fpspecial_value(fp_inf,ur.negative,prec);
+        goto store;
+
+    -- nan (all signaling)
+    when urf_not_a_number do
+        buffer:=fpspecial_value(fp_nan_sig,ur.negative,prec);
+        goto store;
+
+    -- normal value
+    when urf_normal do -- continue
+    end case;
+  
   -- load working variables
   buffer:=ur.mantissa;
   exp:=ur.exponent;
@@ -3131,14 +3300,19 @@ begin
 
   -- exponent too high
   if exp>signed_to_uniint(exponent_max(prec)) then
-    -- dump error
+    -- dump warning
+
+    -- +/-inf will be stored
+    buffer:=fpspecial_value(fp_inf,ur.negative,prec);
+    goto store;
 
   -- exponent too small
   elsif exp<signed_to_uniint(exponent_min(prec)) then
     -- dump warning
 
-    -- 0.0 will be stored
-    return;
+    -- +/-0.0 will be stored
+    buffer:=fpspecial_value(fp_zero,ur.negative,prec);
+    goto store;
 
   -- exponent in range, assemble the result
   else
@@ -3165,9 +3339,108 @@ begin
       end if;
     end if;
 
+store:
   -- copy [buffer] to [val]
   uniint_store(buffer,val,size);
   end unireal_store_float;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_load_float =
+-- Loads binary value of floating-point type.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure get_bits (
+        ui         : in tuniint;                 -- input bit-string
+        index      : in t_signed;                -- from index
+        cnt        : in t_signed)                -- bits count
+        return          tuniint =                -- output bit-string
+    -- Returns value defined by bits [index]..[index]+([cnt]-1).
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- set appropriate bits
+      for i in index..index+cnt-1 loop
+        result+(ui_1 shl signed_to_uniint(i));
+        end loop;
+      
+      -- get source bits
+      result and ui;
+
+      -- shift right
+      result shr signed_to_uniint(index);
+      end get_bits;
+
+
+var
+  buffer           : tuniint;                    -- working space
+  prec             : t_float_precision;          -- desired precision
+  tmp              : t_logical;                  -- aux. var.
+
+begin
+  -- set requested precision
+  case size
+    when  4 do     prec:=  single_prec;
+    when  8 do     prec:=  double_prec;
+    when 10 do     prec:=extended_prec;
+
+    -- unexpected type size
+    when others do verify({VERIFY=}001437,true);
+    end case;
+
+  -- load binary value
+  uniint_load(buffer,val,size,tmp);
+
+  -- check for +0
+  if buffer=fpspecial_value(fp_zero,false,prec) then ur:=ur_0;
+
+  -- check for -0
+  elsif buffer=fpspecial_value(fp_zero,true,prec) then ur:=ur_minus_0;
+
+  -- assemble value
+  else
+    -- set negative flag in accordance with sign bit
+    ur.negative:=ui_0<>get_bits(buffer,sign_index(prec),1);
+
+    -- get biased exponent and significand
+    if prec<>extended_prec 
+      -- single and double precision f.p. values don't include integer bit in significiand
+      then
+        ur.exponent:=get_bits(buffer,significand_bits(prec)-1,exponent_bits(prec));
+        ur.mantissa:=get_bits(buffer,0,significand_bits(prec)-1);
+        ur.mantissa or (ui_1 shl signed_to_uniint(significand_bits(prec)-1));
+
+      -- extended precision f.p. values do
+      else
+        ur.exponent:=get_bits(buffer,significand_bits(prec),exponent_bits(prec));
+        ur.mantissa:=get_bits(buffer,0,significand_bits(prec));
+        end if;
+
+    -- check for special value
+    if (ur.exponent xor ((ui_1 shl signed_to_uniint(exponent_bits(prec)))-ui_1))=ui_0
+      -- nan or inf
+      then
+        if ur.mantissa=ui_0
+          -- inf
+          then ur.form:=urf_infinity;
+
+          -- nan
+          else ur.form:=urf_not_a_number;
+          end if;
+
+      -- normal value
+      else
+        ur.form:=urf_normal;
+
+        -- denormalize mantissa and unbias exponent
+        ur.exponent-signed_to_uniint(exponent_bias(prec)+significand_bits(prec)-1);
+        end if;
+
+    -- normalize number
+    unireal_normalize(ur);
+    end if;
+  end unireal_load_float;
 
 
 
@@ -3203,6 +3476,41 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure unireal_eq =
+-- [a] = [b]
+----------------------------------------------------------------------------------------------------
+begin
+  -- nan
+  if a.form=urf_not_a_number or b.form=urf_not_a_number then
+    -- nan = nan
+    if a.form=b.form then result:=true; end if;
+
+  -- inf
+  elsif a.form=urf_infinity or b.form=urf_infinity then
+    -- inf ? inf
+    if a.form=b.form and a.negative=b.negative then result:=true; end if;
+
+  -- +/-0 = +/-0
+  elsif a.form=urf_zero and b.form=urf_zero then result:=true;
+
+  -- other values have to be binary equal
+  else result:=a.negative=b.negative and a.mantissa=b.mantissa and a.exponent=b.exponent;
+  end if;
+  end unireal_eq;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_ne =
+-- [a] <> [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=not unireal_eq(a,b);
+  end unireal_ne;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure unireal_le =
 -- A <= B
 ----------------------------------------------------------------------------------------------------
@@ -3210,8 +3518,25 @@ var
   tmp              : tunireal;
 
 begin
-  tmp:=A-B;
-  result:=unireal_sign(tmp) or tmp=ur_0;
+  -- nan
+  if a.form=urf_not_a_number or b.form=urf_not_a_number then
+    -- nan = nan
+    if a.form=b.form then result:=true; end if;
+
+  -- inf
+  elsif a.form=urf_infinity or b.form=urf_infinity then
+    -- inf <= inf
+    if (a.form=b.form and (a.negative=b.negative or a.negative))
+    -- -inf < [b]
+    or else (a.form=urf_infinity and a.negative)
+      then result:=true;
+      end if;
+
+  -- other values comparation is made by subtraction
+  else
+    tmp:=A-B;
+    result:=tmp.negative or tmp.form=urf_zero;
+    end if;
   end unireal_le;
 
 
@@ -3221,7 +3546,16 @@ procedure unireal_lt =
 -- [a] < [b]
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=unireal_sign(a-b);
+  -- nan < * = false = * < nan
+  if a.form=urf_not_a_number or b.form=urf_not_a_number then result:=false;
+
+  -- -inf < inf
+  elsif a.form=urf_infinity and b.form=urf_infinity then
+    if a.negative and (not b.negative) then result:=true; end if;
+
+  -- other values comparison is made by subtraction
+  else result:=unireal_sign(a-b);
+  end if;
   end unireal_lt;
 
 
@@ -3231,7 +3565,13 @@ procedure unireal_ge =
 -- [a] >= [b]
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=not unireal_lt(a,b);
+  -- nan = nan
+  if a.form=urf_not_a_number or b.form=urf_not_a_number then
+    if a.form=b.form then result:=true; end if;
+
+  -- other values comparison
+  else result:=not unireal_lt(a,b);
+  end if;
   end unireal_ge;
 
 
@@ -3241,7 +3581,12 @@ procedure unireal_gt =
 -- [a] > [b]
 ----------------------------------------------------------------------------------------------------
 begin
-  result:=not unireal_le(a,b);
+  -- nan > * = false = * > nan
+  if a.form=urf_not_a_number or b.form=urf_not_a_number then result:=false;
+
+  -- other values comparison
+  else result:=not unireal_le(a,b);
+  end if;
   end unireal_gt;
 
 
@@ -3329,31 +3674,44 @@ procedure unireal_normalize =
       end minimize_mantissa;  
 
 begin
-  if ur.mantissa=ui_0
-    then 
-      -- výsledek je 0
-      ur:=ur_0;
+  -- nan
+  if ur.form=urf_not_a_number then ur:=ur_nan;
 
-    else
-      -- shr [ur.mantissa] until lsb([ur.mantissa])=1
-      minimize_mantissa(ur.mantissa,ur.exponent);
-
-      -- zn. bit je 1 => zkrátit mantisu o 1bit se zaokrouhlením nahoru (ořezaný bit je 1)
-      if uniint_sign(ur.mantissa) then
-        ur.mantissa shr ui_1;
-        if ur.mantissa=ui_last
-          then
-            ur.mantissa:=ui_1;
-            ur.exponent+unsigned_to_uniint(uniint_precision);
-          else
-            succ ur.mantissa;
-            succ ur.exponent;
-
-            -- shr [ur.mantissa] until lsb([ur.mantissa])=1
-            minimize_mantissa(ur.mantissa,ur.exponent);
-            end if;
-        end if;
+  -- +/-inf
+  elsif ur.form=urf_infinity then
+    if ur.negative
+      then ur:=ur_minus_inf;
+      else ur:=ur_inf;
       end if;
+
+  -- +/-0
+  elsif ur.form=urf_zero or ur.mantissa=ui_0 then
+    if ur.negative
+      then ur:=ur_minus_0;
+      else ur:=ur_0;
+      end if;
+
+  -- other values
+  else
+    -- shr [ur.mantissa] until lsb([ur.mantissa])=1
+    minimize_mantissa(ur.mantissa,ur.exponent);
+
+    -- zn. bit je 1 => zkrátit mantisu o 1bit se zaokrouhlením nahoru (ořezaný bit je 1)
+    if uniint_sign(ur.mantissa) then
+      ur.mantissa shr ui_1;
+      if ur.mantissa=ui_last
+        then
+          ur.mantissa:=ui_1;
+          ur.exponent+unsigned_to_uniint(uniint_precision);
+        else
+          succ ur.mantissa;
+          succ ur.exponent;
+
+          -- shr [ur.mantissa] until lsb([ur.mantissa])=1
+          minimize_mantissa(ur.mantissa,ur.exponent);
+          end if;
+      end if;
+    end if;
   end unireal_normalize;
 
 
@@ -3372,66 +3730,87 @@ var
   neg2             : t_logical;                  -- sign of 2nd operand
 
 begin
-  -- [a] + [b] = [a.mantissa]*2^[a.exponent] + [b.mantissa]*2^[b.exponent]
-  --           = 2^[a.exponent] * ([a.mantissa] + [b.mantissa]*2^([b.exponent]-[a.exponent]))
+  -- nan + [b] = [a] + nan = nan
+  if a.form=urf_not_a_number or b.form=urf_not_a_number then
+    result:=ur_nan;
 
-  -- 1. argument buď ten s větším exponentem
-  if a.exponent>b.exponent
-    then
-      result.mantissa:=a.mantissa;
-      mant2:=b.mantissa;
-      result.exponent:=a.exponent;
-      deltaexp:=a.exponent-b.exponent;
-      result.negative:=a.negative;
-      neg2:=b.negative;
-  
-    else
-      result.mantissa:=b.mantissa;
-      mant2:=a.mantissa;
-      result.exponent:=b.exponent;
-      deltaexp:=b.exponent-a.exponent;
-      result.negative:=b.negative;
-      neg2:=a.negative;
-    end if;
-
-  -- shift 1st operand's mantissa left without loss of precision
-  while (msb_mask and result.mantissa)=ui_0 and deltaexp>ui_0 loop
-    result.mantissa shl ui_1;
-    pred deltaexp;
-    pred result.exponent;
-    end loop;
-
-  -- shift 2nd operand's mantissa right (if needed)
-  mant2 shr deltaexp;
-
-  -- add mantissas  (method actually depends on signs)
-  if result.negative xor neg2
-    -- subtraction
-    then
-      if result.negative
-        -- [mant2] - [result.mantissa]
-        then result.mantissa:=mant2-result.mantissa;
-
-        -- [result.mantissa] - [mant2]
-        else result.mantissa-mant2;
-        end if;
-
-      -- sign of result
-      if uniint_sign(result.mantissa)
-        then
-          -result.mantissa;
-          result.negative:=true;
-        else
-          result.negative:=false;
-          end if;
-
-    -- addition
-    else
-      result.mantissa+mant2;
+  -- inf + [b] = [a] + inf = inf
+  elsif a.form=urf_infinity xor b.form=urf_infinity then
+    if a.form=urf_infinity
+      then result:=a;
+      else result:=b;
       end if;
 
-  -- normalize [result]
-  unireal_normalize(result);
+  -- inf + inf = inf if same sign, or nan if signs are different
+  elsif a.form=urf_infinity then
+    if a.negative xor b.negative
+      then result:=ur_nan;
+      else result:=a;
+      end if;
+
+  -- other cases
+  else
+    -- [a] + [b] = [a.mantissa]*2^[a.exponent] + [b.mantissa]*2^[b.exponent]
+    --           = 2^[a.exponent] * ([a.mantissa] + [b.mantissa]*2^([b.exponent]-[a.exponent]))
+
+    -- 1. argument buď ten s větším exponentem
+    if a.exponent>b.exponent
+      then
+        result.mantissa:=a.mantissa;
+        mant2:=b.mantissa;
+        result.exponent:=a.exponent;
+        deltaexp:=a.exponent-b.exponent;
+        result.negative:=a.negative;
+        neg2:=b.negative;
+
+      else
+        result.mantissa:=b.mantissa;
+        mant2:=a.mantissa;
+        result.exponent:=b.exponent;
+        deltaexp:=b.exponent-a.exponent;
+        result.negative:=b.negative;
+        neg2:=a.negative;
+        end if;
+
+    -- shift 1st operand's mantissa left without loss of precision
+    while (msb_mask and result.mantissa)=ui_0 and deltaexp>ui_0 loop
+      result.mantissa shl ui_1;
+      pred deltaexp;
+      pred result.exponent;
+      end loop;
+
+    -- shift 2nd operand's mantissa right (if needed)
+    mant2 shr deltaexp;
+
+    -- add mantissas  (method actually depends on signs)
+    if result.negative xor neg2
+      -- subtraction
+      then
+        if result.negative
+          -- [mant2] - [result.mantissa]
+          then result.mantissa:=mant2-result.mantissa;
+
+          -- [result.mantissa] - [mant2]
+          else result.mantissa-mant2;
+          end if;
+
+        -- sign of result
+        if uniint_sign(result.mantissa)
+          then
+            -result.mantissa;
+            result.negative:=true;
+          else
+            result.negative:=false;
+            end if;
+
+      -- addition
+      else
+        result.mantissa+mant2;
+        end if;
+
+    -- normalize [result]
+    unireal_normalize(result);
+    end if;
   end unireal_add;
 
  
@@ -3711,17 +4090,32 @@ begin
   -- [a] * [b] = [a.mantissa]*2^[a.exponent] * [b.mantissa]*2^[b.exponent]
   --           = [a.mantissa]*[b.mantissa] * 2^([a.exponent]+[b.exponent])
 
+  -- [a]*nan = nan*[b] = nan
+  if a.form=urf_not_a_number or b.form=urf_not_a_number then
+    a:=ur_nan;
+
+  -- [a]*inf = inf*[b] = inf
+  elsif a.form=urf_infinity or b.form=urf_infinity then
+    -- 0 * inf = inf * 0 = nan
+    if a.form=urf_zero or b.form=urf_zero
+      then a:=ur_nan;
+      else a.form:=urf_infinity;
+      end if;
+
+  -- [a]*[b]
+  else
+    -- mantisa výsledku
+    uniint_mul_assign_double(a.mantissa,b.mantissa,delta_exp);
+
+    -- exponent výsledku
+    a.exponent+(b.exponent+delta_exp);
+
+    -- normalizovat výsledek
+    unireal_normalize(a);
+    end if;
+
   -- znaménko výsledku
   a.negative xor b.negative;
-
-  -- mantisa výsledku
-  uniint_mul_assign_double(a.mantissa,b.mantissa,delta_exp);
-
-  -- exponent výsledku
-  a.exponent+(b.exponent+delta_exp);
-
-  -- normalizovat výsledek
-  unireal_normalize(a);
   end unireal_mul_assign;
 
 
@@ -4004,17 +4398,41 @@ begin
   -- [a]/[b] = [a.mantissa]*2^[a.exponent] / [b.mantissa]*2^[b.exponent]
   --         = ([a.mantissa]/[b.mantissa])*2^[a.exponent-b.exponent]
 
+  -- [a]/nan = nan/[b] = nan
+  if a.form=urf_not_a_number or b.form=urf_not_a_number then
+    a:=ur_nan;
+
+  -- 0/0 = nan
+  elsif a.form=urf_zero and b.form=urf_zero then
+    a:=ur_nan;
+
+  -- [a]/0.0 or inf/[b] = inf
+  elsif b.form=urf_zero or a.form=urf_infinity then
+    a.form:=urf_infinity;
+
+  -- [a]/inf = 0.0
+  elsif b.form=urf_infinity then
+    if a.form<>urf_infinity then
+      a:=ur_0;
+      end if;
+
+  -- 0/[b] = 0
+  elsif a.form=urf_zero then -- do nothing
+
+  -- [a]/[b]
+  else
+    -- exponent výsledku
+    a.exponent-b.exponent;
+
+    -- Euklidův algoritmus pro výpočet podílu mantis [a] a [b]
+    euklides_assign(a.mantissa,b.mantissa,a.exponent);
+
+    -- normalizovat [a]
+    unireal_normalize(a);
+    end if;
+
   -- znaménko výsledku
   a.negative xor b.negative;
-
-  -- exponent výsledku
-  a.exponent-b.exponent;
-
-  -- Euklidův algoritmus pro výpočet podílu mantis [a] a [b]
-  euklides_assign(a.mantissa,b.mantissa,a.exponent);
-
-  -- normalizovat [a]
-  unireal_normalize(a);
   end unireal_div_assign;
 
 
@@ -4027,6 +4445,17 @@ begin
   result:=a;
   unireal_div_assign(result,b);
   end unireal_div;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_inverse =
+-- 1.0 / [ur]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=ur_1;
+  unireal_div_assign(result,ur);
+  end unireal_inverse;
 
 
 

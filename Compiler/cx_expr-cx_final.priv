@@ -32,7 +32,7 @@ begin
   end selectusage;
 
 
--- %%HYNEK - zobecnit??
+-- %%HYNEK - zobecnit?? %%TODO
 ----------------------------------------------------------------------------------------------------
 procedure t_is_ranged (
     typ            : in typeview)
@@ -105,8 +105,8 @@ procedure a_final_operator (
 
       -- provést typovou kontrolu se správným typem
       case expr^.concatkind
-        -- substring nebo subpole
-        when nck_substring, nck_subarray do do_final(curr,expr,ptyp,usage,info,fin_context);
+        -- substring, subpole, množina
+        when nck_substring, nck_subarray, nck_set do do_final(curr,expr,ptyp,usage,info,fin_context);
 
         -- komponenta
         when nck_component do do_final(curr,expr,ptyp.getbase(curr),usage,info,fin_context);
@@ -262,7 +262,7 @@ begin
             if expr^.oper=op_div
               then
                 load_unireal(pexpimm(er)^.imm,x);
-                error:=x=ur_0;
+                error:=unireal_eq(x,ur_0);
 
               else
                 load_uniint(pexpimm(er)^.imm,a);
@@ -507,7 +507,7 @@ begin
           end if;
 
         -- zápis není povolen
-        verify({VERIFY=}000607,usage in expusageset:[eu_write,eu_change]);
+        -- verify({VERIFY=}000607,usage in expusageset:[eu_write,eu_change]);
 
     -- procedura
     when nc_proc do
@@ -530,7 +530,7 @@ begin
           end if;
 
         -- je povolen jen formální přístup a získání adresy
-        verify({VERIFY=}000608,usage not in expusageset:[eu_formal,eu_addr]);
+        -- verify({VERIFY=}000608,usage not in expusageset:[eu_formal,eu_addr]);
 
     -- zpráva
     when nc_message     do
@@ -540,7 +540,7 @@ begin
           end if;
 
         -- je povolen jen formální přístup a získání adresy
-        verify({VERIFY=}000609,usage not in expusageset:[eu_formal,eu_addr]);
+        -- verify({VERIFY=}000609,usage not in expusageset:[eu_formal,eu_addr]);
 
     -- typ
     when nc_type do
@@ -550,7 +550,7 @@ begin
           end if;
 
         -- je povolen jen formální přístup a použití hodnoty (tagu)
-        verify({VERIFY=}000620,usage not in expusageset:[{%%X Doplněno EU_READ, je to dobře??}eu_read,eu_use,eu_formal]);
+        -- verify({VERIFY=}000620,usage not in expusageset:[{%%X Doplněno EU_READ, je to dobře??}eu_read,eu_use,eu_formal]);
 
     -- něco jiného
     when others do
@@ -560,7 +560,7 @@ begin
           end if;
 
         -- je povolen jen formální přístup
-        verify({VERIFY=}000606,usage not in expusageset:[{%%X Doplněno EU_NONE}eu_none,eu_formal]);
+        -- verify({VERIFY=}000606,usage not in expusageset:[{%%X Doplněno EU_NONE}eu_none,eu_formal]);
     end case;
 
   -- povedla se finalizace podvýrazu ? 
@@ -586,7 +586,7 @@ var
   change           : t_logical;                  -- T-změnila se reprezentace konstanty
 
 begin
-  verify({VERIFY=}000887,usage=eu_write);
+  -- verify({VERIFY=}000887,usage in expusageset:[eu_write,eu_change]);
   if ptyp.tview<>tview_null
 
     -- požadován konkrétní typ konstanty
@@ -598,20 +598,20 @@ begin
         -- změnit typ výrazu pokud se změnila reprezentace
         -- nebo pokud požadujeme ready-to-use hodnotu
         -- nebo pokud byl původní typ univerzální
-        if change or (usage=eu_use) or t_is_sts(expr^.t,dts_unitype) then
+        if change or usage=eu_use or t_is_sts(expr^.t,dts_unitype) then
           expr^.t:=ptyp;
           end if;
         end if;
 
       -- test správnosti
-      if (expr^.t.tview=tview_full) and (usage in expusageset:[eu_read,eu_use,eu_formal]) then
+      if expr^.t.tview=tview_full and usage in expusageset:[eu_read,eu_use,eu_formal] then
         imm_check(curr,expr^.imm,expr^.t);
         end if;
 
     -- není určen typ 
     else
       -- provést test mezí
-      if (expr^.t.tview=tview_full) and (usage in expusageset:[eu_use,eu_formal]) then
+      if expr^.t.tview=tview_full and usage in expusageset:[eu_use,eu_formal] then
         imm_check(curr,expr^.imm,expr^.t);
         end if;
       end if;
@@ -762,21 +762,32 @@ begin
   er_type:=er^.t;
 
   -- pravy podvyraz konstanta?
-  if er^.ntype<>nt_imm
-  -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu
-  and then not t_is_range_inclusive(el_range,er_type) then
-    -- jedna se o indexovani retezce?
-    if el^.t.stype in dts_string
-      
-      -- ano - kontrola indexovani retezce
-      then
-        expr^.set_run_check(rchcl_gen,rch_index_string);
+  if er^.ntype<>nt_imm then
+    -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu
+    if not t_is_range_inclusive(el_range,er_type) then
+      -- jedna se o indexovani retezce?
+      if el^.t.stype in dts_string
+        -- ano - kontrola indexovani retezce
+        then
+          expr^.set_run_check(rchcl_gen,rch_index_string);
 
-      -- ne - bezna kontrola rozsahu
-      else 
-        er^.set_run_check(rchcl_load,rch_ordinal_range);
-        er^.set_rangecheck_type(rchcl_load,el_range);
-        end if;
+        -- jinak bezna kontrola rozsahu
+        else
+          er^.set_run_check(rchcl_load,rch_ordinal_range);
+          er^.set_rangecheck_type(rchcl_load,el_range);
+          end if;
+      end if;
+
+    -- jedna se o indexovani dynamickeho pole s dostupnym :LAST?
+    if el^.t.stype=dt_uarray and rta_last in el^.rta_avail then
+      -- ano - kontrola indexovani pole
+      expr^.set_run_check(rchcl_gen,rch_index_array);
+      end if;
+
+  -- pokud to je konstanta, pak musíme kontrolovat pouze indexaci dynamického pole s dostupnym :LAST
+  elsif el^.t.stype=dt_uarray and rta_last in el^.rta_avail then
+    -- kontrola indexovani pole
+    expr^.set_run_check(rchcl_gen,rch_index_array);
     end if;
 
   -- povedla se finalizace podvýrazů ? 

@@ -321,9 +321,22 @@ begin
   -- doplnit číslo návěští
   assign_label_target(bl^.plabel,info);
 
-  -- skok na návěští
-  -- %%X Zjednodušeno
-  addjump(inst,info,ic_ucond,picodegen_label(bl^.plabel^.codegen)^.target);
+  -- není pro tuto entitu vyžadován složitější způsob návratu
+  if (bl^.blevel>1) and (bl^.blevel>bl^.plabel^.level)
+
+    -- ano => využít Return-control frame
+    then
+      -- vyplnit Return-control frame
+      i_set_rcframe_action(inst,info,bl^.blevel-bl^.plabel^.level,picodegen_label(bl^.plabel^.codegen)^.target);
+
+      -- skok na koncové návěští bloku
+      addjump(inst,info,ic_ucond,context.end_block);
+
+    -- ne => přímo skok na konec cyklu
+    else
+     -- skok na návěští
+     addjump(inst,info,ic_ucond,picodegen_label(bl^.plabel^.codegen)^.target);
+     end if;
   end i_goto;
 
 
@@ -495,7 +508,7 @@ begin
           i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xrange,oprtavalue);
 
           -- je to ^unconstrained array/string ?
-          if base<>nil and then base^.stype in dts_index then
+          if base<>nil and then base^.stype in dts_unconstrained then
             -- uložit hodnotu atributu :last do pointeru
             storertattrib(opvar,rta_last,oprtavalue);
 
@@ -537,7 +550,7 @@ begin
   -- příkazů umístěných v epilogu tohoto příkazu NEW.
 {
   -- má počáteční hodnotu ?
-  if base<>nil and then base^.init.isset and then not imm_isnil(base^.init.getimm^)
+  if base<>nil and then base^.init.isset and then not imm_is_nil(base^.init.getimm^)
 
     -- ano => alokovat a přiřadit
     then
@@ -975,10 +988,15 @@ begin
     elsif bl^.xrange^.ntype=nt_attrib then
       verifyx({VERIFY=}000597,(pexpattrib(bl^.xrange)^.aclass<>atc_dynamic) or pexpattrib(bl^.xrange)^.ata not in tattractualset:[ata_string_range,ata_array_range],bl^.pos[bp_begin]);
 
+      -- %%TECH Atribut nad dt_array (constrained pole) není ve skutečnosti dynamický, znamená to jenom,
+      --        že toto pole bylo předáno pomocí class pointeru. Ale žádný potomek meze změnit nemůže,
+      --        takže použijeme prostě konstanty.
+
       -- dolní mez
       case bl^.xrange^.sub^.t.stype
         when dt_string,dt_ustring do oplow.create_imm(bound_edtype,0,timm32(1));
         when dt_uarray            do oplow.create_imm(bound_edtype,0,timm32(0));
+        when dt_array             do oplow.create_imm(bound_edtype,0,uniint_to_imm32(bl^.xrange^.sub^.t.getctype^.srange.getctype^.lval));
         when others               do verifyx({VERIFY=}000598,true,bl^.pos[bp_begin]);
         end case;
 
@@ -986,6 +1004,7 @@ begin
       case bl^.xrange^.sub^.t.stype
         when dt_string,dt_ustring do i_load_subrtattrib(inst,info,mastercontext,curr,rta_length,bl^.xrange^.sub,bl^.order=bfo_reverse,ophigh);
         when dt_uarray            do i_load_subrtattrib(inst,info,mastercontext,curr,rta_last,  bl^.xrange^.sub,bl^.order=bfo_reverse,ophigh);
+        when dt_array             do ophigh.create_imm(bound_edtype,0,uniint_to_imm32(bl^.xrange^.sub^.t.getctype^.srange.getctype^.hval));
         when others               do verifyx({VERIFY=}000599,true,bl^.pos[bp_begin]);
         end case;
 
@@ -1008,9 +1027,9 @@ begin
         ophigh.adjust_size(oplow.size);
         end if;
 
-      -- horní mez je dynamická
-      dynamicbound:=true;
-      highdynamic:=bl^.order<>bfo_reverse;
+      -- horní mez je dynamická, pokud to není jenom constrained pole (viz výše)
+      dynamicbound:=bl^.xrange^.sub^.t.stype<>dt_array;
+      highdynamic:=dynamicbound and bl^.order<>bfo_reverse;
 
     -- nic jiného se zde nemůže objevit
     else
