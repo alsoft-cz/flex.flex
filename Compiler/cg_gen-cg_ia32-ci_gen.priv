@@ -20,7 +20,12 @@ with
   ci_code.ci_instr,
   ci_block,
   cp_cpu.cp_32.cp_def,
-  cp_cpu.cp_ia32.ci_abi;
+  cp_cpu.cp_ia32.ci_abi,
+  cg_gen.cg_ia32.ci_context,
+  cg_gen.cg_ia32.ci_code.ci_operand,
+  cg_gen.cg_ia32.ci_code.ci_operand.c_operand,
+  cc_options;
+
 
 ----------------------------------------------------------------------------------------------------
 procedure i_gen (
@@ -59,7 +64,7 @@ begin
 procedure addcallrtl (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o p©ekladu
-    rtl            : in trtlproc) =              -- volan˜ intern¡ podprogram
+    rtl            : in t_rtl_entity) =          -- volan˜ intern¡ podprogram
 -- P©id  vol n¡ intern¡ho podprogramu.
 -- Varianta [cg_gen.cg_ia32.ci_code.ci_instr.addcallrtl], kter  si sama p©iprav¡ kontext v˜razu.
 ----------------------------------------------------------------------------------------------------
@@ -81,7 +86,7 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure i_instance (
-    curr           : in out tentity_code;        -- generovan˜ symbol
+    curr           : in out class tentity_code;  -- generovan˜ symbol
     inst           : in out picodeinst) =        -- instance
 -- Alokuje novou instanci.
 ----------------------------------------------------------------------------------------------------
@@ -134,6 +139,43 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure do_stack_reserve(
+    context        : in out iexprcontext;        -- kontext v˜razu
+    compi          : in tentity_compile;
+    inst           : in out icodeinst;
+    info           : in out igeninfo) =
+----------------------------------------------------------------------------------------------------
+var
+  size        : t_unsigned;
+
+begin
+  -- zjisti velikost rezervovaneho mista
+  size:=os^.getstackreserve(compi);
+  if size<>0 then
+    setfield(inst,info.espmark,size);
+    end if;
+
+  -- %%TODO(HYNEK) - doresit predavani adresy reservovane na stacku
+  -- ulo‘it esp na stack
+  declare var
+    opesp   : c_operand;
+  begin
+    -- pouzijeme esp
+    opesp.create_use_register(inst,info,context,edt_unsigned,ir_esp);
+    
+    -- ulo‘it esp na stack
+    addii(inst,info,ii_push,opesp,op0,op0);
+
+    leave
+      -- uvolnime registr
+      opesp.free(info,context);
+    end declare;
+
+  end do_stack_reserve;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_gen_prog_compile (
     curr           : in out tentity_compile) =   -- kompila‡n¡ jednotka
 -- Vygeneruje k¢d kompila‡n¡ jednotky programu
@@ -146,9 +188,10 @@ var
   tg_unhandled     : itarget;                    -- n vˆ¨t¡ obsluhy neobslou‘en˜ch v˜jimek
   tg_endxframe     : itarget;                    -- n vˆ¨t¡ obsluhy neobslou‘en˜ch v˜jimek
   p                : pentity;
+  context          : iexprcontext;               -- kontext v˜razu
 
 begin
-  if opt_dump_code in curr.compv.opts then
+  if o_is_option_by_entity(opt_dump_code,curr) then
     debug_dump('-------- Kompilacni jednotka --------------------------------------------------');
     end if;
 
@@ -158,6 +201,9 @@ begin
   -- p©ipravit informace o generov n¡
   initinfo(curr,info);
 
+  -- pripravit prazdny kontext vyrazu
+  i_createcontext(context,lm_gen,nil);
+
   -- alokovat n vˆ¨t¡ obsluhy neobslou‘en˜ch v˜jimek
   newtarget(info,tg_unhandled);
   newtarget(info,tg_endxframe);
@@ -165,13 +211,16 @@ begin
   -- prenastavit vyjimky
   i_set_handler(inst^,info,framehandler,tg_unhandled);
 
-  -- inicializovat task control block pro hlavn¡ task
-  if not cfg_no_runtime then 
-    addcallrtl(inst^,info,rtl_register_task); 
-    end if;
-
   -- vytvo©it stack-frame
   i_gen_entry(curr,inst^,info);
+
+  -- inicializovat task control block pro hlavn¡ task
+  if not cfg_no_runtime then 
+    -- reservovat misto na stacku
+    do_stack_reserve(context,curr,inst^,info);
+
+    addcallrtl(inst^,info,rtl_register_task); 
+    end if;
 
   -- vytvo©it exception-frame
   i_create_xframe(inst^,info,framehandler,tg_endxframe);
@@ -242,11 +291,6 @@ procedure i_gen_lib_compile (
     curr           : in out tentity_compile) =   -- kompila‡n¡ jednotka
 -- Vygeneruje k¢d kompila‡n¡ jednotky knihovny
 ----------------------------------------------------------------------------------------------------
-with
-  cg_gen.cg_ia32.ci_context,
-  cg_gen.cg_ia32.ci_code.ci_operand,
-  cg_gen.cg_ia32.ci_code.ci_operand.c_operand;
-
 var
   inst             : picodeinst;                 -- instance
   info             : igeninfo;                   -- informace o generov n¡
@@ -262,7 +306,7 @@ var
   tg_endxframe2    : itarget;                    -- n vˆ¨t¡ obsluhy neobslou‘en˜ch v˜jimek
 
 begin
-  if opt_dump_code in curr.compv.opts then
+  if o_is_option_by_entity(opt_dump_code,curr) then
     debug_dump('-------- Kompilacni jednotka --------------------------------------------------');
     end if;
 
@@ -282,24 +326,18 @@ begin
   newtarget(info,tg_endxframe);
   newtarget(info,tg_endxframe2);
 
-  -- prenastavit vyjimky
-  i_set_handler(inst^,info,framehandler,tg_unhandled);
-  
   -- vytvo©it stack-frame
   -- stack-frame musi byt EBP relativni
   i_gen_entry(curr,inst^,info);
 
-  -- pushnout esi - windows pouziva pro obnovu stacku
-  declare var
-    opesi   : c_operand;
-  begin
-    opesi.create_use_register(inst^,info,context,edt_unsigned,ir_esi);
-    addii(inst^,info,ii_push,opesi,op0,op0);
-    
-    leave
-      opesi.free(info,context);;
-    end declare;
+  -- prenastavit vyjimky
+  i_set_handler(inst^,info,framehandler,tg_unhandled);
 
+  if not cfg_no_runtime then 
+    -- reservovat misto na stacku
+    do_stack_reserve(context,curr,inst^,info);
+    end if;
+  
   -- fdwReason je 2. parametr DllMain
   opvar.create_memory_address_on_stack(inst^,edt_unsigned,4,signed_to_imm32(12));
 
@@ -425,17 +463,6 @@ begin
   -- navesti konce
   settarget(info,l_konec,getaddr(inst^));
 
-  -- popnout esi - windows pouziva pro obnovu stacku
-  declare var
-    opesi   : c_operand;
-  begin
-    opesi.create_use_register(inst^,info,context,edt_unsigned,ir_esi);
-    addii(inst^,info,ii_pop,opesi,op0,op0);
-
-    leave
-      opesi.free(info,context);;
-    end declare;
-
   opvar.free(info,context);
 
   -- zru¨it stack-frame
@@ -465,11 +492,17 @@ procedure i_gen_compile (
 -- Vygeneruje k¢d kompila‡n¡ jednotky.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- kompilujeme knihovnu nebo program?
-  if library 
-    then i_gen_lib_compile(curr);
-    else i_gen_prog_compile(curr);
-    end if;
+  -- co generujeme?
+  case curr.compitype
+    -- knihovna
+    when ct_library do i_gen_lib_compile(curr);
+    
+    -- program
+    when ct_program do i_gen_prog_compile(curr);
+    
+    -- ostatni nezname
+    when others do verify(667,true);
+    end case;
   end i_gen_compile;
 
 
@@ -524,7 +557,7 @@ begin
   if curr^.etype in ets_body then
     --write_line(sym_get_qid(curr));
 
-    if opt_dump_code in curr^.compv.opts then
+    if o_is_option_by_entity(opt_dump_code,curr^) then
       debug_dump('-------- ' & sym_get_qid(curr) & ' --------');
       end if;
 

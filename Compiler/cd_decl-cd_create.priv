@@ -32,13 +32,20 @@ type
       end enum;
   tdecltypeset     = set of tdecltype;
 
+  -- typ abstraktn¡ deklarace
+  tabstractdecl    = enum
+      tad_no;                                    -- nen¡ povolena abstraktn¡ deklarace
+      tad_mixed;                                 -- abstraktn¡ deklarace s povolen˜ obsahem
+      tad_pure;                                  -- ‡istˆ abstraktn¡ deklarace
+      end enum;
+
 type
   -- informace o deklaraci
   tdeclinfo        = record
       start        : tdeclstart;                 -- lexik ln¡ element za‡¡naj¡c¡ deklaraci
       parts        : tdeclparts;                 -- maxim ln¡ po‡et ‡ st¡ deklarace
       iparts       : tdeclparts;                 -- maxim ln¡ po‡et ‡ st¡ intern¡ deklarace
-      can_abstract : t_logical;                  -- T-entita sm¡ b˜t abstraktn¡
+      can_abstract : tabstractdecl;              -- T-entita sm¡ b˜t abstraktn¡
       end record;
 
 var
@@ -50,20 +57,18 @@ var
       for et_module    use [for start use tds_kw  , for parts use tdp_3, for iparts use tdp_3],
       for et_special   use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_2],
       for et_procedure use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
-      for et_virtual   use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2, for can_abstract use true],
+      for et_virtual   use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2, for can_abstract use tad_pure],
       for et_static    use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
       for et_task      use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
       for et_override  use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
       for et_macro     use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
       for et_overload  use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_1],
       for et_operator  use [for start use tds_kw  , for parts use tdp_1, for iparts use tdp_1],
-      { et_link      }{(start: tds_none; parts: tdp_1),}                           
       for et_var       use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
     --for et_define    use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
     --for et_alias     use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
       for et_type      use [for start use tds_id  , for parts use tdp_2, for iparts use tdp_1],
-    --for et_with      use [for start use tds_none, for parts use tdp_1, for iparts use tdp_1],
-      for et_class     use [for start use tds_kw  , for parts use tdp_3, for iparts use tdp_3, for can_abstract use true],
+      for et_class     use [for start use tds_kw  , for parts use tdp_3, for iparts use tdp_3, for can_abstract use tad_mixed],
       for et_const     use [for start use tds_kw  , for parts use tdp_2, for iparts use tdp_2],
       for et_enum      use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
       for et_param     use [for start use tds_id  , for parts use tdp_1, for iparts use tdp_1],
@@ -105,7 +110,7 @@ begin
       end if;
 
   -- o¨et©it abstraktn¡ deklarace
-  abstract_present:=declinfo[etype].can_abstract and then checklex(context,lex_abstract);
+  abstract_present:=declinfo[etype].can_abstract<>tad_no and then checklex(context,lex_abstract);
 
   -- p©e‡¡st identifik tor
   getlex(context,lex);
@@ -232,8 +237,12 @@ begin
 
     -- Incomplete declaration/Full body
     when tdt_default do
-        if curr^.declared<>etd_none then 
-          curr^.compiling:=etd_full;
+        -- byla ji‘ zpracov na nˆjak  ‡ st deklarace => mus¡ to b˜t Full body
+        if curr^.declared<>etd_none then
+      {
+        -- je to ‡istˆ abstraktn¡ deklarace => mus¡ to b˜t Full body
+        or else (curr^.is_abstract and declinfo[etype].can_abstract=tad_pure) then 
+      }   curr^.compiling:=etd_full;
           end if;
 
     when others do verify(152,true);
@@ -508,8 +517,17 @@ procedure d_end =
 -- Konec deklarace symbolu.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- pozice
-  getlexpos(pos.e,ll_curr,true);
+  -- nen¡ to ‡istˆ abstraktn¡ deklarace ?
+  if curr.is_abstract and then declinfo[curr.etype].can_abstract=tad_pure
+
+    -- ano => nejprve odsimulovat ne£plnou deklaraci
+    then
+      d_next(curr,pos);
+
+    -- ne => jen zjistit aktu ln¡ pozici a dokon‡it deklaraci
+    else
+      getlexpos(pos.e,ll_curr,true);
+      end if;
 
   -- konec deklarace
   d_end_at_position(curr,pos,true);

@@ -1,0 +1,478 @@
+----------------------------------------------------------------------------------------------------
+module private segregated_heap =
+-- Flex Run-time Library
+-- Memory manager - segregated
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+with
+    thread;
+
+const
+    stat_items     : t_rtl_unsigned32            = 1024;
+    pool_items     : t_rtl_unsigned32            = 96;
+    stat_maxrange  : t_rtl_native_unsigned       = largeblocksize;
+    pool_startcnt  : t_rtl_unsigned32            = 48;
+    pool_size      : t_rtl_native_unsigned       = 256*1024;
+
+class c_rtl_segregatedmemheap_head;
+type p_rtl_segregatedmemheap_head = ^c_rtl_segregatedmemheap_head for machine_pointer use true;
+
+type
+  t_segregated_pool_head = t_rtl_chain_item with record 
+      freeblocks   : c_rtl_chain;
+      freecount    : t_rtl_native_unsigned;
+      usedcount    : t_rtl_native_unsigned;
+      parent       : p_rtl_segregatedmemheap;
+      parenthead   : p_rtl_segregatedmemheap_head;
+      poolindex    : t_rtl_unsigned32;
+      minsize      : t_rtl_native_unsigned;
+      maxsize      : t_rtl_native_unsigned;
+      isfull       : t_rtl_logical8;
+      end record;
+
+----------------------------------------------------------------------------------------------------
+class public c_rtl_segregated_pool = extend c_rtl_memheap;
+----------------------------------------------------------------------------------------------------
+    var
+      head         : t_segregated_pool_head;
+
+    ------------------------------------------------------------------------------------------------
+    static init (
+      aparenthead  : p_rtl_segregatedmemheap_head;
+      apoolindex   : t_rtl_unsigned32;
+      aminsize     : in t_rtl_native_unsigned;
+      amaxsize     : in t_rtl_native_unsigned);
+    ------------------------------------------------------------------------------------------------
+  end c_rtl_segregated_pool;
+
+
+type p_rtl_segregated_pool = ^c_rtl_segregated_pool for machine_pointer use true;
+
+
+
+----------------------------------------------------------------------------------------------------
+class public c_rtl_segregatedmemheap_head = 
+----------------------------------------------------------------------------------------------------
+  var
+      poollocks    : array 0..pool_items of t_rtl_critical;
+      freepools    : array 0..{pool_items}96 of c_rtl_chain;
+      fullpools    : array 0..{pool_items}96 of c_rtl_chain;
+      minblocksize : array 0..{pool_items}96 of t_rtl_native_unsigned;
+      maxblocksize : array 0..{pool_items}96 of t_rtl_native_unsigned;
+      poolcount    : t_rtl_unsigned32;
+      statistic    : array 0..{stat_items}(4*1024) of t_rtl_native_unsigned;
+      statisticact : array 0..{stat_items}(4*1024) of t_rtl_native_unsigned;
+      poolindexes  : array 0..{stat_items}(4*1024) of t_rtl_unsigned32;
+      maxsize1     : t_rtl_native_unsigned;
+      maxsize2     : t_rtl_native_unsigned;
+      maxsize3     : t_rtl_native_unsigned;
+      maxsize4     : t_rtl_native_unsigned;
+      granu1       : t_rtl_native_unsigned;
+      granu2       : t_rtl_native_unsigned;
+      granu3       : t_rtl_native_unsigned;
+      granu4       : t_rtl_native_unsigned;
+      maxstat1     : t_rtl_native_unsigned;
+      maxstat2     : t_rtl_native_unsigned;
+      maxstat3     : t_rtl_native_unsigned;
+      maxstat4     : t_rtl_native_unsigned;
+
+      collecttask  : t_thread_ref;
+
+    ------------------------------------------------------------------------------------------------
+    static collect ;
+    ------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+    procedure size2statindex(
+      sizehead     : in t_rtl_native_unsigned;
+      statindex    : out t_rtl_unsigned32) ;
+    ------------------------------------------------------------------------------------------------
+    procedure statindex2size(
+      statindex    : in  t_rtl_unsigned32;
+      maxsizehead  : out t_rtl_native_unsigned) ;
+    ------------------------------------------------------------------------------------------------
+    static memmgr_alloc (
+    num            : in t_rtl_native_unsigned;   -- allocation ID
+    addr           : out t_rtl_pointer;          -- address
+    size           : in  t_rtl_native_unsigned;  -- requested size
+    chain          : in  p_rtl_chain:=nil) ;     -- chain to add into
+    ------------------------------------------------------------------------------------------------
+    end c_rtl_segregatedmemheap_head;
+
+----------------------------------------------------------------------------------------------------
+procedure collector:t_rtl_thread_entry =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_sleep(10000); --10 sekund
+  loop
+    p_rtl_segregatedmemheap_head(userdata:unchecked)^.collect;
+    rtl_sleep(5000); --5 sekund
+    end loop;
+  end collector;
+
+----------------------------------------------------------------------------------------------------
+class private c_rtl_segregatedmemheap_head = 
+----------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------------
+    procedure size2statindex =
+    ------------------------------------------------------------------------------------------------
+    begin
+      if sizehead<=maxsize2 then
+        if sizehead<=maxsize1 then 
+          statindex:=((sizehead+granu1-1) div granu1);
+        else 
+          statindex:=(((sizehead-maxsize1+granu2-1) div granu2)+maxstat1);
+          end if;
+      else 
+        if sizehead<=maxsize3 then 
+          statindex:=(((sizehead-maxsize2+granu3-1) div granu3)+maxstat2);
+        else 
+          if sizehead<=maxsize4 then 
+            statindex:=(((sizehead-maxsize3+granu4-1) div granu4)+maxstat3);
+          else 
+            statindex:=0;   --out of stat
+            raise memory_error;
+            end if;
+          end if;
+        end if;
+      end size2statindex;
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure statindex2size =
+    ------------------------------------------------------------------------------------------------
+    -- neni definovano pro 0                                                                        
+    begin
+      if statindex<=maxstat2 then 
+        if statindex<=maxstat1 then 
+          maxsizehead:=(statindex)*granu1;
+        else 
+          maxsizehead:=((statindex-maxstat1)*granu2)+maxsize1;
+          end if
+      else 
+        if statindex<=maxstat3 then
+          maxsizehead:=((statindex-maxstat2)*granu3)+maxsize2;
+        else 
+          maxsizehead:=((statindex-maxstat3)*granu4)+maxsize3;
+          end if;
+        end if;
+      end statindex2size;
+
+    ------------------------------------------------------------------------------------------------
+    static create_new_pool(
+      poolindex    : in t_rtl_unsigned32;
+      freepool     : out p_rtl_segregated_pool) =
+    ------------------------------------------------------------------------------------------------
+    var
+      backup       : p_rtl_memheap;
+    begin
+      backup:=actual_thread_heap;
+      actual_thread_heap:=nil;
+      new freepool;
+      actual_thread_heap:=backup;
+      freepool^.init(^this,poolindex,minblocksize[poolindex],maxblocksize[poolindex]);
+      freepools[poolindex].add(p_rtl_chain_item(^freepool^.head));
+    catch
+      when others do
+        freepool:=nil;
+        actual_thread_heap:=backup;
+      end create_new_pool;
+
+    ------------------------------------------------------------------------------------------------
+    static memmgr_alloc = 
+    ------------------------------------------------------------------------------------------------
+    var
+      statindex    : t_rtl_unsigned32;
+      poolindex    : t_rtl_unsigned32;
+      freepool     : p_rtl_segregated_pool;
+      sizehead     : t_rtl_native_unsigned;
+      header       : p_rtl_memmgr_header;
+    begin
+      -- compute size with head
+      sizehead:=addheader(size);
+      
+      -- compute statindex
+      size2statindex(sizehead,statindex);
+
+      -- handle too big blocks
+      if statindex=0 then
+        systempages.memmgr_alloc(num,addr,size,chain);
+        return;
+        end if;
+
+      --statistic
+      statistic[0]         +1;
+      statistic[statindex] +1;
+      statisticact[0]         +1;
+      statisticact[statindex] +1;
+      
+      --poolindex
+      poolindex:=poolindexes[statindex];
+
+      --lock poolchain
+      rtl_critical_lock(poollocks[poolindex]);
+      freepool:=nil;
+      freepools[poolindex].get_next_chain_item_not_locked(p_rtl_chain_item(freepool:unchecked));
+      --alloc new pool if need
+      if(freepool=nil) then
+        create_new_pool(poolindex,freepool);
+        if(freepool=nil) then
+          rtl_critical_unlock(poollocks[poolindex]);
+          addr:=nil;
+          raise memory_alloc_error;
+          end if;
+      else
+        --%%TODO FLEX remove when c_rtl_segregated_pool will be derived from t_rtl_chain_item and compiler know how to compute address
+        freepool:unchecked:=t_rtl_native_unsigned(freepool:unchecked) - 8{object header};
+        end if;
+
+      --lock free pool
+      freepool^.head.freeblocks.lock;
+      header:=nil;
+      freepool^.head.freeblocks.get_next_chain_item_not_locked(p_rtl_chain_item(header:unchecked));
+      freepool^.head.freeblocks.del_not_locked(p_rtl_chain_item(header:unchecked));
+      --counters
+      freepool^.head.freecount - 1;
+      freepool^.head.usedcount + 1;
+      --remove from free chain if need
+      if freepool^.head.freecount=0 then
+        freepool^.head.isfull:=true;
+        freepools[poolindex].del(p_rtl_chain_item(^freepool^.head));
+        fullpools[poolindex].add(p_rtl_chain_item(^freepool^.head));
+        end if;
+      --unlock free pool
+      freepool^.head.freeblocks.unlock;
+      set_header_alloc(num,header,size,p_rtl_memheap(freepool:unchecked),chain,nil);
+      addr:=hdr2adr(header);
+      
+      --unlock poolchain
+      rtl_critical_unlock(poollocks[poolindex]);
+      end memmgr_alloc;
+
+    
+    ------------------------------------------------------------------------------------------------
+    static save =
+    ------------------------------------------------------------------------------------------------
+    begin
+      end save;
+
+    ------------------------------------------------------------------------------------------------
+    static load =
+    ------------------------------------------------------------------------------------------------
+    begin
+      end load;
+
+    ------------------------------------------------------------------------------------------------
+    static firstinit =
+    ------------------------------------------------------------------------------------------------
+    var
+      lastminsize      : t_rtl_native_unsigned;
+      laststatindex    : t_rtl_unsigned32;
+      firststatindex   : t_rtl_unsigned32;
+      actualmaxsize    : t_rtl_native_unsigned;
+      create           : t_rtl_logical8;
+      firstpool        : p_rtl_segregated_pool;
+    begin
+      laststatindex:=0;
+      lastminsize:=0;
+      create:=true;
+      size2statindex(mem_headbothsize+1,firststatindex);
+      for i in firststatindex .. stat_items loop
+        statindex2size(i,actualmaxsize);
+        if (i=stat_items) then
+          create:=true;
+          end if;
+        if ((actualmaxsize*3)>=(lastminsize*4)) then
+          create:=true;
+          end if;
+        if create then
+          create:=false;
+          minblocksize[poolcount]:=lastminsize;
+          maxblocksize[poolcount]:=actualmaxsize;
+          rtl_critical_new(poollocks[poolcount]);
+          for k in laststatindex .. i loop
+            poolindexes[k]:=poolcount;
+            end loop;
+          lastminsize:=actualmaxsize + 1;
+          laststatindex:=i + 1;
+          poolcount + 1;
+          end if;
+        end loop;
+      end firstinit;
+
+    ------------------------------------------------------------------------------------------------
+    static collect =
+    ------------------------------------------------------------------------------------------------
+    var
+      maxblock     : t_rtl_native_unsigned;
+      sum          : t_rtl_native_unsigned;
+      poolindex    : t_rtl_unsigned32;
+      lastindex    : t_rtl_unsigned32;
+      newmin       : t_rtl_native_unsigned;
+      newmax       : t_rtl_native_unsigned;
+
+    begin
+      { shrink stat if too large }
+      if statistic[0]>$7fffffff then
+        for k in 0 .. stat_items loop
+          statistic[k]:=statistic[k] div 10;
+          end loop;
+        end if;
+
+      { save statistics }
+      save;
+
+      { redivide large blocks }
+      maxblock:=statistic[0] div poolcount;
+      sum:=0;
+      if poolcount < pool_items then
+        for i in 1 .. (stat_items) loop
+          if poolindexes[i]<>poolindexes[i-1] then
+            sum:=statisticact[i];
+            lastindex:=i;
+          else
+            sum + statisticact[i];
+            if (sum > maxblock) then
+              poolindex:=poolindexes[i];
+              statindex2size(i,newmax);
+              newmin:=newmax+1;
+              rtl_critical_new(poollocks[poolcount]);
+              minblocksize[poolcount]:=minblocksize[poolindex];
+              maxblocksize[poolcount]:=newmax;
+              minblocksize[poolindex]:=newmin;
+              for k in lastindex .. i loop
+                poolindexes[k]:=poolcount;
+                end loop;
+              poolcount + 1;
+              if poolcount >= pool_items then
+                break {loop};
+                end if;
+              end if;
+            end if;
+          end loop;
+        end if;
+      end collect;
+
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    ------------------------------------------------------------------------------------------------
+    begin
+      firstinit;
+      rtl_start_thread(collecttask,^collector,false,^this);
+      end entry;
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    ------------------------------------------------------------------------------------------------
+    begin
+      rtl_kill_and_finish_thread(collecttask);
+      for i in 0 .. (poolcount-1) loop
+        rtl_critical_discard(poollocks[i]);
+        end loop;
+      end exit;
+
+    end c_rtl_segregatedmemheap_head;
+
+
+----------------------------------------------------------------------------------------------------
+class private c_rtl_segregated_pool =
+----------------------------------------------------------------------------------------------------
+    var
+      data         : array 0..((256*1024)-64-48-1){pool_size -t_segregated_pool_head:size -mem_bothsize -1} of unsigned 8;
+
+    ------------------------------------------------------------------------------------------------
+    override  memmgr_adjust =
+    ------------------------------------------------------------------------------------------------
+    begin
+      end memmgr_adjust;
+
+
+    ------------------------------------------------------------------------------------------------
+    override  memmgr_free =
+    ------------------------------------------------------------------------------------------------
+    var
+      header       : p_rtl_memmgr_header;
+      statindex    : t_rtl_unsigned32;
+    begin
+      header:=adr2hdr(addr);
+      --test header
+
+      check_allocated_header(header);
+      -- remove from client chain
+      set_header_free(num,header,nil,chain);
+
+      head.freeblocks.lock;
+      head.freeblocks.add_not_locked(p_rtl_chain_item(header:unchecked));
+      head.freecount + 1;
+      head.usedcount - 1;
+      if (head.isfull) and (head.freecount>=16) then
+        rtl_critical_lock(head.parenthead^.poollocks[head.poolindex]);
+        head.isfull:=false;
+        head.parenthead^.freepools[head.poolindex].del(p_rtl_chain_item(^head));
+        head.parenthead^.fullpools[head.poolindex].add(p_rtl_chain_item(^head));
+        rtl_critical_unlock(head.parenthead^.poollocks[head.poolindex]);
+        end if;
+      head.freeblocks.unlock;
+
+      -- compute statindex
+      head.parenthead^.size2statindex(addheader(header^.size),statindex);
+
+      -- statistic
+      head.parenthead^.statisticact[0]         -1;
+      head.parenthead^.statisticact[statindex] -1;
+      end memmgr_free;
+
+    ------------------------------------------------------------------------------------------------
+    static init =
+    ------------------------------------------------------------------------------------------------
+    var
+      block        : p_rtl_memmgr_header;
+      dta          : t_rtl_pointer;
+    begin
+      head.parenthead:=aparenthead;
+      head.poolindex:=apoolindex;
+      head.minsize:=aminsize;
+      head.maxsize:=amaxsize;
+      head.freecount:=data:size div head.maxsize;
+      head.isfull:=false;
+      head.usedcount:=0;
+      dta:=^data:unchecked;
+      for i in 0 .. (head.freecount-1) loop
+        block:unchecked:=t_rtl_native_unsigned(dta:unchecked) + (head.maxsize*i);
+        set_header_free(0,block,^(head.freeblocks),nil);
+        end loop;
+      end init;
+
+  end c_rtl_segregated_pool;
+
+   
+----------------------------------------------------------------------------------------------------
+class private c_rtl_segregatedmemheap = 
+----------------------------------------------------------------------------------------------------
+    var
+      head         : {%%TODO(FLEX) not pointer, internal err 564}p_rtl_segregatedmemheap_head;
+
+    ------------------------------------------------------------------------------------------------
+    override memmgr_alloc =
+    ------------------------------------------------------------------------------------------------
+    begin
+      head^.memmgr_alloc(num,addr,size,chain);
+      end memmgr_alloc;
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    ------------------------------------------------------------------------------------------------
+    begin
+      new head;
+      end entry;
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    ------------------------------------------------------------------------------------------------
+    begin
+      discard head;
+      end exit;
+
+    end c_rtl_segregatedmemheap;
+end segregated_heap;

@@ -152,6 +152,57 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure p_skipparams (
+    curr           : in tcontext) =              -- aktu ln¡ kontext
+-- preskoci parametry metaprikazu
+----------------------------------------------------------------------------------------------------
+var
+  x                : pexpnode;
+  lex              : lexsym;                     -- lexik ln¡ symbol
+
+begin
+  -- lev  z vorka
+  if followlex(curr,lex_lpar) then
+    ce^.seterror({CCERR=}000153,ce_x_lpar);
+    ce^.loadpos;
+    end if;
+
+
+  -- vy‡¡st parametry az do prave zavorky
+  loop
+    -- parametr
+    x_vyraz(curr,x,es_expr);
+
+    getlex(curr,lex);
+    case lex
+      -- carka je ok -pokracujeme dal
+      when lex_comma    do;
+      
+      -- prava zavorka - koncime
+      when lex_rpar     do break;
+      
+      -- konec - koncime
+      when lex_eof      do checkmeta; return;
+      
+      -- ostatni - chyba - cekame pravou zavorku
+      when others       do
+        ce^.seterror({CCERR=}000156,ce_x_rpar);
+        ce^.loadpos;
+      end case;
+
+    end loop;
+
+  -- strednik
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000157,ce_x_scol);
+    ce^.loadpos;
+    end if;
+
+  end p_skipparams;
+    
+
+
+----------------------------------------------------------------------------------------------------
 procedure p_pragma_import (
     curr           : in tcontext) =              -- aktu ln¡ kontext
 -- Pragma IMPORT.
@@ -382,8 +433,8 @@ var
   lex              : lexsym;                     -- lexik ln¡ symbol
   expr             : pexpnode;                   -- v˜raz
   eval             : tentityeval;                -- vyhodnocen¡
-  proc             : pentity_procedure;          -- procedura
-  id               : pentityident;               -- identifik tor volac¡ konvence
+  rtl              : t_rtl_entity;               -- intern¡ entita p©eklada‡e
+  etype            : tentitytype;                -- typ skute‡n‚ entity
 
 begin
   -- lev  z vorka
@@ -400,7 +451,9 @@ begin
     {%%RESUME ce^.raiseerror;}
     ce^.resumeerror;
     end if;
-  id:=getlexid;
+
+  -- zjistit typ intern¡ entity
+  rtl_id_to_entity(getlexid^,rtl,etype);
 
   -- ‡ rka
   if followlex(curr,lex_comma) then
@@ -411,9 +464,13 @@ begin
 
   -- jm‚no procedury
   x_vyraz(curr,expr,es_name);
-  x_evaluate(curr,expr,ek_sym_proc,nil,eu_formal,true,eval);
+  case etype
+    when et_undef     do x_evaluate(curr,expr,ek_sym,nil,eu_formal,true,eval);
+    when et_procedure do x_evaluate(curr,expr,ek_sym_proc,nil,eu_formal,true,eval);
+    when et_message   do x_evaluate(curr,expr,ek_context_message,nil,eu_formal,true,eval);
+    when others       do verify(672,true);
+    end case;
   {%%X a co kdy‘ je EVAL<>SE_EVALUATED ? }
-  pentity(proc):=expr^.getsymbol;
 
   -- prav  z vorka
   if followlex(curr,lex_rpar) then
@@ -429,7 +486,9 @@ begin
     end if;
 
   -- vytvo©it vazbu na p©eklada‡
-  rtl_set_proc(id^,proc);
+  if rtl<>rtl_unknown then
+    rtl_set_entity(rtl,expr^.getsymbol);
+    end if;
   end p_pragma_assign;
 
 
@@ -580,6 +639,67 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure p_pragma_stack_reserve (
+    curr           : in tcontext) =
+-- pragma stack_reserve
+----------------------------------------------------------------------------------------------------
+with
+  cc_base,
+  cc_base.cc_options;
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  pos              : lexposblock;                -- pozice
+  size             : t_unsigned;                 -- velikost alokovaneho mista na stacku v bytech
+  compi            : pentity;                    -- kompilacni jednotka
+
+begin
+  
+  -- lev  z vorka
+  if followlex(curr,lex_lpar) then
+    ce^.seterror({CCERR=}000153,ce_x_lpar);
+    ce^.loadpos;
+    end if;
+
+  -- velikost
+  getlex(curr,lex);
+  if lex<>lex_numi then
+    ce^.seterror({CCERR=}000162,ce_x_numi);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+
+  size:=uniint_to_unsigned(getlexui);
+
+  -- prav  z vorka
+  if followlex(curr,lex_rpar) then
+    ce^.seterror({CCERR=}000156,ce_x_rpar);
+    ce^.loadpos;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000157,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
+  -- najdi kompilacni jednotku
+  compi:=sym_get_enclosing_or_self(curr.entity,et_compile);  
+
+  -- kompilacni jednotka musi existovat
+  verify(670,compi=nil);
+  
+  -- nastav
+  o_set_option_on(opt_stack_reserve,curr);
+  o_set_option_param_unsigned(opt_stack_reserve,curr,size);
+  
+  end p_pragma_stack_reserve;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure p_meta_include : tmetaaction =
 -- Metap©¡kaz #INCLUDE.
 ----------------------------------------------------------------------------------------------------
@@ -699,31 +819,18 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure p_meta_option : tmetaaction =
--- Metap©¡kaz #OPTION.
+procedure p_meta_option_warning (
+    curr         : in tcontext) =
+-- Metap©¡kaz #option - specialni pripad warning
 ----------------------------------------------------------------------------------------------------
 var
   lex              : lexsym;                     -- lexik ln¡ symbol
   expr             : pexpnode;                   -- v˜raz
-  idopt            : pentityident;               -- identifik tor parametru
   idwarning        : pentityident;               -- identifik tor warningu
-  warnings         : t_logical;                  -- T-jedn  se o nastaven¡ warning–
   ul               : tunilogical;
   eval             : tentityeval;
 
 begin
-  -- identifik tor
-  if followlex(curr,lex_id) then
-    ce^.seterror({CCERR=}000181,ce_x_id);
-    ce^.loadpos;
-    {%%RESUME ce^.raiseerror;}
-    ce^.resumeerror;
-    end if;
-  idopt:=getlexid;
-
-  -- nen¡ to nastaven¡ warov n¡ ?
-  warnings:=idopt^=opt_warning;
-
   -- lev  z vorka
   if followlex(curr,lex_lpar) then
     ce^.seterror({CCERR=}000182,ce_x_lpar);
@@ -731,21 +838,19 @@ begin
     end if;
 
   -- identifik tor warningu
-  if warnings then
-    -- identifik tor
-    if followlex(curr,lex_id) then
-      ce^.seterror({CCERR=}000000,ce_x_id);
-      ce^.loadpos;
-      {%%RESUME ce^.raiseerror;}
-      ce^.resumeerror;
-      end if;
-    idwarning:=getlexid;
 
-    -- ‡ rka
-    if followlex(curr,lex_comma) then
-      ce^.seterror({CCERR=}000000,ce_x_comma);
-      ce^.loadpos;
-      end if;
+  if followlex(curr,lex_id) then
+    ce^.seterror({CCERR=}000000,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
+    end if;
+  idwarning:=getlexid;
+
+  -- ‡ rka
+  if followlex(curr,lex_comma) then
+    ce^.seterror({CCERR=}000000,ce_x_comma);
+    ce^.loadpos;
     end if;
 
   -- v˜raz
@@ -770,10 +875,175 @@ begin
     end if;
 
   -- nastavit
-  if warnings
-    then sym_set_warning(curr,idwarning^,ul=ul_true);
-    else sym_set_option(curr,idopt^,ul=ul_true);
+  sym_set_warning(curr,idwarning^,ul=ul_true);
+
+  end p_meta_option_warning;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_meta_option : tmetaaction =
+-- Metap©¡kaz #OPTION.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base,
+  cc_base.cc_options;
+
+var
+  lex              : lexsym;                     -- lexik ln¡ symbol
+  expr             : pexpnode;                   -- v˜raz
+  idopt            : pentityident;               -- identifik tor parametru
+  ul               : tunilogical;
+  ui               : tuniint;
+  eval             : tentityeval;
+  option           : toption;
+  switchable       : t_logical;
+  paramtype        : tdatatype;
+  paramexpr        : expkind;
+  optionapplicable : t_logical;
+
+begin
+  -- identifik tor
+  if followlex(curr,lex_id) then
+    ce^.seterror({CCERR=}000181,ce_x_id);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    ce^.resumeerror;
     end if;
+  idopt:=getlexid;
+
+  -- nen¡ to nastaven¡ warov n¡ ?
+  if (idopt^=opt_warning) then 
+    p_meta_option_warning(curr); 
+    return; 
+    end if;
+
+  -- neznama option?
+  if not o_get_option_by_id(idopt^,option) then
+    -- waruj
+    ce^.setwarning({CCERR=}000320,cw_unknown_option);
+    ce^.setparam(entityident_to_string(idopt^));
+    ce^.loadpos;
+    
+    -- preskoc zbytek
+    p_skipparams(curr);
+    
+    return;
+    end if;
+
+  -- da se nastaveni pouzit v tomto contextu?
+  optionapplicable:=o_is_option_applicable(option,curr);
+  if not optionapplicable then
+    -- neda
+    ce^.setwarning({CCERR=}000320,cw_option_not_applicable);
+    ce^.setparam(entityident_to_string(idopt^));
+    ce^.loadpos;
+
+    -- preskoc zbytek
+    p_skipparams(curr);
+
+    -- konec
+    return;
+    end if;
+  
+  -- lev  z vorka
+  if followlex(curr,lex_lpar) then
+    ce^.seterror({CCERR=}000182,ce_x_lpar);
+    ce^.loadpos;
+    end if;
+
+  -- da se nastaveni vypnout?
+  switchable:=o_is_option_switchable(option);
+  if switchable then
+    -- da - ocekavame logicky vyraz
+    x_vyraz(curr,expr,es_expr);
+    x_evaluate(curr,expr,ek_const_logical,nil,eu_use,true,eval);
+    verify(285,eval<>ete_evaluated);
+
+    -- hodnota v˜razu
+    x_const_logical(expr,ul);
+    end if;
+
+  -- pokud se neda nastaveni vypnout a je jiz definovane
+  if not switchable and o_is_option_by_context(option,curr) then
+    -- varuj
+    ce^.setwarning({CCERR=}000320,cw_option_redefined);
+    ce^.setparam(entityident_to_string(idopt^));
+    ce^.loadpos;
+
+    end if;
+
+  -- datovy typ parametru parametru nastaveni
+  paramtype:=o_get_option_param_type(option);
+
+  -- ocekavame parametr?
+  if paramtype<>dt_undef then
+    -- ocekavame
+    
+    -- pokud vypinatelne
+    if switchable then
+      -- ‡ rka
+      if followlex(curr,lex_comma) then
+        ce^.seterror({CCERR=}000000,ce_x_comma);
+        ce^.loadpos;
+        end if;
+      end if;
+
+    -- typ ocekavaneho vyrazu podle datoveho typu parametru nastaveni
+    case paramtype
+      -- cele kladne cislo
+      when dt_unsigned do paramexpr:=ek_const_int;
+    
+      -- nic jineho nezname - podle potreby pridat dalsi typy
+      when others do verify(681,true);
+      end case;
+    
+    x_vyraz(curr,expr,es_expr);
+    x_evaluate(curr,expr,paramexpr,nil,eu_use,true,eval);
+    verify(285,eval<>ete_evaluated);
+
+    -- podle typu ziskej hodnotu vyrazu
+    case paramexpr
+      when ek_const_int do
+        -- zjisti hodnotu univerzalniho cisla
+        x_const_int(expr,ui);
+        
+        -- z unicisla zformatuj ocekavany typ
+        case paramtype
+          when dt_unsigned do o_set_option_param_unsigned(option,curr,uniint_to_unsigned(ui));
+          
+          -- jiny datovy typ nezname - podle potreby dodelat
+          when others do verify(673,true);
+          end case;
+      
+      -- jiny vyraz zatim nezname - podle potreby dodelat
+      when others do verify(674,true);
+
+      end case;
+    end if;
+
+  -- nastaveni se vypina?
+  if switchable and ul=ul_false then
+    -- ano - vypni
+    o_set_option_off(option,curr);
+  else
+    -- ne - zapni
+    o_set_option_on(option,curr);
+    end if;
+
+  -- prav  z vorka
+  if followlex(curr,lex_rpar) then
+    ce^.seterror({CCERR=}000183,ce_x_rpar);
+    ce^.loadpos;
+    end if;
+
+  -- st©edn¡k
+  if followlex(curr,lex_scol) then
+    ce^.seterror({CCERR=}000184,ce_x_scol);
+    ce^.loadpos;
+    {%%RESUME ce^.raiseerror;}
+    end if;
+
   end p_meta_option;
 
 
@@ -826,6 +1096,10 @@ begin
   -- #pragma no_return
   elsif id^=pragma_no_return then
     p_pragma_no_return(curr);
+
+  -- #pragma stack_alloc
+  elsif id^=pragma_stack_reserve then
+    p_pragma_stack_reserve(curr);
 
   -- nezn m‚ pragma
   else 
@@ -2314,11 +2588,11 @@ begin
                 return;
 
               -- lev  z vorka => vno©en¡
-              elsif lex=lex_lpar then
+              elsif lex in lexsymset:[lex_lpar,lex_lbra] then
                 succ depth;
 
               -- prav  z vorka
-              elsif lex=lex_rpar then 
+              elsif lex in lexsymset:[lex_rpar,lex_rbra] then 
                 if depth=0
                   -- na nult‚ £rovni je to konec v¨ech parametr–
                   then break;

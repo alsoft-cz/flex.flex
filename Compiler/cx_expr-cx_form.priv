@@ -268,7 +268,7 @@ begin
   ---- - ----
   uset11(unarytab,un_minus         ,dt_signed    ,una_el);
   uset11(unarytab,un_minus         ,dt_uniint    ,una_el);
-  uset1s(unarytab,un_minus         ,dts_u_real   ,una_el);
+  uset1s(unarytab,un_minus         ,dts_u_float  ,una_el);
 
   ---- NOT ----
   uset1s(unarytab,un_not           ,dts_u_logical,una_el);
@@ -283,12 +283,12 @@ begin
   ---- ABS ----
   uset11(unarytab,un_abs           ,dt_signed    ,una_el);
   uset11(unarytab,un_abs           ,dt_uniint    ,una_el);
-  uset1s(unarytab,un_abs           ,dts_u_real   ,una_el);
+  uset1s(unarytab,un_abs           ,dts_u_float  ,una_el);
 
   ---- SUCC/PRED ----
   usetss(unarytab,expunarytypeset:[un_succ,un_pred],dts_u_integer,una_el);
-  usetss(unarytab,expunarytypeset:[un_succ,un_pred],dts_u_logical,una_el);
   usetss(unarytab,expunarytypeset:[un_succ,un_pred],dts_u_char   ,una_el);
+  usetss(unarytab,expunarytypeset:[un_succ,un_pred],dts_u_logical,una_el);
   usets1(unarytab,expunarytypeset:[un_succ,un_pred],dt_enum      ,una_el);
   end initunarytab;
 
@@ -305,26 +305,69 @@ procedure checkparam (
 ----------------------------------------------------------------------------------------------------
 var
   argt             : typeview;                   -- typ argumentu
+  oclass           : toperclass;                 -- t©¡da operace p©ed n¡ parametru
 
 begin
   -- p©edpoklad: nedopadne to dob©e
   ok:=false;
 
   -- ovˆ©it t©¡du v˜razu
-  case param^.mode
-    -- IN => hodnota
-    when pm_in            do if expr^.nclass not in ncs_value then return; end if;
+  case param^.pass
+    -- hodnotou nebo referenc¡
+    when pp_value, pp_ref do
+        case param^.mode
+          -- IN => hodnota
+          when pm_in            do 
+              -- podv˜raz mus¡ b˜t hodnota
+              -- %%X nebo typ, kdy‘ je to tag!
+              if expr^.nclass not in ncs_value then return; end if;
 
-    -- [ IN ] OUT => promˆnn 
-    when pm_out, pm_inout do if expr^.nclass not in ncs_var then return; end if;
+              -- p©ed n¡ oby‡en‚ho IN parametru
+              oclass:=toc_param_in;
 
-    when others   do verify(294,true);
+          -- [ IN ] OUT => promˆnn 
+          when pm_out, pm_inout do 
+              -- podv˜raz mus¡ b˜t promˆnn 
+              if expr^.nclass not in ncs_var then return; end if;
+
+              -- p©ed n¡ oby‡ejn‚ho OUT parametru
+              oclass:=toc_param_out;
+
+          when others   do verify(294,true);
+          end case;
+
+    -- referenc¡, bez typov‚ kontroly
+    when pp_unchecked do 
+        -- podv˜raz mus¡ b˜t promˆnn 
+        if expr^.nclass not in ncs_var then return; end if;
+
+        -- p©ed n¡ UNCHECKED parametru
+        oclass:=toc_param_unchecked;
+
+    -- referenc¡, v‡etnˆ odvozen˜ch typ–
+    when pp_class     do
+        -- podv˜raz mus¡ b˜t promˆnn 
+        if expr^.nclass not in ncs_var then return; end if;
+
+        -- p©ed n¡ CLASS nebo VIRTUAL parametru
+        oclass:=toc_param_class;
+
+    -- referenc¡, ©¡d¡c¡ parametr virtu ln¡ho vol n¡
+    when pp_virtual   do 
+        -- podv˜raz mus¡ b˜t promˆnn 
+        if expr^.nclass not in ncs_var then return; end if;
+
+        -- p©ed n¡ CLASS nebo VIRTUAL parametru
+        oclass:=toc_param_class;
+
+    when others do verify(673,true);
     end case;
 
   -- ovˆ©it kompatibilitu typ–
   verify(293,param^.pass=pp_unchecked);
   argt.init(curr,param^.typ.getctype);
-  if t_getcomplevel(curr,toc_ref,false,argt,typ,false)<tcl_static_identical then return; end if;
+  if t_getcomplevel(curr,toc_param_class{oclass},false,argt,typ,false)<tcl_static_identical then return; end if;
+  --if t_getcomplevel(curr,toc_ref,false,argt,typ,false)<tcl_static_identical then return; end if;
 
   -- OK, kompatibiln¡
   ok:=true;
@@ -638,7 +681,7 @@ begin
     if (oop<>oop_none)
     -- ... a operand je neuniverz ln¡ho typu) 
     and not t_is_sts(elt^,dts_unitype) then
-      {%%X Tenhle algoritmus je a‘ na drobnosti stejn˜, }
+      -- %%X Tenhle algoritmus je a‘ na drobnosti stejn˜,
       -- jako v A_FORM_OPERATOR. Ne¨lo by to zobecnit ?  
 
       -- prohledat v¨echny p©et¡‘en‚ oper tory 
@@ -762,7 +805,7 @@ begin
               checkclass(curr,arg^.sub,ncs_value,ce_i_expr,info);
 
               -- typy mus¡ b˜t kompatibiln¡
-              if not t_compatible(curr,toc_transform,false,arg^.t,arg^.sub^.t,false) then
+              if not t_compatible(curr,toc_param_in,false,arg^.t,arg^.sub^.t,false) then
                 {%%X zp©esnit chybov‚ hl ¨en¡ }
                 ce^.seterror({CCERR=}000047,ce_incompatible);
                 arg^.errpos;
@@ -775,8 +818,8 @@ begin
               -- podv˜raz mus¡ b˜t promˆnn 
               checkclass(curr,arg^.sub,ncs_var,ce_x_name_var,info);
 
-              -- typy mus¡ b˜t alespo¤ staticky bin rnˆ shodn‚
-              if t_getcomplevel(curr,toc_ref,false,arg^.t,arg^.sub^.t,false)<tcl_static_identical then
+              -- typy mus¡ b˜t kompatibiln¡
+              if not t_compatible(curr,toc_param_out,false,arg^.t,arg^.sub^.t,false) then
                 {%%X zp©esnit chybov‚ hl ¨en¡ }
                 ce^.seterror({CCERR=}000048,ce_incompatible);
                 arg^.errpos;
@@ -793,7 +836,16 @@ begin
         -- podv˜raz mus¡ b˜t promˆnn 
         checkclass(curr,arg^.sub,ncs_var,ce_x_name_var,info);
 
-        {%%X Doplnit kontrolu n sobku velikostu pro unconstrained array }
+        -- typy mus¡ b˜t kompatibiln¡
+        if not t_compatible(curr,toc_param_unchecked,false,arg^.t,arg^.sub^.t,false) then
+          {%%X zp©esnit chybov‚ hl ¨en¡ }
+          ce^.seterror({CCERR=}000048,ce_incompatible);
+          arg^.errpos;
+          {%%RESUME ce^.raiseerror;}
+          ce^.resumeerror;
+          end if;
+{
+        -- %%X Doplnit kontrolu n sobku velikostu pro unconstrained array
         -- a unconstrained string a dynamick‚ kontroly
 
         -- m  form ln¡ parametr typ ?
@@ -807,14 +859,14 @@ begin
           else
             { nic nedˆlat };
             end if;
-
+}
     -- referenc¡, v‡etnˆ odvozen˜ch typ–
     when pp_class     do
         -- podv˜raz mus¡ b˜t promˆnn 
         checkclass(curr,arg^.sub,ncs_var,ce_x_name_var,info);
 
-        -- typy mus¡ b˜t alespo¤ dynamicky bin rnˆ shodn‚
-        if t_getcomplevel(curr,toc_ref,false,arg^.t,arg^.sub^.t,false)<tcl_dynamic_identical then
+        -- typy mus¡ b˜t kompatibiln¡
+        if not t_compatible(curr,toc_param_class,false,arg^.t,arg^.sub^.t,false) then
           {%%X zp©esnit chybov‚ hl ¨en¡ }
           ce^.seterror({CCERR=}000049,ce_incompatible);
           arg^.errpos;
@@ -844,18 +896,12 @@ with
   advanced.low_level,
   advanced.low_level.bit_operations;
 
-var
-  proc             : pentity_type;               -- typ procedury
-  param            : pentity_param;              -- form ln¡ parametry procedury
-  param_srch       : tentitysearch;              -- vyhled v tko 
-  arg              : pexpitem;                   -- skute‡n‚ parametry procedury
-  --%%X nˆjak zobecnit p©es seznam argument–
-  argsused         : set of t_unsigned8;         -- pou‘it‚ parametry
-  pos              : t_unsigned;                 -- index pozi‡n¡ho parametru
+type
+  t_argsused       = set of t_unsigned8; 
 
     ------------------------------------------------------------------------------------------------
     procedure argcount (
-        argsused   : a_form_call.argsused:type)
+        argsused   : t_argsused)
                    return t_unsigned =
     -- Po‡et pou‘it˜ch argument–
     ------------------------------------------------------------------------------------------------
@@ -867,11 +913,26 @@ var
         end loop;  
       end argcount;
 
+var
+  proc             : pentity_type;               -- typ procedury
+  param            : pentity_param;              -- form ln¡ parametry procedury
+  param_srch       : tentitysearch;              -- vyhled v tko 
+  arg              : pexpitem;                   -- skute‡n‚ parametry procedury
+  --%%X nˆjak zobecnit p©es seznam argument–
+  argsused         : t_argsused;         -- pou‘it‚ parametry
+  pos              : t_unsigned;                 -- index pozi‡n¡ho parametru
+
 begin
   ----- %%LANG Po©ad¡ vyhodnocov n¡ parametr– ------------------------------------------------------
   -- Pozi‡n¡ parametry se vyhodnocuj¡ zleva doprava. Kl¡‡ov‚ parametry nemaj¡ p©esn‚ po©ad¡
   -- vyhodnocov n¡ definov no - kompil tor si je m–‘e p©eskl dat tak, jak se mu budou nejl‚pe
   -- ukl dat na stack.
+  --------------------------------------------------------------------------------------------------
+
+  ----- %%TECH P©erovn n¡ skute‡n˜ch parametr– -----------------------------------------------------
+  -- P©eklada‡ p©erovn v  skute‡n‚ parametry podle po©ad¡ deklarace form ln¡ch parametr–, a to
+  -- v‡etnˆ kl¡‡ov˜ch parametr–. P©i generov n¡ k¢du se vol¡ smˆr zpracov n¡ parametr– (zleva do
+  -- prava nebo naopak) podle volac¡ konvence.
   --------------------------------------------------------------------------------------------------
 
   -- typ procedury 
@@ -882,12 +943,13 @@ begin
   param_srch.find_et_first(proc,rc_primary,et_param,{tesearchflagset:}[]);
   argsused:=[];
   pos:=0;
-  while (arg<>nil) and (arg^.itype in expitemtypeset:[ei_empty,ei_expr]) loop
+  while arg<>nil and then arg^.itype in expitemtypeset:[ei_empty,ei_expr] loop
+  {
     -- naj¡t dal¨¡ pozi‡n¡ parametr 
     while param_srch.psym<>nil and then pentity_param(param_srch.psym)^.num<>pos loop
       param_srch.find_et_next;
       end loop;
-
+  }
     -- pro zjednodu¨en¡ p©evz¡t v˜sledek hled n¡
     param:=param_srch.psym;
    
@@ -901,6 +963,7 @@ begin
       end if;
 
     -- ke skute‡n‚mu parametru p©i©adit form ln¡ parametr, aŸ se to p©¡¨tˆ l‚pe hled  
+    verify(682,pentity_param(param)^.num<>pos);
     arg^.sym:=param;
 
     -- po‘adovan˜ typ parametru 
@@ -937,16 +1000,17 @@ begin
 
     -- dal¨¡ pozi‡n¡ parametr 
     arg:=pexpitem(arg^.next);
+    param_srch.find_et_next;
     succ pos;
     end loop;
 
   -- zpracovat kl¡‡ov‚ parametry 
-  while (arg<>nil) and (arg^.itype=ei_ident) loop
+  while arg<>nil and then arg^.itype=ei_ident loop
     unimplementedx(16,arg^.sub^.pos);
     end loop;
 
   -- kl¡‡ov˜ parametr OTHERS 
-  if (arg<>nil) and (arg^.itype=ei_others) then
+  if arg<>nil and then arg^.itype=ei_others then
     unimplementedx(85,arg^.sub^.pos);
     end if;
 
@@ -956,7 +1020,10 @@ begin
   if argcount(argsused){%%TODO(ATTRIBUTE) nahradit atributem: bitcount(argsused,argsused:size)}<proc^.parcount then
     unimplementedx(17,expr^.sub^.pos);
 
-    -- vy‡erpal jsem v¨echny parametry ? 
+    -- naj¡t form ln¡ parametr
+    --...
+
+    --  vy‡erpal jsem v¨echny parametry ? 
     end if;
 
   if proc^.result{rtype.getutype}<>nil
@@ -997,8 +1064,8 @@ var
   arg              : pexpitem;                   -- parametr
 
 begin
-  {%%TECH P©edpokl d  se, ‘e form ln¡ kontrola prefixu i parametr– ji‘ byla  }
-  -- provedena a ‘e typ podv˜razu je zpr va.                                  
+  -- %%TECH P©edpokl d  se, ‘e form ln¡ kontrola prefixu i parametr– ji‘ byla
+  -- provedena a ‘e typ podv˜razu je zpr va.
 
   -- oddˆlit prefix a parametry 
   expr^.get(el,arglist);
@@ -1040,8 +1107,8 @@ var
   arg              : pexpitem;                   -- parametr                                    
 
 begin
-  {%%TECH P©edpokl d  se, ‘e form ln¡ kontrola prefixu i parametr– ji‘ byla  }
-  -- provedena a ‘e typ podv˜razu je zpr va.                                  
+  -- %%TECH P©edpokl d  se, ‘e form ln¡ kontrola prefixu i parametr– ji‘ byla
+  -- provedena a ‘e typ podv˜razu je zpr va.
 
   -- oddˆlit prefix a parametry 
   expr^.get(el,arglist);
@@ -1832,16 +1899,13 @@ var
   x                : pexpitem;
 
 begin
-  ----- %%TECH -----------------------------------------------------------
-  -- Form ln¡ kontrolu mohu prov‚st nez visle pro prefix i pro v¨echny        
-  -- argumenty, tak‘e se p©¡padn‚ nevyhodnocen¡ detekuje a‘ po zpracov n¡     
-  -- v¨ech podv˜raz–.                                                         
+  ----- %%TECH -------------------------------------------------------------------------------------
+  -- Form ln¡ kontrolu mohu prov‚st nez visle pro prefix i pro v¨echny argumenty, tak‘e se p©¡padn‚ 
+  -- nevyhodnocen¡ detekuje a‘ po zpracov n¡ v¨ech podv˜raz–.                                                         
   -- Srovnej s CX_TYPE.A_TYPE_CALL, CX_OPT.A_OPT_CALL                         
   --                                                                          
-  -- %%X a p©eci - nemˆlo by se to pro ka‘d˜ typ dˆlat znova ? T©eba ve       
-  -- form ln¡ kontrole vol n¡ procedury se stejnˆ v cyklu kontroluj¡          
-  -- parametry.                                                               
-  --                                                                          
+  -- %%X a p©eci - nemˆlo by se to pro ka‘d˜ typ dˆlat znova ? T©eba ve form ln¡ kontrole vol n¡ 
+  -- procedury se stejnˆ v cyklu kontroluj¡ parametry.                                                               
   --------------------------------------------------------------------------------------------------
 
   -- rozdˆlit 
@@ -2128,6 +2192,9 @@ procedure a_form_ref (
     info           : in expinfo) =               -- informace o pr–bˆhu anal˜zy
 -- Reference.
 ----------------------------------------------------------------------------------------------------
+with
+  cx_phase;
+
 var
   size             : tunidata_size;              -- velikost pointeru
   el               : pexpnode;                   -- podv˜raz
@@ -2143,14 +2210,18 @@ begin
   -- rozdelit podv˜razy 
   expr^.split(el);
 
-  -- form ln¡ kontrola podv˜razu 
-  a_form(curr,el,info);
+  -- vyhodnotit prefix 
+  x_phase_next(curr,el,nulltype,eu_none,ep_type,info);
 
   -- slou‡it 
   expr^.join(el);
 
-  -- povedla se form ln¡ kontrola podv˜raz– 
-  if el^.zprac<>ep_form then return; end if;
+  -- povedlo se vyhodnocen¡ podv˜razu?
+  if el^.zprac<ep_type then return; end if;
+
+  -- %%TECH p©esto‘e dynamick‚ atributy se ur‡uj¡ a‘ v dal¨¡ f zi zpracov n¡
+  -- v˜razu, je mo‘n‚ se na nˆ odkazovat funkc¡ X_RTA_IS_AVAILABLE d¡ky
+  -- vol n¡ X_PHASE_NEXT v˜¨e.
 
   -- podv˜raz mus¡ b˜t jednozna‡n˜ 
   checkresolve(curr,el,nulltype,info);
@@ -2167,7 +2238,7 @@ begin
         -- ur‡it kompatibilitu b ze
         case el^.t.tview
           -- Unchecked view => unchecked
-          when tview_unchecked do
+          when tview_unchecked  do
               -- Regul rn¡ jistˆ bude
               -- D–kaz: Unchecked view lze zkonstruovat jen pomoc¡ :unchecked
               -- a tento atribut lze aplikovat jen na podv˜raz regul rn¡ho
@@ -2175,31 +2246,31 @@ begin
               pbase:=pb_unchecked;
 
           -- Partial view => class
-          when tview_partial   do
+          when tview_partial    do
               -- Regul rn¡ jistˆ bude
               -- D–kaz: Pokud je u typu podez©en¡, ‘e na nˆj m–‘e b˜t
               -- vytvo©eno Partial view, je definitoricky prohl ¨en za
               -- regul rn¡. Dop©edn  deklarace nelze dokon‡it definic¡
               -- singul rn¡ho typu.
-              if el^.t.tagged
+              if {el^.t.tagged} x_rta_is_available(el,rta_tag)
                 then pbase:=pb_class
                 else pbase:=pb_strict;
                 end if;
 
           -- Incomplete view => class
           when tview_incomplete do
-              -- %%X Nem–‘e se st t, ‘e typ byl singul rn¡? Snad ne, proto‘e  
+              -- %%X Nem–‘e se st t, ‘e by typ byl singul rn¡? Snad ne, proto‘e  
               -- jinak by od nˆj neexistovala instance v podobˆ promˆnn‚, ne? 
-              if el^.t.tagged
+              if {el^.t.tagged} x_rta_is_available(el,rta_tag)
                 then pbase:=pb_class
                 else pbase:=pb_strict;
                 end if;
 
           -- Full view => class
-          when tview_full      do
+          when tview_full       do
               -- podv˜raz mus¡ b˜t regul rn¡ typ
               checksts(curr,el,dts_regular,ce_i_expr,'',info);
-              if el^.t.tagged
+              if {el^.t.tagged} x_rta_is_available(el,rta_tag)
                 then pbase:=pb_class
                 else pbase:=pb_strict;
                 end if;
@@ -2213,8 +2284,8 @@ begin
         -- vypo‡¡tat determinaci p©¡stupu
         paccess:=va_norm;
       { Tohle zat¡m nefunguje.
-        {%%X Na tohle udˆlat funkci ! }
-        {%%X Takhle jednoduch‚ to snad nem–‘e b˜t, ne ? Mus¡ se to prohled vat do hloubky. }
+        --%%X Na tohle udˆlat funkci ! 
+        -- %%X Takhle jednoduch‚ to snad nem–‘e b˜t, ne ? Mus¡ se to prohled vat do hloubky. 
         case el^.ntype
           when nt_component do
               verify(545,(pexpcomponent(el)^.s.psym=nil) or (pexpcomponent(el)^.s.psym^.ptype<>et_var));
@@ -2226,7 +2297,7 @@ begin
                 end case;
 
           when nt_attrib do paccess:=va_norm;
-          when nt_index  do {%%X !! prohledat loop hloubky}paccess:=va_norm; end loop;
+          when nt_index  do {%%X !! prohledat do hloubky}paccess:=va_norm; end loop;
           when nt_deref  do paccess:=el^.sub^.t.getpaccess;
           when others do verify(546,true);
           end case;
@@ -2558,8 +2629,8 @@ begin
   expr^.split(el,arglist);
 
   -- vyhodnotit prefix 
-  x_phase_next(curr,el,nulltype,eu_none,pred(ep_final),info);
-  if el^.zprac<pred(ep_final) then
+  x_phase_next(curr,el,nulltype,eu_none,pred ep_final,info);
+  if el^.zprac<pred ep_final then
     expr^.join(el,arglist);
     return;
     end if;
@@ -2987,7 +3058,7 @@ begin
   verify(2,expr=nil);
 
   -- zpracov vat jen v˜razy z bezprost©ednˆ p©edchoz¡ f ze
-  if expr^.zprac<>pred(ep_form) then return; end if;
+  if expr^.zprac<>pred ep_form then return; end if;
 
   -- zkontrolovat v˜raz 
   case expr^.ntype

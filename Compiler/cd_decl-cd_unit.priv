@@ -200,7 +200,7 @@ begin
             pconst^.cflags+constflagset:[cf_typed];
 
             -- p©e‡¡st typ konstanty
-            p_typename(curr,pconst_context,pconst^.typ);
+            p_typeidef(curr,pconst_context,pconst^.typ);
 
             -- dal¨¡ symbol
             getlex(pconst_context,lex);
@@ -1126,10 +1126,10 @@ begin
       -- p©ed v n¡ instance
       -- v t©¡dˆ
       if curr.entity^.etype=et_class then
-         if etype=et_virtual and curr.region^.vsect<>etv_private then pproc^.instance:=tip_dispatch
-         elsif etype=et_procedure then pproc^.instance:=tip_optional
-         else pproc^.instance:=tip_pass;
-         end if;
+        if etype=et_virtual and curr.region^.vsect<>etv_private then pproc^.instance:=tip_dispatch
+        elsif etype=et_procedure then pproc^.instance:=tip_optional
+        else pproc^.instance:=tip_pass;
+        end if;
       -- v modulu/programu/kompila‡n¡ jednotku
       elsif curr.entity^.etype in tentitytypeset:[et_module,et_program,et_compile] then pproc^.instance:=tip_none
       -- v overridu
@@ -1170,7 +1170,16 @@ begin
       case lex
 
         -- rovn¡tko => Full declaration
-        when lex_eq   do d_next(pproc^,pos);
+        when lex_eq   do 
+            -- abstraktn¡ deklarace nesm¡ obsahovat definici
+            if pproc^.is_abstract then
+              ce^.seterror({CCERR=}000000,ce_no_abstract_definition);
+              ce^.loadpos;
+              ce^.resumeerror;
+              end if;
+            
+            -- dal¨¡ ‡ st deklarace
+            d_next(pproc^,pos);
 
         -- st©edn¡k => Incomplete declaration
         when lex_scol do d_end(pproc^,pos);
@@ -1186,7 +1195,7 @@ begin
       end if;
 
   -- p©elo‘it definici
-  if pproc^.compiling=etd_full then
+  if pproc^.compiling=etd_full and not pproc^.is_abstract then
     -- p©ekl d  se rovnou ‡ st PRIVATE
     pproc_context.region^.vsect:=etv_private;
 
@@ -1779,7 +1788,7 @@ begin
         when lex_protected do p_protected(curr);
 
         -- konec bloku deklarac¡
-        when lex_eof,lex_entry,lex_exit,lex_adjust,lex_program,lex_begin,lex_end do
+        when lex_eof,lex_entry,lex_exit,lex_adjust,lex_rollback,lex_commit,lex_program,lex_begin,lex_end do
             -- naposledy p©e‡ten˜ symbol vr tit do vstupu
             ungetlex;
             return;
@@ -1798,7 +1807,7 @@ begin
             loop
               getlex(curr,lex);
               if lex in lexsymset:[lex_eof,lex_program,lex_begin,lex_end] then return{goto k1}; end if;
-              until lex in lexsymset:[lex_type,lex_const,lex_var,lex_define,lex_procedure,
+              until lex in lexsymset:[lex_type,lex_const,lex_var,{lex_define,}lex_procedure,
                 lex_static,lex_virtual,lex_macro,lex_class,{lex_interface,}
                 lex_private,lex_protected,lex_message,{lex_alias,}lex_label,
                 lex_overload,lex_module,{lex_entry,lex_exit,lex_adjust,}lex_task];
@@ -2008,6 +2017,9 @@ begin
   ---- typ intern¡ slo‘ky t©¡dy @STATUS ----
   newdefaultord(nil,dt_unsigned,inttype_status);
 
+  ---- typ intern¡ slo‘ky t©¡dy @INSTANCE ----
+  newdefaultptr(nil,ptrflagsset:[pf_machine],pc_data,pb_unchecked,[],inttype_instance);
+
   ---- strojov˜ pointer ----
   newdefaultptr(nil,ptrflagsset:[pf_machine],pc_data,pb_unchecked,[],inttype_machine_pointer);
   end p_compinit;
@@ -2053,9 +2065,12 @@ begin
 
   -- deklarace programu nebo knihovny
   if checklex(compi_context,lex_program) 
-    then p_program(compi_context);
-    else library:=true;
-    -- tady jiz knihovna zkompilovana (viz. p_declare)
+    then 
+      compi^.compitype:=ct_program;
+      p_program(compi_context);
+    else 
+      -- knihovna uz zkompilovana (viz. p_declare)
+      compi^.compitype:=ct_library;
     end if;
 
   -- konec textu

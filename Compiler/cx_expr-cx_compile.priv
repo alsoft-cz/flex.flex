@@ -8,7 +8,8 @@ module private cx_compile =
 
 with
   cc_debug,cc_attr,
-  cx_imm;
+  cx_imm,
+  cc_options;
 
 ----------------------------------------------------------------------------------------------------
 procedure x_vyraz =
@@ -16,6 +17,9 @@ procedure x_vyraz =
 -- Provede pouze syntaktickou anal˜zu.
 ----------------------------------------------------------------------------------------------------
 with
+#if #declared advanced_resuming; #and then; advanced_resuming then;
+  cc_syntax,
+#end if;
   cx_parse;
   
 var
@@ -25,7 +29,7 @@ begin
   expr:=nil;
 
 #if dump then;{%OFF}
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     debug_dump('---- Prvni pruchod ------------------------------------------------------------');
     end if;
 #end if;{%ON}
@@ -34,24 +38,40 @@ begin
   info.init(false,nil{typ},false{final});
 
   -- F ze 1: rozklad v˜razu
-#if dump then;{%OFF}
-  if opt_dump in curr.entity^.compv.opts then
-    debug_dump('---- Faze 1: Rozklad vyrazu ---------------------------------------------------');
-    end if;
-#end if;{%ON}
-  info.phase:=ep_syntax;
-  case syntax
-    when es_expr   do a_vyraz(curr,expr,info);
-    when es_range  do a_rozsah(curr,expr,info);
-    when es_choice do a_vyber(curr,expr,info);
-    when es_name   do a_jmeno(curr,expr,info);
-    when es_cmd    do a_prikaz(curr,expr,info);
-    when others    do verify(243,true);
-    end case;
-#if dump then;
-  if opt_dump in curr.entity^.compv.opts then
-    dumptree(expr);
-    end if;
+#if #declared advanced_resuming; #and then; advanced_resuming then;
+  declare var
+    sr             : c_sr_expression;
+
+  begin
+    -- sv zat s aktu ln¡m kontextem
+    sr.bind(curr);
+#end if;
+
+  #if dump then;{%OFF}
+    if o_is_option_by_context(opt_dump,curr) then
+      debug_dump('---- Faze 1: Rozklad vyrazu ---------------------------------------------------');
+      end if;
+  #end if;{%ON}
+    
+    -- syntaktick  anal˜za
+    info.phase:=ep_syntax;
+    case syntax
+      when es_expr   do a_vyraz(curr,expr,info);
+      when es_range  do a_rozsah(curr,expr,info);
+      when es_choice do a_vyber(curr,expr,info);
+      when es_name   do a_jmeno(curr,expr,info);
+      when es_cmd    do a_prikaz(curr,expr,info);
+      when others    do verify(243,true);
+      end case;
+
+  #if dump then;
+    if o_is_option_by_context(opt_dump,curr) then
+      dumptree(expr);
+      end if;
+  #end if;
+
+#if #declared advanced_resuming; #and then; advanced_resuming then;
+    end declare;
 #end if;
 
   -- ozna‡it vrcholov˜ uzel
@@ -153,7 +173,7 @@ begin
   t.init(curr,typ);
 
 #if dump then;{%OFF}
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     debug_dump('---- Druhy pruchod ------------------------------------------------------------');
     end if;
 #end if;{%ON}
@@ -164,42 +184,42 @@ begin
 
   -- F ze 2: form ln¡ kontrola
 #if dump then;{%OFF}
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     debug_dump('---- Faze 2: Formalni kontrola ------------------------------------------------');
     end if;
 #end if;{%ON}
   info.phase:=ep_form;
   a_form(curr,expr,info);
 #if dump then;
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     dumptree(expr);
     end if;
 #end if;
 
   -- F ze 3: typov  kontrola
 #if dump then;{%OFF}
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     debug_dump('---- Faze 3: Typova kontrola --------------------------------------------------');
     end if;
 #end if;{%ON}
   info.phase:=ep_type;
   a_type(curr,expr,t,info);
 #if dump then;
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     dumptree(expr);
     end if;
 #end if;
 
   -- F ze 4: optimalizace
 #if dump then;{%OFF}
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     debug_dump('---- Faze 4: Optimalizace -----------------------------------------------------');
     end if;
 #end if;{%ON}
   info.phase:=ep_opt;
   a_opt(curr,expr,info);
 #if dump then;
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     dumptree(expr);
     end if;
 #end if;
@@ -212,14 +232,14 @@ begin
 
   -- F ze 5: finalizace
 #if dump then;{%OFF}
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     debug_dump('---- Faze 5: Finalizace -------------------------------------------------------');
     end if;
 #end if;{%ON}
   info.phase:=ep_final;
   a_final(curr,expr,t,usage,info);
 #if dump then;
-  if opt_dump in curr.entity^.compv.opts then
+  if o_is_option_by_context(opt_dump,curr) then
     dumptree(expr);
     end if;
 #end if;
@@ -358,7 +378,7 @@ begin
 
       -- symbol - virtu ln¡ metoda
       when ek_sym_virtual do
-          if not (is_virtual_procedure) then
+          if not is_virtual_procedure then
             ce^.seterror({CCERR=}000195,ce_x_ex_sym_virtual);
             expr^.errpos;
             {%%RESUME ce^.raiseerror;}
@@ -473,7 +493,7 @@ begin
 
       -- konstantn¡ - re ln˜
       when ek_const_real do
-          if (expr^.ntype<>nt_imm) or not t_is_sts(expr^.t,dts_u_real) then
+          if (expr^.ntype<>nt_imm) or not t_is_sts(expr^.t,dts_u_float) then
             ce^.seterror({CCERR=}000201,ce_x_ex_const_real);
             expr^.errpos;
             {%%RESUME ce^.raiseerror;}
@@ -560,7 +580,7 @@ begin
             ce^.resumeerror;
             end if;
 
-      -- kotext - EXTEND zpr va
+      -- kotext - zpr va
       when ek_context_message do
           if not (
           -- je to komponenta 
@@ -762,7 +782,7 @@ begin
       then ptyp:=expr^.t.getctype;
 
       -- z konstantn¡ho rozsahu univerz ln¡ho ordin ln¡ho typu odvodit regul rn¡ ordin ln¡ typ
-      else x_rangetotype(curr,pexprange(expr),ptyp);
+      else x_rangetotype(curr,pexprange(expr),ptyp,native);
       end if;
 
   -- nep©¡mo specifikovan˜ rozsah (nap©. jm‚no typu nebo :range)

@@ -9,13 +9,15 @@ module private cd_eval =
 with
   cc_def.cc_entity.cc_ref,
   cx_expr,cx_expr.cx_def,cx_expr.cx_compile,
-  cd_create;
+  cd_create,
+  cc_options;
 
 use
   cx_expr.cx_def,
   cb_block,
   cb_block.cb_compile,
   cb_block.cb_def;
+  
 
 #if dump then;
 var
@@ -348,7 +350,7 @@ begin
   if bl.geteval>ete_none then return; end if;
 
   if bl.getublock=nil
-    -- v˜raz nen¡ uveden (nevad¡, t©eba je to z mˆr)
+    -- blok p©¡kaz– nen¡ uveden (nevad¡, t©eba je to z mˆr)
     then bl.seteval(ete_evaluated)
     -- jinak ho vyhodnotit
     else 
@@ -422,9 +424,12 @@ procedure e_reftype (
  -- declared       : in tentitydeclared;         -- po‘adovan  £rove¤ deklarace
     final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
 -- Vyhodnot¡ referenci na typ.
--- Pohled na typ mus¡ b˜t z TVIEW a datov˜ typ ve Full view mus¡ b˜t z DTS.
+-- Pohled na typ mus¡ b˜t z [tview] a datov˜ typ ve Full view mus¡ b˜t z [dts].
 -- Pokud je to Incomplete view, po‘aduje se, aby byl typ regul rn¡.
--- Je-li ALLOWCLASS=True, pak je povoleno i Incomplete view na t©¡du.
+-- Je-li [allow_class]=True, pak je povoleno i Incomplete view na t©¡du.
+-- Je-li [allow_abstract]=True, pak jsou povoleny i abstraktn¡ typy.
+-- Je-li [ekind]=[ek_rangetype], pak z p©¡padn‚ho rozsahu univerz ln¡ho typu vygeneruje typ
+-- o velikosti alespo¤ strojov‚ho slova, v opa‡n‚m p©¡padˆ o minim ln¡ mo‘n‚ velikosti.
 ----------------------------------------------------------------------------------------------------
 var
   ptyp             : pentity_type;
@@ -439,7 +444,7 @@ begin
     if e_part(typ.e,typ.getrefexpr^.geteval) then return; end if;
 
     -- p©evz¡t typ
-    x_get_type(curr,pexpnode(typ.getcexpr),ptyp);
+    x_get_type(curr,pexpnode(typ.getcexpr),ptyp,ekind=ek_rangetype);
     typ.settype(ptyp);
     end if;
 
@@ -555,6 +560,8 @@ procedure e_refsymbol_from_typename (
     allow_abstract : in t_logical;               -- T-povolit abstraktn¡ typy
     final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
 -- Vyhodnot¡ referenci na symbol zadan˜ jako jm‚no typu.
+-- Je-li [allow_class]=True, pak je povoleno i Incomplete view na t©¡du.
+-- Je-li [allow_abstract]=True, pak jsou povoleny i abstraktn¡ typy.
 ----------------------------------------------------------------------------------------------------
 var
   ptyp             : pentity_type;
@@ -568,7 +575,7 @@ begin
   if e_part(sym.e,sym.getrefexpr^.geteval) then return end if;
 
   -- p©evz¡t symbol 
-  x_get_type(curr,pexpnode(sym.getcexpr),ptyp);
+  x_get_type(curr,pexpnode(sym.getcexpr),ptyp,false);
   sym.setentity(ptyp);
   if e_part(sym.e,ptyp^.eval) then return end if;
 
@@ -648,7 +655,7 @@ begin
   curr.hval:=hval;
 
   -- odvodit velikost typu
-  cpu^.getordparams2(dt_enum,curr.bits,size{curr.size},ui_0,hval);
+  cpu^.getordparams2(dt_enum,curr.bits,size{curr.size},ui_0,hval,false);
 
   -- doplnit velikost
   type_setsize(curr,size);
@@ -1007,7 +1014,7 @@ begin
     end if;
 
   -- ur‡it t©¡du pointeru
-  if (base<>nil) and (base^.tkind<>tk_unknown)
+  if base<>nil and then base^.tkind<>tk_unknown
 
     -- podle typu b ze
     then
@@ -1060,7 +1067,7 @@ begin
     end if;
 
   -- pokud je uvedeno CLASS, mus¡ b˜t b zov˜ typ TAGGED
-  if (curr.pbase=pb_class) and not (tf_tagged in base^.tflags) then
+  if curr.pbase=pb_class and tf_tagged not in base^.tflags then
     ce^.seterror({CCERR=}000259,ce_i_basetype);
     ce^.sethint(hint_ptr_tagged_base);
     {%%RESUME ce^.raiseerror;}
@@ -1068,7 +1075,7 @@ begin
     end if;
 
   -- sestavit mno‘inu voliteln˜ch atribut–
-  if not (pf_machine in curr.pflags) then
+  if pf_machine not in curr.pflags then
     t_getptrattrib(curr.pbase,curr.pclass,base,curr.pattrib);
     end if;
 
@@ -1414,7 +1421,6 @@ begin
         -- default view
         curr.defview :=t.tview;
 
-
     -- type constraint
     when td_constrained       do
         -- p©edek mus¡ b˜t Full view
@@ -1444,7 +1450,6 @@ begin
 
               -- meze
               x_const_range(curr.expr.getcexpr,curr.lval,curr.hval);
-
 
           -- pole/neomezen‚ pole
           -- Ondra 25.2.2002 : Zak z no odvozov n¡ od constrained pol¡
@@ -1486,7 +1491,6 @@ begin
               -- dosadit velikost typu
               type_setsize(curr,size);
 
-
           -- ©etˆzec/neomezen˜ ©etˆzec
           -- Ondra 25.2.2002 : Zak z no odvozov n¡ od constrained string–
           when {dt_string,} dt_ustring do
@@ -1525,7 +1529,6 @@ begin
               type_setsize(curr,size);
               --u_nimplemented(86);
 
-
           -- pro ostatn¡ typy nem  omezen¡ rozsahu smysl
           when others do
               ce^.seterror({CCERR=}000267,ce_i_derive);
@@ -1537,7 +1540,6 @@ begin
 
         -- default view
         curr.defview:=tview_full;
-
 
     -- type extension/private extension,
     when td_extension, td_private_extension do
@@ -1554,7 +1556,6 @@ begin
               verify(451,e_spec_tab[curr.stype]=nil);
               e_spec_tab[curr.stype]^(curr,curr_context,final);
               if e_part(curr.eval,curr.seval) then return; end if;
-
 
           -- Full view => lze roz¨¡©it jen record recordem
           when tview_full do
@@ -1573,7 +1574,6 @@ begin
                   {%%RESUME ce^.raiseerror;}
                   ce^.resumeerror;
                   end if;
-
 
           -- jin‚ typy pohled– na typ nelze roz¨¡©it
           when others do
@@ -1614,7 +1614,6 @@ begin
 
         curr.eval:=ete_evaluated;
 
-
     -- --> full
     when etd_full do
 --      verify(17,(curr.stype=st_undef) and final);
@@ -1639,7 +1638,6 @@ begin
                     else curr.tkind:=tk_singular;
                     end if;
 
-
               -- regul rn¡
               when tk_regular do
                   -- pokud to nen¡ private extension (ta je zat¡m ST_UNDEF)
@@ -1655,7 +1653,6 @@ begin
                     {%%RESUME ce^.raiseerror;}
                     ce^.resumeerror;
                     end if;
-
 
               -- singul rn¡
               when tk_singular do
@@ -1736,7 +1733,6 @@ begin
             curr.eval:=ete_evaluated
             end if;
 
-
     -- --> full
     when etd_full do
         if cf_typed in curr.cflags
@@ -1761,7 +1757,6 @@ begin
             -- %%X nem–‘u tady p©ij¡t o v˜raz ?
             curr.typ.settype(pexpnode(curr.init.getcexpr)^.t.getutype);
             end if;
-
 
     when others do verify(160,true);
     end case;
@@ -1804,7 +1799,6 @@ begin
         -- ozna‡it za vyhodnocen‚
         curr.eval:=ete_evaluated;
 
-
     when others do verify(161,true);
     end case;
   end e_enum;
@@ -1813,7 +1807,7 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure e_code_body (
-    curr           : in out tentity_code;        -- vyhodnocovan  procedura
+    curr           : in out class tentity_code;  -- vyhodnocovan  procedura
     curr_context   : in tcontext;                -- prim rn¡ kontext entity
     final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
 -- Vyhodnocen¡ tˆla podprogramu pro £rove¤ SD_FULL.
@@ -1882,7 +1876,7 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure e_subprogram (
-    curr           : in out tentity_subprogram;  -- vyhodnocovan  procedura
+    curr           : in out class tentity_subprogram; -- vyhodnocovan  procedura
     curr_context   : in tcontext;                -- prim rn¡ kontext entity
     level          : in tentitydeclared;         -- po‘adovan  urove¤ vyhodnocen¡
     final          : in t_logical) =             -- T-v˜sledek mus¡ b˜t vyhodnocen
@@ -2035,7 +2029,7 @@ begin
           -- v modulu, programu ‡i kompila‡n¡ jednotce
           else
             -- override mus¡ b˜t t‚‘ v modulu, programu ‡i kompila‡n¡ jednotce
-            if not (curr.context.entity^.etype in ets_container-tentitytypeset:[et_class]) then
+            if curr.context.entity^.etype not in ets_container-tentitytypeset:[et_class] then
               {%%X}
               end if;
 
@@ -2717,7 +2711,7 @@ begin
     psym^.compile+tentitycompileset:[etc_evaluating];
 
   #if dump then;
-    if opt_dump in psym^.compv.opts then
+    if o_is_option_by_entity(opt_dump,psym^) then
       debug_dump({%%TODO(AGGREGATE) fillstr(' ',elevel)+}'e_symbol(' & sym_get_qid(psym) & '; ' & tentitydeclaredtxt[psym^.declared] & '): ' & tentitydeclaredtxt[psym^.evaluated] & ' (' & tentityevaltxt[psym^.eval] & ') --> ' & tentitydeclaredtxt[level]);
       end if;
     elevel+2;
@@ -2762,7 +2756,7 @@ begin
       then psym^.evaluated:=level
       else
       #if dump then;
-        if opt_dump in psym^.compv.opts then debug_dump({%%TODO(AGGREGATE)fillstr(' ',elevel)+}'Failed.'); end if;
+        if o_is_option_by_entity(opt_dump,psym^) then debug_dump({%%TODO(AGGREGATE)fillstr(' ',elevel)+}'Failed.'); end if;
       #end if;
         end if;
 

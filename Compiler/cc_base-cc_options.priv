@@ -1,0 +1,391 @@
+module private cc_options =
+-- Prekladac
+-- nastaveni prekladace
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def.cc_entity,
+  cc_base.cc_sym,
+  advanced,
+  advanced.low_level,
+  advanced.low_level.bit_operations;
+
+
+type
+  -- popis nastaveni
+  toptiondesc      = record
+      txt          : tshortident;
+      opt          : toption;
+      etypes       : tentitytypeset;             -- typy entit pro ktere se vztahuje dane nastaveni
+      switch       : t_logical;                  -- F - option se da pouze nastavit, T - da se zapnout a vypnout
+      paramtype    : tdatatype;                  -- datovy typ 1. parametru
+      end record;
+
+  
+  -- parametry jednoho nastaveni
+  toptiondata;
+  poptiondata      = ^toptiondata;
+  toptiondata      = record
+      typ          : toption;
+      
+      -- pridat dalsi typy dle potreby
+      uint         : t_unsigned;                -- cele cislo bez znamenka
+      
+      next         : poptiondata;
+      end record;
+
+  
+  -- nastaveni s parametry nastaveni
+  toptions;
+  poptions         = ^class toptions;
+  toptions         = t_flex_record with record
+      opts         : toptionset;
+      params       : poptiondata;
+      end record;
+
+  
+var
+{%OFF}
+  -- tabulku je treba drzet setridenou podle [txt]!
+  optiontab       : const array toption of toptiondesc := [
+      [for txt use 'DUMP'              , for opt use opt_dump             , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
+      [for txt use 'DUMP_CODE'         , for opt use opt_dump_code        , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
+      [for txt use 'DUMP_REGS'         , for opt use opt_dump_regs        , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
+      [for txt use 'IMAGE_BASE'        , for opt use opt_image_base       , for etypes use [et_compile]       ,for switch use false,for paramtype use dt_unsigned],
+      [for txt use 'OVERFLOW_CHECKING' , for opt use opt_overflow_checking, for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
+      [for txt use 'RANGE_CHECKING'    , for opt use opt_range_checking   , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   ],
+      [for txt use 'STACK_RESERVE'     , for opt use opt_stack_reserve    , for etypes use [et_compile]       ,for switch use false,for paramtype use dt_unsigned]];
+{%ON}
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_get_option_by_id  =
+-- zjisti ordinalni id nastaveni podle identifikatoru
+-- vrati T pokud ok, F pokud takove nastaveni nezname
+----------------------------------------------------------------------------------------------------
+var
+  zac              : optiontab:range;
+  kon              : optiontab:range;
+  stred            : optiontab:range;
+
+begin
+  result:=false;
+  
+  -- vyhledat
+  zac:=optiontab:first;
+  kon:=optiontab:last;
+  loop
+    stred:ord:=(zac:ord+kon:ord) div 2;
+    if optionid>optiontab[stred].txt
+      then zac:ord:=stred:ord+1;
+      else kon:=stred;
+      end if;
+    until zac>=kon;
+
+  -- nasli?
+  if optionid=optiontab[zac].txt then
+    option:=toption(zac);
+    result:=true;
+    end if;
+  
+  end o_get_option_by_id;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_is_option_switchable =
+-- vrati T pokud je nastaveni [option] prepinatelne, jinak F
+----------------------------------------------------------------------------------------------------
+begin
+  result:=optiontab[option].switch;  
+  end o_is_option_switchable;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_get_option_param_type =
+-- vrati pozadovany datovy typ parametru nastaveni [option]
+-- vrati dt_undef pokud nastaveni [option] nema parametr
+----------------------------------------------------------------------------------------------------
+begin
+  result:=optiontab[option].paramtype;
+  end o_get_option_param_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure find_entity_by_entity (
+    entity         : in pentity;
+    option         : in toption)
+                     return pentity =
+-- najde nejblizsi platnou entitu pro nastaveni [option] podle [entity]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=sym_get_enclosing_or_self_ex(entity,optiontab[option].etypes);
+  end find_entity_by_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure find_entity_by_context (
+    context        : in tcontext;
+    option         : in toption)
+                     return pentity =
+-- najde nejblizsi platnou entitu pro nastaveni [option] podle [context]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=find_entity_by_entity(context.entity,option);
+  end find_entity_by_context;
+
+
+
+----------------------------------------------------------------------------------------------------
+overload find_entity : find_entity_by_entity,find_entity_by_context;
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_is_option_applicable =
+-- vrati T - pokud je nastaveni [option] platne pro kontext [context], jinak F 
+----------------------------------------------------------------------------------------------------
+begin
+  result:=find_entity_by_context(context,option)<>nil;
+  end o_is_option_applicable;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure alloc_options (
+    options        : in out p_flex_record) =
+-- alokuje strukturu nastaveni pokud je treba
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokuj novou strukturu options pokud treba
+  if options=nil then 
+    new poptions(options); 
+    end if;
+  
+  -- chyba?
+  verify(675,options=nil);
+  end alloc_options;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_set_option_on =
+var
+  entity    : pentity;
+-- zapne nastaveni [option] v ramci kontextu [context]
+-- hleda se nejblizsi platny kontext, pokud se nenajde vyvola se interni chyba
+----------------------------------------------------------------------------------------------------
+begin
+  -- najdi entitu, na ktere se provede uprava nastaveni
+  entity:=find_entity_by_context(context,option);
+
+  -- entita nenalezena?
+  verify(676,entity=nil);
+
+  -- alokuj misto pro nastaveni pokud treba
+  alloc_options(entity^.compv.options);
+
+  -- a nastav
+  bit_set(poptions(entity^.compv.options)^.opts,t_bit_index(option:ord));
+
+  -- ok
+  end o_set_option_on;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_set_option_off =
+var
+  entity    : pentity;
+-- zapne nastaveni [option] v ramci kontextu [context]
+-- hleda se nejblizsi platny kontext, pokud se nenajde vyvola se interni chyba
+----------------------------------------------------------------------------------------------------
+begin
+  -- najdi entitu, na ktere se provede uprava nastaveni
+  entity:=find_entity_by_context(context,option);
+
+  -- entita nenalezena?
+  verify(677,entity=nil);
+
+  if entity^.compv.options<>nil then
+    bit_reset(poptions(entity^.compv.options)^.opts,t_bit_index(option:ord));
+    end if;
+ 
+  end o_set_option_off;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_is_option_by_entity =
+var
+  foundentity    : pentity;
+-- zjisti jestli je nastaveni [option] zapnute v ramci entity [entity]; T-ano, F-ne
+-- hleda se nejblizsi platny kontext, pokud se nenajde vrati F
+----------------------------------------------------------------------------------------------------
+begin
+  result:=false;
+
+  -- najdi entitu, na ktere se provede uprava nastaveni
+  foundentity:=find_entity_by_entity(^entity,option);
+
+  -- entita nenalezena?
+  if foundentity=nil then return; end if;
+
+  result:=foundentity^.compv.options<>nil and then option in poptions(foundentity^.compv.options)^.opts;
+  end o_is_option_by_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_is_option_by_context =
+-- zjisti jestli je nastaveni [option] zapnute v ramci kontextu [context]; T-ano, F-ne
+-- hleda se nejblizsi platny kontext, pokud se nenajde vrati F
+----------------------------------------------------------------------------------------------------
+begin
+  verify(678,context.entity=nil);
+  result:=o_is_option_by_entity(option,context.entity^);
+  end o_is_option_by_context;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure find_option_data (
+    option     : in toption;
+    firstdata  : in poptiondata)                 -- zacatek seznamu
+                 return poptiondata =
+-- najde data parametru [option] v seznamu parametru nastaveni
+----------------------------------------------------------------------------------------------------
+begin
+  result:=firstdata;
+  while result<>nil and then result^.typ<>option loop
+    result:=result^.next;
+    end loop;
+
+  end find_option_data;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure add_option_data (
+    datalist   : in out poptiondata;
+    datatoadd  : in poptiondata) =
+-- prida data parametru do seznamu parametru nastaveni
+----------------------------------------------------------------------------------------------------
+var
+  data      : poptiondata;
+
+begin
+  if datalist=nil then 
+    datalist:=datatoadd;
+    return;
+    end if;
+  
+  -- najdi ocas
+  data:=datalist;
+  while data^.next<>nil loop data:=data^.next; end loop;
+
+  data^.next:=datatoadd;
+  end add_option_data;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure alloc_option_data (
+    optiondata    : in out poptiondata ) =
+-- alokuje strukturu pro data parametru nastaveni
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokuj novou strukturu options pokud treba
+  if optiondata=nil then 
+    new optiondata; 
+    end if;
+  
+  -- chyba?
+  verify(679,optiondata=nil);
+  end alloc_option_data;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_set_option_param_unsigned =
+-- nastavi bezznamenkovy celociselny parametr pro nastaveni [option] v ramci kontextu [context]
+-- hleda se nejblizsi platny kontext, pokud se nenajde vyvola se interni chyba
+----------------------------------------------------------------------------------------------------
+var
+  entity          : pentity;
+  optiondata      : poptiondata;
+
+begin
+  -- najdi entitu, na ktere se provede uprava nastaveni
+  entity:=find_entity_by_context(context,option);
+
+  -- entita nenalezena?
+  verify(680,entity=nil);
+
+  -- alokuj misto pro nastaveni pokud treba
+  alloc_options(entity^.compv.options);
+
+  -- najdi parametr
+  optiondata:=find_option_data(option,poptions(entity^.compv.options)^.params);
+
+  -- alokuj novou strukturu pokud treba
+  if optiondata=nil then 
+    alloc_option_data(optiondata);
+    optiondata^.typ:=option;
+    add_option_data(poptions(entity^.compv.options)^.params,optiondata);
+    end if;
+
+  optiondata^.uint:=param;
+
+  end o_set_option_param_unsigned;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_get_option_param_unsigned_by_entity =
+-- vrati bezznamenkovy celociselny parametr pro nastaveni [option] v ramci entity [entity]
+-- hleda se nejblizsi platny kontext, pokud se nenajde funkce vrati F, jinak
+-- funkce vrati F pokud parametr jeste nebyl nastaveny a [param] je nedefinovany, T pri uspechu
+----------------------------------------------------------------------------------------------------
+var
+  pent       : pentity;
+  optiondata : poptiondata;
+
+begin
+  result:=false;
+
+  -- najdi entitu, na ktere se provede uprava nastaveni
+  pent:=find_entity_by_entity(^entity,option);
+
+  -- entita nenalezena?
+  if pent=nil then return; end if;
+
+  -- najdi parametr
+  optiondata:=find_option_data(option,poptions(pent^.compv.options)^.params);
+
+  -- existuje parametr pro [option]?
+  if optiondata<>nil then 
+    -- existuje - precti ho
+    param:=optiondata^.uint;
+    result:=true;
+    end if;
+  end o_get_option_param_unsigned_by_entity;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure o_get_option_param_unsigned_by_context =
+-- vrati bezznamenkovy celociselny parametr pro nastaveni [option] v ramci kontextu [context]
+-- hleda se nejblizsi platny kontext, pokud se nenajde funkce vrati F, jinak
+-- funkce vrati F pokud parametr jeste nebyl nastaveny a [param] je nedefinovany, T pri uspechu
+----------------------------------------------------------------------------------------------------
+begin
+  result:=o_get_option_param_unsigned_by_entity(option,context.entity^,param);
+  end o_get_option_param_unsigned_by_context;
+
+  end cc_options;

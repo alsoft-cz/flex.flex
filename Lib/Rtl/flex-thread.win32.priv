@@ -8,7 +8,8 @@ with
     os_api,
     synchronization,
     flex.exceptions,
-    flex.exceptions.seh;
+    flex.exceptions.seh,
+    stack;
     
 
 type
@@ -19,10 +20,15 @@ type
       prev         : p_thread_sysTIBuservalue;
       end record;
 
-    t_thread_header = record
-      exceptions   : t_rtl_exceptions;
+    t_thread_physical = record
       threadid     : t_rtl_unsigned32;
       threadhandle : THANDLE;
+      end record;
+
+    t_thread_header = record
+      exceptions   : t_rtl_exceptions;
+      osthread     : t_thread_physical;
+      stackheader  : t_rtl_stack_header;
       parentthread : p_thread_header;
       variables    : vars.t_thread_vars;
       usagecount   : t_rtl_native_unsigned;
@@ -128,7 +134,7 @@ begin
 procedure rtl_suspend_thread_internal =
 ----------------------------------------------------------------------------------------------------
 begin 
-  if SuspendThread(threadheader^.threadhandle)=$FFFFFFFF then 
+  if SuspendThread(threadheader^.osthread.threadhandle)=$FFFFFFFF then 
     raise tasking_error;
     end if;
   end rtl_suspend_thread_internal;
@@ -137,7 +143,7 @@ begin
 procedure rtl_resume_thread_internal =
 ----------------------------------------------------------------------------------------------------
 begin 
-  if ResumeThread(threadheader^.threadhandle)=$FFFFFFFF then 
+  if ResumeThread(threadheader^.osthread.threadhandle)=$FFFFFFFF then 
     raise tasking_error;
     end if;
   end rtl_resume_thread_internal;
@@ -264,16 +270,35 @@ begin
 procedure rtl_init_task_helper(
     thread_header  : p_thread_header)=
 ----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.3' then;
 begin
   -- nastavit jako systemovou threadovou promennou
   if not TlsSetValue(sthread_header,LPVOID(thread_header:unchecked)) then
     raise tasking_error;
     end if;
-  thread_header^.threadid:=t_thread_id(GetCurrentThreadId);
-  thread_header^.threadhandle:=OpenThread(THREAD_ALL_ACCESS,false,thread_header^.threadid);
-  if thread_header^.threadhandle=nil then 
+  thread_header^.osthread.threadid:=t_thread_id(GetCurrentThreadId);
+  thread_header^.osthread.threadhandle:=OpenThread(THREAD_ALL_ACCESS,false,thread_header^.osthread.threadid);
+  if thread_header^.osthread.threadhandle=nil then 
     raise tasking_error;
     end if;
+#else;
+var
+  prochandle   : THANDLE;
+  threadhandle : THANDLE;
+  dupresult    : BOOL;
+
+begin
+  -- nastavit jako systemovou threadovou promennou
+  if not TlsSetValue(sthread_header,LPVOID(thread_header:unchecked)) then
+    raise tasking_error;
+    end if;
+  prochandle:=GetCurrentProcess;
+  dupresult:=DuplicateHandle(prochandle,GetCurrentThread,prochandle,^threadhandle:unchecked,0,false,DUPLICATE_SAME_ACCESS);
+  thread_header^.osthread.threadhandle:=threadhandle;
+    if not dupresult or thread_header^.osthread.threadhandle=nil then 
+    raise tasking_error;
+    end if;
+#end if;
   end rtl_init_task_helper;
 
 ----------------------------------------------------------------------------------------------------
@@ -282,11 +307,11 @@ procedure rtl_deinit_task_helper(
 ----------------------------------------------------------------------------------------------------
 begin
   rtl_critical_lock(thread_header^.locker);
-  if not CloseHandle(THANDLE(thread_header^.threadhandle)) then
+  if not CloseHandle(THANDLE(thread_header^.osthread.threadhandle)) then
     raise tasking_error;
     end if;
-  thread_header^.threadhandle:=INVALID_HANDLE;
-  thread_header^.threadid:=INVALID_HANDLE;
+  thread_header^.osthread.threadhandle:=INVALID_HANDLE;
+  thread_header^.osthread.threadid:=INVALID_HANDLE;
   if not TlsSetValue(sthread_header,nil) then
     raise tasking_error;
     end if;
@@ -337,7 +362,7 @@ begin
     raise tasking_error;
     end if;
 
-  -- inicializovat threadove promenne
+  -- inicializovat threadove vlastnosti
   rtl_init_task_exceptions(^threadheader^.exceptions);
   rtl_init_task_exceptions_win32(^sys_except_handler);
   rtl_init_task_header(true,true,threadheader,threadheader^.parentthread);
@@ -356,11 +381,13 @@ begin
       -- volat uzivatelsky kod
       stacpy.thread_entry^(stacpy.userdata);
     leave
+      -- odinicializovat threadove vlastnosti
       rtl_deinit_task_header(stacpy.threadheader);
       if not TlsSetValue(sthread_header,nil) then
         raise tasking_error;
         end if;
       end;
+    -- odinicializovat threadove vlastnosti
     rtl_deinit_task_exceptions(^threadheader^.exceptions);
     rtl_deinit_task_exceptions_win32(^sys_except_handler);
     rtl_terminate_thread;
@@ -389,8 +416,8 @@ begin
   starter.suspended:=suspended;
   threadheader^.parentthread:=rtl_get_current_thread;
   rtl_event_new(starter.wait_event);
-  starter.threadheader^.threadhandle:=CreateThread(nil,64*1024{%%TODO remove when dynamic stack}*8{},^thread_entry_internal,^starter,STACK_SIZE_PARAM_IS_A_RESERVATION,starter.threadheader^.threadid);
-  if starter.threadheader^.threadhandle=0 then
+  starter.threadheader^.osthread.threadhandle:=CreateThread(nil,64*1024{%%TODO remove when dynamic stack}*8{},^thread_entry_internal,^starter,STACK_SIZE_PARAM_IS_A_RESERVATION,starter.threadheader^.osthread.threadid);
+  if starter.threadheader^.osthread.threadhandle=0 then
     discard threadheader;
     rtl_event_discard(starter.wait_event);
     raise tasking_error;
@@ -453,18 +480,17 @@ begin
     rtl_init_task_exceptions(^threadheader^.exceptions);
     rtl_init_task_helper(threadheader);
     rtl_init_task_header(ismain,false,threadheader,nil);
-    --%%TODO dynamic stack
+#if #environment compiler_version;='4.0.3.3' then;
     rtl_init_task_exceptions_win32_inject;
+#else;
+    threadheader^.stackheader.seh_handler:=p_rtl_exceptions_handler(topstackspace);
+    rtl_init_task_exceptions_win32(threadheader^.stackheader.seh_handler);
+#end if;
     end if;
   end rtl_register_task;
 
 -- compiler magic
-#if #environment compiler_version;='4.0.3.2' then;
-  --%%TODO delete when obsoleted
-  #pragma assign(init_main_task,rtl_register_task);
-#else;
-  #pragma assign(register_task,rtl_register_task);
-#end if;
+#pragma assign(register_task,rtl_register_task);
 
 
 ----------------------------------------------------------------------------------------------------
@@ -476,6 +502,7 @@ var
   tibptr           : p_thread_sysTIBuservalue;
   dodiscard        : t_rtl_logical8:=false;
   ismain           : t_rtl_logical8:=false;
+
 begin
   threadheader:=rtl_get_current_thread_safe;
   if threadheader=nil then
@@ -501,7 +528,12 @@ begin
     if ismain then
       rtl_critical_discard(thread_list_lock);
       if not TlsFree(sthread_header) then
+#if #environment compiler_version;='4.0.3.3' then;
         raise tasking_error;
+#else;
+        -- %%HYNEK - TlsFree vzdy vraci chybu v DLL. Vyresi az vlastni inicializacni rutiny knihoven.
+        -- raise tasking_error;
+#end if;
         end if;
     else
       discard threadheader;
@@ -513,17 +545,16 @@ begin
     mov    fs:[t_winnt_tib.aruserpointer],eax
     #end asm;
   if dodiscard then
+#if #environment compiler_version;='4.0.3.3' then;
     rtl_deinit_task_exceptions_win32_inject;
+#else;
+    rtl_deinit_task_exceptions_win32(threadheader^.stackheader.seh_handler);
+#end if;
     end if;
   end rtl_unregister_task;
 
 -- compiler magic
-#if #environment compiler_version;='4.0.3.2' then;
-  --%%TODO delete when obsoleted
-  #pragma assign(deinit_main_task,rtl_unregister_task);
-#else;
-  #pragma assign(unregister_task,rtl_unregister_task);
-#end if;
+#pragma assign(unregister_task,rtl_unregister_task);
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_wait_and_finish_thread =
@@ -532,18 +563,18 @@ var
   threadheader : p_thread_header;
 begin 
   threadheader:=thread_ref.threadheader;
-  if WaitForSingleObjectEx(threadheader^.threadhandle,INFINITE,true)=WAIT_FAILED then
+  if WaitForSingleObjectEx(threadheader^.osthread.threadhandle,INFINITE,true)=WAIT_FAILED then
     raise tasking_error;
     end if;
   if SleepEx(0,true)=0 then
     end if;
   rtl_critical_lock(threadheader^.locker);
   rtl_discard_all_thread_ref(threadheader);
-  if not CloseHandle(THANDLE(threadheader^.threadhandle)) then
+  if not CloseHandle(THANDLE(threadheader^.osthread.threadhandle)) then
     raise tasking_error;
     end if;
-  threadheader^.threadhandle:=INVALID_HANDLE;
-  threadheader^.threadid:=INVALID_HANDLE;
+  threadheader^.osthread.threadhandle:=INVALID_HANDLE;
+  threadheader^.osthread.threadid:=INVALID_HANDLE;
   rtl_critical_discard(threadheader^.locker);
   discard threadheader;
   end rtl_wait_and_finish_thread;
@@ -572,7 +603,7 @@ procedure rtl_wait_for_finish_thread =
 ----------------------------------------------------------------------------------------------------
 begin 
   if thread_ref.threadheader<>nil then
-    if WaitForSingleObjectEx(thread_ref.threadheader^.threadhandle,INFINITE,true)=WAIT_FAILED then
+    if WaitForSingleObjectEx(thread_ref.threadheader^.osthread.threadhandle,INFINITE,true)=WAIT_FAILED then
       raise tasking_error;
       end if;
     end if;
@@ -585,19 +616,5 @@ procedure rtl_terminate_thread =
 begin
   ExitThread(0);
   end rtl_terminate_thread;
-
-{
-----------------------------------------------------------------------------------------------------
-entry =
-----------------------------------------------------------------------------------------------------
-begin
-  end entry;
-
-----------------------------------------------------------------------------------------------------
-exit =
-----------------------------------------------------------------------------------------------------
-begin
-  end exit;
-}
 
 end thread;
