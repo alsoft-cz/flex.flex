@@ -336,6 +336,10 @@ begin
 #separate private ci_rcheck;
 -- behove kontroly
 ----------------------------------------------------------------------------------------------------
+#separate public ci_rta;
+#separate private ci_rta;
+-- Manipulace s run-time atributy.
+----------------------------------------------------------------------------------------------------
 
 
 
@@ -1545,7 +1549,7 @@ begin
 
     -- promànn†
     when nc_var do
-        if (expr^.sub=nil) or {not} (expr^.sub^.nclass {in ncs_value}<>nc_var)
+        if expr^.sub=nil or {not} expr^.sub^.nclass {in ncs_value}<>nc_var
 
           -- p©°mo promànn†
           then
@@ -1657,8 +1661,7 @@ begin
                     ----- %%TECH Implicitn° dereference --------------------
                     --
                     --------------------------------------------------------
-                    if (pvar^.vmode=vm_ref)
-                    and (context.mode<>lm_addr_attr) then
+                    if pvar^.vmode=vm_ref and context.mode<>lm_addr_attr then
                       declare var
                         optemp : c_operand;
                       begin
@@ -1711,7 +1714,6 @@ begin
                       i_gen_rtattrib(inst,info,context,expr,vysl);
                       end if;
 
-                -- %%X
                 when others do verify(71,true);
                 end case;
               end declare;
@@ -1752,7 +1754,7 @@ begin
     when nc_message     do
         -- na p©°padnò podvòraz se ka®le, nem† vòznam
 
-        -- vr†tit á°slo zpr†vy
+        -- vr†tit tag zpr†vy
         vysl.create_imm(edt_unsigned,0,0);
         vysl.set_relo_entity(expr^.s.psym);
 
@@ -1907,75 +1909,17 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_call_subprogram (
+procedure i_gen_call_subprogram_prepare (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o prñbàhu generov†n°
     context        : in out iexprcontext;        -- kontext generov†n° vòrazu
     expr           : in pexplist;                -- strom
     pproc          : in pentity_subprogram;      -- volan† procedura
-    vysl           : out c_operand) =            -- vòsledek
--- Generov†n° k¢du vol†n° procedury.
+    call           : out icallconvention;        -- volac° konvence
+    pinst          : out picodeinst;             -- instance volanÇ procedury
+    ptyp           : out pentity_type) =         -- typ procedury
+-- Generov†n° k¢du vol†n° procedury: p©°prava vol†n°.
 ----------------------------------------------------------------------------------------------------
-var
-  arg              : pexpitem;                   -- skuteánò parametr
-  call             : icallconvention;            -- volac° konvence
-
-    ------------------------------------------------------------------------------------------------
-    procedure firstarg =
-    -- Prvn° argument procedury (podle volac° konvence).
-    ------------------------------------------------------------------------------------------------
-    var
-      el           : pexpnode;
-
-    begin
-      -- %%X áasem doplnit do stromu dvousmàrnej seznam 
-
-      -- prvn° argument v seznamu
-      expr^.get(el,arg);
-
-      -- dojet na konec
-      if call in iccs_reverse then
-        while (arg<>nil) and (arg^.next<>nil) loop arg:=pexpitem(arg^.next); end loop;
-        end if;
-      end firstarg;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    procedure nextarg =
-    -- Dal®° argument procedury (podle volac° konvence).
-    ------------------------------------------------------------------------------------------------
-    var
-      el           : pexpnode;
-      a            : pexpitem;
-
-    begin
-      -- %%X áasem doplnit do stromu dvousmàrnej seznam
-
-      if call in iccs_reverse
-
-        -- hledat p©edchoz°
-        then
-          expr^.get(el,a);
-          if arg=a
-            then arg:=nil
-            else
-              while a^.next<>arg loop a:=pexpitem(a^.next); end loop;
-              arg:=a;
-              end if;
-
-        -- dal®°
-        else 
-          arg:=pexpitem(arg^.next);
-          end if;
-      end nextarg;
-
-var
-  el               : pexpnode;                   -- levò podvòraz
-  pinst            : picodeinst;                 -- instance volanÇ procedury
-  ptyp             : pentity_type;               -- typ procedury
-  newcontext       : iexprcontext;               -- kontext podvòrazñ
-
 begin
   -- pro neuráitÇ p©°pady p©edpokl†dejme default volac° konvenci
   call:=icc_default;
@@ -2020,8 +1964,168 @@ begin
   -- %%X Omezit jen na registry skuteánà pouëitÇ ve volanÇ procedu©e
   saveregs(inst,info,context);
 }
+  end i_gen_call_subprogram_prepare;
 
-  ---- rezervovat m°sto pro n†vratovou hodnotu ----
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_call_subprogram_parameters (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o prñbàhu generov†n°
+    context        : in out iexprcontext;        -- kontext generov†n° vòrazu
+    expr           : in pexplist;                -- strom
+    pproc          : in pentity_subprogram;      -- volan† procedura
+    call           : in icallconvention;         -- volac° konvence
+    pinst          : in picodeinst;              -- instance volanÇ procedury
+    ptyp           : in pentity_type) =          -- typ procedury
+-- Generov†n° k¢du vol†n° procedury: generov†n° skuteánòch parametrñ.
+----------------------------------------------------------------------------------------------------
+var
+  arg              : pexpitem;                   -- skuteánò parametr
+
+    ------------------------------------------------------------------------------------------------
+    procedure firstarg =
+    -- Prvn° argument procedury (podle volac° konvence).
+    ------------------------------------------------------------------------------------------------
+    var
+      el           : pexpnode;
+
+    begin
+      -- %%X áasem doplnit do stromu dvousmàrnej seznam 
+
+      -- prvn° argument v seznamu
+      expr^.get(el,arg);
+
+      -- dojet na konec
+      if call in iccs_reverse then
+        while arg<>nil and then arg^.next<>nil loop arg:=pexpitem(arg^.next); end loop;
+        end if;
+      end firstarg;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure nextarg =
+    -- Dal®° argument procedury (podle volac° konvence).
+    ------------------------------------------------------------------------------------------------
+    var
+      el           : pexpnode;
+      a            : pexpitem;
+
+    begin
+      -- %%X áasem doplnit do stromu dvousmàrnej seznam
+
+      if call in iccs_reverse
+
+        -- hledat p©edchoz°
+        then
+          expr^.get(el,a);
+          if arg=a
+            then arg:=nil
+            else
+              while a^.next<>arg loop a:=pexpitem(a^.next); end loop;
+              arg:=a;
+              end if;
+
+        -- dal®°
+        else 
+          arg:=pexpitem(arg^.next);
+          end if;
+      end nextarg;
+
+begin
+  firstarg;
+  while arg<>nil loop
+    if arg^.sub<>nil
+
+      -- hodnota je explicitnà uvedena
+      then
+        if pentity_param(arg^.sym)^.pass=pp_value and x_is_nil(arg^.sub)
+
+          -- speci†ln° p©°pad: p©ed†v† se NIL hodnotou
+          then
+            i_gen_pushnil(inst,info,context,arg^.t.getctype^.size);
+
+          -- v®echny ostatn° p©°pady
+          else
+            declare var
+              newcontext : iexprcontext;         -- kontext podvòrazñ
+
+            begin
+              -- p©ipravit kontext
+              case pentity_param(arg^.sym)^.pass
+                -- hodnotou
+                when pp_value     do
+                    i_newcontext(context,newcontext,lm_push_value,arg^.t.getutype);
+                    i_setoutpref(newcontext,iop_stack);
+
+                -- odkazem
+                when pp_ref       do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});
+
+                -- odkazem, bez typovÇ kontroly
+                when pp_unchecked do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});
+
+                -- odkazem, váetnà odvozenòch typñ
+                when pp_class     do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});--unimplemented(74);
+
+                -- odkazem, ©°d°c° parametr virtu†ln°ho vol†n°
+                when pp_virtual   do unimplemented(82);
+
+                when others do verify(63,true);
+                end case;
+
+              -- jakÇ dynamickÇ atributy n†s zaj°maj° ?
+              newcontext.rta:=pentity_param(arg^.sym)^.rta_used{usedrta};
+
+              -- parametr p©edanò hodnotou nem† dynamickÇ atributy
+              verify(327,(pentity_param(arg^.sym)^.pass=pp_value) and (newcontext.rta<>rtattribset:[]));
+
+              -- vygenerovat parametr
+              declare var
+                opnone : c_operand;
+              begin
+                i_load(inst,info,newcontext,context,arg^.sub,opnone);
+              leave
+                opnone.free(info,context);
+                end declare;
+              end declare;
+            end if;
+
+      -- pouë°t implicitn° hodnotu
+      else
+        unimplemented(176);
+        end if;
+
+    -- dal®° parametr
+    nextarg;
+    end loop;
+  end i_gen_call_subprogram_parameters;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_call_subprogram (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o prñbàhu generov†n°
+    context        : in out iexprcontext;        -- kontext generov†n° vòrazu
+    expr           : in pexplist;                -- strom
+    pproc          : in pentity_subprogram;      -- volan† procedura
+    vysl           : out c_operand) =            -- vòsledek
+-- Generov†n° k¢du vol†n° procedury.
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- levò podvòraz
+  call             : icallconvention;            -- volac° konvence
+  pinst            : picodeinst;                 -- instance volanÇ procedury
+  ptyp             : pentity_type;               -- typ procedury
+  newcontext       : iexprcontext;               -- kontext podvòrazñ
+
+begin
+  ---- (1) p©°prava vol†n°: zjistit instanci, volac° konvenci, typ procedury ----
+  i_gen_call_subprogram_prepare(inst,info,context,expr,pproc,call,pinst,ptyp);
+
+
+  ---- (2) rezervovat m°sto pro n†vratovou hodnotu ----
   if expr^.t.tview<>tview_null and call in iccs_ret_stack then
     declare var
       resultsize   : t_unsigned;                 -- velikost n†vratovÇ hodnoty
@@ -2066,75 +2170,22 @@ begin
       end declare;
     end if;
 
-  ---- zpracovat argumenty ----
-  firstarg;
-  while arg<>nil loop
-    if arg^.sub<>nil
 
-      -- hodnota je explicitnà uvedena
-      then
-        if (pentity_param(arg^.sym)^.pass=pp_value) and x_is_nil(arg^.sub)
+  ---- (3) zpracovat argumenty ----
+  i_gen_call_subprogram_parameters(inst,info,context,expr,pproc,call,pinst,ptyp);
 
-          -- speci†ln° p©°pad: p©ed†v† se NIL hodnotou
-          then
-            i_gen_pushnil(inst,info,context,arg^.t.getctype^.size);
 
-          -- v®echny ostatn° p©°pady
-          else
-            -- p©ipravit kontext
-            case pentity_param(arg^.sym)^.pass
-              -- hodnotou
-              when pp_value     do
-                  i_newcontext(context,newcontext,lm_push_value,arg^.t.getutype);
-                  i_setoutpref(newcontext,iop_stack);
-
-              -- odkazem
-              when pp_ref       do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});
-
-              -- odkazem, bez typovÇ kontroly
-              when pp_unchecked do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});
-
-              -- odkazem, váetnà odvozenòch typñ
-              when pp_class     do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});--unimplemented(74);
-
-              -- odkazem, ©°d°c° parametr virtu†ln°ho vol†n°
-              when pp_virtual   do unimplemented(82);
-
-              when others do verify(63,true);
-              end case;
-
-            -- jakÇ dynamickÇ atributy n†s zaj°maj° ?
-            newcontext.rta:=pentity_param(arg^.sym)^.rta_used{usedrta};
-
-            -- parametr p©edanò hodnotou nem† dynamickÇ atributy
-            verify(327,(pentity_param(arg^.sym)^.pass=pp_value) and (newcontext.rta<>rtattribset:[]));
-
-            -- vygenerovat parametr
-            declare var
-              opnone : c_operand;
-            begin
-              i_load(inst,info,newcontext,context,arg^.sub,opnone);
-            leave
-              opnone.free(info,context);
-              end declare;
-            end if;
-
-      -- pouë°t implicitn° hodnotu
-      else
-        unimplemented(176);
-        end if;
-
-    -- dal®° parametr
-    nextarg;
-    end loop;
-
-  ---- uloëit pointer na instanci a naá°st adresu procedury ----
+  ---- (4) uloëit pointer na instanci a naá°st adresu procedury ----
   declare var
     nclass         : nodeclass;                  -- p©evzat†/uráen† t©°da jmÇna procedury
     opcall         : c_operand;                  -- adresa volanÇ procedury
 
   begin
-    expr^.get(el,arg);
+    declare var
+      arg          : pexpitem;                   -- argumenty
+    begin
+      expr^.get(el,arg);
+      end declare;
     if el=nil
       then nclass:=nc_proc
       else nclass:=el^.nclass;
@@ -2275,36 +2326,40 @@ begin
           -- pointer budeme zpracov†vat po 4bytovòch kousc°ch
           opcall.adjust_size(4);
 
-          declare var
-            optemp : c_operand;                  -- pracovn° registr
-            tgcall : itarget;                    -- c°l skoku na vol†n° procedury
+          -- jestliëe to nen° zrovna machine pointer na proceduru, tak se zabòvat instanc°
+          verify(723,el^.sub=nil or else not t_is_stype(el^.sub^.t,dt_pointer));
+          if pf_machine not in el^.sub^.t.getpflags then
+            declare var
+              optemp : c_operand;                  -- pracovn° registr
+              tgcall : itarget;                    -- c°l skoku na vol†n° procedury
 
-          begin
-            -- bude se hodit jeden registr
-            optemp.create_new_register(inst,info,context,edt_address,4);
+            begin
+              -- bude se hodit jeden registr
+              optemp.create_new_register(inst,info,context,edt_address,4);
 
-            -- naá°st pointer na instanci
-            opcall.shift_displacement(4);
-            addii(inst,info,ii_mov,optemp,opcall,op0);
-            opcall.unshift_displacement(4);
+              -- naá°st pointer na instanci
+              opcall.shift_displacement(4);
+              addii(inst,info,ii_mov,optemp,opcall,op0);
+              opcall.unshift_displacement(4);
 
-            -- alokovat n†và®t° skoku
-            newtarget(info,tgcall);
+              -- alokovat n†và®t° skoku
+              newtarget(info,tgcall);
 
-            -- zjistit, zda je to platnò pointer na instanci
-            addii(inst,info,ii_cmp,optemp,op_FFFFFFFF,op0);
-            addjump(inst,info,context,ic_e,tgcall);
+              -- zjistit, zda je to platnò pointer na instanci
+              addii(inst,info,ii_cmp,optemp,op_FFFFFFFF,op0);
+              addjump(inst,info,context,ic_e,tgcall);
 
-            -- uloëit instanci
-            addii(inst,info,ii_push,optemp,op0,op0);
+              -- uloëit instanci
+              addii(inst,info,ii_push,optemp,op0,op0);
 
-            -- adresa skoku na toto m°sto
-            settarget(info,tgcall,getaddr(inst));
+              -- adresa skoku na toto m°sto
+              settarget(info,tgcall,getaddr(inst));
 
-          leave
-            -- uvolnit pomocnò operand
-            optemp.free(info,context);
-            end declare;
+            leave
+              -- uvolnit pomocnò operand
+              optemp.free(info,context);
+              end declare;
+            end if;
 
       when others do verify(379,true);
       end case;
@@ -2329,7 +2384,8 @@ begin
     opcall.free(info,context);
     end declare;
 
-  ---- p©evz°t vòsledek ----
+
+  ---- (5) p©evz°t vòsledek ----
   if expr^.t.tview<>tview_null{stype<>dt_undef} then
     declare var
       resultsize   : t_unsigned;                 -- velikost n†vratovÇ hodnoty
@@ -2911,9 +2967,14 @@ begin
         --ata_var_unchecked : i_load(inst,info,lm_gen,nil,expr^.sub,vysl);
 
           -- :tag
-          when ata_type_tag{ata_expr_tag} do
+          when ata_type_tag do
               vysl.create_imm(edt_unsigned,4,0);
               vysl.set_relo_entity(expr^.sub^.t.getctype);
+
+          -- :tag
+          when ata_message_tag do
+              vysl.create_imm(edt_unsigned,4,0);
+              vysl.set_relo_entity(expr^.sub^.getsymbol);
 
           when others do verifyx(148,true,expr^.pos);
           end case;
@@ -3086,6 +3147,10 @@ begin
   -- podvòrazy
   expr^.get(el,arg);
 
+  -- tag vòjimky
+  i_newcontext(context,newcontext,lm_push_value,nil);
+  i_load(inst,info,newcontext,context,el,opnone);
+
   -- parametry
   if arg<>nil
 
@@ -3097,14 +3162,6 @@ begin
     else
       i_gen_pushstack(inst,info,context,op_0);
       end if;
-
-  -- á°slo vòjimky
-  i_newcontext(context,newcontext,lm_push_value,nil);
-  i_load(inst,info,newcontext,context,el,opnone);
-
-  -- tag
-  -- %%X
-  i_gen_pushstack(inst,info,context,op_0);
 
 leave
   -- uvolnit operand
@@ -3120,7 +3177,7 @@ procedure i_gen_callspec (
     context        : in out iexprcontext;        -- kontext generov†n° vòrazu
     expr           : in pexpcallspec;            -- dereference
     vysl           : out c_operand) =            -- vòsledek
--- Generov†n° k¢du odesl†n° zpr†vy.
+-- Generov†n° k¢du vol†n° speci†ln° metody.
 ----------------------------------------------------------------------------------------------------
 var
   opnone           : c_operand;                  -- pr†zdnò vòsledek
@@ -3229,6 +3286,52 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure i_gen_call_rtl (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o prñbàhu generov†n°
+    context        : in out iexprcontext;        -- kontext generov†n° vòrazu
+    expr           : in pexpcallrtl;             -- dereference
+    vysl           : out c_operand) =            -- vòsledek
+-- Generov†n° k¢du p©°mÇho vol†n° funkce RTL.
+----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_rtl;
+
+var
+  pproc            : pentity_subprogram;         -- volan† RTL procedura
+  call             : icallconvention;            -- volac° konvence
+  pinst            : picodeinst;                 -- instance volanÇ procedury
+  ptyp             : pentity_type;               -- typ procedury
+  newcontext       : iexprcontext;               -- kontext podvòrazñ
+
+begin
+  -- nalÇzt RTL proceduru
+  rtl_get_entity(expr^.rtl_proc,pproc);
+  verify(718,pproc=nil or else pproc^.etype not in ets_callable);
+
+
+  ---- (1) p©°prava vol†n°: zjistit instanci, volac° konvenci, typ procedury ----
+  i_gen_call_subprogram_prepare(inst,info,context,expr,pproc,call,pinst,ptyp);
+
+
+  ---- (2) zpracovat argumenty ----
+  i_gen_call_subprogram_parameters(inst,info,context,expr,pproc,call,pinst,ptyp);
+
+
+  ---- (3) vol†n° ----
+  -- Ondra 14.5.2002 : Tak tohle je %%X %%TODO(REGALLOC) ** KRUTè ** z†plata !!
+  -- Podrobnàji viz zakomentovanÇ vol†n° SAVEREGS na zaá†tku tÇto procedury
+  -- uloëit v®echny pouëitÇ registry
+  -- %%X Omezit jen na registry skuteánà pouëitÇ ve volanÇ procedu©e
+  i_reg_save_used(inst,info,context);
+  
+  -- vol†n°
+  addcallrtl(inst,info,context,expr^.rtl_proc);
+  end i_gen_call_rtl;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_gen_this (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o prñbàhu generov†n°
@@ -3316,6 +3419,9 @@ begin
 
     -- vol†n° speci†ln° metody
     when nt_callspec  do i_gen_callspec(inst,info,context,pexpcallspec(expr),vysl);
+
+    -- p©°mÇ vol†n° funkce RTL
+    when nt_call_rtl  do i_gen_call_rtl(inst,info,context,pexpcallrtl(expr),vysl);
 
     -- THIS
     when nt_this      do i_gen_this(inst,info,context,pexpthis(expr),vysl);
@@ -3910,6 +4016,8 @@ begin
   -- :=
   oset1s(opertab,op_assign,dts_tag,^i_gen_op_assign);
 
+  -- <> =
+  osetss(opertab,[op_ne,op_eq],dts_tag,^i_gen_op_compare_ordinal);
 
   ---- t©°dy ----
   -- :=

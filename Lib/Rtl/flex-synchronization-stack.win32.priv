@@ -1,3 +1,19 @@
+type
+  t_rtl_sstack = t_rtl_ref_lifo with record      -- struktura stacku
+    freedata       : p_rtl_ref_free_resource;    -- uvolnovaci callback
+    waitable       : t_rtl_logical32;            -- priznak zda se ma cekat
+    --is waitable
+      critisem     : t_rtl_critisem;             -- semafor pro cekani na prazdny stack
+                                                 -- pro pocet prvku mensi nez pocet ctecich 
+                                                 -- threadu blokujici ve smyslu prvku ktere se 
+                                                 -- jiz zacali cist
+    -- else
+      count        : aliased t_rtl_native_signed -- inverzni pocitadlo prvku
+                     for position use 16;        -- na stejnem offsxetu jako pocitadlo critisemu
+    -- end if waitable
+    end record;
+
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_sstack_pop_now (
     stack          : in out ref t_rtl_sstack;
@@ -33,83 +49,49 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_sstack_reset =
 ----------------------------------------------------------------------------------------------------
-var
-  oldstack         : t_rtl_sstack;
-  data             : t_rtl_pointer;
-
 begin
-  rtl_sstack_move(stack,oldstack);
-  -- projizdim cely stack a zahazuju vsechno
-  loop
-    if rtl_sstack_pop_now(oldstack,data) then
-      if stack.freedata<>nil then
-        stack.freedata^(data);
-        end if;
-    else
-      break;
-      end if;
-    end loop;
   end rtl_sstack_reset;
+
 
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_sstack_move =
 ----------------------------------------------------------------------------------------------------
-var
-  oldstack         : t_rtl_sstack;
-
 begin
-  rtl_sstack_new(tostack,fromstack.waitable,fromstack.freedata);
-
-  -- pocitadlo
-  oldstack.critisem:=fromstack.critisem;
-  fromstack.critisem:=tostack.critisem;
-  tostack.critisem:=oldstack.critisem;
-
-  -- hlavicku
-  loop
-    oldstack:=fromstack;
-    rtl_interlocked_abaref_compare_exchange(^fromstack.first,
-                                            tostack.first,
-                                            oldstack.first,
-                                            tostack.first);
-    -- dokud se to nepodari
-    if tostack.first=oldstack.first then
-      break;
-      end if;
-    end loop;
   end rtl_sstack_move; 
+
+
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_sstack_push =
 -- vlozi prvek na stack
 ----------------------------------------------------------------------------------------------------
 var
-  newnode          : t_rtl_abaref_pointer;
-  temp             : aliased t_rtl_abaref_pointer;
-  success          : t_rtl_logical8;
+  newnode          : t_rtl_ref_local;
+  temp             : t_rtl_ref_snapshot;
 
 label
   restart;
 
 begin 
   -- vytvorim novy nod
-  rtl_abaref_new(newnode);
-  newnode.ptr^.data:=data;
+  rtl_ref_create_local(newnode,data,stack.freedata);
 
 restart:
-  temp:=stack.first;
+  rtl_ref_shared_to_snapshot(stack.first,temp);
 
-  -- zkopiruju si prvni nod jako svuj dalsi
-  rtl_abaref_copy_pointer_source(newnode.ptr^.next,stack.first,^temp,stack.freedata,success);
-  if not success then goto restart; end if;
+  -- cosi
+  if not rtl_ref_shared_to_local_shared(stack.first,newnode.node^.next,temp) then
+    goto restart; 
+    end if;
 
   -- zkusim nahradit stack.first svym novym nodem
-  rtl_abaref_copy_pointer_target(stack.first,^temp,newnode,nil,stack.freedata,success);
-  if not success then goto restart; end if;
+  if not rtl_ref_local_to_shared(newnode,stack.first,temp) then
+    goto restart; 
+    end if;
 
   -- podarilo se uvolnim novy nod
-  rtl_abaref_discard(newnode,stack.freedata,success);
+  rtl_ref_discard_local(newnode);
 
   -- zvednu pocet prvku ve stacku a nebo povolim dalsimu threadu cteni
   if stack.waitable 
@@ -124,43 +106,50 @@ restart:
 procedure rtl_sstack_pop_now  =
 ----------------------------------------------------------------------------------------------------
 var
-  mynode           : t_rtl_abaref_pointer;
-  temp             : aliased t_rtl_abaref_pointer;
-  success          : t_rtl_logical8;
+  mynode           : t_rtl_ref_local;
+  temp             : t_rtl_ref_snapshot;
+  nexttemp         : t_rtl_ref_snapshot;
 
 label
   restart;
 
 begin
 restart:
-  temp:=stack.first;
+  rtl_ref_shared_to_snapshot(stack.first,temp);
 
   -- zkusim jestli neni stack prazdny
-  if temp.ptr=nil then
+  if temp.node=nil then
     data:=nil;
 
     --uvolnim posledni zkopirovany pointer
-    rtl_abaref_discard(mynode,stack.freedata,success);
+    rtl_ref_discard_local(mynode);
     result:=false;
     return;
     end if;
 
   -- zkopiruju si pointer na prvni prvek
-  rtl_abaref_copy_pointer_source(mynode,stack.first,^temp,stack.freedata,success);
-  if not success then goto restart; end if;
+  if not rtl_ref_shared_to_local(stack.first,mynode,temp) then
+    goto restart; 
+    end if;
 
   -- zkusim jestli se mi podari prehodit stack.first na dalsi prvek
-  rtl_abaref_copy_pointer_target(stack.first,^temp,mynode.ptr^.next,nil,stack.freedata,success);
-  if not success then goto restart; end if;
+  rtl_ref_shared_to_snapshot(mynode.node^.next,nexttemp);
+  if not rtl_ref_shared_to_shared(mynode.node^.next,stack.first,nexttemp,temp) then
+    goto restart; 
+    end if;
 
   -- podarilo se mi to, vezmu si data
-  data:=mynode.ptr^.data;
+  data:=mynode.node^.data;
+  mynode.node^.data:=nil;
 
   -- uvolnim pointer na dalsi prvek
-  rtl_abaref_discard(mynode.ptr^.next,stack.freedata,success);
+  if not rtl_ref_discard_shared(mynode.node^.next,nexttemp) then
+    raise synchronization_error;
+    end if;
 
   -- uvolnim tento prvek
-  rtl_abaref_discard(mynode,stack.freedata,success);
+  --rtl_ref_discard_local_shared(mynode);
+  rtl_ref_discard_local(mynode);
   result:=true;
   end rtl_sstack_pop_now;
 
@@ -188,7 +177,7 @@ procedure rtl_sstack_try_pop =
 var
     start          : t_system_ticks;
     elapsed        : t_system_ticks;
-    timeout        : t_rtl_native_signed;
+    timeout        : t_rtl_timeout;
 
 begin
   -- reknu ze si beru jeden prvek
@@ -242,7 +231,7 @@ begin
     -- pokud je potreba pocitat cas tak zjistim kolik ubehlo
     if milisec>0 then
       elapsed:=GetTickCount()-start;
-      timeout - t_rtl_native_signed(elapsed);
+      timeout - t_rtl_timeout(elapsed);
       if timeout<1 then
         -- timeout
         result:=false;

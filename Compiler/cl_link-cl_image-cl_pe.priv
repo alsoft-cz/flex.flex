@@ -587,10 +587,10 @@ class private linkimage_pe =
       dllname         : t_char32str := 'main.dll';
     
     begin
-       -- osetrit vstup. parametry
-       if export.count<=0 or export.list=nil then return; end if;
+      -- osetrit vstup. parametry
+      if export.count<=0 or export.list=nil then return; end if;
 
-       -- pocet exportu
+      -- pocet exportu
       expnum:=export.count;
 
       -- suma velikosti exportnich jmen
@@ -631,7 +631,6 @@ class private linkimage_pe =
       -- jmeno dllka
       dir.namerva:=dir.ordtblrva+ordinalssize;
       add_name(dllname, names, n);
-
      
       for i in 1..export.list^:length loop
         -- export address table
@@ -639,111 +638,113 @@ class private linkimage_pe =
 
         -- name ptr table and names
         nameptrs^[i-1]:=dir.ordtblrva+ordinalssize+n;
-
         add_name(pexportinfo(pentity_procedure(export.list^[i])^.export_info)^.export_name, names, n);
-
-        
+       
         -- ord table
         ordinals^[i-1]:=i-1;
-
         end loop;
-
       end buildexport; 
 
 
 
     ------------------------------------------------------------------------------------------------
     static buildrelocs (
-        base       : in  t_unsigned32; 
-        relocaddrs : in  trelocs;  -- setrideny seznam adres na kterych je treba provest relokaci
+        base       : in t_unsigned32;            -- b zov  adresa PE
+        relocaddrs : in trelocs;                 -- setrideny seznam adres na kterych je treba provest relokaci
         fixups     : out pperelocfixuptable;     -- PE relokacni informace
-        relocdatasize : out t_unsigned32) =      -- celkova velikost PE relokacnich informaci
+        relocdatasize : out t_unsigned32 := 0) = -- celkova velikost PE relokacnich informaci
     -- Sestav¡ relokacni tabulku
     ------------------------------------------------------------------------------------------------
     var
-      tempaddr     : t_unsigned;
       fixupblocks  : t_unsigned;
-      blockindex   : t_unsigned;
-      blockrelocs  : t_unsigned;
-      k            : t_unsigned;
-      checkrelocs  : t_unsigned;                 
 
     begin
       -- prazdny seznam relokaci?
       if relocaddrs:length=0 then return; end if;
 
-      relocdatasize:=0;
-      blockindex:=0;
-
-      -- alespon jeden 4K fixup blok
-      fixupblocks:=1;
- 
       -- zjisti kolik ze to 4-kilovych fixup bloku budeme mit
-      -- inicalizuj tempaddr prvni adresou
-      tempaddr:=relocaddrs[1];
-      
-      -- projed vsechny adresy
-      for i in relocaddrs:range loop
-        if relocaddrs[i]-tempaddr>=4096 then
-          tempaddr:=relocaddrs[i];
-          
-          -- incrementuj pocet fixup bloku kazdych 4096 bytu
-          succ fixupblocks;
-          end if;
-        end loop;
+      declare var
+        tempaddr   : t_unsigned;
+
+      begin
+        -- alespon jeden 4K fixup blok
+        fixupblocks:=1;
+  
+        -- inicalizuj tempaddr prvni adresou
+        tempaddr:=relocaddrs[1];
+        
+        -- projed vsechny adresy
+        for i in relocaddrs:range loop
+          if relocaddrs[i]-tempaddr>=4096 then
+            tempaddr:=relocaddrs[i];
+            
+            -- incrementuj pocet fixup bloku kazdych 4096 bytu
+            succ fixupblocks;
+            end if;
+          end loop;
+        end declare;
 
       -- alokuj pamet pro zjisteny pocet 4-kilovych bloku
       new fixups range fixupblocks;
 
-      verify(662,fixups=nil);
+      -- projed vsechny adresy a vygeneruj relokacni informace
+      declare var
+        blockindex : t_unsigned := 0;
+        blockrelocs: t_unsigned;
+        checkrelocs: t_unsigned;                 
+        i          : t_unsigned;
 
-      -- projed vsechny adresy
-      for i in relocaddrs:range loop
-        -- pro kazdy 4-kilovy blok
-        if i=1 or relocaddrs[i]-tempaddr>=4096 then
-          tempaddr:=relocaddrs[i];
-
+      begin
+        i:=relocaddrs:first;
+        while i<=relocaddrs:length loop
           verify(663,not (blockindex<fixupblocks));
 
           -- do hlavicky bloku uloz page rva, 
-          fixups^[blockindex].pagerva:=tempaddr-base;
+          fixups^[blockindex].pagerva:=relocaddrs[i]-base;
 
           -- zjisti pocet jednotlivych relokaci v tomto bloku
-          k:=i;
-          while k<=relocaddrs:length and relocaddrs[k]-relocaddrs[i]<4096 loop 
-            succ k;
-            end loop;
-          blockrelocs:=k-i;
+          declare var
+            k    : t_unsigned;
+          begin
+            k:=i;
+            while k<=relocaddrs:length and then relocaddrs[k]-relocaddrs[i]<4096 loop 
+              succ k;
+              end loop;
+            blockrelocs:=k-i;
+            end declare;
 
           -- alokuj pole typeandoffset poctem jednotlicych relokaci zjistenym v predchozim kroku
           new fixups^[blockindex].typeandoffset range blockrelocs;
 
-          verify(664,fixups^[blockindex].typeandoffset=nil);
-
           -- napln typeandoffset jednotlivymi relokacemi
-          k:=i;
-          while k<=relocaddrs:length and relocaddrs[k]-relocaddrs[i]<4096 loop 
-            -- hornich 4 bitu udava typ relokace, zbylych 12 offset od fixups^[blockindex].pagerva
-            fixups^[blockindex].typeandoffset^[k-i]:=(IMAGE_REL_BASED_HIGHLOW shl 12) or t_mod_unsigned16(relocaddrs[k]-relocaddrs[i]);
-            succ k;
-            
-            -- kontrolni promenna
-            succ checkrelocs;
-            end loop;
+          declare var
+            k    : t_unsigned;
+          begin
+            k:=i;
+            while k<=relocaddrs:length and then relocaddrs[k]-relocaddrs[i]<4096 loop 
+              -- hornich 4 bitu udava typ relokace, zbylych 12 offset od fixups^[blockindex].pagerva
+              fixups^[blockindex].typeandoffset^[k-i]:=(IMAGE_REL_BASED_HIGHLOW shl 12) or t_mod_unsigned16(relocaddrs[k]-relocaddrs[i]);
+              succ k;
+              
+              -- kontrolni promenna
+              succ checkrelocs;
+              end loop;
+            i:=k;
+            end declare;
 
           -- uloz velikost hlavicky bloku a vsech relokaci v bloku do hlavicky 4-K bloku
           fixups^[blockindex].blocksize:=fixups^[blockindex].pagerva:size+fixups^[blockindex].blocksize:size+blockrelocs*t_unsigned16:size;
           
           -- pricist velikost bloku k celkove velikosti PE relokacnich informaci
-          relocdatasize + fixups^[blockindex].blocksize;
+          relocdatasize+fixups^[blockindex].blocksize;
 
           -- dalsi block
-          succ blockindex;
-             end if;
-        end loop;
+          succ blockindex;      
+          end loop;
 
-      -- pokud checkrelocs se nebude rovnat poctu adres v seznamu relokaci, je chyba v algoritmu teto funkce
-      verify(665,checkrelocs<>relocaddrs:length);
+        -- pokud checkrelocs se nebude rovnat poctu adres v seznamu relokaci, je chyba v algoritmu teto funkce
+        verify(665,checkrelocs<>relocaddrs:length);
+        end declare;
       end buildrelocs;
 
 
@@ -803,8 +804,8 @@ class private linkimage_pe =
       dir_ofs      : tpefileptr;                 -- offset Data Directory
       scode        : tpesectheader;              -- sekce: k¢d
       scode_ofs    : tpefileptr;                 -- offset sekce
-      stypedesc    : tpesectheader;              -- sekce: deskriptory typ–
-      stypedesc_ofs: tpefileptr;                 -- offset sekce
+      smetadata    : tpesectheader;              -- sekce: metadata
+      smetadata_ofs: tpefileptr;                 -- offset sekce
       sconst       : tpesectheader;              -- sekce: konstanty
       sconst_ofs   : tpefileptr;                 -- offset sekce
       sinit        : tpesectheader;              -- sekce: inicializovan  data
@@ -918,13 +919,13 @@ class private linkimage_pe =
       pehdr.linkerver.major:=linkver_major;
       pehdr.linkerver.minor:=linkver_minor;
       pehdr.codetotal :=unidata_size_to_unsigned(resolver.getsegtotal(tseg_code));
-      pehdr.inittotal :=unidata_size_to_unsigned(resolver.getsegtotal(tseg_typedesc))
+      pehdr.inittotal :=unidata_size_to_unsigned(resolver.getsegtotal(tseg_metadata))
                        +unidata_size_to_unsigned(resolver.getsegtotal(tseg_const))
                        +unidata_size_to_unsigned(resolver.getsegtotal(tseg_init));
       pehdr.datatotal :=unidata_size_to_unsigned(resolver.getsegtotal(tseg_data));
         pehdr.entrypoint:=unicode_addr_to_unsigned(resolver.getentrypoint)-base;
       pehdr.codebase  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_code))-base;
-      pehdr.database  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_typedesc))-base;
+      pehdr.database  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_metadata))-base;
       os^.write(pehdr);
 
       -- image base
@@ -991,27 +992,27 @@ class private linkimage_pe =
         end if;
 
       -- sekce: deskriptory typ–
-      if resolver.checkseg(tseg_typedesc) then
-        stypedesc_ofs:=os^.get_output_written;
-        stypedesc.name       :={%OFF}'TYPES'\0\0\0{%ON};
-        stypedesc.virtualsize:=get_seg_virtualsize(tseg_typedesc); 
-        stypedesc.virtualaddr:=get_seg_virtualaddr(tseg_typedesc);
-        stypedesc.datasize   :=get_seg_datasize(tseg_typedesc);
-        stypedesc.dataptr    :=0;
-        stypedesc.flags      :=IMAGE_SCN_CNT_INITIALIZED_DATA
+      if resolver.checkseg(tseg_metadata) then
+        smetadata_ofs:=os^.get_output_written;
+        smetadata.name       :={%OFF}'METADATA'{%ON};
+        smetadata.virtualsize:=get_seg_virtualsize(tseg_metadata); 
+        smetadata.virtualaddr:=get_seg_virtualaddr(tseg_metadata);
+        smetadata.datasize   :=get_seg_datasize(tseg_metadata);
+        smetadata.dataptr    :=0;
+        smetadata.flags      :=IMAGE_SCN_CNT_INITIALIZED_DATA
                             or IMAGE_SCN_MEM_READ;
-        os^.write(stypedesc);
+        os^.write(smetadata);
 
       #if debug2 then;
         #if codeview then;
         if debug_mode=tdit_codeview and debug_info<>nil then
-          p_codeview(debug_info)^.register_segment(tseg_typedesc,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],stypedesc.dataptr,stypedesc.datasize);
+          p_codeview(debug_info)^.register_segment(tseg_metadata,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],smetadata.dataptr,smetadata.datasize);
           end if;
         #end if;
       #end if;
 
         succ coff.sectioncount;
-        maxrva:=max_unsigned(maxrva,((stypedesc.virtualaddr+stypedesc.virtualsize+sectalign-1) div sectalign)*sectalign);
+        maxrva:=max_unsigned(maxrva,((smetadata.virtualaddr+smetadata.virtualsize+sectalign-1) div sectalign)*sectalign);
         end if;
 
       -- sekce: konstanty
@@ -1216,9 +1217,9 @@ class private linkimage_pe =
         end if;
 
       -- deskriptory typ–
-      if resolver.checkseg(tseg_typedesc) then
-        stypedesc.dataptr:=os^.get_output_written;
-        resolver.writesegment(tseg_typedesc,os);
+      if resolver.checkseg(tseg_metadata) then
+        smetadata.dataptr:=os^.get_output_written;
+        resolver.writesegment(tseg_metadata,os);
         falign(os,filealign);
         end if;
 
@@ -1326,8 +1327,8 @@ class private linkimage_pe =
       if resolver.checkseg(tseg_code) then
         f.write(scode_ofs,scode,scode:size);
         end if;
-      if resolver.checkseg(tseg_typedesc) then
-        f.write(stypedesc_ofs,stypedesc,stypedesc:size);
+      if resolver.checkseg(tseg_metadata) then
+        f.write(smetadata_ofs,smetadata,smetadata:size);
         end if;
       if resolver.checkseg(tseg_const) then
         f.write(sconst_ofs,sconst,sconst:size);

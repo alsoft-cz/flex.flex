@@ -36,51 +36,29 @@ with
   cd_decl.cd_create;
 
 begin
-  -- symbol nen¡ k dispozici
+  -- entita nen¡ k dispozici, ale ona se mˆla nal‚zt => je to chyba
   if srch.psym=nil then
-    if etc_generic not in curr.entity^.compile {info.final}
+    declare var
+      undef         : pentity;               -- z stupce za nedefinovanou entitu
+      undef_context : tcontext;              -- kontext z stupce za nedefinovanou entitu
 
-      -- ale on se mˆl nal‚zt -> je to chyba
-      then
-        declare var
-          undef         : pentity;               -- z stupce za nedefinovanou entitu
-          undef_context : tcontext;              -- kontext z stupce za nedefinovanou entitu
+    begin
+      -- ohl sit chybu
+      ce^.seterror({CCERR=}000040,ce_undeclared);
+      ce^.setparam(entityident_to_string(id^));
+      expr^.errpos;
 
-        begin
-          -- ohl sit chybu
-          ce^.seterror({CCERR=}000040,ce_undeclared);
-          ce^.setparam(entityident_to_string(id^));
-          expr^.errpos;
+      -- zalo‘it symbol typu ET_UNDEF coby prost©edek zotaven¡ z chyby
+      d_create_internal(curr,undef,undef_context,et_undef,id);
+      d_end_internal(undef^,false);
 
-          -- zalo‘it symbol typu ET_UNDEF coby prost©edek zotaven¡ z chyby
-          d_create_internal(curr,undef,undef_context,et_undef,id);
-          d_end_internal(undef^,false);
+      -- nastavit jako v˜sledek 
+      srch.set_entity(undef);
 
-          -- nastavit jako v˜sledek 
-          srch.set_entity(undef);
-
-          -- poslat chybu v˜¨
-          ce^.resumeerror;
-          end declare;
-
-      -- asi nˆjak  genericita
-      else
-        --info.generic:=true;
-        {checkeval:=false;}
-        return;
-        end if;
+      -- poslat chybu v˜¨
+      ce^.resumeerror;
+      end declare;
     end if;
-{
-  -- ne£plnˆ vyhodnocen˜ symbol vyhodnotit
-  if psym^.evaluated<psym^.declared then
-    {%%X Tady se zcela zbyte‡nˆ po© d vyhodnocuje pozice v˜razu, co‡ je zna‡nˆ }
-    -- netrivi ln¡ v˜po‡et. Nedal by se do E_SYMBOL a podobn˜ch procedur
-    -- p©ed vat nˆjak‚ symbolick‚ ur‡en¡ pozice a pozici fyzicky zji¨Ÿovat a‘
-    -- p©i nalezen¡ chyby ?
-    expr^.getpos(pos);
-    e_symbol(psym,pos,psym^.declared,info.final);
-    end if;
-}
   end checkeval;
 
 
@@ -1700,11 +1678,11 @@ begin
 
               -- podv˜raz je promˆnn  => m me instanci => t©¡da: procedura
               elsif expr^.sub^.nclass in ncs_value then 
-                expr^.nclass:=nc_proc
+                expr^.nclass:=nc_proc;
 
               -- podv˜raz je, ale nen¡ to promˆnn  => t©¡da: nic
               else
-                expr^.nclass:=nc_proc
+                expr^.nclass:=nc_none;
                 end if;
 
           when others do verify(378,true);
@@ -1714,12 +1692,13 @@ begin
         expr^.zprac:=ep_form;
 
         -- doplnit implicitn¡ vol n¡
-        if (nf_name in expr^.nflags
+        -- Ondra 13.11.2003 V˜raz samoz©ejmˆ mus¡ b˜t t©¡dy [nc_proc]
+        if expr^.nclass=nc_proc and then ((nf_name in expr^.nflags
         and (nf_top not in expr^.nflags or info.kind not in eks_proc)
         -- Ondra 18.9.2001 : Pouze pokud nechceme referenci na proceduru
         and nf_reference not in expr^.nflags)
         -- Ondra 11.10.2001 : Nebo pokud se v˜sledek bude dereferencovat }
-        or nf_dereference in expr^.nflags then
+        or nf_dereference in expr^.nflags) then
           -- zv˜¨it strom
           newtree(pexpnode(expr),info,nt_call);
 
@@ -1849,15 +1828,15 @@ var
       sym_get_visibility(curr.entity,expr^.sub^.getsymbol,sv);
 
       -- jestli‘e nejsou povoleny ‘ dn‚ £rovnˆ viditelnosti
-      if sv=tentityvisibleset:[] 
+      if sv=tentityvisibleset:[]
       -- a p©ekl dan˜ v˜raz bude pou‘it jako jm‚no v nˆjak‚ vazebn¡ klauzuli
-      and info.kind in eks_link 
+      and info.kind in eks_link
       -- a podv˜raz reprezentuje modul nebo t©¡du
-      and expr^.sub^.getsymbol^.etype in ets_modular 
+      and expr^.sub^.getsymbol^.etype in ets_modular
       -- m–‘eme to zkusit zachr nit automatick˜m USE
       then
         -- automatick‚ USE
-        sym_add_with(curr,expr^.sub,expr^.sub^.getsymbol,twm_use,twl_normal);
+        sym_add_with(curr,expr^.sub,expr^.sub^.getsymbol,twm_use,twl_normal,true);
 
         -- a zkusit zjistit viditelnost je¨tˆ jednou
         sym_get_visibility(curr.entity,expr^.sub^.getsymbol,sv);
@@ -1912,10 +1891,10 @@ begin
 
         -- v ur‡it‚m kontextu by to mohlo b˜t jm‚no dosud nep©elo‘en‚ho modulu 
         if srch.psym=nil and info.kind in eks_link then
-          -- zkusit p©elo‘it soubor 
+          -- zkusit p©elo‘it soubor
           p_loadmodule(curr,expr^.id^);
 
-          -- a zkusit je¨tˆ jednou vyhledat 
+          -- a zkusit je¨tˆ jednou vyhledat
           srch.find_global(curr,expr^.id^);
           end if;
 
@@ -1978,11 +1957,8 @@ begin
     checkeval(curr,expr,srch,expr^.id,info);
     end if;
 
-  -- symbol se nenalezl, nevad¡ zkus¡me p©¡¨tˆ 
-  if srch.psym=nil then
-    verify(18,not info.final or not (etc_generic in curr.entity^.compile));
-    return;
-    end if;
+  -- nyn¡ ji‘ je jistˆ entita k dispozici
+  verify(18,srch.psym=nil);
 
   -- poznamenat symbol 
   expr^.s:=srch;
@@ -3010,8 +2986,9 @@ begin
                                          or cc(nc_value,dts_u_ordinal,etd_full,ata_ord_ord,atc_dynamic,tt_ord,nc_value);
 
         -- :tag
-        when atf_tag              do check:=cd(rta_tag,ata_expr_tag,tt_tag,nc_value)
-                                         or ctg(dts_all-dts_internal,etd_incomplete,ata_type_tag,tt_tag,nc_value);
+        when atf_tag              do check:=cd  (rta_tag,ata_expr_tag,tt_tag,nc_value)
+                                         or cent(et_message,ata_message_tag,tt_tag,nc_value)
+                                         or ctg (dts_all-dts_internal,etd_incomplete,ata_type_tag,tt_tag,nc_value);
 
         -- :tagged
         when atf_tagged           do check:=cd(rta_tag,ata_expr_tagged,tt_unilogical,nc_value)
@@ -3373,7 +3350,6 @@ begin
 
     -- interface cast
     when nt_interface_cast do a_form_interface_cast(curr,pexpinterfacecast(expr),info);
-
 {
     -- Ondra 16.7.2003+12.9.2003 : Explicitn¡ vol n¡ speci ln¡ch metod zak z no.
     -- vol n¡ speci ln¡ metody

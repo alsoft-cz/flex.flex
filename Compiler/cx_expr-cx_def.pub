@@ -41,7 +41,8 @@ with
   cc_def.cc_lexsym,cc_def.cc_tree,cc_attr;
 
 use
-  cc_sym;
+  cc_sym,
+  cc_base.cc_rtl;
 
 ----- %%TECH ---------------------------------------------------------------------------------------
 -- V˜raz je p©eveden do obecn‚ho stromov‚ho tvaru. Strom je tvo©en
@@ -159,14 +160,11 @@ class public expinfo = extend c_flex_class;
     var
       phase        : expphase;                   -- f ze p©ekladu
       kind         : expkind;                    -- druh o‡ek van‚ho v˜razu
-      pass2        : t_logical;                  -- T-druh˜ pr–chod anal˜zy
-    --generic      : t_logical;                  -- T-nalezeny extern¡ odkazy
       typ          : pentity_type;               -- po‘adovan˜ typ v˜razu
-      final        : t_logical;                  -- T-po‘adov no £pln‚ vyhodnocen¡
+    --final        : t_logical;                  -- T-po‘adov no £pln‚ vyhodnocen¡
 
     ------------------------------------------------------------------------------------------------
     static init (
-        _pass2     : in t_logical;               -- T-druh˜ pr–chod anal˜zou
         _typ       : in pentity_type;            -- po‘adovan˜ typ v˜razu
         _final     : in t_logical);              -- T-po‘ad. pln‚ vyhodnocen¡
     -- Inicializace.
@@ -215,6 +213,7 @@ type
       -- uzly pou‘it‚ poprv‚ p©i kompil torem ©¡zen‚m generov n¡ v˜raz– (typicky v glob ln¡ anal˜ze)
       nt_callspec;                               -- vol n¡ speci ln¡ metody
       nt_fake_tag;                               -- fake tag interfacu t©¡dy
+      nt_call_rtl;                               -- p©¡m‚ vol n¡ funkce RTL
 --    nt_tag_field;                              -- polo‘ka tagu
       end enum;
   nodetypeset      = set of nodetype;
@@ -247,17 +246,19 @@ const
   ncs_var              = nodeclassset:[nc_var];
   -- hodnota
   ncs_value            = ncs_var + nodeclassset:[nc_value];
-  -- podprogramy
-  ncs_subprog          = nodeclassset:[nc_proc];
+  -- podprogramy - pohled na volateln˜ podprogram
+  ncs_actual_subprogram= nodeclassset:[nc_proc];
+  -- podprogramy - pohled na ne nutnˆ volateln˜ podprogram
+  ncs_formal_subprogram= nodeclassset:[nc_proc,nc_none];
   -- zpr vy
   ncs_message          = nodeclassset:[nc_message];
   -- entity s adresou
-  ncs_ref              = ncs_var + ncs_subprog + ncs_message;
+  ncs_ref              = ncs_var + ncs_actual_subprogram + ncs_message;
   -- v˜bˆr
   ncs_range            = nodeclassset:[nc_type,nc_composite];
   ncs_choice           = ncs_value + ncs_range;
   -- prefix selektoru komponenty
-  ncs_prefix_component = ncs_value + ncs_subprog + nodeclassset:[nc_none,nc_module,nc_type];
+  ncs_prefix_component = ncs_value + ncs_formal_subprogram + nodeclassset:[nc_none,nc_module,nc_type];
   -- prefix indexu
   ncs_prefix_index     = ncs_value + nodeclassset:[nc_type];
   -- prefix dereference
@@ -328,21 +329,20 @@ const
   tlistdelta       = 4;
 
 
--- runtimove kontroly
-type
-  
- --trida runtimove kontroly
-  t_runtime_check_class  = enum
-    rchcl_gen;                                   -- provadi se behem generovani vyrazu
-    rchcl_load;                                  -- provadi se po nacteni vyrazu pro prirazeni
-    end enum;
-  
-  -- typy runtimovych kontrol
-  t_runtime_check  = enum
-    rch_ordinal_overflow;                        -- ordinalni preteceni/podteceni
-    rch_ordinal_range;                           -- ordinalni kontrola mezi
-    end enum;
+---- Run-time kontroly -----------------------------------------------------------------------------
 
+type
+  -- trida run-time kontroly
+  t_runtime_check_class = enum
+      rchcl_gen;                                 -- provadi se behem generovani vyrazu
+      rchcl_load;                                -- provadi se po nacteni vyrazu pro prirazeni
+      end enum;
+  
+  -- typ run-time kontrol
+  t_runtime_check  = enum
+      rch_ordinal_overflow;                      -- ordinalni preteceni/podteceni
+      rch_ordinal_range;                         -- ordinalni kontrola mezi
+      end enum;
   t_runtime_check_set = set of t_runtime_check;
 
 
@@ -368,6 +368,7 @@ class expcallspec;      type pexpcallspec      = ^class expcallspec;
 class expthis;          type pexpthis          = ^class expthis;
 class expcurrent;       type pexpcurrent       = ^class expcurrent;
 class expfaketag;       type pexpfaketag       = ^class expfaketag;
+class expcallrtl;       type pexpcallrtl       = ^class expcallrtl;
 {
 class exptagfield;      type pexptagfield      = ^class exptagfield;
 }
@@ -375,7 +376,7 @@ class exptagfield;      type pexptagfield      = ^class exptagfield;
 
 
 ----------------------------------------------------------------------------------------------------
-class public expnode = extend c_flex_class;
+class public expnode = extend c_flex_construct;
 -- Uzel
 ----------------------------------------------------------------------------------------------------
 
@@ -448,7 +449,7 @@ class public expnode = extend c_flex_class;
         _pos       : out lexposblock);           -- pozice v˜razu
     -- Zjist¡ pozici v˜razu.
     ------------------------------------------------------------------------------------------------
-    static errpos;
+    -- static errpos;
     -- Dosad¡ pozici v˜razu do posledn¡ho chybov‚ho hl ¨en¡.
     ------------------------------------------------------------------------------------------------
     static set_run_check (
@@ -1206,7 +1207,7 @@ class public expinterfacecast = extend expbinary0;
 
 ----------------------------------------------------------------------------------------------------
 class public expcallspec = extend explist;
--- vol n¡ speci ln¡ metody
+-- Vol n¡ speci ln¡ metody.
 ----------------------------------------------------------------------------------------------------
 
     var
@@ -1214,6 +1215,18 @@ class public expcallspec = extend explist;
       spec         : pentity_special;            -- volan  spec. metoda, je-li staticky ur‡ena
 
     end expcallspec;
+
+
+
+----------------------------------------------------------------------------------------------------
+class public expcallrtl = extend explist;
+-- Vol n¡ funkce RTL knihovny.
+----------------------------------------------------------------------------------------------------
+
+    var
+      rtl_proc     : cc_base.cc_rtl.t_rtl_entity;-- procedura run-time knihovny, kter  se m  volat
+
+    end expcallrtl;
 
 
 

@@ -951,6 +951,8 @@ begin
 procedure imm_cmp =
 -- Porovn n¡ dvou p©¡m˜ch hodnot.
 ----------------------------------------------------------------------------------------------------
+with
+  cc_base.cc_sym;
 
     ------------------------------------------------------------------------------------------------
     procedure cmpnil (
@@ -973,6 +975,182 @@ procedure imm_cmp =
         when others     do verify(317,true);
         end case;
       end cmpnil;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure array_step (
+        paitems    : in pimm_array;              -- polo‘ky agreg tu
+        pval       : out pimm_value;             -- aktu ln¡ defini‡n¡ hodnota polo‘ek
+        bound      : in out tuniint;             -- prav  hranice aktu ln¡ho defini‡n¡ho rozsahu
+        iter       : in out t_unsigned;          -- iter tor ©etˆzce polo‘kov˜ch definic
+        at_end     : out t_logical) =            -- T-bylo dosa‘eno konce ©etˆzce polo‘kov˜ch def.
+    -- Posunout hranici def. rozsahu v ©etˆzci a ur‡it aktu ln¡ defini‡n¡ hodnotu polo‘ek.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nebylo dosa‘eno konce ©etˆzce
+      if paitems^.list<>nil and then iter<paitems^.list^:length
+        -- p©echod do polo‘kov‚ definice, ‡i do mezery mezi nimi
+        then
+          -- dal¨¡ polo‘ka navazuje
+          if bound=paitems^.list^[succ iter].lval-ui_1
+        
+            -- p©ej¡t na dal¨¡ polo‘kovou definici
+            then
+              succ iter;
+              pval:=^paitems^.list^[iter].val;
+              bound:=paitems^.list^[iter].hval;
+
+            -- p©ej¡t do mezery mezi polo‘kov˜mi definicemi
+            else
+              pval:=^paitems^.othersval;
+              bound:=paitems^.list^[succ iter].lval-ui_1;
+              end if;
+
+        -- p©echod na zar ‘ku konce ©etˆzce
+        else
+          pval:=^paitems^.othersval;
+          at_end:=true;
+          end if;
+      end array_step;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure array_condensed_cmp (
+        paitems    : in pimm_array;              -- defini‡n¡ polo‘ky nekondenzovan‚ho pole
+        pcitems    : in pimm_condensed) =        -- prvky kondenzovan‚ho pole
+    -- Vyhodnotit porovn n¡ =, <> nekondenzovan‚ho a kondenzovan‚ho pole.
+    ------------------------------------------------------------------------------------------------
+    var
+      citer        : tuniint :=ui_0;             -- iter tor kondenzovan‚ho pole
+      cat_end      : t_logical := false;         -- p©¡znak dosa‘en¡ konce kondenzovan‚ho. pole
+      bound        : tuniint;                    -- hranice zkontrolovan˜ch def. rozsah– nekond. pole
+      iter         : t_unsigned := 0;            -- iter tor nekond. pole
+      at_end       : t_logical := false;         -- p©¡znak dosa‘en¡ konce nekond. pole
+      pval         : pimm_value;                 -- aktu ln¡ defini‡n¡ hodnota polo‘ek nekond. pole
+      leftmost     : tuniint;                    -- min. index pol¡
+      rightmost    : tuniint;                    -- max. index pol¡
+      a            : tuniint;                    -- hodnota polo‘ky kondenzovan‚ho pole
+      b            : tuniint;                    -- hodnota polo‘ky nekondenzovan‚ho pole
+
+    begin
+      -- inicializovat hranice pol¡
+      leftmost:=typ.getrange(context).getlval;
+      rightmost:=typ.getrange(context).gethval;
+      bound:=pred leftmost;
+
+      -- porovnat prvky kondenzovan‚ho pole
+      -- se v¨emi odpov¡daj¡c¡mi polo‘kov˜mi definicemi nek. pole
+      loop
+        -- v nekondenzovan‚m poli jsme pozadu
+        if citer+leftmost>bound then
+          -- posunout hranici nekond. pole, na‡¡st hodnotu a z n¡ ‡¡slo
+          array_step(paitems,pval,bound,iter,at_end);
+          uniint_load(b,pval^.ui,pval^.ui:size,{%%X sign:}false);
+          end if;
+
+        -- zjistit hodnotu platnou pro index [i] kondenzovan‚ho pole
+        if citer<unsigned_to_uniint(pcitems^.len)
+
+          -- nˆjak‚ prvky zbyly
+          then
+            -- na‡¡st ‡¡slo z pole
+            uniint_load(a,pcitems^.items^[uniint_to_unsigned(citer)*pcitems^.isize],pcitems^.isize,{%%X sign:}false);
+
+          -- konec pole
+          else
+            -- zprava je kondenzovan‚ pole naplnˆno hodnotou [nil] => nastavit
+            a:=ui_nil;
+            cat_end:=true;
+
+            -- p©esko‡it na posledn¡ polo‘ku porovn van‚ho rozsahu
+            citer:=bound-leftmost;
+            end if;
+
+        -- porovnat
+        if a<>b then break; end if;
+
+        -- dal¨¡ prvek
+        succ citer;
+        cmp:=(cat_end and at_end) or (citer+leftmost>rightmost);
+        until cmp;
+
+      -- po‘adov n test na nerovnost => negovat [cmp]
+      cmp xor (oper=cmp_ne);
+      end array_condensed_cmp;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure set_inclusion (
+        lop        : in timm_value;              -- lev˜ operand
+        rop        : in timm_value) =            -- prav˜ operand
+    -- Vyhodnotit inkluzivn¡ porovn vac¡ operace <, <=.
+    ------------------------------------------------------------------------------------------------
+    var
+      llen         : t_unsigned :=0;             -- d‚lka seznamu rozsah– lev‚ho operandu
+      li           : t_unsigned :=1;             -- iter tor seznamu rozsah– lev‚ho operandu
+      rlen         : t_unsigned :=0;             -- d‚lka seznamu rozsah– prav‚ho operandu
+      ri           : t_unsigned :=1;             -- iter tor seznamu rozsah– prav‚ho operandu
+      sharp        : t_logical :=false;          -- p©¡znak ostr‚ inkluze
+      match        : t_logical;                  -- p©¡znak inkluze aktu ln¡ho rozsahu
+      ldiff        : tuniint;                    -- rozd¡l lev˜ch hranic rozsah–
+      rdiff        : tuniint;                    -- rozd¡l prav˜ch hranic rozsah–
+
+    begin
+      -- zjistit d‚lky seznam– rozsah– operand–
+      if lop.sitems^.list<>nil then
+        llen:=lop.sitems^.list^:length;
+        end if;
+
+      if rop.sitems^.list<>nil then
+        rlen:=rop.sitems^.list^:length;
+        end if;
+
+      -- pro ka‘d˜ rozsah lev‚ho operandu hledat rozsah v prav‚m op.,
+      -- ve kter‚m je inkluzivnˆ obsa‘en
+      cmp:=true;
+      while cmp and li<=llen loop
+        match:=false;
+        while ri<=rlen loop
+          -- vypo‡¡tat rozd¡ly hranic aktu ln¡ch rozsah–
+          ldiff:=lop.sitems^.list^[li].lval-rop.sitems^.list^[ri].lval;
+          rdiff:=lop.sitems^.list^[li].hval-rop.sitems^.list^[ri].hval;
+
+          -- aktu ln¡ rozsah lev‚ho operandu inkluzivnˆ v aktu ln¡m rozsahu prav‚ho operandu
+          match:=ldiff>=ui_0 and rdiff<=ui_0;
+          if match then
+            -- zaznamenat p©¡padnou ostrou inkluzi
+            sharp or (ldiff<>ui_0 or rdiff<>ui_0);
+
+            -- dosa‘en prav˜ okraj aktu ln¡ho rozsahu prav‚ho operandu => posunout
+            if rdiff=ui_0 then
+              succ ri;
+              end if;
+                  
+            -- p©ej¡t na dal¨¡ rozsah lev‚ho operandu
+            break;
+            end if;
+                
+          -- zaznamenat ostrou inkluzi
+          sharp:=true;
+
+          -- dal¨¡ rozsah prav‚ho operandu
+          succ ri;
+          end loop;
+              
+        -- zaznamenat v˜sledek hled n¡ inkluze aktu ln¡ho rozsahu lev‚ho operandu
+        cmp and match;
+
+        -- dal¨¡ rozsah lev‚ho operandu
+        succ li;
+        end loop;
+            
+      -- po‘adov na ostr  inkluze => zkontrolovat
+      cmp and (oper not in tcmpoperset:[cmp_gt,cmp_lt] or sharp);
+      end set_inclusion;
+
 
 var
   a                : tuniint;
@@ -1033,17 +1211,212 @@ begin
       when others do verify(318,true);
       end case;
 
-  -- pole -- pole
-  elsif (imm1.ic in timmclassset:[ic_condensed,ic_array]) and (imm2.ic in timmclassset:[ic_condensed,ic_array]) then
-    unimplemented(110);
+  -- nekondenzovan‚ pole -- nekondenzovan‚ pole
+  elsif imm1.ic=ic_array and imm2.ic=ic_array then
+    case oper
+      -- =, <>
+      when cmp_eq,cmp_ne do
+          declare var
+            bound1     : tuniint;                -- hranice zkontrolovan˜ch def. rozsah– [imm1.aitems^.list]
+            iter1      : t_unsigned :=0;         -- iter tor [imm1.aitems^.list]
+            at_end1    : t_logical :=false;      -- p©¡znak dosa‘en¡ konce [imm1.aitems^.list]
+            pval1      : pimm_value;             -- aktu ln¡ defini‡n¡ hodnota polo‘ek [imm1]
+            bound2     : tuniint;                -- obdobn‚ s‚mantiky pro [imm2]
+            iter2      : t_unsigned :=0;
+            at_end2    : t_logical :=false;
+            pval2      : pimm_value;
+            rightmost  : tuniint;                -- max. index pol¡
+
+          begin
+            -- inicializovat hranice obou pol¡
+            bound1:=pred typ.getrange(context).getlval;
+            bound2:=bound1;
+            rightmost:=typ.getrange(context).gethval;
+
+            -- obˆ pole nebyla zkontrolov na cel 
+            while not (bound1=rightmost and bound2=rightmost) loop
+              -- v [imm1] jsme pop©edu => posunout hranici [imm2] a na‡¡st hodnotu
+              if bound1>bound2 then
+                array_step(imm2.aitems,pval2,bound2,iter2,at_end2);
+
+              -- v [imm2] jsme pop©edu => posunout hranici [imm1] a na‡¡st hodnotu
+              elsif bound2>bound1 then
+                array_step(imm1.aitems,pval1,bound1,iter1,at_end1);
+
+              -- v obou jsme z rove¤ => posunout hranice a na‡¡st hodnoty obou
+              else
+                array_step(imm1.aitems,pval1,bound1,iter1,at_end1);
+                array_step(imm2.aitems,pval2,bound2,iter2,at_end2);
+                end if;
+              
+              -- konec [imm1] byl dosa‘en => nastavit hranici [imm1] na max.
+              if at_end1 then
+                bound1:=rightmost;
+                end if;
+
+              -- konec [imm2] byl dosa‘en => nastavit hranici [imm2] na max.
+              if at_end2 then
+                bound2:=rightmost;
+                end if;
+
+              -- testovat incidentn¡ polo‘ky na nerovnost
+              imm_cmp(pval1^,pval2^,cmp_ne,cmp,typ.getbase(context),context);
+
+              -- agreg ty si neodpov¡daj¡ (alespo¤ v jedn‚ polo‘ce)
+              if cmp then
+                break;
+                end if;
+              end loop;
+            end declare;
+    
+          -- po‘adov n test na rovnost => negovat [cmp]
+          cmp xor oper=cmp_eq;
+
+      -- <, <=, >, >=
+      when cmp_lt,cmp_le,cmp_gt,cmp_ge do
+          unimplemented(205);
+
+      when others do verify(719,true);
+      end case;
+
+  -- pole -- kondenzovan‚ pole
+  elsif (imm1.ic=ic_array) and (imm2.ic=ic_condensed) then
+    case oper
+      -- =, <>
+      when cmp_eq,cmp_ne do
+          array_condensed_cmp(imm1.aitems,^imm2.citems);
+
+      -- <, <=, >, >=
+      when cmp_lt,cmp_le,cmp_gt,cmp_ge do
+          unimplemented(110);
+      
+      when others do verify(720,true);
+      end case;
+
+  -- kondenzovan‚ pole -- pole
+  elsif (imm1.ic=ic_condensed) and (imm2.ic=ic_array) then
+    case oper
+      -- =, <>
+      when cmp_eq,cmp_ne do
+          array_condensed_cmp(imm2.aitems,^imm1.citems);
+
+      -- <, <=, >, >=
+      when cmp_lt,cmp_le,cmp_gt,cmp_ge do
+          unimplemented(206);
+      
+      when others do verify(723,true);
+      end case;
 
   -- record -- record
   elsif (imm1.ic=ic_record) and (imm2.ic=ic_record) then
-    unimplemented(107);
+    case oper
+      -- =, <>
+      when cmp_eq,cmp_ne do
+          declare var
+            srch   : tentitysearch;              -- hled tko
+            len1   : t_unsigned :=0;             -- d‚lka [imm1.ritems^.list]
+            pval1  : pimm_value;                 -- hodnota polo‘ky v [imm1]
+            len2   : t_unsigned :=0;             -- d‚lka [imm2.ritems^.list]
+            pval2  : pimm_value;                 -- hodnota polo‘ky v [imm2]
+            ityp   : typeview;                   -- pohled na typ polo‘ky
+
+          begin
+            -- zjistit d‚lky seznam– definic hodnot [imm1] a [imm2]
+            if imm1.ritems^.list<>nil then
+              len1:=imm1.ritems^.list^:length;
+              end if;
+            if imm2.ritems^.list<>nil then
+              len2:=imm2.ritems^.list^:length;
+              end if;
+
+            -- hledat v¨echny polo‘ky z znamu v konstant ch [imm1] a [imm2]
+            srch.find_et_first(typ.getctype,rc_primary,et_var,tesearchflagset:[]);
+
+            cmp:=true;
+            while cmp and srch.psym<>nil loop
+              -- vyhledat definici hodnoty polo‘ky v [imm1]
+              i:=1;
+              pval1:=^imm1.ritems^.othersval;
+              while i<=len1 loop
+                if imm1.ritems^.list^[i].item=srch.psym then
+                  pval1:=^imm1.ritems^.list^[i].val;
+                  break;
+                  end if;
+                succ i;
+                end loop;
+
+              -- vyhledat definici hodnoty polo‘ky v [imm2]
+              i:=1;
+              pval2:=^imm2.ritems^.othersval;
+              while i<=len2 loop
+                if imm2.ritems^.list^[i].item=srch.psym then
+                  pval2:=^imm2.ritems^.list^[i].val;
+                  break;
+                  end if;
+                succ i;
+                end loop;
+
+              -- sestavit pohled na typ polo‘ky
+              ityp.init(context,pentity_var(srch.psym)^.typ.getctype);
+
+              -- porovnat hodnoty odpov¡daj¡c¡ polo‘k m
+              imm_cmp(pval1^,pval2^,cmp_eq,cmp,ityp,context);
+
+              -- naj¡t dal¨¡ polo‘ku
+              srch.find_et_next;
+              end loop;
+            end declare;
+
+          --po‘adov n test na nerovnost => negovat [cmp]
+          cmp xor (oper=cmp_ne);
+
+      -- <, <=, >, >=
+      when cmp_lt,cmp_le,cmp_gt,cmp_ge do
+          unimplemented(107);
+
+      when others do verify(721,true);
+      end case;
 
   -- mno‘ina -- mno‘ina
   elsif (imm1.ic=ic_set) and (imm2.ic=ic_set) then
-    unimplemented(138);
+    case oper
+      -- =, <>
+      when cmp_eq,cmp_ne do
+          -- p©edpokl dat r–znost
+          cmp:=false;
+
+          -- prvn¡ mno‘ina nepr zdn 
+          if imm1.sitems^.list<>nil then
+            -- shodn‚ d‚lky seznam– rozsah– => je t©eba porovnat
+            if imm2.sitems^.list<>nil and then imm1.sitems^.list^:length=imm2.sitems^.list^:length then
+              -- porovnat seznamy rozsah–
+              cmp:=true;
+              i:=1;
+              while cmp and i<=imm1.sitems^.list^:length loop
+                -- porovnat [i]-t‚ rozsahy
+                cmp:=imm1.sitems^.list^[i].lval=imm2.sitems^.list^[i].lval and imm1.sitems^.list^[i].hval=imm2.sitems^.list^[i].hval;
+                succ i;
+                end loop;
+              end if;
+          
+          -- obˆ mno‘iny jsou pr zdn‚
+          elsif imm2.sitems^.list=nil then
+            cmp:=true;
+            end if;
+    
+          -- po‘adov n test na nerovnost => negovat [cmp]
+          cmp xor (oper=cmp_ne);
+
+      -- <, <=
+      when cmp_lt,cmp_le do
+          set_inclusion(imm1,imm2);
+
+      -- >, >=
+      when cmp_gt,cmp_ge do
+          set_inclusion(imm2,imm1);
+
+      when others do verify(722,true);
+      end case;
 
   -- NIL -- NIL
   elsif (imm1.ic=ic_nil) and (imm2.ic=ic_nil) then

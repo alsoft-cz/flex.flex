@@ -1,3 +1,25 @@
+type
+  t_rtl_sset = t_rtl_ref_fifo with record      -- struktura stacku
+    freedata       : p_rtl_ref_free_resource;    -- uvolnovaci callback
+    waitable       : t_rtl_logical32;            -- priznak zda se ma cekat
+    --is waitable
+      critisem     : t_rtl_critisem;             -- semafor pro cekani na prazdny stack
+                                                 -- pro pocet prvku mensi nez pocet ctecich 
+                                                 -- threadu blokujici ve smyslu prvku ktere se 
+                                                 -- jiz zacali cist
+    -- else
+      count        : aliased t_rtl_native_signed -- inverzni pocitadlo prvku
+                     for position use 24;        -- na stejnem offsxetu jako pocitadlo critisemu
+    -- end if waitable
+    end record;
+
+type
+  t_rtl_sset_iterrator = record                  -- iterator
+    prev           : t_rtl_ref_shared;
+    data           : t_rtl_ref_shared;
+    end record;
+
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_sset_find_valid (
     sset           : in out ref t_rtl_sset;
@@ -9,12 +31,14 @@ procedure rtl_sset_find_valid (
 procedure rtl_sset_new =
 ----------------------------------------------------------------------------------------------------
 var
-    success        : t_rtl_logical8;
+    temp           : t_rtl_ref_local;
 
 begin
   sset.freedata:=freedata;
-  rtl_abaref_new(sset.tail);
-  rtl_abaref_copy_pointer_none(sset.head,sset.tail,sset.freedata,success);
+  rtl_ref_create_local(temp,nil,freedata);
+  rtl_ref_local_to_local_shared(temp,sset.head);
+  rtl_ref_local_to_local_shared(temp,sset.tail);
+  rtl_ref_discard_local(temp);
   end rtl_sset_new;
 
 
@@ -50,59 +74,67 @@ begin
 procedure rtl_sset_append =
 ----------------------------------------------------------------------------------------------------
 var
-  zero             : aliased t_rtl_abaref_pointer;
-  oldtail          : aliased t_rtl_abaref_pointer;
-  newnode          : aliased t_rtl_abaref_pointer;
-  prevnode         : t_rtl_abaref_pointer;
-  success          : t_rtl_logical8;
+  zero             : t_rtl_ref_snapshot;
+  oldtail          : aliased t_rtl_ref_snapshot;
+  wrktail          : t_rtl_ref_snapshot;
+  newtemp          : aliased t_rtl_ref_snapshot;
+  newnode          : t_rtl_ref_local;
+  prevnode         : t_rtl_ref_shared;
 
 label
   restart
   ;
 
 begin
-
-  rtl_abaref_new(newnode);
-  newnode.ptr^.data:=data;
-  zero:=nil;
+  rtl_ref_create_local(newnode,data,sset.freedata);
 
 restart:
-  oldtail:=sset.tail;
+  rtl_ref_shared_to_snapshot(sset.tail,oldtail);
 
   -- zkopiruju si pointer na "posledni prvek"
-  rtl_abaref_copy_pointer_source(prevnode,sset.tail,^oldtail,sset.freedata,success);
-  if not success then goto restart; end if;
+  if not rtl_ref_shared_to_local_shared(sset.tail,prevnode,oldtail) then
+    goto restart; 
+    end if;
 
   --hledam jestli je opravdu posledni
-  while prevnode.ptr^.next.ptr<>nil loop
+  rtl_ref_shared_to_snapshot(prevnode.node^.next,wrktail);
+  while wrktail.node<>nil loop
 
     -- neni posledni takze si posunu ukazatel na posledni
-    rtl_abaref_copy_pointer_source(prevnode,prevnode.ptr^.next,nil,sset.freedata,success);
-    if not success then goto restart; end if;
+    if not rtl_ref_shared_to_local_shared(prevnode.node^.next,prevnode,wrktail) then
+      goto restart; 
+      end if;
 
     -- zkusim prehodit pointer na "posledni prvek" na tenhle prvek
-    rtl_abaref_copy_pointer_target(sset.tail,^oldtail,prevnode,^oldtail,sset.freedata,success);
-    if not success then goto restart; end if;
+    if not rtl_ref_local_shared_to_shared(prevnode,sset.tail,oldtail,^oldtail) then
+      goto restart; 
+      end if;
+    -- podarilo se udelam si novy snapshot
+    rtl_ref_shared_to_snapshot(prevnode.node^.next,wrktail);
     end loop;
 
   -- mam docasneho reprezentanta posledniho prvku
   -- zkusim do nej nakopirovat novy node za predpokladu ze je opravdu posledni
-  rtl_abaref_copy_pointer_target(prevnode.ptr^.next,^zero,newnode,^newnode,sset.freedata,success);
-  if not success then goto restart; end if;
+  if not rtl_ref_local_to_shared(newnode,prevnode.node^.next,zero) then
+    goto restart; 
+    end if;
 
   -- podarilo se mi 
   -- zkusim prehodit pointer na "posledni prvek" na tenhle prvek
-  rtl_abaref_copy_pointer_target(sset.tail,^oldtail,newnode,nil,sset.freedata,success);
-  -- pokud se nepodarilo tak to asi udelal nekdo jiny a mne to nevadi
+  if not rtl_ref_local_to_shared(newnode,sset.tail,oldtail) then
+    -- pokud se nepodarilo tak to asi udelal nekdo jiny a mne to nevadi
+    end if;
 
 
   -- uvolnim nebo predam iterator prvek
   if iterator=nil then
-    rtl_abaref_discard(prevnode,sset.freedata,success);
-    rtl_abaref_discard(newnode,sset.freedata,success);
+    rtl_ref_discard_local_shared(prevnode);
+    rtl_ref_discard_local(newnode);
   else
     iterator^.prev:=prevnode;
-    iterator^.data:=newnode;
+    iterator^.data.node:=newnode.node;
+    iterator^.data.softcount:=0;
+    iterator^.data.abacount:=newtemp.abacount;
     end if;
   end rtl_sset_append;
 
@@ -111,16 +143,17 @@ restart:
 procedure rtl_sset_remove =
 ----------------------------------------------------------------------------------------------------
 var
-    oldinvalid     : t_rtl_native_signed;
+  oldinvalid       : t_rtl_native_signed;
+  oldtail          : t_rtl_ref_snapshot;
 
 begin
   -- testuju validitu iteratoru
-  if iterator.data.ptr=nil then
+  if iterator.data.node=nil then
     raise synchronization_error;
     end if;
   
   -- oznacim jako invalid
-  rtl_interlocked_inc_out(^iterator.data.ptr^.invalid,oldinvalid);
+  rtl_interlocked_inc_out(^iterator.data.node^.invalid,oldinvalid);
   if winner<>nil then
     winner^:=(oldinvalid=0);
     end if;
@@ -135,71 +168,75 @@ begin
 procedure rtl_sset_find_valid =
 ----------------------------------------------------------------------------------------------------
 var
-    next           : aliased t_rtl_abaref_pointer; 
-    data           : aliased t_rtl_abaref_pointer; 
-    prev           : t_rtl_abaref_pointer; 
-    temp           : aliased t_rtl_abaref_pointer; 
-    firsttemp      : aliased t_rtl_abaref_pointer; 
-    success        : t_rtl_logical8;
+    temp           : t_rtl_ref_snapshot; 
+    nexttemp       : aliased t_rtl_ref_snapshot; 
+    firsttemp      : aliased t_rtl_ref_snapshot; 
+    next           : t_rtl_ref_shared; 
+    data           : t_rtl_ref_shared; 
+    prev           : t_rtl_ref_shared; 
 
 begin
   -- trivialni pripad
-  if iterator.data.ptr=nil then
+  if iterator.data.node=nil then 
+    rtl_ref_discard_local_shared(iterator.prev);
     result:=false;
     return;
     end if;
-  if iterator.data.ptr^.invalid=0 then
+
+  if iterator.data.node^.invalid=0 then
     result:=true;
     return;
     end if;
 
-  next:=nil;
-  rtl_abaref_copy_pointer_none(prev,iterator.prev,sset.freedata,success);
-  rtl_abaref_copy_pointer_none(data,iterator.data,sset.freedata,success);
-  firsttemp:=data;
+  rtl_ref_local_shared_to_local_shared(iterator.prev,prev);
+  rtl_ref_local_shared_to_local_shared(iterator.data,data);
+
   loop
     -- zjistuju next, dokud se to nestabilizuje
     loop
-      rtl_abaref_copy_pointer_source(next,data.ptr^.next,nil,sset.freedata,success);
-      until success;
+      rtl_ref_shared_to_snapshot(data.node^.next,nexttemp);
+      until rtl_ref_shared_to_local_shared(data.node^.next,next,nexttemp);
     
     -- jestli neni konec
-    if next.ptr<>nil then
+    if next.node<>nil then
       -- kopiruju prubeznou upravu pointeru
-      temp:=data;
-      rtl_abaref_copy_pointer_target(prev.ptr^.next,^temp,next,^next,sset.freedata,success);
+      rtl_ref_shared_to_snapshot(data,temp);
+
+      if rtl_ref_local_shared_to_shared(next,prev.node^.next,temp,^nexttemp) then 
+        next.abacount:=nexttemp.abacount;
+        end if;
       
       -- jestli je to poprve, zapamatuju si to
-      if data.ptr=iterator.data.ptr then
-        firsttemp:=next;
+      if data.node=iterator.data.node then
+        rtl_ref_shared_to_snapshot(next,firsttemp);
       else
-        rtl_abaref_copy_pointer_target(iterator.prev.ptr^.next,^firsttemp,next,^firsttemp,sset.freedata,success);
+        -- ignoruju jak to dopadlo 
+        if rtl_ref_local_shared_to_shared(next,iterator.prev.node^.next,firsttemp,^firsttemp) then end if;
         end if;
 
 
       -- rotuju pointery
-      rtl_abaref_discard(prev,sset.freedata,success);
+      rtl_ref_discard_local_shared(prev);
       prev:=data;
       data:=next;
       next:=nil;
 
       -- nasel jsem validni prvek, aspon ted se tak tvari
-      if data.ptr^.invalid=0 then
+      if data.node^.invalid=0 then
         result:=true;
-        rtl_abaref_discard(iterator.data,sset.freedata,success);
+        rtl_ref_discard_local_shared(iterator.data);
         iterator.data:=data;
-        rtl_abaref_discard(prev,sset.freedata,success);
+        rtl_ref_discard_local_shared(prev);
         break;
         end if;
 
     else
       result:=false;
       -- uvolnim vsecko
-      rtl_abaref_discard(prev,sset.freedata,success);
-      rtl_abaref_discard(data,sset.freedata,success);
-      rtl_abaref_discard(next,sset.freedata,success);
-      rtl_abaref_discard(iterator.prev,sset.freedata,success);
-      rtl_abaref_discard(iterator.data,sset.freedata,success);
+      rtl_ref_discard_local_shared(prev);
+      rtl_ref_discard_local_shared(data);
+      rtl_ref_discard_local_shared(iterator.prev);
+      rtl_ref_discard_local_shared(iterator.data);
       break;
       end if;
     end loop;
@@ -211,16 +248,16 @@ begin
 procedure rtl_sset_start =
 ----------------------------------------------------------------------------------------------------
 var
-  success          : t_rtl_logical8;
+  temp             : t_rtl_ref_snapshot;
 
 begin
   -- zrusim prev
-  rtl_abaref_discard(iterator.prev,sset.freedata,success);
+  rtl_ref_discard_local_shared(iterator.prev);
 
   -- zkopiruju pointer na first
   loop
-    rtl_abaref_copy_pointer_source(iterator.data,sset.head,nil,sset.freedata,success);
-    until success;
+    rtl_ref_shared_to_snapshot(sset.head,temp);
+    until rtl_ref_shared_to_local_shared(sset.head,iterator.data,temp);
   end rtl_sset_start;
 
 
@@ -229,23 +266,22 @@ begin
 procedure rtl_sset_next =
 ----------------------------------------------------------------------------------------------------
 var
-  success          : t_rtl_logical8;
-  next             : t_rtl_abaref_pointer; 
+  temp             : t_rtl_ref_snapshot;
+  next             : t_rtl_ref_shared; 
 
 begin
   -- testuju validitu iteratoru
-  if iterator.prev.ptr=nil and iterator.data.ptr=nil then
+  if iterator.prev.node=nil and iterator.data.node=nil then
     raise synchronization_error;
     end if;
 
   -- zjistuju next
   loop
-    rtl_abaref_copy_pointer_source(next,iterator.data.ptr^.next,nil,sset.freedata,success);
-    -- dokud se to nestabilizuje
-    until success;
+    rtl_ref_shared_to_snapshot(iterator.data.node^.next,temp);
+    until rtl_ref_shared_to_local_shared(iterator.data.node^.next,next,temp);
 
   -- rotuju pointery
-  rtl_abaref_discard(iterator.prev,sset.freedata,success);
+  rtl_ref_discard_local_shared(iterator.prev);
   iterator.prev:=iterator.data;
   iterator.data:=next;
   next:=nil;
@@ -253,7 +289,7 @@ begin
   -- najdu prvni platny
   result:=rtl_sset_find_valid(sset,iterator);
   if result then
-    data:=iterator.data.ptr^.data;
+    data:=iterator.data.node^.data;
     end if;
   end rtl_sset_next;
 
@@ -266,8 +302,8 @@ var
 
 begin
   -- drop iterator
-  rtl_abaref_discard(iterator.prev,sset.freedata,success);
-  rtl_abaref_discard(iterator.data,sset.freedata,success);
+  rtl_ref_discard_local_shared(iterator.prev);
+  rtl_ref_discard_local_shared(iterator.data);
   end rtl_sset_stop;
 
 
@@ -275,5 +311,5 @@ begin
 procedure rtl_sset_free_data_discard =
 ----------------------------------------------------------------------------------------------------
 begin
-  discard data;
+  discard resource;
   end rtl_sset_free_data_discard;

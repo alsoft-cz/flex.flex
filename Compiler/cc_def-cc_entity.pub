@@ -123,13 +123,14 @@ type
       isize        : t_unsigned;                 -- velikost jednoho prvku
       items        : p_unsigned8array;           -- prvky
       end record;
+  pimm_condensed   = ^timm_condensed;
 
   -- cel  p©¡m  hodnota
   timm_value       = record
       ic           : timmclass;                  -- t©¡da konstanty
       ui           : tuniint;                    -- ordin ln¡ hodnota (diskr‚tn¡ typ)
       ur           : tunireal;                   -- re ln‚ ‡¡slo
-      citems       : timm_condensed;             -- slo‘ky kondenzovan‚ho agreg tu
+      citems       : aliased timm_condensed;     -- slo‘ky kondenzovan‚ho agreg tu
       {%%X Pro‡ CITEMS nen¡ pointer, kdy‘ ostatn¡ jsou ? }
       aitems       : pimm_array;                 -- slo‘ky pole
       ritems       : pimm_record;                -- slo‘ky recordu
@@ -142,23 +143,23 @@ type
   timm_array_item  = record
       lval         : tuniint;                    -- doln¡ mez
       hval         : tuniint;                    -- horn¡ mez
-      val          : timm_value;                 -- hodnota
+      val          : aliased timm_value;         -- hodnota
       end record;
   timm_array_items = string of timm_array_item;
   timm_array       = record
       list         : ^timm_array_items;          -- hodnoty slo‘ek
-      othersval    : timm_value;                 -- hodnota OTHERS
+      othersval    : aliased timm_value;         -- hodnota OTHERS
       end record;
 
   -- slo‘ky recordu
   timm_record_item = record
       item         : pentity_var;                -- souvisej¡c¡ slo‘ka
-      val          : timm_value;                 -- hodnota
+      val          : aliased timm_value;         -- hodnota
       end record;
   timm_record_items= string of timm_record_item;
   timm_record      = record
       list         : ^timm_record_items;         -- hodnoty slo‘ek
-      othersval    : timm_value;                 -- hodnota OTHERS
+      othersval    : aliased timm_value;         -- hodnota OTHERS
       end record;
 
   -- slo‘ky mno‘iny
@@ -182,7 +183,7 @@ type
       cmp_gt;                                    -- >
       cmp_ge;                                    -- >=
       end enum;
-
+  tcmpoperset      = set of tcmpoper;
 
 
 ----------------------------------------------------------------------------------------------------
@@ -327,7 +328,7 @@ type
   -- vyhodnocen¡ symbolu
   tentityeval      = enum
       ete_none;                                  -- dosud netestov no
-      ete_generic;                               -- symbol je genericky z visl˜
+   -- ete_generic;                               -- symbol je genericky z visl˜
       ete_evaluated;                             -- symbol je plnˆ vyhodnocen
       ete_unevaluated;                           -- symbol se nepovedlo vyhodnotit a nem  cenu
                                                  -- to zkou¨et znova
@@ -342,14 +343,14 @@ type
       etc_compiling;                             -- symbol je p©ekl d n
       etc_evaluating;                            -- symbol je vyhodnocov n
       -- permanentn¡ modifik tory
-      etc_generic;                               -- generick  deklarace (tato nebo nad©azen )
+   -- etc_generic;                               -- generick  deklarace (tato nebo nad©azen )
       etc_macro;                                 -- makro deklarace (tato nebo nad©azen )
       end enum;
   tentitycompileset= set of tentitycompile;
 
 const
   -- maska permanentn¡ch modifik tor–
-  etcs_modemask    = tentitycompileset:[etc_generic,etc_macro];
+  etcs_modemask    = tentitycompileset:[{etc_generic,}etc_macro];
 
 type
   -- pozice entity
@@ -427,7 +428,9 @@ type
       end enum;
 
 
-
+----------------------------------------------------------------------------------------------------
+procedure __get_type_expr (ptyp : in pentity_type) return p_flex_construct;
+-- Pomocn  metoda pro [cc_ref.reftype.settype] pro kontrolu konzistence. Nepou‘¡vat.
 ----------------------------------------------------------------------------------------------------
 #separate public cc_ref;
 #separate private cc_ref;
@@ -518,6 +521,7 @@ type
       stat_usage   : t_unsigned;                 -- pocet uziti
       lexpos       : cc_def.cc_lexsym.lexposblock;-- pozice ve zdrojaku
       level        : t_with_level;               -- £rove¤ vazby
+      automatic    : t_logical;                  -- automaticky WITH/USE?
       end record;
 
 var
@@ -1047,6 +1051,7 @@ type
   varflags         = enum
     --vf_persistent;                             -- persistentn¡ promˆnn 
     --vf_secure;                                 -- zabezpe‡en  promˆnn 
+      vf_;
       end enum;
   varflagset       = set of varflags;
 
@@ -1054,7 +1059,9 @@ type
   varmode          = enum
       vm_direct;                                 -- p©¡mo
       vm_ref;                                    -- p©es referenci
+      vm_index;                                  -- pres index (napriklad taskove promenne)
       end enum;
+  varmodeset       = set of varmode;
 
   -- determinace p©¡stupu
   varaccess        = enum
@@ -1402,6 +1409,14 @@ type
 }
   -- p©¡znaky typu
   typeflags        = enum
+      ----- %%TECH Pou‘¡v n¡ p©¡znak– [tf_tagged] a [tg_temp] --------------------------------------
+      -- P©esto‘e v n¡‘e deklarovan‚ mno‘inˆ se zdaj¡ b˜t p©¡znaky [tf_tagged] a [tf_temp] 
+      -- nez visl‚, zpravidla tomu tak nen¡. U ka‘d‚ho typu je nastaven nejv˜¨e (mo‘n  pr vˆ) jeden 
+      -- z nich. P–vodnˆ byly implicitnˆ deklarovan‚ typy untagged, tak‘e nemˆly p©¡znak 
+      -- [tf_tagged]. Novˆ (viz [cd_decl.cd_eval.e_type] text Ondra 12.11.2003) jsou tagged 
+      -- i implicitnˆ deklarovan‚ typy. Je samoz©ejmˆ st le mo‘n‚ zkonstruovat typ, kter˜ nebude m¡t 
+      -- ani jeden z tˆchto p©¡znak–, opa‡n˜ extr‚m je v¨ak zak zan˜.
+      ----------------------------------------------------------------------------------------------
       tf_tagged;                                 -- typ je tagged
       tf_temp;                                   -- typ je do‡asn˜
       end enum;
@@ -1533,7 +1548,6 @@ type
 type
   -- typ
   tentity_type     = tentity_init with record
-
       ----- %%TECH Upozornˆn¡ ----------------------------------------------------------------------
       -- P©i p©id v n¡ nov‚ slo‘ky nezapome¤ doplnit jej¡ kop¡rov n¡ nebo
       -- jinou p©¡slu¨nou akci do CD_EVAL.E_TYPE_DERIVED.
@@ -1632,7 +1646,7 @@ type
 type
   tentity_message  = tentity with record
       typ          : cc_ref.reftype;             -- typ zpr vy
-      num          : tunimsg;                    -- ‡¡slo zpr vy
+    --num          : tunimsg;                    -- ‡¡slo zpr vy
       end record;
 
 

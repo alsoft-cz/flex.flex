@@ -173,8 +173,28 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure create_rel_or_imm (
+    instr          : in iasmnode_instr;          -- souvisej¡c¡ instrukce
+    size           : in t_unsigned;              -- velikost operandu (typicky 0 nebo 4)
+    entity         : in pentity;                 -- souvisej¡c¡ relokabiln¡ entita
+    oper           : in out c_operand) =         -- v˜sledn˜ operand
+-- Podle druhu pr vˆ p©ekl dan‚ instrukce sestav¡ operand typu relativn¡ adresa nebo p©¡m  hodnota
+-- a nastav¡ relokaci na zadanou entitu.
+----------------------------------------------------------------------------------------------------
+begin
+  if iinstrinfo[instr.ii].kind in iiks_branch
+    then oper.create_relative_address_low_level(size);
+    else oper.create_imm_low_level(edt_address,size,0);
+    end if;
+  oper.set_relo_entity(entity);
+  end create_rel_or_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure asm_label_to_oper (
     curr           : in tcontext;                -- aktu ln¡ kontext
+    instr          : in iasmnode_instr;          -- souvisej¡c¡ instrukce
     id             : in pentityident;            -- identifik tor n vˆ¨t¡
     bl             : in blasm;                   -- uzel reprezentuj¡c¡ blok v inline assembleru
     oper           : in out c_operand) =         -- v˜sledn˜ operand
@@ -221,8 +241,7 @@ begin
   succ plabel^.stat_usage;
 
   -- sestavit operand
-  oper.create_relative_address(0);
-  oper.set_relo_entity(plabel);
+  create_rel_or_imm(instr,0,plabel,oper);
   end asm_label_to_oper;
 
 
@@ -719,14 +738,13 @@ begin
                   load_uniint(pentity_const(srch.psym)^.init.getimm^,ui);
 
                   -- ze z¡skan‚ hodnoty vytvo© operand instrukce
-                  oper.create_imm(edt_unsigned,0,uniint_to_imm32(ui));
+                  oper.create_imm_low_level(edt_unsigned,0,uniint_to_imm32(ui));
                   end declare;
 
             -- procedura
             when et_procedure, et_static do
                 -- vytvo©it operand
-                oper.create_relative_address_low_level(4);
-                oper.set_relo_entity(srch.psym);
+                create_rel_or_imm(instr,4,srch.psym,oper);
 
             when others do verify(192,true);
             end case;
@@ -747,7 +765,7 @@ begin
         -- %% Zkontrolovat, zda se konstanta vejde do prostoru velikosti [opsize]
 
         -- ze z¡skan‚ hodnoty vytvo© operand instrukce
-        oper.create_imm(edt_unsigned,opsize,uniint_to_imm32(getlexui));
+        oper.create_imm_low_level(edt_unsigned,opsize,uniint_to_imm32(getlexui));
       {
         -- pokud si to u‘ivatel p©eje, tak zmˆn¡me implicitn¡ velikost operandu
         if opsize<>0 then
@@ -758,7 +776,7 @@ begin
     -- navesti
     when lex_asm_label do
         -- do instrukce ulo‘it odkaz na n vˆ¨t¡
-        asm_label_to_oper(curr,getlexid,bl,oper);
+        asm_label_to_oper(curr,instr,getlexid,bl,oper);
 
         -- explicitn¡ specifikace velikosti tu nem  co dˆlat
         if opsize<>0 then

@@ -11,6 +11,7 @@ with
   cc_base.cc_sym,
   cp_cpu,
   cp_cpu.cp_32,
+  cp_cpu.cp_32.cp_def,
   cl_map;
 
 ----------------------------------------------------------------------------------------------------
@@ -154,6 +155,146 @@ class private linkresolver_ia32 =
 
 
     ------------------------------------------------------------------------------------------------
+    #template new_entity_descriptor (
+        codegen,                                 -- ©¡d¡c¡ struktura
+        codegen_type,                            -- typ pointeru na typ ©¡d¡c¡ struktury
+        desc_type);                              -- typ pointeru na typ deskriptoru
+    -- Alokuje ©¡d¡c¡ strukturu gener toru k¢du a deskriptor.
+    ------------------------------------------------------------------------------------------------
+      -- alokovat pamˆŸ
+      new codegen_type(codegen);
+
+      -- vypo‡¡tat velikost deskriptoru
+      codegen_type(codegen)^.desc_size:=desc_type:base:size;
+
+      -- alokovat deskriptor typu
+      new desc_type(codegen_type(codegen)^.desc);
+      #end new_entity_descriptor;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    #template set_tag (
+        base_addr,                               -- b zov  absolutn¡ adresa struktury, ve kter‚ je polo‘ka
+        tag_field,                               -- polo‘ka, do kter‚ se ukl d  tag
+        src_codegen);                            -- ©¡d¡c¡ struktura entity jej¡‘ tag se zji¨Ÿuje
+    -- P©i©ad¡ do polo‘ky [tag_field] hodnotu tagu entity reprezentovan‚ ©¡d¡c¡ strukturou 
+    -- [src_codegen] a vygeneruje odpov¡daj¡c¡ load-time relokaci.
+    ------------------------------------------------------------------------------------------------
+      verify(721,src_codegen=nil);
+
+      -- p©i©adit do polo‘ky tag
+      tag_field:=picodegen_metadata(src_codegen)^.desc_addr;
+
+      -- vygenerovat relokaci
+      add_relocation(base_addr+tag_field:position);
+      -- %%TOOD(RELOCATION) Hynk–––––
+      #end set_tag;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_vtable_size (
+        codegen    : in picodegen_interface)     -- ©¡d¡c¡ struktura gener toru k¢du
+        return t_unsigned =                      -- velikost virtu ln¡ tabulky
+    -- Zjist¡ velikost virtu ln¡ tabulky.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=codegen^.vtable^:length*codegen^.vtable^:base:size;
+      end get_vtable_size;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_itable_size (
+        codegen    : in picodegen_interface)     -- ©¡d¡c¡ struktura gener toru k¢du
+        return t_unsigned =                      -- velikost tabulky interfac–
+    -- Zjist¡ velikost interfac–.                           
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=codegen^.itable^:length*codegen^.itable^:base:size+codegen^.itable^:length:size;
+      end get_itable_size;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_vtable_addr (
+        codegen    : in picodegen_interface)     -- ©¡d¡c¡ struktura gener toru k¢du
+        return t_unsigned =                      -- adresa virtu ln¡ tabulky
+    -- Zjist¡ absolutn¡ adresu virtu ln¡ tabulky.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- virtu ln¡ tabulka le‘¡ hned za deskriptorem
+      result:=codegen^.desc_addr+codegen^.desc_size;
+      end get_vtable_addr;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_itable_addr (
+        codegen    : in picodegen_interface)     -- ©¡d¡c¡ struktura gener toru k¢du
+        return t_unsigned =                      -- adresa tabulky interfac–
+    -- Zjist¡ absolutn¡ adresu tabulky interfac–.                           
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- tabulka interfac– le‘¡ hned za virtu ln¡ tabulkou
+      result:=get_vtable_addr(codegen)+get_vtable_size(codegen);
+      end get_itable_addr;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static build_entity_descriptor (
+        codegen    : in picodegen_metadata;      -- ©¡d¡c¡ struktura gener toru k¢du
+        entity     : in pentity;                 -- entita, obecnˆ nez visl  na ©¡d¡c¡ struktu©e
+        addr       : in out c_address_aligner_32;-- p©idˆlova‡ adres
+        fake_tag   : in t_logical := false) =    -- T-sestavujeme fake deskriptor
+    -- Sestav¡ z klad deskriptoru ka‘d‚ entity. 
+    -- Deskriptoru p©idˆl¡ adresu, a to metodou pro v¡cekrokov˜ posun.
+    --
+    -- Upozornˆn¡: Tato procedura mus¡ b˜t vol na jako prvn¡ pro ka‘d˜ deskriptor. P©ed samotn˜m
+    -- deskriptorem alokuje prostor pro jeho kvalifikovan˜ identifik tor.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- kvalifikovan˜ identifik tor entity
+      -- %%TODO(QID) dodˆlat generov n¡ kvalifikovan‚ho identifik toru
+      codegen^.desc_qid:=entity^.id;
+      if codegen^.desc_qid<>nil then
+        codegen^.desc^.id:=addr.get_address_and_adjust(4+codegen^.desc_qid^:length*4);
+        end if;
+
+      -- p©idˆlit adresu a zapo‡¡tat velikost deskriptoru 
+      -- (mus¡ se dˆlat a‘ po p©idˆlen¡ prostoru pro identifik tor)
+      codegen^.desc_addr:=addr.get_address;
+      addr.register_size(codegen^.desc_size{%%TODO(COMPATIBILITY) desc^:size});
+
+      -- k¢d entity
+      codegen^.desc^.etype:=entity_code_table[entity^.etype];
+
+      -- p©edek
+      declare var
+        ancestor   : pentity;                    -- p©edek
+
+      begin
+        -- zvolit p©edka s ohledem na fakeovost deskriptoru
+        if fake_tag
+          -- pro fake tag pou‘¡t rovnou dodanou entitu
+          then ancestor:=entity;
+          -- jinak naj¡t skute‡n‚ho p©edkae
+          else ancestor:=entity^.ancestor.getuentity;
+          end if;
+
+        -- nalezl-li se, tak doplnit do deskriptoru jeho tag
+        if ancestor<>nil then
+          verify(389,ancestor^.linked<>ls_linked or ancestor^.codegen=nil or ancestor^.codegen=entity^.codegen);
+          set_tag(codegen^.desc_addr,codegen^.desc^.ancestor_tag,ancestor^.codegen);
+          end if;
+        end declare;
+      end build_entity_descriptor;
+
+
+
+    ------------------------------------------------------------------------------------------------
     static build_type_descriptor_special_methods (
         codegen    : in picodegen_type;          -- ©¡d¡c¡ struktura gener toru k¢du
         ptyp       : in pentity_type) =          -- typ
@@ -173,8 +314,10 @@ class private linkresolver_ia32 =
 
         -- doplnit adresu instance do deskriptoru typu
         p_desc_type(picodegen_type(ptyp^.codegen)^.desc)^.spec_ptr[pentity_special(srch.psym)^.spectype]:=picodegen_subprog(pentity_special(srch.psym)^.codegen)^.ifirst^.cstart;
-        --picodegen_addr(pdefspecial(srch.psym)^.codegen)^.addr;
-        
+
+        -- zapamatovat si relokaci pro generov n¡ EXE
+        add_relocation(codegen^.desc_addr+t_desc_type.spec_ptr:position+pentity_special(srch.psym)^.spectype:ord*t_desc_type.spec_ptr:base:size);
+
         -- dal¨¡ speci ln¡ metoda
         srch.find_et_next;
         end loop;
@@ -189,27 +332,90 @@ class private linkresolver_ia32 =
     -- Do deskriptoru typu dosad¡ adresy virtu ln¡ch metod.
     ------------------------------------------------------------------------------------------------
     var
-      pmethod      : pentity_code;
-      reg_size     : t_mod_unsigned;
+    { reg_size     : t_mod_unsigned; }
+      vtable_addr  : tdata32;                    -- absolutn¡ adresa virtu ln¡ tabulky
 
     begin
-      reg_size:=t_mod_unsigned((t_mod_unsigned(picodegen_interface(interface^.codegen)^.vtable^:last)-t_mod_unsigned(picodegen_interface(interface^.codegen)^.vtable^:first)+1)*4);
+      -- velikost tabulky virtu ln¡ metod zapo‡¡tat do celkov‚ho sou‡tu velikost¡ komponent deskriptoru
+      addr.register_size(get_vtable_size(interface^.codegen));
 
-      -- velikost tabulky virtu ln¡ metod zapo‡¡tat do celkov‚ho sou‡tu velikost– komponent deskriptoru
-      addr.register_size({%%TODO(COMPATIBILITY}t_unsigned(reg_size));
+      -- vypo‡¡tat absolutn¡ adresu virtu ln¡ tabulky, bude se hodit
+      vtable_addr:=get_vtable_addr(interface^.codegen);
+
+      -- poznamenat adresu tabulky virtu ln¡ch metod pro nep©¡m˜ p©¡stup
+      p_desc_class(picodegen_interface(interface^.codegen)^.desc)^.vtable:=vtable_addr;
+
+      -- zapamatovat si relokaci pro generov n¡ EXE
+      add_relocation(picodegen_interface(interface^.codegen)^.desc_addr+t_desc_class.vtable:position);
 
       -- zpracovat v¨echny virtu ln¡ metody ve virtu ln¡ tabulce
       for vindex in 1..interface^.get_vtable_size loop
-        -- dohledat implementaci virtu ln¡ metody
-        pmethod:=interface^.get_virtual_method(vindex);
-        verify(528,pmethod=nil or else (pmethod^.linked<>ls_linked
-                or picodegen_subprog(pmethod^.codegen)^.ifirst=nil
-                or picodegen_subprog(pmethod^.codegen)^.ifirst<>picodegen_subprog(pmethod^.codegen)^.ilast));
+        declare var
+          pmethod  : pentity_code;
 
-        -- doplnit adresu
-        picodegen_interface(interface^.codegen)^.vtable^[interface^.normalize_vindex(vindex)]:=picodegen_subprog(pmethod^.codegen)^.ifirst^.cstart;
+        begin           
+          -- dohledat implementaci virtu ln¡ metody
+          pmethod:=interface^.get_virtual_method(vindex);
+          verify(528,pmethod=nil or else (pmethod^.linked<>ls_linked
+                  or picodegen_subprog(pmethod^.codegen)^.ifirst=nil
+                  or picodegen_subprog(pmethod^.codegen)^.ifirst<>picodegen_subprog(pmethod^.codegen)^.ilast));
+
+          -- doplnit adresu
+          picodegen_interface(interface^.codegen)^.vtable^[interface^.normalize_vindex(vindex)]:=picodegen_subprog(pmethod^.codegen)^.ifirst^.cstart;
+
+          -- zapamatovat si relokaci pro generov n¡ EXE
+          add_relocation(vtable_addr+interface^.normalize_vindex(vindex)*t_vptr_table:base:size);
+          end declare;
         end loop;
       end build_class_descriptor_virtual_methods;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static build_class_descriptor_interfaces (
+        interface  : in p_class_interface;       -- interface t©¡dy
+        addr       : in out c_address_aligner_32) = -- p©idˆlova‡ adres
+    -- Do deskriptoru typu dosad¡ informace o interfacech.
+    ------------------------------------------------------------------------------------------------
+    with
+      standard.classes.lists;
+
+    var
+      it           : c_list_iterator;            -- iter tor p©es rozhran¡ t©¡dy
+      exposed_iface: p_class_interface;          -- exposovan˜ interface
+      itable_addr  : t_unsigned;                 -- absolutn¡ adresa tabulky interfac–
+
+    begin
+      verify(724,picodegen_interface(interface^.codegen)^.itable=nil);
+
+      -- vypo‡¡tat absolutn¡ adresu tabulky interfac–, bude se hodit
+      itable_addr:=get_itable_addr(interface^.codegen);
+
+      -- p©ipravit iter tor
+      pentity_type(interface^.refclass.getcentity)^.interfaces^.get_exposed_interfaces(it);
+
+      -- pro ka‘d˜ exposovan˜ interface vygenerovat z znam do tabulky interfac–
+      while it.get(exposed_iface) loop
+        declare var
+          ref_iface: t_ref_interface;            -- polo‘ka tabulky interfac–
+
+        begin
+          -- doplnit tag t©¡dy-interfacu
+          set_tag(itable_addr,
+                  ref_iface.class_tag,
+                  picodegen_interface(exposed_iface^.refclass.getcentity^.codegen));
+
+          -- doplnit offset instance interfaceu v r mci nad©azen‚ instance
+          ref_iface.offset:=unidata_addr_to_imm32(pentity_var(exposed_iface^.instance.getcentity)^.addr);
+
+          -- p©idat novou polo‘ku do tabulky interfac–
+          picodegen_interface(interface^.codegen)^.itable^ & ref_iface;
+          end declare;
+        end loop;
+
+      -- velikost tabulky interfac– zapo‡¡tat do celkov‚ho sou‡tu velikost¡ komponent deskriptoru
+      addr.register_size(get_itable_size(interface^.codegen));
+      end build_class_descriptor_interfaces;
 
 
 
@@ -219,44 +425,21 @@ class private linkresolver_ia32 =
         ptyp       : in pentity_type;            -- typ
         fake_tag   : in t_logical;               -- T-sestavujeme fake tag
         addr       : in out c_address_aligner_32) = -- p©idˆlova‡ adres
-    -- P©iprav¡ z klad deskriptoru typu.
+    -- P©iprav¡ z klad deskriptoru typu (zaji¨Ÿuje t‚‘ vol n¡ [build_entity_descriptor]).
     -- Jestli‘e deskriptor typu odpov¡d  fake tagu, potom za p©edka zvol¡ sama sebe, v opa‡n‚m
     -- p©¡padˆ skute‡n‚ho p©edka dodan‚ho typu.
     ------------------------------------------------------------------------------------------------
     begin
-      --%%RTTI
+      verify(720,tf_tagged not in ptyp^.tflags or else (ptyp^.ancestor.isset and then tf_tagged not in pentity_type(ptyp^.ancestor.getcentity)^.tflags));
 
-      -- p©idˆlit adresu a zapo‡¡tat velikost deskriptoru
-      codegen^.addr:=addr.get_address;
-      addr.register_size(codegen^.size{%%TODO(COMPATIBILITY) desc^:size});
+      -- p©ipravit z klad deskriptoru entity
+      build_entity_descriptor(codegen,ptyp,addr,fake_tag);
 
       -- atribut :size
-      codegen^.desc^.size:=unidata_size_to_unsigned(ptyp^.size);
+      p_desc_type(codegen^.desc)^.size:=unidata_size_to_unsigned(ptyp^.size);
 
       -- datov˜ typ
-      codegen^.desc^.dtype:=datatype_code_table[ptyp^.stype];
-
-      -- :tag p©edka
-      if ptyp^.ancestor.isset then
-        declare var
-          ancestor : pentity_type;               -- p©edek
-
-        begin
-          -- p©edek pro zjednodu¨en¡
-          if fake_tag
-            -- pro fake tag pou‘¡t rovnou dodan˜ typ
-            then ancestor:=ptyp;
-            -- jinak naj¡t skute‡n‚ho p©edka
-            else ancestor:=ptyp^.ancestor.getcentity;
-            end if;
-
-          -- na to aby mohl m¡t tag, mus¡ b˜t tagged
-          if tf_tagged in ancestor^.tflags then
-            verify(389,ancestor^.linked<>ls_linked or ancestor^.codegen=nil or ancestor^.codegen=codegen);
-            codegen^.desc^.ancestor_tag:=picodegen_type(ancestor^.codegen)^.addr;
-            end if;
-          end declare;
-        end if;
+      p_desc_type(codegen^.desc)^.dtype:=datatype_code_table[ptyp^.stype];
       end build_type_descriptor_base;
 
 
@@ -279,20 +462,13 @@ class private linkresolver_ia32 =
         --------------------------------------------------------------------------------------------
         begin
           -- alokovat ©¡d¡c¡ strukturu
-          new picodegen_interface(interface^.codegen);
-
-          -- vypo‡¡tat velikost
-          -- %%TODO(COMPATIBILITY) odstranit
-          picodegen_interface(interface^.codegen)^.size:=t_desc_class:size;
-
-          -- alokovat deskriptor
-          new p_desc_class(picodegen_interface(interface^.codegen)^.desc);
+          new_entity_descriptor(interface^.codegen,picodegen_interface,p_desc_class);
 
           -- alokovat tabulku virtu ln¡ch metod
           new picodegen_interface(interface^.codegen)^.vtable range interface^.get_vtable_size;
 
           -- alokovat tabulku interfac–
-          if is_exposed and then pentity_type(interface^.refclass.getcentity)^.interfaces^.exposed_interfaces>0 then
+          if not is_exposed and then pentity_type(interface^.refclass.getcentity)^.interfaces^.exposed_interfaces>0 then
             new picodegen_interface(interface^.codegen)^.itable range pentity_type(interface^.refclass.getcentity)^.interfaces^.exposed_interfaces;
             end if;
           end new_codegen;
@@ -316,7 +492,9 @@ class private linkresolver_ia32 =
           build_class_descriptor_virtual_methods(interface,addr);
 
           -- dosadit adresy interfac–
-          {...}
+          if not is_exposed and then pentity_type(interface^.refclass.getcentity)^.interfaces^.exposed_interfaces>0 then
+            build_class_descriptor_interfaces(interface,addr);
+            end if;
 
           -- nyn¡ je ji‘ velikost v¨ech slo‘ek deskriptoru zapo‡¡tan , m–‘eme posunout adresu
           addr.compute_next_address;
@@ -369,19 +547,36 @@ class private linkresolver_ia32 =
     ------------------------------------------------------------------------------------------------
     begin
       -- alokovat pamˆŸ
-      new picodegen_type(ptyp^.codegen);
-
-      -- vypo‡¡tat velikost deskriptoru
-      picodegen_type(ptyp^.codegen)^.size:=t_desc_type:size;
-
-      -- alokovat deskriptor typu
-      new p_desc_type(picodegen_type(ptyp^.codegen)^.desc);
+      if ptyp^.stype    in dts_index   then new_entity_descriptor(ptyp^.codegen,picodegen_type,p_desc_type_indexed);
+      elsif ptyp^.stype in dts_base    then new_entity_descriptor(ptyp^.codegen,picodegen_type,p_desc_type_based);
+      elsif ptyp^.stype in dts_ordinal then new_entity_descriptor(ptyp^.codegen,picodegen_type,p_desc_type_ordinal);
+      else                                  new_entity_descriptor(ptyp^.codegen,picodegen_type,p_desc_type);
+      end if;
 
       -- p©ipravit z klad deskriptoru typu
       build_type_descriptor_base(ptyp^.codegen,ptyp,false,addr);
 
       -- dosadit adresy speci ln¡ch metod
       build_type_descriptor_special_methods(ptyp^.codegen,ptyp);
+
+      -- dosadit vlastnosti specifick‚ pro typy s b zov˜m typem
+      if ptyp^.stype in dts_base then
+        -- tag typu b ze
+        set_tag(picodegen_type(ptyp^.codegen)^.desc_addr,p_desc_type_based(picodegen_type(ptyp^.codegen)^.desc)^.base_tag,ptyp^.base.getctype^.codegen);
+        end if;
+
+      -- dosadit vlastnosti specifick‚ pro typy s rozsahem
+      if ptyp^.stype in dts_index then
+        -- tag typu rozsahu
+        set_tag(picodegen_type(ptyp^.codegen)^.desc_addr,p_desc_type_indexed(picodegen_type(ptyp^.codegen)^.desc)^.range_tag,ptyp^.srange.getctype^.codegen);
+        end if;
+
+      -- dosadit vlastnosti specifick‚ pro ordin ln¡ typy
+      if ptyp^.stype in dts_ordinal then
+        -- doln¡ a horn¡ mez typu
+        p_desc_type_ordinal(picodegen_type(ptyp^.codegen)^.desc)^.first:=uniint_to_imm32(ptyp^.lval);
+        p_desc_type_ordinal(picodegen_type(ptyp^.codegen)^.desc)^.last :=uniint_to_imm32(ptyp^.hval);
+        end if;
 
       -- nyn¡ je ji‘ velikost v¨ech slo‘ek deskriptoru zapo‡¡tan , m–‘eme posunout adresu
       addr.compute_next_address;
@@ -390,12 +585,31 @@ class private linkresolver_ia32 =
 
 
     ------------------------------------------------------------------------------------------------
-    static build_type_descriptors =
-    -- Sestaven¡ deskriptor– typ–.
+    static build_message_descriptor (
+        pmsg       : in pentity_message;         -- zpr va
+        addr       : in out c_address_aligner_32) = -- p©idˆlova‡ adres
+    -- Sestav¡ deskriptor zpr vy.
     ------------------------------------------------------------------------------------------------
-    var
-      ptyp         : pentity_type;               -- typ
+    begin
+      -- alokovat pamˆŸ
+      new_entity_descriptor(pmsg^.codegen,picodegen_message,p_desc_message);
 
+      -- p©ipravit z klad deskriptoru entity
+      build_entity_descriptor(pmsg^.codegen,pmsg,addr);
+
+      -- tag typu zpr vy
+      set_tag(picodegen_message(pmsg^.codegen)^.desc_addr,p_desc_message(picodegen_message(pmsg^.codegen)^.desc)^.type_tag,pmsg^.typ.getctype^.codegen);
+
+      -- nyn¡ je ji‘ velikost v¨ech slo‘ek deskriptoru zapo‡¡tan , m–‘eme posunout adresu
+      addr.compute_next_address;
+      end build_message_descriptor;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static build_metadata =
+    -- Sestaven¡ metadat.
+    ------------------------------------------------------------------------------------------------
     begin
       -- je v–bec co sestavovat ?
       if list.list=nil then
@@ -404,23 +618,34 @@ class private linkresolver_ia32 =
 
       -- zpracovat v¨echny typy
       for i in list.list^:range loop
-        -- pro zjednodu¨en¡
-        ptyp:=pentity_type(list.list^[i]);
-        verify(386,ptyp^.linked<>ls_used or ptyp^.etype not in ets_type or ptyp^.codegen<>nil);
+        declare var
+          entity   : pentity;                    -- entita
 
-        -- sestavit deskriptor pro tento typ
-        if ptyp^.stype=dt_class
-          then build_class_descriptor(ptyp,addr);
-          else build_type_descriptor(ptyp,addr);
-          end if;
+        begin
+          -- pro zjednodu¨en¡
+          entity:=list.list^[i];
+          verify(386,entity^.linked<>ls_used or entity^.codegen<>nil);
 
-        -- ozna‡it symbol jako vyhodnocen˜
-        ptyp^.linked:=ls_linked;
+          -- sestavit deskriptor pro tuto entitu
+          case entity^.etype
+            -- typ
+            when et_type    do build_type_descriptor(entity,addr);
 
-        -- ozna‡it symbol jako vyhodnocen˜
-        ptyp^.linked:=ls_linked;
+            -- t©¡da
+            when et_class   do build_class_descriptor(entity,addr);
+
+            -- zpr va
+            when et_message do build_message_descriptor(entity,addr);
+
+            -- pro nic jin‚ho metadata generovat neum¡me
+            when others do verify(719,true)
+            end case;
+
+          -- ozna‡it symbol jako vyhodnocen˜
+          entity^.linked:=ls_linked;
+          end declare;
         end loop;
-      end build_type_descriptors;
+      end build_metadata;
    
 
       
@@ -431,9 +656,6 @@ class private linkresolver_ia32 =
     with
       cg_gen.cg_ia32.ci_code,
       cg_gen.cg_ia32.ci_code.ci_instr;
-    
-    var
-      modtemp   : t_mod_unsigned32;
 
     begin
       -- je v–bec co vyhodnocovat ?
@@ -442,8 +664,38 @@ class private linkresolver_ia32 =
         end if;
 
       for i in inst.r^:range loop -- with inst.r^[i] loop
-        declare var
-          r        : inst.r^:base;
+        declare 
+        
+          var
+            r      : inst.r^:base;
+
+          ------------------------------------------------------------------------------------------
+          procedure set_absolute (
+              value: in t_unsigned32) =
+          -- Dosad¡ hodnotu absolutn¡ relokace a udˆl  ji load-time relokabiln¡.
+          ------------------------------------------------------------------------------------------
+          begin
+            -- dosadit hodnotu absolutn¡ relokace do k¢du
+            verify(590,not r.absolute);
+            setfield(inst,r.disp,value);
+            
+            -- zapamatovat si relokaci pro generov n¡ EXE
+            add_relocation(inst.cstart+r.disp);
+            end set_absolute;
+
+          ------------------------------------------------------------------------------------------
+          procedure set_relative (
+              value: in t_unsigned32) =
+          -- Dosad¡ hodnotu relativn¡ relokace.
+          ------------------------------------------------------------------------------------------
+          var
+            modtemp : t_mod_unsigned32;
+
+          begin
+            modtemp:=t_mod_unsigned32(value);
+            modtemp-t_mod_unsigned32(r.nextip+inst.cstart);
+            setfield(inst,r.disp,t_unsigned32(modtemp));
+            end set_relative;
 
         begin
           -- pro zjednodu¨en¡, aŸ se neup¡¨eme
@@ -457,86 +709,45 @@ class private linkresolver_ia32 =
             when irt_entity do
                 case pentity(r.relo_info.rentity)^.etype
                   -- promˆnn 
-                  when et_var  do 
-                      verify(590,not r.absolute);
-                      setfield(inst,r.disp,picodegen_var(pentity(r.relo_info.rentity)^.codegen)^.addr);
-                      
-                      -- zapamatuj
-                      insertrelocaddrsorted(r.disp+picodegen_var(pentity(r.relo_info.rentity)^.codegen)^.addr);
+                  when et_var do set_absolute(picodegen_var(pentity(r.relo_info.rentity)^.codegen)^.addr);
 
                   -- procedura
                   when et_procedure do
                       if pentity_procedure(r.relo_info.rentity)^.import_info<>nil
                         
                         -- extern¡ symbol
-                        then 
-                          verify(591,not r.absolute);
-                          setfield(inst,r.disp,getindirect(pentity_procedure(r.relo_info.rentity)));
-                          
-                          -- zapamatuj
-                          insertrelocaddrsorted(r.disp+getindirect(pentity_procedure(r.relo_info.rentity)));
+                        then set_absolute(getindirect(pentity_procedure(r.relo_info.rentity)));
                         
                         -- norm ln¡ symbol }{%%X A kter  instance to je ?
-                        else
+                        else 
                           if not r.absolute
-                            then 
-                              modtemp:=t_mod_unsigned32(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
-                              modtemp-t_mod_unsigned32((r.nextip+inst.cstart));
-                              setfield(inst,r.disp,t_unsigned32(modtemp));
-                            else 
-                              setfield(inst,r.disp,picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
-                              
-                              -- zapamatuj
-                              insertrelocaddrsorted(r.disp+picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
-                              end if;
+                            then set_relative(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
+                            else set_absolute(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
+                            end if;
                           end if;
 
                   -- program, metoda, speci ln  metoda, kompila‡n¡ jednotka
                   when et_program, et_static, et_virtual, et_override, et_special, et_compile do
                       {%%X A kter  instance to je ? }
                       if not r.absolute
-                        then 
-                          modtemp:=t_mod_unsigned32(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
-                          modtemp-t_mod_unsigned32((r.nextip+inst.cstart));
-                          setfield(inst,r.disp,t_unsigned32(modtemp));
-                        else 
-                          setfield(inst,r.disp,picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
-                          
-                          -- zapamatuj
-                          insertrelocaddrsorted(r.disp+picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
-                          end if;
+                        then set_relative(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
+                        else set_absolute(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
+                        end if;
 
-                  -- ‡¡slo zpr vy
-                  when et_message do
-                      verify(592,not r.absolute);
-                      setfield(inst,r.disp,unimsg_to_unsigned(pentity_message(r.relo_info.rentity)^.num));
+                  -- tag zpr vy
+                  when et_message do set_absolute(picodegen_message(pentity_message(r.relo_info.rentity)^.codegen)^.desc_addr);
 
                   -- tag typu/t©¡dy
-                  when et_type,et_class do
-                      verify(593,not r.absolute);
-                      setfield(inst,r.disp,picodegen_type(pentity_type(r.relo_info.rentity)^.codegen)^.addr);
-                      
-                      -- zapamatuj
-                      insertrelocaddrsorted(r.disp+picodegen_type(pentity_type(r.relo_info.rentity)^.codegen)^.addr);
+                  when et_type,et_class do set_absolute(picodegen_type(pentity_type(r.relo_info.rentity)^.codegen)^.desc_addr);
 
                   when others do verify(33,true);
                   end case;                       
 
             -- p©¡m  hodnota
-            when irt_imm do
-                verify(307,not r.absolute);
-                setfield(inst,r.disp,picodegen_imm(pexpimm(r.relo_info.rexpr)^.imm.codegen)^.addr);
-                
-                -- zapamatuj
-                insertrelocaddrsorted(r.disp+picodegen_imm(pexpimm(r.relo_info.rexpr)^.imm.codegen)^.addr);
+            when irt_imm do set_absolute(picodegen_imm(pexpimm(r.relo_info.rexpr)^.imm.codegen)^.addr);
 
             -- interface t©¡dy
-            when irt_interface do
-                verify(695,not r.absolute);
-                setfield(inst,r.disp,picodegen_type(r.relo_info.rinterface^.codegen)^.addr);
-                
-                -- zapamatuj
-                insertrelocaddrsorted(r.disp+picodegen_type(r.relo_info.rinterface^.codegen)^.addr);
+            when irt_interface do set_absolute(picodegen_type(r.relo_info.rinterface^.codegen)^.desc_addr);
 
             when others do verify(203,true);
             end case;
@@ -613,12 +824,12 @@ class private linkresolver_ia32 =
 
 
     ------------------------------------------------------------------------------------------------
-    override link_segment_type_descriptors =
+    override link_segment_metadata =
     -- Segment: deskriptory typ–.
     ------------------------------------------------------------------------------------------------
     begin
-      build_type_descriptors(typedesc,_address);
-      end link_segment_type_descriptors;
+      build_metadata(metadata,_address);
+      end link_segment_metadata;
 
 
 
@@ -707,7 +918,7 @@ class private linkresolver_ia32 =
           -- vlastn¡ sestaven¡
           case _seg
             when tseg_code     do link_segment_code(local_address);
-            when tseg_typedesc do link_segment_type_descriptors(local_address);
+            when tseg_metadata do link_segment_metadata(local_address);
             when tseg_const    do link_segment_const(local_address);
             when tseg_init     do link_segment_init_var(local_address);
             when tseg_data     do link_segment_uninit_var(local_address);
@@ -746,8 +957,8 @@ class private linkresolver_ia32 =
       link_segment('Code',tseg_code,calign);
 
       ----- F ze 2: p©idˆlit adresy promˆnn˜ch, konstant a deskriptor– -----
-      -- 1. deskriptory typ–
-      link_segment('Type Descriptors',tseg_typedesc,dalign);
+      -- 1. metadata
+      link_segment('Metadata',tseg_metadata,dalign);
 
       -- 2. konstanty
       link_segment('Constants',tseg_const,dalign);
@@ -946,54 +1157,94 @@ class private linkresolver_ia32 =
 
 
         --------------------------------------------------------------------------------------------
-        procedure write_type_desc (
-            codegen: in picodegen_type) =        -- deskriptor typu
-        -- Zap¡¨e do souboru deskriptor typu.
+        #template write_padding (size);
+        -- Zap¡¨e do v˜stupn¡ho streamu pot©ebn‚ zarovn n¡
         --------------------------------------------------------------------------------------------
-        begin
-          -- zapsat deskriptor
-          os^.writex(codegen^.desc^,t_desc_type:size{%%TODO(COMPATIBILITY) codegen^.desc^:size});
+          if size mod dalign<>0 then 
+            os^.writex(fill_nops,dalign-(size mod dalign)); 
+            end if;
+          #end write_padding;
+
+
+
+        --------------------------------------------------------------------------------------------
+        #template write_and_pad (data,size);
+        -- Zap¡¨e do v˜stupn¡ho streamu data a pot©ebn‚ zarovn n¡
+        --------------------------------------------------------------------------------------------
+          -- zapsat
+          os^.writex(data,size);
 
           -- zarovnat
-          if codegen^.size{%%TODO(COMPATIBILITY) desc^:size} mod dalign<>0 then 
-            os^.writex(fill_nops,dalign-(codegen^.size{%%TODO(COMPATIBILITY) desc^:size} mod dalign)); 
-            end if;
-          end write_type_desc;
+          write_padding(size);
+          #end write_and_pad;
 
 
 
         --------------------------------------------------------------------------------------------
-        procedure write_class_desc (
+        procedure write_desc_entity_base (
+            codegen: in picodegen_metadata;      -- ©¡d¡c¡ struktura s deskriptorem entity
+            size   : out t_unsigned) =           -- kumulativn¡ velikost v¨ech slo‘ek deskriptoru
+        -- Zap¡¨e do souboru z klad deskriptoru entity.
+        --------------------------------------------------------------------------------------------
+        begin
+          -- zapsat identifik tor
+          if codegen^.desc_qid<>nil then
+            write_and_pad(codegen^.desc_qid^,4+codegen^.desc_qid^:length*4);
+            end if;
+
+          -- zapsat deskriptor 
+          os^.writex(codegen^.desc^,codegen^.desc_size{%%TODO(COMPATIBILITY) codegen^.desc^:size});
+          size+codegen^.desc_size;
+          end write_desc_entity_base;
+
+
+
+        --------------------------------------------------------------------------------------------
+        procedure write_desc_class (
             codegen: in picodegen_interface) =   -- deskriptor t©¡dy (resp. interfacu)
         -- Zap¡¨e do souboru deskriptor t©¡dy.
         --------------------------------------------------------------------------------------------
         var
           size     : t_unsigned;                 -- kumulativn¡ velikost v¨ech slo‘ek
-          modtemp  : t_mod_unsigned;
 
         begin
-          -- z klad tvo©¡ deskriptor typu
-          os^.writex(codegen^.desc^,t_desc_class:size{%%TODO(COMPATIBILITY) codegen^.desc^:size});
-          size+t_desc_class:size{%%TODO(COMPATIBILITY) codegen^.desc^:size};
+          -- z klad tvo©¡ deskriptor entity
+          write_desc_entity_base(codegen,size);
 
           -- n sleduje virtu ln¡ tabulka
           if codegen^.vtable<>nil then
-            modtemp:=(t_mod_unsigned(codegen^.vtable^:last)-t_mod_unsigned(codegen^.vtable^:first)+1)*4;
-            os^.writex(codegen^.vtable^,t_unsigned(modtemp));
+            os^.writex(codegen^.vtable^,get_vtable_size(codegen));
                        {%%TODO(COMPATIBILITY) codegen^.vtable^:size);}
-            size+t_unsigned(modtemp);
+            size+get_vtable_size(codegen);
             end if;
 
           -- a tabulka interfac– 
-          {...}
+          if codegen^.itable<>nil then
+            os^.writex(codegen^.itable^,get_itable_size(codegen));
+            size+get_itable_size(codegen);
+            end if;
 
           -- zarovn n¡
-          if size mod dalign<>0 then 
-            os^.writex(fill_nops,dalign-(size mod dalign)); 
-            end if;
-          end write_class_desc;
+          write_padding(size);
+          end write_desc_class;
 
 
+
+        --------------------------------------------------------------------------------------------
+        procedure write_desc_entity (
+            codegen: in picodegen_metadata) =    -- deskriptor entity
+        -- Zap¡¨e do souboru deskriptor typu.
+        --------------------------------------------------------------------------------------------
+        var
+          size     : t_unsigned;                 -- kumulativn¡ velikost v¨ech slo‘ek
+
+        begin
+          -- z klad tvo©¡ deskriptor entity
+          write_desc_entity_base(codegen,size);
+
+          -- zarovn n¡
+          write_padding(size);
+          end write_desc_entity;
 
     var
       pvar             : pentity_var;                -- promˆnn 
@@ -1025,10 +1276,11 @@ class private linkresolver_ia32 =
                 until p=nil;
               end loop;
 
-        -- deskriptory typ–
-        when tseg_typedesc do
-            for i in typedesc.list^:range loop
-              if typedesc.list^[i]^.etype=et_class
+        -- metadata
+        when tseg_metadata do
+            for i in metadata.list^:range loop
+              if metadata.list^[i]^.etype=et_class
+
                 -- pro t©¡du se mus¡ zapsat deskriptory v¨ech interfac–
                 then
                   declare var
@@ -1037,17 +1289,17 @@ class private linkresolver_ia32 =
 
                   begin
                     -- p©ipravit iter tor
-                    pentity_type(typedesc.list^[i])^.interfaces^.get_all_interfaces(it);
+                    pentity_type(metadata.list^[i])^.interfaces^.get_all_interfaces(it);
 
                     -- zpracovat v¨echny exposovan‚ interfacy
                     while it.get(interface) loop
-                      write_class_desc(interface^.codegen);
+                      write_desc_class(interface^.codegen);
                       end loop;
                     end declare;
 
-                -- pro typ pouze jeden deskriptor
+                -- pro ostatn¡ typy entit je to mnohem jednodu¨¨¡
                 else
-                  write_type_desc(typedesc.list^[i]^.codegen);
+                  write_desc_entity(metadata.list^[i]^.codegen);
                   end if;
               end loop;
 

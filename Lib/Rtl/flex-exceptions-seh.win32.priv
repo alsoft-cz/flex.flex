@@ -24,61 +24,6 @@ const
 #end if;
 
 
-----------------------------------------------------------------------------------------------------
-procedure rtl_init_task_exceptions_win32_inject =
-----------------------------------------------------------------------------------------------------
---%%TODO(ASM) remove when lea eax,winnt_except_handler
-var 
-  handler          : p_winnt_except_handler;
-
-begin
-  #if not rtl_debug_disable_SEH_conversion then;
---%%todo remove when lea eax,winnt_except_handler
-  handler:=^winnt_except_handler;
-  #syntax asm;
-    -- skip caller ret
-    pop    edx                                   -- pop out ret address of caller
-    mov    esp,ebp                               -- free stack frame of caller
-    pop    ebp
-    pop    edx                                   -- get ret address of callers caller
-    -- intstall handler
-    push   handler                               -- push address of my handler
-    mov    eax,fs:[t_winnt_tib.exceptionlist]    -- get prev handler registration
-    push   eax                                   -- push prev handler reg
-    mov    fs:[t_winnt_tib.exceptionlist],esp    -- save my handler registartion to tib
-    -- simulate return from caller
-    jmp    edx
-    #end asm;
-  #end if;
-  end rtl_init_task_exceptions_win32_inject;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_deinit_task_exceptions_win32_inject =
-----------------------------------------------------------------------------------------------------
-begin
-  #if not rtl_debug_disable_SEH_conversion then;
-  #syntax asm;
-    -- skip caller ret
-    pop    edx                                   -- pop out ret address of caller
-    mov    esp,ebp                               -- free stack frame of caller
-    pop    ebp
-    pop    edx                                   -- get ret address of callers caller
-    mov    esp,ebp                               -- free stack frame of caller
-    pop    ebp
-    -- unintstall handler
-    pop    eax                                   -- get pointer to previous handler record
-    mov    fs:[t_winnt_tib.exceptionlist],eax    -- install previous record
-    pop    eax                                   -- get pointer to previous handler record
-    -- simulate return from caller
-    mov    eax,0
-    ret
-    #end asm;
-  #end if;
-  end rtl_deinit_task_exceptions_win32_inject;
-
-
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_init_task_exceptions_win32 =
@@ -118,6 +63,8 @@ begin
   #end if;
   end rtl_deinit_task_exceptions_win32;
 
+
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_pop_task_exceptions_win32 =
 ----------------------------------------------------------------------------------------------------
@@ -132,12 +79,17 @@ begin
   end rtl_pop_task_exceptions_win32;
 
 
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_raise_system_exception =
 -- raises an exception using windows SEH
 ----------------------------------------------------------------------------------------------------
 begin
+#if #environment compiler_version;='4.0.3.7' then;
   rtl_debug_dump_exception(msg_raise_system,ecode,etag,edata);
+#else;
+  rtl_debug_dump_exception(msg_raise_system,etag,edata);
+#end if;
   rtl_debuger_break_exception;
   --%%TODO doddelat data, parametry, pocet
   if econtinue then
@@ -155,9 +107,11 @@ begin
 procedure winnt_except_handler = 
 ----------------------------------------------------------------------------------------------------
 var
-    ecode          : t_rtl_unsigned32;
-    etag           : t_rtl_unsigned32;
-    edata          : t_rtl_pointer;
+#if #environment compiler_version;='4.0.3.7' then;
+  ecode            : t_rtl_unsigned32;
+#end if;
+  etag             : t_rtl_tag;
+  edata            : t_rtl_pointer;
 
 begin
   #syntax asm;
@@ -174,92 +128,112 @@ begin
     alloc_estackrow
     #end asm;
   case exceptionrecord^.exceptioncode
-{
---%%todo vyresit tag vs. code
-    when exception_access_violation do
-      etag:unchecked:=memory_error:tag;
-      --%%TODO when exceptions can have parameters
-      --edata^.read_or_write:=exceptionrecord^.exceptioninfo[0];
-      --edata^.address:=exceptionrecord^.exceptioninfo[1];
     when exception_array_bounds_exceeded do
-      etag:unchecked:=constraint_error:tag;
+        etag:=constraint_error:tag;
+
     when exception_stack_overflow do
-      etag:unchecked:=memory_error:tag;
+        etag:=memory_error:tag;
+
     when exception_datatype_misalignment do
-      etag:unchecked:=constraint_error:tag;
+        etag:=constraint_error:tag;
+{
 #if #environment compiler_version;='4.0.2' then;
     when exception_flt_denormal_operand do
-      etag:unchecked:=fp_denormal_operand:tag;
+      etag:=fp_denormal_operand:tag;
     when exception_flt_divide_by_zero do
-      etag:unchecked:=fp_divide_by_zero:tag;
+      etag:=fp_divide_by_zero:tag;
     when exception_flt_inexact_result do
-      etag:unchecked:=fp_inexact_result:tag;
+      etag:=fp_inexact_result:tag;
     when exception_flt_invalid_operation do
-      etag:unchecked:=fp_invalid_operand:tag;
+      etag:=fp_invalid_operand:tag;
     when exception_flt_overflow do
-      etag:unchecked:=fp_numeric_overflow:tag;
+      etag:=fp_numeric_overflow:tag;
     when exception_flt_stack_check do
-      etag:unchecked:=fp_numeric_error:tag;
+      etag:=fp_numeric_error:tag;
     when exception_flt_underflow do
-      etag:unchecked:=fp_numeric_underflow:tag;
+      etag:=fp_numeric_underflow:tag;
 #end if;
-    when exception_illegal_instruction do
-      etag:unchecked:=implementation_error:tag;
-    when exception_in_page_error do
-      etag:unchecked:=memory_error:tag;
-    when exception_int_divide_by_zero do
-      etag:unchecked:=numeric_error:tag;
-    when exception_int_overflow do
-      etag:unchecked:=numeric_error:tag;
-    when exception_invalid_disposition do
-      etag:unchecked:=implementation_error:tag;
-    when exception_priv_instruction do
-      etag:unchecked:=implementation_error:tag;
-    when exception_single_step do
-      etag:unchecked:=implementation_error:tag;
-    when others do
-      etag:unchecked:=implementation_error:tag;
 }
+    when exception_illegal_instruction do
+        etag:=implementation_error:tag;
+
+    when exception_in_page_error do
+        etag:=memory_error:tag;
+
+    when exception_int_divide_by_zero do
+        etag:=numeric_error:tag;
+
+    when exception_int_overflow do
+        etag:=numeric_error:tag;
+
+    when exception_invalid_disposition do
+        etag:=implementation_error:tag;
+
+    when exception_priv_instruction do
+        etag:=implementation_error:tag;
+
+    when exception_single_step do
+        etag:=implementation_error:tag;
+
     when exception_noncontinuable_exception do
-      etag:=exceptionrecord^.exceptioncode;
-      ecode:=exceptionrecord^.exceptioninfo[0];
-      edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
-      rtl_debug_dump_exception(msg_noncont_system,ecode,etag,t_rtl_unsigned32(edata:unchecked));
-      #syntax asm;
-        mov eax,1{exceptioncontinuesearch}
-        ret
-        #end asm;
-    when exception_breakpoint do
-      {
-      etag:=exceptionrecord^.exceptioncode;
-      ecode:=exceptionrecord^.exceptioninfo[0];
-      edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
-      rtl_debug_dump_exception(msg_breakpoint,ecode,etag,edata);
-      }
-      #if rtl_breakpoints_without_debuger then;
+        etag:=t_rtl_tag(exceptionrecord^.exceptioncode:unchecked);
+      #if #environment compiler_version;='4.0.3.7' then;
+        ecode:=exceptionrecord^.exceptioninfo[0];
+      #end if;
+        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+      #if #environment compiler_version;='4.0.3.7' then;
+        rtl_debug_dump_exception(msg_noncont_system,ecode,etag,t_rtl_unsigned32(edata:unchecked));
+      #else;
+        rtl_debug_dump_exception(msg_noncont_system,etag,t_rtl_unsigned32(edata:unchecked));
+      #end if;
         #syntax asm;
           mov eax,1{exceptioncontinuesearch}
           ret
           #end asm;
-      #else;
-        contextrecord^.reip + 1;
-        #syntax asm;
-          mov eax,0{exceptioncontinueexecution}
-          ret
-          #end asm;
-      #end if;
+
+    when exception_breakpoint do
+        {
+        etag:=exceptionrecord^.exceptioncode;
+        ecode:=exceptionrecord^.exceptioninfo[0];
+        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+        rtl_debug_dump_exception(msg_breakpoint,ecode,etag,edata);
+        }
+        #if rtl_breakpoints_without_debuger then;
+          #syntax asm;
+            mov eax,1{exceptioncontinuesearch}
+            ret
+            #end asm;
+        #else;
+          contextrecord^.reip + 1;
+          #syntax asm;
+            mov eax,0{exceptioncontinueexecution}
+            ret
+            #end asm;
+        #end if;
+
     when exception_access_violation do
-      etag:=exceptionrecord^.exceptioncode;
-      ecode:=exceptionrecord^.exceptioninfo[0];
-      edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
-      rtl_debug_dump_exception(msg_memory,etag,ecode,t_rtl_unsigned32(edata:unchecked));
-      etag:=6{memory_error:code};
+      #if #environment compiler_version;='4.0.3.7' then;
+        ecode:=exceptionrecord^.exceptioninfo[0];
+      #end if;
+        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+      #if #environment compiler_version;='4.0.3.7' then;
+        rtl_debug_dump_exception(msg_memory,etag,ecode,t_rtl_unsigned32(edata:unchecked));
+      #else;
+        rtl_debug_dump_exception(msg_memory,etag,t_rtl_unsigned32(edata:unchecked));
+      #end if;
+        etag:=memory_error:tag;
+
     when others do
-      etag:=exceptionrecord^.exceptioncode;
-      ecode:=exceptionrecord^.exceptioninfo[0];
-      edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
-      rtl_debug_dump_exception(msg_pending_system,etag,ecode,t_rtl_unsigned32(edata:unchecked));
-      etag:=9{program_error};
+      #if #environment compiler_version;='4.0.3.7' then;
+        ecode:=exceptionrecord^.exceptioninfo[0];
+      #end if;
+        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+      #if #environment compiler_version;='4.0.3.7' then;
+        rtl_debug_dump_exception(msg_pending_system,etag,ecode,t_rtl_unsigned32(edata:unchecked));
+      #else;
+        rtl_debug_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+      #end if;
+        etag:=program_error:tag;
     end case;
 
   #syntax asm;
