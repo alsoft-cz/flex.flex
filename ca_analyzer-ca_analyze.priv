@@ -10,7 +10,11 @@ with
   cc_base,cc_base.cc_type,cc_base.cc_sym,cc_base.cc_debug,
   cb_block,cb_block.cb_def,cb_block.cb_make,
   cx_expr,cx_expr.cx_def,
-  ca_var,ca_block,ca_util,ca_type;
+  ca_var,ca_block,ca_util,ca_type,cc_def.cc_var,standard.console
+#if #declared hynek; #and then; hynek  then;
+  ,cc_def.cc_codes,cp_os
+#end if;
+  ;
 
 -- %%X Nejd©¡v jsem si myslel, ‘e inicializace promˆnn˜ch se bude dˆlat 
 -- zvl ¨tn¡ procedurou v gener toru. Pak jsem ale rad¨i za‡al vkl dat
@@ -26,7 +30,6 @@ procedure dumpmemclass (
     mclass         : in memclassset) =
 ----------------------------------------------------------------------------------------------------
 var
-  m                : memclass;
   s                : t_char32str;
 
 begin
@@ -166,10 +169,11 @@ procedure a_program (
     curr           : in out tentity_program) =   -- analyzovan˜ symbol
 -- Anal˜za programu.
 ----------------------------------------------------------------------------------------------------
+{
 var
   binfo            : blinfo;                     -- kontext
   xinfo            : expinfo;                    -- kontext
-
+}
 begin
 {
   1. inicializace statickych lokalnich promennych
@@ -180,6 +184,9 @@ begin
   -- analyzovat promˆnn‚
   a_scan_variables(sym_primary_context(curr));
 
+  -- vygenerovat inicializaci a finalizaci promˆnn˜ch
+  a_block_process_vars(sym_primary_context(curr),pblblock(curr.bl.getcblock),mc_static,true,true);
+{
   -- p©ipravit kontexty
   a_prepare_info(binfo,xinfo);
 
@@ -191,7 +198,7 @@ begin
 
   -- zavolat exit statick˜ch lok ln¡ch promˆnn˜ch
   a_var_exit(curr,pblblock(curr.bl.getcblock)^.bexit,binfo,xinfo,^curr,mc_static,true);
-
+}
   -- analyzovat p©¡kazy
   a_block(curr,pblblock(curr.bl.getcblock));
   end a_program;
@@ -230,11 +237,11 @@ procedure a_subprogram (
           if curr.nesting=0 then curr.nesting:=1; end if;
           end if;
       end calcnesting;
-
+{
 var
   binfo            : blinfo;                     -- kontext
   xinfo            : expinfo;                    -- kontext
-
+}
 begin
 {
   1. inicializace lokalnich promennych
@@ -252,6 +259,9 @@ begin
   -- Ondra 7.8.2002 : Zru¨eno, prov d¡ se rekurzivnˆ z modulu, programu a kompila‡n¡ jednotky
   -- a_scan_variables(sym_primary_context(curr));
 
+  -- vygenerovat inicializaci a finalizaci promˆnn˜ch
+  a_block_process_vars(sym_primary_context(curr),pblblock(curr.bl.getcblock),mc_auto,false,false);
+{
   -- p©ipravit kontexty
   a_prepare_info(binfo,xinfo);
 
@@ -263,7 +273,7 @@ begin
 
   -- zavolat exit automatick˜ch lok ln¡ch promˆnn˜ch
   a_var_exit(curr,pblblock(curr.bl.getcblock)^.bexit,binfo,xinfo,^curr,mc_auto,false);
-
+}
   -- analyzovat p©¡kazy
   a_block(curr,pblblock(curr.bl.getcblock));
   end a_subprogram;
@@ -275,12 +285,41 @@ procedure a_procedure (
     curr           : in out tentity_procedure) = -- analyzovan˜ symbol
 -- Anal˜za podprogramu.
 ----------------------------------------------------------------------------------------------------
+var
+  entity           : pentity;
+
 begin
   -- analyzovat lze jen procedury, kter‚ skute‡nˆ m me definovan‚ ve zdroj ku
   if curr.import=nil then
     a_subprogram(curr);
     end if;
+
+#if #declared hynek; #and then; hynek then;   
+  
+  -- exportovany symbol?
+  if curr.export_info<>nil then
+    
+    -- najdi enclosed modul
+    entity:=sym_get_enclosing_or_self(^curr, et_module);
+    
+    -- je exportovany?
+    if (entity=nil) or else (pentity_module(entity)^.lib_info=nil) then
+      -- neni - chyba
+      ce^.seterror({CCERR=}000777,ce_internal);
+      ce^.loadpos;
+      ce^.resumeerror;
+      return;
+      end if;
+   
+    -- zarad symbol pro export
+    plibraryinfo(pentity_module(entity)^.lib_info)^.export_list.add(^curr);
+    write('HYNEK DEBUG: export ');
+    write_line(sym_get_qid(^curr));
+    end if;
+  
+#end if;
   end a_procedure;
+ 
 
 
 
@@ -350,32 +389,32 @@ begin
   ---- inicializace ----
   -- inicializace glob ln¡ch promˆnn˜ch
   if curr.spectype=tst_entry then
-    a_var_init(curr.context.entity^,pblblock(curr.bl.getcblock)^.binit,binfo,xinfo,curr.context.entity,mclass{mc_class},true,{for classonly use}classonly{false});
+    a_var_init(curr.context,pblblock(curr.bl.getcblock)^.binit,binfo,xinfo,mclass{mc_class},true,{for classonly use}classonly{false});
     end if;
 
   -- inicializace automatick˜ch lok ln¡ch promˆnn˜ch
-  a_var_init(curr,pblblock(curr.bl.getcblock)^.binit,binfo,xinfo,^curr,mc_auto,false,false);
+  a_var_init(sym_primary_context(curr),pblblock(curr.bl.getcblock)^.binit,binfo,xinfo,mc_auto,false,false);
 
   ---- ENTRY/ADJUST ----
   -- zavolat adjust glob ln¡ch promˆnn˜ch
   if curr.spectype=tst_adjust then
-    a_var_adjust(curr.context.entity^,pblblock(curr.bl.getcblock)^.bentry,binfo,xinfo,curr.context.entity,mc_class,true);
+    a_var_adjust(curr.context,pblblock(curr.bl.getcblock)^.bentry,binfo,xinfo,mc_class,true);
 
   -- zavolat entry glob ln¡ch promˆnn˜ch
   elsif curr.spectype=tst_entry then
-    a_var_entry(curr.context.entity^,pblblock(curr.bl.getcblock)^.bentry,binfo,xinfo,curr.context.entity,mclass{mc_class},{for recursive use}true);
+    a_var_entry(curr.context,pblblock(curr.bl.getcblock)^.bentry,binfo,xinfo,mclass{mc_class},{for recursive use}true);
     end if;
 
   -- zavolat entry automatick˜ch lok ln¡ch promˆnn˜ch
-  a_var_entry(curr,pblblock(curr.bl.getcblock)^.bentry,binfo,xinfo,^curr,mc_auto,false);
+  a_var_entry(sym_primary_context(curr),pblblock(curr.bl.getcblock)^.bentry,binfo,xinfo,mc_auto,false);
 
   ---- EXIT ----
   -- zavolat exit automatick˜ch lok ln¡ch promˆnn˜ch
-  a_var_exit(curr,pblblock(curr.bl.getcblock)^.bexit,binfo,xinfo,^curr,mc_auto,false);
+  a_var_exit(sym_primary_context(curr),pblblock(curr.bl.getcblock)^.bexit,binfo,xinfo,mc_auto,false);
 
   -- zavolat exit glob ln¡ch promˆnn˜ch
   if curr.spectype=tst_exit then
-    a_var_exit(curr.context.entity^,pblblock(curr.bl.getcblock)^.bexit,binfo,xinfo,curr.context.entity,mclass{mc_class},{for recursive use}true);
+    a_var_exit(curr.context,pblblock(curr.bl.getcblock)^.bexit,binfo,xinfo,mclass{mc_class},{for recursive use}true);
     end if;
 
   -- £plnˆ na konec zavolat EXIT p©edka
@@ -435,6 +474,23 @@ begin
     pspec^.bl.setblock(b_make_block(pspec_context,binfo));
     d_end_internal(pspec^,true);
     end if;
+
+#if #declared hynek; #and then; hynek then;     
+  -- je modul exportovany jako knihovna?
+  if curr.lib_info<>nil then
+    -- vygeneruj libentry
+    case plibraryinfo(curr.lib_info)^.lib_type
+      when tlt_system do
+      
+      when others do verify(true);
+      end case;
+
+    cc_def.cc_var.lib_list.add(^curr);
+    write('HYNEK DEBUG: library ');
+    write_line(sym_get_qid(^curr));
+    end if;
+#end if;
+   
   end a_pre_module;
 
 
@@ -534,7 +590,6 @@ procedure a_context (
 var
   p                : pentity;                    -- analyzovan  entita
   region           : pregion;                    -- analyzovan˜ region          
-  i                : t_unsigned;
 
 begin
   -- analyzovat WITH/USE
@@ -579,9 +634,6 @@ procedure a_entity =
 ----------------------------------------------------------------------------------------------------
 with
   standard,console;
-
-var
-  rcategory        : tregioncategory;
 
 begin
   -- analyzovat jen dosud neanalyzovan‚ symboly
@@ -657,8 +709,21 @@ begin
 procedure a_analyze =
 -- Glob ln¡ anal˜za programu.
 ----------------------------------------------------------------------------------------------------
+#if #declared ondra; #and then; ondra then;
+with
+  standard.console,
+  standard.conversions;
+#end if;
+
 begin
   a_entity(compi);
+
+#if #declared ondra; #and then; ondra then;
+  write('loop:  '); write_line(unsigned_to_string(bl_metrics[bt_loop]-bl_loop_until));
+  write('for:   '); write_line(unsigned_to_string(bl_metrics[bt_for]));
+  write('while: '); write_line(unsigned_to_string(bl_metrics[bt_while]));
+  write('until: '); write_line(unsigned_to_string(bl_loop_until));
+#end if; 
   end a_analyze;
 
 

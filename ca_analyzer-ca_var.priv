@@ -15,8 +15,8 @@ with
   cx_expr.cx_make,
   cb_block,
   cb_block.cb_make,
-  ca_util,
-  ca_type;
+  ca_analyzer.ca_util,
+  ca_analyzer.ca_type;
 
 type
   -- operace nad promˆnnou (inicializace, vol n¡ ENTRY/EXIT)
@@ -58,7 +58,7 @@ begin
   ptyp:=pvar^.typ.getutype;
 
   -- je k dispozici inicializa‡n¡ metoda pro tento typ ?
-  if (ptyp<>nil) and (ptyp^.tinit=ti_complex)  {ptyp^.stable[tst_init].isset and ((ptyp^.stype in dts_component) or (ptyp^.derive=td_private_extension))}
+  if ptyp<>nil and then ptyp^.tinit=ti_complex {ptyp^.stable[tst_init].isset and ((ptyp^.stype in dts_component) or (ptyp^.derive=td_private_extension))}
 
     -- ano => pou‘¡t
     then
@@ -170,7 +170,7 @@ procedure traceop_entry : ttraceop =
 -- Vol n¡ ENTRY promˆnn‚.
 ----------------------------------------------------------------------------------------------------
 begin
-   traceop_call_special(curr,list,binfo,xinfo,pvar,tst_entry);
+  traceop_call_special(curr,list,binfo,xinfo,pvar,tst_entry);
   end traceop_entry;
 
 
@@ -248,36 +248,61 @@ procedure trace (
 -- pro MCLASS=MC_STATIC i vno©en‚ t©¡dy.
 ----------------------------------------------------------------------------------------------------
 var
-  psym             : pentity;
+  psym             : pentity;                    -- zkouman  entita
+  ptyp             : pentity_type;               -- typ promˆnn‚
   region           : pregion;
 
 begin
   psym:=curr.region^.entities.first;
   while psym<>nil loop
+{
+    if psym^.etype=et_var then 
+      if  pentity_var(psym)^.mclass=mclass then 
+        -- a nen¡ to parametr (kromˆ OUT parametr–)
+        if (pentity_var(psym)^.pparam=nil or pentity_var(psym)^.pparam^.mode=pm_out) then
 
+          -- a je to t©¡da, je-li tak po‘adov no
+          if (not classonly or (pentity_var(psym)^.typ.isset and t_contains_class(pentity_var(psym)^.typ.getctype^))
+                               {(pentity_var(psym)^.typ.isset and (pentity_var(psym)^.typ.getctype^.ptype=et_class))}) then 
+            -- a nen¡ to symbol generovan˜ kompil torem k technick˜ch £‡el–m
+            if etc_generated not in psym^.compile then psym:=psym end if;
+            end if;
+          end if;
+        end if;
+      end if;
+}
     -- promˆnn  po‘adovan‚ pamˆŸov‚ t©¡dy
-    if (psym^.etype=et_var) and (pentity_var(psym)^.mclass=mclass)
+    if psym^.etype=et_var and then pentity_var(psym)^.mclass=mclass
     -- a nen¡ to parametr (kromˆ OUT parametr–)
-    and ((pentity_var(psym)^.pparam=nil) or (pentity_var(psym)^.pparam^.mode=pm_out))
-    -- a je to t©¡da, je-li tak po‘adov no
-    and (not classonly or (pentity_var(psym)^.typ.isset and t_contains_class(pentity_var(psym)^.typ.getctype^))
-                         {(pentity_var(psym)^.typ.isset and (pentity_var(psym)^.typ.getctype^.ptype=et_class))})
+    and then (pentity_var(psym)^.pparam=nil or pentity_var(psym)^.pparam^.mode=pm_out)
     -- a nen¡ to symbol generovan˜ kompil torem k technick˜ch £‡el–m
-    and not (etc_generated in psym^.compile)
-    -- => inicializovat
+    and then etc_generated not in psym^.compile
+{
+    -- a je to t©¡da, je-li tak po‘adov no
+    and (not classonly or (pentity_var(psym)^.typ.isset and then 
+      (t_contains_class(pentity_var(psym)^.typ.getctype^) or (pentity_var(psym)^.typ.getctype^.tinit=ti_complex)))
+                         {(pentity_var(psym)^.typ.isset and (pentity_var(psym)^.typ.getctype^.ptype=et_class))})
+}
+    -- => zkoumat d l
     then
+      -- pro zjednodu¨en¡ zjistit typ promˆnn‚
+      ptyp:=pentity_var(psym)^.typ.getutype;
+      
       -- analyzovat typ promˆnn‚ (kromˆ t©¡d)
-      if pentity_var(psym)^.typ.isset and (pentity_var(psym)^.typ.getctype^.etype=et_type) then
-        a_type(pentity_var(psym)^.typ.getctype^);
+      if ptyp<>nil and then ptyp^.etype=et_type then
+        a_type(ptyp^);
         end if;
 
-      -- prov‚st operaci
-      op^(curr,list,binfo,xinfo,pentity_var(psym));
+      -- m  smysl prov dˆt po‘adovanou operaci ?
+      if not classonly or else (ptyp<>nil and then t_contains_class(ptyp^)) then
+        -- prov‚st operaci
+        op^(curr,list,binfo,xinfo,pentity_var(psym));
+        end if;
       end if;
 
     -- rekurzivnˆ trasovat podprogramy
-    if recursive and (((psym^.etype in ets_subprogram) and check^(psym,mclass))
-    or ((mclass=mc_static) and (psym^.etype=et_class) and check^(psym,mclass))) then
+    if recursive and ((psym^.etype in ets_subprogram and check^(psym,mclass))
+    or (mclass=mc_static and psym^.etype=et_class and check^(psym,mclass))) then
       trace(sym_primary_context(psym^),list,binfo,xinfo,mclass,recursive,classonly,op,check);
       end if;
 
@@ -300,14 +325,16 @@ begin
     end loop;
 
   -- trasovat vno©en‚ regiony
-  region:=curr.region^.regions.first;
-  while region<>nil loop
-    -- protrasovat
-    trace(sym_build_context(curr.entity,region),list,binfo,xinfo,mclass,recursive,classonly,op,check);
-    
-    -- dal¨¡ region
-    region:=region^.next;
-    end loop;
+  if recursive then
+    region:=curr.region^.regions.first;
+    while region<>nil loop
+      -- protrasovat
+      trace(sym_build_context(curr.entity,region),list,binfo,xinfo,mclass,recursive,classonly,op,check);
+      
+      -- dal¨¡ region
+      region:=region^.next;
+      end loop;
+    end if;
   end trace;
 
 
@@ -319,7 +346,7 @@ procedure a_var_init =
 -- MCLASS=MC_STATIC jsou ostatn¡ promˆnn‚ inicializovan‚ loaderem).
 ----------------------------------------------------------------------------------------------------
 begin
-  trace(sym_primary_context(curr),list,binfo,xinfo,mclass,recursive,classonly,^traceop_init,^tracecheck_init);
+  trace(curr,list,binfo,xinfo,mclass,recursive,classonly,^traceop_init,^tracecheck_init);
   end a_var_init;
 
 
@@ -329,7 +356,7 @@ procedure a_var_entry =
 -- Vygeneruje p©¡kazy na vol n¡ ENTRY promˆnn˜ch.
 ----------------------------------------------------------------------------------------------------
 begin
-  trace(sym_primary_context(curr),list,binfo,xinfo,mclass,recursive,true,^traceop_entry,^tracecheck_entry);
+  trace(curr,list,binfo,xinfo,mclass,recursive,true,^traceop_entry,^tracecheck_entry);
   end a_var_entry;
 
 
@@ -339,7 +366,7 @@ procedure a_var_exit =
 -- Vygeneruje p©¡kazy na vol n¡ EXIT promˆnn˜ch.
 ----------------------------------------------------------------------------------------------------
 begin
-  trace(sym_primary_context(curr),list,binfo,xinfo,mclass,recursive,true,^traceop_exit,^tracecheck_exit);
+  trace(curr,list,binfo,xinfo,mclass,recursive,true,^traceop_exit,^tracecheck_exit);
   end a_var_exit;
 
 
@@ -349,7 +376,7 @@ procedure a_var_adjust =
 -- Vygeneruje p©¡kazy na vol n¡ ADJUST promˆnn˜ch.
 ----------------------------------------------------------------------------------------------------
 begin
-  trace(sym_primary_context(curr),list,binfo,xinfo,mclass,recursive,true,^traceop_adjust,^tracecheck_adjust);
+  trace(curr,list,binfo,xinfo,mclass,recursive,true,^traceop_adjust,^tracecheck_adjust);
   end a_var_adjust;
 
 

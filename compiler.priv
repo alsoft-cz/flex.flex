@@ -3,135 +3,6 @@ module private compiler =
 -- P©eklada‡ Flexu.
 ----------------------------------------------------------------------------------------------------
 
-{
-----------------------------------------------------------------------------------------------------
-procedure compile =
--- P©eklad programu.
-----------------------------------------------------------------------------------------------------
-with
-  console;
-
-type
-  --%%TODO(TAG) Odstranit tento typ.
-  pci_cpuspecific  = ^class cp_cpu.cp_ia32.ci_cpuspecific;
-  pcp_osspecific   = ^class cp_os.cp_win32.cp_osspecific;
-  plinkresolver_ia32_win32 = ^class cl_link.cl_resolver.cl_ia32.linkresolver_ia32_win32;
-  plinkimage_pe            = ^class cl_link.cl_image.cl_pe.linkimage_pe;
-
-var
-  compi            : pentity_compile;            -- kompila‡n¡ jednotka
-  resolver         : ^class cl_link.cl_resolver.linkresolver;
-  image            : ^class cl_link.cl_image.linkimage;
-  exe_name         : p_file_name;
-  lst_name         : p_file_name;
-  listing          : cc_listing;                 -- listing
-
-begin
-  -- zvolit platformu
-  compdesc:=cdbase_flex;
-  sysdesc :=sdbase_win32;
-  sysdesc.os_subsystem_type:=os_subsystem_console;
-  
-  -- nastavit parametry c¡lov‚ platformy
-  new pci_cpuspecific(cpu); --%%TODO(TAG) new cpu tag cp_cpu.cp_ia32.ci_cpuspecific;
-  new pcp_osspecific(os);   --%%TODO(TAG) new cpu tag cp_os.cp_win32.cp_osspecific;
-
-  -- inicializovat environment promˆnn‚
-  cc_def.cc_env.env_init_var;
-
-  -- inicializovat seznam soubor– a seznam jmen pou‘it˜ch soubor–
-  new cc_var.cfg_files;
-  new cc_var.used_files;
-
-  -- inicializovat seznam chyb
-  new cc_var.ce;
-
-  -- %%X vypo‡¡tat jm‚no EXE
-  new exe_name range sname:length+4;
-  exe_name^:=sname;
-  exe_name^ & '.exe';
-
-  -- %%X vypo‡¡tat jm‚no listingu
-  new lst_name range sname:length+4;
-  lst_name^:=sname;
-  lst_name^ & '.lst';
-
-  -- inicializovat listing
-  listing.create(lst_name^,listing.t_listing_section_set:full);
-  cc_var.listing:=^listing;
-
-
-  ---- (0) opsat do listingu konfiguraci p©ekladu ----
-  listing.start_section(listing.tls_setup);
-
-  begin
-    ---- (1) p©eklad  ----
-
-    -- poznamenat do listingu za‡ tek p©ekladu
-    listing.start_section(listing.tls_compilation);
-    listing.write_header_item('Source code:',sname);
-    listing.write_header_item('Compiled program:',exe_name^);
-    listing.write_header_item('Listing:',lst_name^);
-    listing.write_header_item('Date and time of compilation:','%%TODO(LIB)');
-    listing.end_header;
-
-    -- otev©¡t soubor
-    cc_text.openfile(sname,false);
-
-    -- p©elo‘it
-    p_compunit(compi);
-
-
-    ---- (2) glob ln¡ anal˜za  ----
-
-    -- poznamenat na obrazovku a do listingu
-    write_line('Analyzing...');
-    listing.start_section(listing.tls_global_analysis);
-
-    -- glob ln¡ anal˜za
-    a_analyze(compi);
-
-
-    ---- (3) generov n¡ k¢du  ----
-
-    -- poznamenat na obrazovku a do listingu
-    write_line('Generating code...');
-    listing.start_section(listing.tls_code_generation);
-
-    -- generov n¡ k¢du
-    cg_gen.cg_ia32.ci_gen.i_codegen(compi);
-
-
-    ---- (4) linkov n¡  ----
-
-    -- poznamenat na obrazovku a do listingu
-    write_line('Linking...');
-    listing.start_section(listing.tls_linking);
-
-    -- linkov n¡
-    new plinkresolver_ia32_win32(resolver);
-    new plinkimage_pe(image);
-    plinkresolver_ia32_win32(resolver)^.init(compi,$00400000,4096,4096,32{16},4);
-    plinkimage_pe(image)^.init(exe_name^);
-    l_link(compi,resolver^,image^);
-
-  catch
-    -- chyby p©i p©ekladu
-    when cc_codes.compiler_error, cc_codes.resume_error, cc_codes.internal_error {%%TODO(EXCEPTION) cc_codes.flex_error} do
-        -- v tuto chv¡li ji‘ nic nedˆlat
-
-  leave
-    ---- (5) v˜sledek p©ekladu ----
-    listing.start_section(listing.tls_summary);
-
-    -- vypsat seznam chyb na obrazovku a do listingu
-    print_errors(console_output^);
-    print_errors(listing.get_output_text_stream^);
-    end;
-  end compile;
-}
-
-
 ----------------------------------------------------------------------------------------------------
 class private c_flex_compiler =
 -- P©eklada‡ Flexu.
@@ -139,6 +10,7 @@ class private c_flex_compiler =
 
     with
       standard.conversions,
+      standard.names,
       cc_def,
       cc_def.cc_entity,
       cc_def.cc_desc,
@@ -182,6 +54,86 @@ class private c_flex_compiler =
       resolver     : ^class cl_link.cl_resolver.linkresolver;
       image        : ^class cl_link.cl_image.linkimage;
 
+#if #declared hynek; #and then; hynek then;
+    ------------------------------------------------------------------------------------------------
+    procedure link_libs =
+    -- P©eklad programu.
+    ------------------------------------------------------------------------------------------------
+
+    with 
+      standard,
+      standard.console,
+      cc_base.cc_sym;
+
+    var  
+      lib_resolver : ^class cl_link.cl_resolver.linkresolver;
+      lib_image    : ^class cl_link.cl_image.linkimage;
+
+    procedure unmark (reg : in tregion)  =
+    var
+      temp         : pentity;
+
+    begin
+      
+      temp:=reg.entities.first;
+      while temp<>nil loop
+        
+        for i in tregioncategory loop
+          if temp^.regions[i]<>nil then unmark(temp^.regions[i]^); end if;
+          end loop;
+        
+        temp^.linked:=ls_undef;
+
+        -- if temp^.etype in ets_type then temp^.codegen:=nil; end if;
+
+        temp:=temp^.next;
+        end loop;
+      
+      end unmark;
+
+   
+    var
+      dir_name      : c_name;
+      dll_name      : c_name;
+      dll_full_name : c_name;
+      dll_flat_name : p_text_name;
+      t             : t_char32str;
+
+    begin
+      
+      for i in lib_list.list^:range loop
+        
+        t:=sym_get_qid(lib_list.list^[i]) & '.dll';
+
+        -- vypo‡¡tat jm‚no knihovny
+        dir_name.decompose_name(exe_name, tnt_unspecified);
+        dir_name.components.delete_last;
+        dll_name.decompose_name(t, tnt_relative);
+        dll_full_name.join(dir_name, dll_name);
+        dll_full_name.compose_name(dll_flat_name);
+        
+        -- poznamenat na obrazovku a do listingu
+        os.write('Linking library... ');
+        os.write_line(dll_flat_name^);
+        -- listing.start_section(listing.tls_linking);
+
+        -- unmarkni
+        unmark(compi^.regions[rc_primary]^);--lib_list.list^[i]^.context.region^);
+
+        -- linkov n¡
+        new plinkresolver_ia32_win32(lib_resolver);
+        new plinkimage_pe(lib_image);
+        plinkresolver_ia32_win32(lib_resolver)^.init(compi,$10000000,4096,4096,32{16},4);
+        plinkresolver_ia32_win32(lib_resolver)^.export:=^plibraryinfo(pentity_module(lib_list.list^[i])^.lib_info)^.export_list;
+        plinkimage_pe(lib_image)^.init(dll_flat_name^);
+        l_link(lib_list.list^[i],lib_resolver^,lib_image^);
+
+        end loop;
+      end link_libs;
+
+#end if;
+
+
     begin
       -- nastavit stream pro z pis pr–bˆhu p©ekladu
       cc_var.output:=^os;
@@ -211,8 +163,8 @@ class private c_flex_compiler =
         -- p©elo‘it
         p_compunit(compi);
 
-        -- konec, pokud je po‘adov na pouze syntaktick  kontrola
-        if cfg_syntaxcheckonly then
+        -- konec, pokud je po‘adov na pouze syntaktick  kontrola nebo nastala nˆjak  chyba
+        if ce^.testerror or cfg_syntax_check_only then
           return;
           end if;
 
@@ -252,6 +204,12 @@ class private c_flex_compiler =
         plinkimage_pe(image)^.init(exe_name);
         l_link(compi,resolver^,image^);
 
+#if #declared hynek; #and then; hynek then;
+        -- slinkuj knihovny
+        link_libs;
+#end if;
+
+        -- %%FLEX
         -- #option Image_Base_Address(<num>);
         -- #option Code_Alignment(<num>);
         -- #option Global_Data_Alignment(<num>);
@@ -292,6 +250,9 @@ class private c_flex_compiler =
     entry =
     -- Inicializace.
     ------------------------------------------------------------------------------------------------
+    with
+      cc_lex;
+
     begin
       -- zvolit platformu
       compdesc:=cdbase_flex;
@@ -310,6 +271,9 @@ class private c_flex_compiler =
 
       -- inicializovat seznam chyb
       new cc_var.ce;
+
+      -- inicializovat lexik ln¡ analyz tor
+      lex_set_default_lexer;
       end entry;
 
     end c_flex_compiler;

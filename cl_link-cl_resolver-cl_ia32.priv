@@ -35,9 +35,6 @@ class private linkresolver_ia32 =
     static init =
     -- Inicializace.
     ------------------------------------------------------------------------------------------------
-    var
-      s                : tsegment;
-
     begin
       imagebase:=_ibase;
       gran:=_gran;
@@ -60,7 +57,6 @@ class private linkresolver_ia32 =
     var
       zarad            : t_logical;                  -- T-zaradit na vyhodnocen¡ relokac¡
       pi               : picodeinst;
-      i                : t_unsigned;
 
     begin
       -- je v–bec co trasovat ?
@@ -110,7 +106,6 @@ class private linkresolver_ia32 =
       pvar             : pentity_var;                -- promˆnn 
       size             : t_unsigned32;               -- velikost promˆnn‚
       ud               : tunidata_addr;              
-      i                : list.list^:range:type;
 
     begin
       -- je v–bec co p©idˆlovat ?
@@ -164,8 +159,6 @@ class private linkresolver_ia32 =
     --size         : uint32;       -- velikost promˆnn‚
       ancestor     : pentity_type;               -- p©edek
       srch         : tentitysearch;              -- hled tko
-      i            : list.list^:range:type;
-      j            : t_unsigned;
 
     begin
       -- je v–bec co sestavovat ?
@@ -309,9 +302,6 @@ class private linkresolver_ia32 =
       cg_gen.cg_ia32.ci_code,
       cg_gen.cg_ia32.ci_code.ci_instr;
 
-    var
-      i                : inst.r^:range:type;
-
     begin
       -- je v–bec co vyhodnocovat ?
       if inst.r=nil then 
@@ -387,15 +377,13 @@ class private linkresolver_ia32 =
     -- Sestaven¡.
     ------------------------------------------------------------------------------------------------
     with
-      standard,standard.console,
+      standard,standard.console, standard.conversions,
       cc_base,cc_base.cc_sym;
 
     var
       pimm             : pimm_value;                 -- ukl dan  p©¡m  hodnota
       bin              : p_unsigned8array;           -- ukl dan  p©¡m  hodnota v bin rn¡m tvaru
       binsize          : tunidata_size;              -- velikost bin rn¡ho tvaru
-      i                : code.list^:range:type; 
-      j                : t_unsigned; 
       p                : picodeinst;
       k                : t_unsigned32;               -- aktu ln¡ adresa
       ud_addr          : tunidata_addr;              -- adresa objektu
@@ -411,6 +399,10 @@ class private linkresolver_ia32 =
 
       -- p©idˆlit adresy v¨em instanc¡m
       k:=seg[tseg_code].start;
+#if #declared hynek; #and then; hynek then;
+      write('adresa');
+      write_line(unsigned_to_string(k));
+#end if;
       if code.list<>nil then
         for i in code.list^:range loop
           verify(594,code.list^[i]^.linked<>ls_used);
@@ -573,7 +565,23 @@ class private linkresolver_ia32 =
       -- konec segmentu
       map_end_segment;
 
+#if #declared hynek; #and then; hynek then;
+      ----- F ze 3.2 : p©ipravit importovan‚ funkce -----
+      -- zapsat do listingu za‡ tek segmentu
+      map_start_segment('Export');
+
+      -- sestavit tabulku importovan˜ch funkc¡
+      addalign(seg[tseg_export].start,seg[tseg_import].start,seg[tseg_import].len,gran);
+      linkexport;
+
+      -- konec segmentu
+      map_end_segment;
+
+      ----- F ze 3.3 : vyhodnotit odkazy v k¢du -----
+#else;
+
       ----- F ze 3.2 : vyhodnotit odkazy v k¢du -----
+#end if;
       if reloc.list<>nil then
         for i in reloc.list^:range loop
           p:=picodegen_subprog(reloc.list^[i]^.codegen)^.ifirst;
@@ -590,15 +598,12 @@ class private linkresolver_ia32 =
       ----- F ze 4 : debug informace -----
     #if debug2 then;
       -- jaky typ debug informaci budeme generovat
-      case debug_mode
-
-        -- CodeView debug inforation
-        when tdit_codeview do ;
-            new p_codeview(debug_info);
-
-        -- nejaky neznamy typ
-        when others do ;
-        end case;
+      if not cfg_no_debug_info then
+        case debug_mode
+          -- CodeView debug inforation
+          when tdit_codeview do new p_codeview(debug_info);
+          end case;
+        end if;
 
       -- generujeme nejake debug informace ?
       if debug_info<>nil then
@@ -753,7 +758,6 @@ class private linkresolver_ia32 =
       fill             : t_unsigned32;               -- velikost dodate‡n‚ v˜plnˆ
       imm              : pimm_value;                 -- p©¡m  hodnota
       pcodegen         : picodegen_type;
-      i                : code.list^:range:type;
       p                : picodeinst;
 
     begin
@@ -778,7 +782,6 @@ class private linkresolver_ia32 =
                 until p=nil;
               end loop;
 
-
         -- deskriptory typ–
         when tseg_typedesc  do
             for i in typedesc.list^:range loop
@@ -794,7 +797,6 @@ class private linkresolver_ia32 =
                 end if;
               end loop;
 
-
         -- konstanty
         when tseg_const     do
             allocsize:=uds_0;
@@ -803,7 +805,6 @@ class private linkresolver_ia32 =
               writeimm(cdata.list^[i].pimm^,cdata.list^[i].ptyp,false);
               end loop;
             discard bin;
-
 
         -- inicializovan  data
         when tseg_init do
@@ -819,6 +820,11 @@ class private linkresolver_ia32 =
 
         -- importy
         when tseg_import do { nev¡m jak zapsat };
+
+#if #declared hynek; #and then; hynek then;
+        -- exporty
+        when tseg_export do { nev¡m jak zapsat };
+#end if;
 
         when others do verify(204,true);
         end case;
@@ -848,7 +854,9 @@ class private linkresolver_ia32_win32 =
       cp_cpu.cp_32,
       cp_cpu.cp_32.cp_def,
       cp_os,
-      cp_os.cp_win32;
+      cp_os.cp_win32,
+      cc_base,
+      cc_base.cc_sym;
 
     ------------------------------------------------------------------------------------------------
     override linkimport =
@@ -857,9 +865,8 @@ class private linkresolver_ia32_win32 =
     var
       zmena            : t_logical;
       psym             : pentity;
-      i                : import.list^:range:type;
-      j                : import.list^:range:type;
       addr             : t_unsigned32;
+      i_sort           : t_unsigned;
 
     begin
       -- je v–bec co importovat ?
@@ -868,10 +875,10 @@ class private linkresolver_ia32_win32 =
         end if;
 
       -- set©¡dit importovan‚ funkce
-      i:=import.list^:length;
+      i_sort:=import.list^:length;
       loop
         zmena:=false;
-        for j in 1..i-1 loop
+        for j in 1..i_sort-1 loop
           if pimportinfo(pentity_procedure(import.list^[j])^.import)^.libname>pimportinfo(pentity_procedure(import.list^[j+1])^.import)^.libname then
             psym:=import.list^[j];
             import.list^[j]:=import.list^[j+1];
@@ -879,8 +886,8 @@ class private linkresolver_ia32_win32 =
             zmena:=true;
             end if;
           end loop;
-        pred i;
-        until not zmena or (i=1);
+        pred i_sort;
+        until not zmena or (i_sort=1);
 
       -- p©i©adit adresy na adresy procedur
       addr:=seg[tseg_import].start;
@@ -907,6 +914,46 @@ class private linkresolver_ia32_win32 =
       -- velikost tabulek adres
       seg[tseg_import].len:=addr-seg[tseg_import].start;
       end linkimport;
+
+
+
+#if #declared hynek; #and then; hynek then;
+    ------------------------------------------------------------------------------------------------
+    override linkexport =
+    -- P©¡prava pro linkov n¡ exportovan˜ch symbolu.
+    ------------------------------------------------------------------------------------------------
+    var
+      zmena            : t_logical;
+      psym             : pentity;
+      i_sort           : t_unsigned;
+
+    begin
+      -- je v–bec co exportovat ?
+      if export=nil or else export^.list=nil or else export^.list^:length=0 then 
+        return; 
+        end if;
+
+      -- zjisti plne kvalifikovana jmena exportu
+      for i in export^.list^:range loop
+        pexportinfo(pentity_procedure(export^.list^[i])^.export_info)^.export_name:=sym_get_qid(export^.list^[i]);
+        end loop;
+      
+      -- set©¡dit podle export. jmen
+      i_sort:=export^.list^:length;
+      loop
+        zmena:=false;
+        for j in 1..i_sort-1 loop
+          if pexportinfo(pentity_procedure(export^.list^[j])^.export_info)^.export_name>pexportinfo(pentity_procedure(export^.list^[j+1])^.export_info)^.export_name then
+            psym:=export^.list^[j];
+            export^.list^[j]:=export^.list^[j+1];
+            export^.list^[j+1]:=psym;
+            zmena:=true;
+            end if;
+          end loop;
+        pred i_sort;
+        until not zmena or (i_sort=1);
+      end linkexport;
+#end if;
 
 
 

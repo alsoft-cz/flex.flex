@@ -1,0 +1,326 @@
+----------------------------------------------------------------------------------------------------
+module private address_space =
+-- Flex Run-time Library
+-- Address space operations
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+with
+  synchronization;
+
+const
+  PAGE_NOACCESS          : t_rtl_unsigned32 = $0000_0001;
+  PAGE_READONLY          : t_rtl_unsigned32 = $0000_0002;
+  PAGE_READWRITE         : t_rtl_unsigned32 = $0000_0004;
+  PAGE_WRITECOPY         : t_rtl_unsigned32 = $0000_0008;
+  PAGE_EXECUTE           : t_rtl_unsigned32 = $0000_0010;
+  PAGE_EXECUTE_READ      : t_rtl_unsigned32 = $0000_0020;
+  PAGE_EXECUTE_READWRITE : t_rtl_unsigned32 = $0000_0040;
+  PAGE_EXECUTE_WRITECOPY : t_rtl_unsigned32 = $0000_0080;
+  PAGE_GUARD             : t_rtl_unsigned32 = $0000_0100;
+  PAGE_NOCACHE           : t_rtl_unsigned32 = $0000_0200;
+  MEM_COMMIT             : t_rtl_unsigned32 = $0000_1000;
+  MEM_RESERVE            : t_rtl_unsigned32 = $0000_2000;
+  MEM_DECOMMIT           : t_rtl_unsigned32 = $0000_4000;
+  MEM_RELEASE            : t_rtl_unsigned32 = $0000_8000;
+  MEM_FREE               : t_rtl_unsigned32 = $0001_0000;
+  MEM_PRIVATE            : t_rtl_unsigned32 = $0002_0000;
+  MEM_MAPPED             : t_rtl_unsigned32 = $0004_0000;
+  MEM_RESET              : t_rtl_unsigned32 = $0008_0000; 
+  MEM_TOP_DOWN           : t_rtl_unsigned32 = $0010_0000;
+
+type
+  -- MEMORY BASIC INFORMATION
+  t_rtl_memory_basic_information = record
+    BaseAddress    : t_rtl_pointer;              -- base address of the region of pages
+    AllocationBase : t_rtl_pointer;              -- base address of a range of pages
+    AllocationProtect : t_rtl_signed32;          -- access protection when the region was initially allocated
+    RegionSize     : t_rtl_unsigned32;           -- size [B]
+    State          : t_rtl_unsigned32;           -- state of the pages in the region
+    Protect        : t_rtl_unsigned32;           -- access protection of the pages in the region
+    _type          : t_rtl_unsigned32;           -- type of pages in the region
+    end record;
+  p_rtl_memory_basic_information = ^t_rtl_memory_basic_information;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure VirtualAlloc (
+    lpAddress      : in t_rtl_pointer;
+    dwSize         : in t_rtl_unsigned32;
+    flAllocationType : in t_rtl_unsigned32;
+    flProtect      : in t_rtl_unsigned32)
+    return t_rtl_pointer;
+#pragma convention(VirtualAlloc,stdcall);
+#pragma import(VirtualAlloc,'VirtualAlloc','KERNEL32.DLL');
+----------------------------------------------------------------------------------------------------
+procedure VirtualFree (
+    lpAddress      : in t_rtl_pointer;
+    dwSize         : in t_rtl_unsigned32;
+    dwFreeType     : in t_rtl_unsigned32)
+    return t_rtl_logical32;
+#pragma convention(VirtualFree,stdcall);
+#pragma import(VirtualFree,'VirtualFree','KERNEL32.DLL');
+----------------------------------------------------------------------------------------------------
+procedure VirtualQuery (
+    lpAddress      : in t_rtl_pointer;
+    lpBuffer       : in p_rtl_memory_basic_information;
+    dwLength       : in t_rtl_unsigned32)
+    return t_rtl_unsigned32;
+#pragma convention(VirtualQuery,stdcall);
+#pragma import(VirtualQuery,'VirtualQuery','KERNEL32.DLL');
+----------------------------------------------------------------------------------------------------
+procedure VirtualLock (
+    lpAddress      : in t_rtl_pointer;
+    dwSize         : in t_rtl_unsigned32)
+    return t_rtl_logical32;
+#pragma convention(VirtualLock,stdcall);
+#pragma import(VirtualLock,'VirtualLock','KERNEL32.DLL');
+----------------------------------------------------------------------------------------------------
+procedure VirtualUnLock (
+    lpAddress      : in t_rtl_pointer;
+    dwSize         : in t_rtl_unsigned32)
+    return t_rtl_logical32;
+#pragma convention(VirtualUnLock,stdcall);
+#pragma import(VirtualUnLock,'VirtualUnlock','KERNEL32.DLL');
+----------------------------------------------------------------------------------------------------
+
+const
+  memory_map_gran  = 64*1024;                    -- memory map granuality
+
+type
+  -- memory map
+  t_rtl_memory_map = record
+    sync           : t_rtl_mutex;                -- memory map access synchronization
+    page           : array 0..(2048*1024 div (memory_map_gran div 1024))-1 of t_rtl_memory_type;
+    end record;
+ 
+var
+  memory_map       : t_rtl_memory_map;           -- memory map
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_set_memory_type (
+    mtype         : in t_rtl_memory_type;        -- type of region
+    addr          : in t_rtl_pointer;            -- address of region
+    size          : in t_rtl_unsigned32) =       -- size of region
+-- set type of region in memory map
+----------------------------------------------------------------------------------------------------
+var
+  firstpage        : t_rtl_unsigned32;           -- first page
+  lastpage         : t_rtl_unsigned32;           -- last page
+
+begin
+  -- synchronization
+  rtl_mutex_lock(memory_map.sync);
+
+  -- compute first and last region page
+  firstpage:=t_rtl_unsigned32(addr:unchecked) div memory_map_gran;
+  lastpage:=(t_rtl_unsigned32(addr:unchecked)+size-1) div memory_map_gran;
+
+  -- set region type in memory map
+  for pageindex in firstpage..lastpage loop 
+    memory_map.page[pageindex]:=mtype; 
+    end loop;
+
+leave
+  -- synchronization
+  rtl_mutex_unlock(memory_map.sync);
+  end rtl_set_memory_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_reserve =      
+-- reserves a region of pages in the virtual address space of the calling process
+----------------------------------------------------------------------------------------------------
+begin
+  -- call windows release function
+  result:=virtualalloc(orgaddr,size,MEM_RESERVE,PAGE_READWRITE);
+
+  -- register to memory map
+  if result<>nil then 
+    rtl_set_memory_type(mtype,result,size);
+    end if;
+  end rtl_as_reserve;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_commit =
+-- commit a region of pages in the virtual address space of the calling process
+----------------------------------------------------------------------------------------------------
+begin
+  -- call windows commit function
+  result:=virtualalloc(orgaddr,size,MEM_COMMIT,PAGE_READWRITE);
+
+  -- register to memory map
+  if (result<>nil) and (orgaddr<>nil) then 
+    rtl_set_memory_type(mtype,result,size);
+    end if;
+  end rtl_as_commit;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_decommit =
+-- decommit a region of pages in the virtual address space of the calling process
+----------------------------------------------------------------------------------------------------
+begin
+  -- call windows decomit function
+  result:=not virtualfree(orgaddr,size,MEM_DECOMMIT);
+  end rtl_as_decommit;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_release =        
+-- release a region of pages in the virtual address space of the calling process
+----------------------------------------------------------------------------------------------------
+begin
+  -- call windows release function
+  result:=not virtualfree(orgaddr,t_rtl_unsigned32(0),MEM_RELEASE);
+
+  if not result then
+    rtl_set_memory_type(trmt_free,orgaddr,size);
+    end if;
+  end rtl_as_release;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_register_region =        
+-- register selected region allocated by operating system
+----------------------------------------------------------------------------------------------------
+var
+  meminfo          : t_rtl_memory_basic_information; -- memory basic information structure
+
+begin
+  -- if success geting information about region
+  if virtualquery(addr,^meminfo,meminfo:size)=meminfo:size then
+    rtl_set_memory_type(mtype,meminfo.BaseAddress,meminfo.RegionSize);
+    end if;
+  end rtl_as_register_region;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_unregister_region =        
+-- unregister selected region allocated by operating system
+----------------------------------------------------------------------------------------------------
+var
+  meminfo          : t_rtl_memory_basic_information; -- memory basic information structure
+
+begin
+  -- if success geting information about region
+  if virtualquery(addr,^meminfo,meminfo:size)=meminfo:size then
+    rtl_set_memory_type(trmt_free,meminfo.BaseAddress,meminfo.RegionSize);
+    end if;
+  end rtl_as_unregister_region;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_register_this_stack =        
+-- register stack of this process
+----------------------------------------------------------------------------------------------------
+var
+  x                : t_rtl_unsigned8;            -- temporery variable on stack
+
+begin
+  -- register my stack
+  rtl_as_register_region(num,trmt_stack,^x)
+  end rtl_as_register_this_stack;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_unregister_this_stack =        
+-- register stack of this process
+----------------------------------------------------------------------------------------------------
+var
+  x                : t_rtl_unsigned8;            -- temporery variable on stack
+
+begin
+  -- register my stack
+  rtl_as_unregister_region(num,^x)
+  end rtl_as_unregister_this_stack;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_query_memory_type =
+-- get type of memory block
+-- index = address mod memory_gran_size
+----------------------------------------------------------------------------------------------------
+begin
+  -- synchronization
+  rtl_mutex_lock(memory_map.sync);
+
+  -- get type of memory block
+  mtype:=memory_map.page[index];
+
+leave
+  -- synchronization
+  rtl_mutex_unlock(memory_map.sync);
+  end rtl_as_query_memory_type;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_lock =
+-- lock region in fyzical memory
+----------------------------------------------------------------------------------------------------
+begin
+  -- lock region
+  error:=not virtuallock(addr,size);
+  end rtl_as_lock;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_as_unlock =
+-- unlock region in fyzical memory
+----------------------------------------------------------------------------------------------------
+begin
+  -- unlock region
+  error:=not virtualunlock(addr,size);
+  end rtl_as_unlock;
+
+
+
+----------------------------------------------------------------------------------------------------
+entry =
+-- entry section
+----------------------------------------------------------------------------------------------------
+type
+  t_procptr        = record
+      ptr          : t_rtl_pointer;
+      instance     : t_rtl_pointer;
+      end record;
+
+var
+  procptr          : t_procptr;
+
+begin
+  -- initialize memory map
+  rtl_mutex_new(memory_map.sync);
+
+  -- register code, data and stack
+  procptr:unchecked:=^rtl_as_register_region;
+  rtl_as_register_region({MEM=}000000,trmt_code,procptr.ptr);
+  rtl_as_register_region({MEM=}000000,trmt_data,t_rtl_pointer(^memory_map));
+  rtl_as_register_this_stack({MEM=}000000);
+  end entry;
+
+
+
+----------------------------------------------------------------------------------------------------
+exit =
+-- entry section
+----------------------------------------------------------------------------------------------------
+begin
+  -- discard mutex
+  rtl_mutex_discard(memory_map.sync);
+  end exit;
+
+end address_space;

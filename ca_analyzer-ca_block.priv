@@ -273,8 +273,10 @@ begin
   -- tak vehementnˆ testuju na existenci.
 
   -- obsahuje t©¡du nebo m  speci ln¡ metodu INIT ?
-  elsif (base.getutype<>nil) and (base.getctype^.tinit=ti_complex)
-  and (t_contains_class(base.getctype^) or (base.getctype^.stable[tst_init].isset))
+  elsif base.getutype<>nil and then (base.getctype^.tinit=ti_complex
+  or (t_contains_class(base.getctype^) and base.getctype^.stable[tst_entry].isset))
+--  elsif base.getutype<>nil and then base.getctype^.tinit=ti_complex
+--  and then (t_contains_class(base.getctype^) or base.getctype^.stable[tst_init].isset)
   -- => potom je alokace o nˆco slo‘itˆj¨¡
   then
     verify(589,not base.getctype^.stable[tst_init].isset and not base.getctype^.stable[tst_entry].isset);
@@ -447,6 +449,13 @@ var
   newcontext       : tblcontext;                 -- nov˜ kontext pro vno©en‚ p©¡kazy
 
 begin
+#if #declared ondra; #and then; ondra then;
+  -- metrika
+  if bl^.cond<>nil then
+    succ bl_loop_until;
+    end if;
+#end if;
+
   -- p©ipravit kontext
   prepare_loop_context(blcontext,newcontext);
 
@@ -471,7 +480,7 @@ begin
   prepare_loop_context(blcontext,newcontext);
 
   -- analyzovat vnit©ek cyklu
-  a_block_sequence(curr,newcontext,bl,bl^.sub);
+  a_block_sequence(sym_build_context(curr.entity,bl^.for_region){curr},newcontext,bl,bl^.sub);
   end a_block_for;
 
 
@@ -555,6 +564,29 @@ begin
   -- kompil torem generovan  ‡ st <EXIT>
   a_block_sequence(curr,newcontext,bl,bl^.bexit);
   end a_block_block;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_declare (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    blcontext      : in tblcontext;              -- kontext analyzovan‚ho uzlu
+    bl             : in pbldeclare) =            -- analyzovav˜ p©¡kaz
+-- blok p©¡kazu s lok ln¡mi deklaracemi
+----------------------------------------------------------------------------------------------------
+var
+  declare_context  : tcontext;                   -- kontext DECLARE bloku
+
+begin
+  -- p©ipravit si kontext
+  declare_context:=sym_build_context(curr.entity,bl^.declare_region);
+
+  -- vygenerovat inicializaci a finalizaci promˆnn˜ch
+  a_block_process_vars(declare_context,bl,mc_auto,false,false);
+
+  -- analyzovat blok p©¡kaz–
+  a_block_block(declare_context,blcontext,bl);
+  end a_block_declare;
 
 
 
@@ -666,6 +698,11 @@ begin
     --%%TODO(UNION) bltop^.loc_cmd+blocktypeset:[p^.btype];
     bit_set(bltop^.loc_cmd,t_bit_index(p^.btype:ord));
 
+  #if #declared ondra; #and then; ondra then;
+    -- metrika
+    succ bl_metrics[p^.btype];
+  #end if;
+
     -- form ln¡ kontrola p©¡kazu
     case p^.btype
       -- jednoduch‚ p©¡kazy
@@ -686,6 +723,7 @@ begin
       when bt_case        do a_block_case(curr,blcontext,pblcase(p));
       when bt_accept      do a_block_accept(curr,blcontext,pblaccept(p));
       when bt_block       do a_block_block(curr,blcontext,pblblock(p));
+      when bt_declare     do a_block_declare(curr,blcontext,pbldeclare(p));
       when bt_asm         do a_block_asm(curr,blcontext,pblasm(p));
       -- pomocn‚ uzly
       when bt_label       do a_block_label(curr,blcontext,pbllabel(p));
@@ -741,6 +779,34 @@ begin
   -- analyzovat blok
   a_block_block(sym_primary_context(curr),blcontext,bl);
   end a_block;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_block_process_vars =
+-- Zpracuje promˆnn‚ v uveden‚m kontextu a vygeneruje inicializa‡n¡/finaliza‡n¡ k¢d (vol  postupnˆ
+-- [a_var_init], [a_var_entry] a [a_var_exit] do zadan‚ho bloku.
+----------------------------------------------------------------------------------------------------
+with
+  ca_analyzer.ca_var;
+
+var
+  binfo            : blinfo;                     -- kontext
+  xinfo            : expinfo;                    -- kontext
+
+begin
+  -- p©ipravit kontexty
+  a_prepare_info(binfo,xinfo);
+
+  -- inicializace statick˜ch lok ln¡ch promˆnn˜ch (jen t©¡d)
+  a_var_init(curr,bl^.binit,binfo,xinfo,mclass,recursive,classonly);
+
+  -- zavolat entry statick˜ch lok ln¡ch promˆnn˜ch
+  a_var_entry(curr,bl^.bentry,binfo,xinfo,mclass,recursive);
+
+  -- zavolat exit statick˜ch lok ln¡ch promˆnn˜ch
+  a_var_exit(curr,bl^.bexit,binfo,xinfo,mclass,recursive);
+  end a_block_process_vars;
 
 
 

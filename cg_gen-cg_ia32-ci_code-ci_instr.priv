@@ -82,6 +82,20 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure addbytes =
+-- P©id  sekvenci byt–.
+----------------------------------------------------------------------------------------------------
+begin
+  ----- (re)alokovat pamˆŸ -----
+  adjust_c(inst);
+
+  ----- p©idat sekvenci byt– -----
+  inst.c^ & bytes;
+  end addbytes;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure addloop =
 -- P©id  LOOP na danou absolutn¡ c¡lovou adresou.
 ----------------------------------------------------------------------------------------------------
@@ -376,6 +390,7 @@ begin
     when op_rm32     do result:=(op.optype in ioptypeset:[io_reg,io_mem]) and (op.size=4);
     when op_rm64     do result:=(op.optype in ioptypeset:[io_reg,io_mem]) and (op.size=8);
     when op_m        do result:=(op.optype=io_mem);
+    when op_m2byte   do result:=(op.optype=io_mem) and (op.size=2);
     when op_m8       do result:=(op.optype=io_mem) and (op.size=1);
     when op_m16      do result:=(op.optype=io_mem) and (op.size=2);
     when op_m32      do result:=(op.optype=io_mem) and (op.size=4);
@@ -408,11 +423,13 @@ begin
     when op_SS       do result:=(op.optype=io_seg) and (op.reg.reg=ir_ss);
     when op_FS       do result:=(op.optype=io_seg) and (op.reg.reg=ir_fs);
     when op_GS       do result:=(op.optype=io_seg) and (op.reg.reg=ir_gs);
-    when op_m32real  do result:=false;
-    when op_m64real  do result:=false;
-    when op_m80real  do result:=false;
-    when op_st0      do result:=false;
-    when op_sti      do result:=false;
+    when op_m32fp    do result:=(op.optype=io_mem) and (op.size=4);  --%%X Dodˆlat kontrolu na FP (?)
+    when op_m64fp    do result:=(op.optype=io_mem) and (op.size=8);  --%%X Dodˆlat kontrolu na FP (?)
+    when op_m80fp    do result:=(op.optype=io_mem) and (op.size=10); --%%X Dodˆlat kontrolu na FP (?)
+    when op_m16int   do result:=(op.optype=io_mem) and (op.size=2);  --%%X Dodˆlat kontrolu na INT (?)
+    when op_m32int   do result:=(op.optype=io_mem) and (op.size=4);  --%%X Dodˆlat kontrolu na INT (?)
+    when op_st0      do result:=(op.optype=io_reg) and (op.reg.reg=ir_st0);
+    when op_sti      do result:=(op.optype=io_reg) and (op.reg.reg in ir_sti);
     end case;
   end shoda;
 
@@ -553,7 +570,7 @@ var
         when io_reg,io_seg,io_cri,io_dri do
             -- do pol¡ Mode a R/M
             if mode in iopmodeset:[op_rm8,op_rm16,op_rm32] then
-              modrm:=modrm or $C0 or iregcode[op.reg.reg];
+              modrm or $C0 or iregcode[op.reg.reg];
               usemodrm:=true;
 
             -- implicitn¡ registry
@@ -562,22 +579,21 @@ var
 
             -- do pole reg
             elsif ex=x_n then
-              modrm:=modrm or (iregcode[op.reg.reg] shl 3);
+              modrm or (iregcode[op.reg.reg] shl 3);
               usemodrm:=true;
 
             -- do pole reg, v˜jimka pro IMUL
             elsif ex=x_x then
-              modrm:=modrm or $C0 or (iregcode[op.reg.reg] shl 3) or iregcode[op.reg.reg];
+              modrm or $C0 or (iregcode[op.reg.reg] shl 3) or iregcode[op.reg.reg];
               usemodrm:=true;
 
             -- registr se zapakoval do opera‡n¡ho k¢du
-            elsif ex=x_r then
+            elsif ex=x_r or ex=x_i then
               -- nic nedˆlat
 
             else
               verify(367,true)
               end if;
-
 
         -- pamˆŸ
         when io_mem do
@@ -635,7 +651,6 @@ var
                 usemodrm:=true;
                 end if;
               end if;
-
 
         -- relativn¡ adresa
         when io_rel do
@@ -734,18 +749,21 @@ begin
   useimm1:=0; useimm2:=0; usedisp:=0;
   inst.c^ & iopcodemap[kod].oc;
   case iopcodemap[kod].ex
-    when x_n do {nic nedˆlat };
+    when x_n do { nic nedˆlat };
     when x_r do
         if iopcodemap[kod].op1 in op_implicit
           then inst.c^[inst.c^:length] or iregcode[op2.reg.reg];
           else inst.c^[inst.c^:length] or iregcode[op1.reg.reg];
           end if;
-
-    when x_i do unimplemented(4);
+    when x_i do 
+         if iopcodemap[kod].op1=op_sti then inst.c^[inst.c^:length]+iregcode[op1.reg.reg]
+         elsif iopcodemap[kod].op2=op_sti then inst.c^[inst.c^:length]+iregcode[op2.reg.reg]
+         elsif iopcodemap[kod].op3=op_sti then inst.c^[inst.c^:length]+iregcode[op3.reg.reg]
+         else verify(638,true);
+         end if;
     when x_0..x_7 do
         modrm:=modrm or ((iopcodemap[kod].ex:ord-x_0:ord) shl 3);
         usemodrm:=true;
-
     end case;
 
   -- sestavit ModR/M a SIB

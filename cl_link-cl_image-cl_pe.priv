@@ -26,7 +26,12 @@ class private linkimage_pe =
       cl_link.cl_debug,
       cl_link.cl_debug.cl_codeview,
     #end if;
-      cl_def;
+      cl_def,
+      cg_gen,
+      cg_gen.cg_ia32,
+      cg_gen.cg_ia32.ci_def,
+      standard.console,
+      standard.conversions;
 
     var
       -- signatura PE souboru
@@ -195,6 +200,52 @@ class private linkimage_pe =
           name         : array 0..255 of t_char8;-- jm‚no, \0
           end record;
 
+#if #declared hynek; #and then; hynek then;
+      -- Export Directory Entry
+      tpeedirentry     = record
+          exportflags  : t_unsigned32;           -- reserved, set to 0
+          datetime     : t_unsigned32;           -- time and date when the export data was created
+          majver       : t_unsigned16;           -- major version
+          minver       : t_unsigned16;           -- minor version
+          namerva      : tperva;                 -- address of the ASCII containing the DLL name 
+          ordbase      : t_unsigned32;           -- starting ordinal for the exports
+          addrtblentrs : t_unsigned32;           -- number of entries in the Export Address Table
+          numnameptr   : t_unsigned32;           -- number of entries in the Name Pointer and Ordinal Table
+          expaddrtblrva: tperva;                 -- address of the Export Address Table
+          nameptrrva   : tperva;                 -- address of the Export Name Pointer
+          ordtblrva    : tperva;                 -- address of the Ordinal Table
+          end record
+              for alignment use 1;
+
+
+      -- Export Address Table
+      tpeeaddrentry    = tperva;                 -- address of the exported symbol when loaded into memory
+
+      tpeeaddrtable    = array of tpeeaddrentry;
+      ppeeaddrtable    = ^tpeeaddrtable;
+
+
+      -- Export Name Pointer Table
+      tpeenameptrentry = tperva;                 -- rva into Export Name Table, ordered lexically
+      tpeenameptrtable = array of tpeenameptrentry;
+      ppeenameptrtable = ^tpeenameptrtable;
+
+
+      -- Export Ordinal Table
+      tpeeordentry     = t_unsigned16;           -- index into Export Address Table
+      tpeeordtable     = array of tpeeordentry;
+      ppeeordtable     = ^tpeeordtable;
+        
+      -- Export Name Table
+      tpeenametable    = array of t_char8;       -- list of ascii null-terminated exported names
+      ppeenametable    = ^tpeenametable;
+
+      -- %%TECH Algorithm for finding symbol's address:
+      -- i = Search_ExportNamePointerTable (ExportName);
+      -- ordinal = ExportOrdinalTable [i];
+      -- SymbolRVA = ExportAddressTable [ordinal - OrdinalBase];
+#end if;
+
     const
       -- c¡lov‚ platformy
       IMAGE_FILE_MACHINE_ALPHA     = $184;       -- Alpha AXP
@@ -351,11 +402,12 @@ class private linkimage_pe =
       pindex       : t_unsigned;                 -- index do LOOKUP
       pbase        : t_unsigned32;               -- b zov  adresa LOOKUP
       nbase        : t_unsigned32;               -- b zov  adresa NAME
-      i            : tentitystring.list^:range;
 
     begin
       -- nen¡ co ©e¨it
-      if import.list^:length=0 then return; end if;
+      if import.list=nil or else import.list^:length=0 then 
+        return; 
+        end if;
 
       -- spo‡¡tat knihovny
       libcount:=0;
@@ -441,6 +493,122 @@ class private linkimage_pe =
 
 
 
+#if #declared hynek; #and then; hynek then;
+    ------------------------------------------------------------------------------------------------
+    static buildexport (
+        base          : in tpe32base;               --
+        export        : in tentitystring;        -- seznam exportovan˜ch symbolu
+        edata         : in t_unsigned32;         -- b zov  adresa Export Directory Table
+        dir           : out tpeedirentry;        -- Export Directory Table (obsahuje jen jeden zaznam)
+        addr          : out ppeeaddrtable;       
+        addrsize      : out t_unsigned32;
+        nameptrs      : out ppeenameptrtable;
+        nameptrssize  : out t_unsigned32;
+        ordinals      : out ppeeordtable;
+        ordinalssize  : out t_unsigned32;
+        names         : out ppeenametable;
+        namessize     : out t_unsigned32)=
+    -- Sestav¡ exportn¡ tabulky.
+    ------------------------------------------------------------------------------------------------
+      
+        --------------------------------------------------------------------------------------------
+        procedure add_name (
+            name       : in t_char32str;
+            names      : in ppeenametable;
+            names_index : in out t_unsigned32) =
+        -- Do jmen [names] doplni zadan‚ jm‚no [name] na pozici [names_index], kterou updateuje
+        --------------------------------------------------------------------------------------------
+        with
+          advanced,
+          advanced.low_level,
+          advanced.low_level.unchecked_memory_access;
+
+        begin
+          for i in name:range loop
+            names^[names_index+i-1]:=t_char8(name[i]);
+            end loop;
+          
+          names_index+name:length+{\0}1;
+          names^[names_index]:=t_char8(0);
+          end add_name;
+
+      
+    var
+      expnameslength  : t_unsigned32;
+      expnum          : t_unsigned32; -- pocet exportu
+      curraddr        : t_unsigned32;
+      n               : t_unsigned32;
+      dllname         : t_char32str := 'lib.dll';
+    
+    begin
+
+       -- pocet exportu
+      expnum:=export.count;
+
+      -- suma velikosti exportnich jmen
+      expnameslength:=0;
+      for i in export.list^:range loop
+        expnameslength+pexportinfo(pentity_procedure(export.list^[i])^.export_info)^.export_name:length;
+        expnameslength+1; -- \0
+        end loop;
+
+      expnameslength+dllname:length+1;
+      
+      dir.exportflags:=0;
+      dir.datetime:=0;
+      dir.majver:=0;
+      dir.minver:=0;
+      dir.namerva:=0;
+      dir.ordbase:=1;
+      dir.addrtblentrs:=expnum;
+      dir.numnameptr:=expnum;
+
+      new addr range expnum;
+      addrsize:=tpeeaddrentry:size*expnum;
+
+      new ordinals range expnum;
+      ordinalssize:=tpeeordentry:size*expnum;
+
+      new nameptrs range expnum;
+      nameptrssize:=tpeenameptrentry:size*expnum;
+
+      new names range expnameslength;
+      namessize:=expnameslength;
+
+      dir.expaddrtblrva:=edata+tpeedirentry:size;
+      dir.nameptrrva:=dir.expaddrtblrva+addrsize;
+      dir.ordtblrva:=dir.nameptrrva+nameptrssize;
+      n:=0;
+
+      -- jmeno dllka
+      dir.namerva:=dir.ordtblrva+ordinalssize;
+      add_name(dllname, names, n);
+
+     
+      for i in 1..export.list^:length loop
+        -- export address table
+        addr^[i-1]:=picodegen_subprog(export.list^[i]^.codegen)^.ifirst^.cstart - base;
+
+        write(pexportinfo(pentity_procedure(export.list^[i])^.export_info)^.export_name);
+        write(' @ ');
+        write_line(unsigned_to_string(picodegen_subprog(export.list^[i]^.codegen)^.ifirst^.cstart));
+
+        -- name ptr table and names
+        nameptrs^[i-1]:=dir.ordtblrva+ordinalssize+n;
+
+        add_name(pexportinfo(pentity_procedure(export.list^[i])^.export_info)^.export_name, names, n);
+
+        
+        -- ord table
+        ordinals^[i-1]:=i-1;
+
+        end loop;
+
+      end buildexport; 
+#end if;
+
+
+
     ------------------------------------------------------------------------------------------------
     override create =
     -- Vytvo©¡ image na z kladˆ seznamu vyhodnocen˜ch prvk–.
@@ -509,7 +677,7 @@ class private linkimage_pe =
     #if debug2 then;
       sdebug       : tpesectheader;              -- sekce: debug informace
       sdebug_ofs   : tpefileptr;                 -- offset sekce
-      #end if;
+    #end if;
       sicode       : tpesectheader;              -- sekce: skokov  tabulka import–
       sicode_ofs   : tpefileptr;                 -- offset sekce
       simport      : tpesectheader;              -- sekce: importy
@@ -522,10 +690,23 @@ class private linkimage_pe =
       iname        : p_unsigned8array;           -- Hint/Name Table
       inamesize    : t_unsigned32;               -- velikost
       os           : p_output_stream;            -- output stream
+#if #declared hynek; #and then; hynek then;
+      sexport      : tpesectheader;              -- sekce: exporty
+      sexport_ofs  : tpefileptr;                 -- offset sekce
+      edir         : tpeedirentry;
+      eaddr        : ppeeaddrtable;
+      eaddrsize    : t_unsigned32;
+      enameptrs    : ppeenameptrtable;
+      enameptrssize: t_unsigned32;
+      eordinals    : ppeeordtable;
+      eordinalssize: t_unsigned32;
+      enames       : ppeenametable;
+      enamessize   : t_unsigned32;
+#end if;
     #if debug2 then;
       debuginfo_data : p_unsigned8array;         -- pointer na codeview debug data              
       debuginfo_size : t_unsigned32;             -- velikost dat v bufferu                      
-      #end if;
+    #end if;
 
     var
       ofs              : t_unsigned32;
@@ -577,9 +758,15 @@ class private linkimage_pe =
         end if;
     #else;
       -- exe neobsahuje debug informace
-        coff.flags:=coff.flags or IMAGE_FILE_DEBUG_STRIPPED; 
-      #end if;
+      coff.flags:=coff.flags or IMAGE_FILE_DEBUG_STRIPPED; 
+    #end if;
 
+#if #declared hynek; #and then; hynek then;
+      if resolver.export<>nil then
+        coff.flags:=coff.flags or IMAGE_FILE_DLL;
+        end if;
+#end if;
+      
       os^.write(coff);
 
       -- PE hlavi‡ka
@@ -592,7 +779,18 @@ class private linkimage_pe =
                        +unidata_size_to_unsigned(resolver.getsegtotal(tseg_const))
                        +unidata_size_to_unsigned(resolver.getsegtotal(tseg_init));
       pehdr.datatotal :=unidata_size_to_unsigned(resolver.getsegtotal(tseg_data));
+
+#if #declared hynek; #and then; hynek then;
+      if resolver.export<>nil 
+      then 
+        pehdr.entrypoint:=0;  
+      else 
+        pehdr.entrypoint:=unicode_addr_to_unsigned(resolver.getentrypoint)-base;
+        end if;
+#else;
       pehdr.entrypoint:=unicode_addr_to_unsigned(resolver.getentrypoint)-base;
+#end if;
+
       pehdr.codebase  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_code))-base;
       pehdr.database  :=unicode_addr_to_unsigned(resolver.getsegbase(tseg_typedesc))-base;
       os^.write(pehdr);
@@ -612,7 +810,14 @@ class private linkimage_pe =
       winhdr.subsysver.minor:=0;
       winhdr.imagesize:=0;
       winhdr.hdrsize:=0;
+#if #declared hynek; #and then; hynek then;
+      if resolver.export<>nil 
+        then winhdr.subsys:=IMAGE_SUBSYSTEM_WINDOWS_GUI;
+        else winhdr.subsys:=IMAGE_SUBSYSTEM_WINDOWS_CUI;
+        end if;
+#else;
       winhdr.subsys:=IMAGE_SUBSYSTEM_WINDOWS_CUI;
+#end if;
       winhdr.dllflags:=0;
       winhdr.stack.reserve:=1024*1024;
       winhdr.stack.commit:=64*1024;
@@ -643,11 +848,10 @@ class private linkimage_pe =
         os^.write(scode);
 
       #if debug2 then;
-        if (debug_mode=tdit_codeview) and (debug_info<>nil) then
-          p_codeview(debug_info)^.register_segment(tseg_code,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_execute,tcvsf_read],
-                                                   scode.dataptr,scode.datasize);
+        if debug_mode=tdit_codeview and debug_info<>nil then
+          p_codeview(debug_info)^.register_segment(tseg_code,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_execute,tcvsf_read],scode.dataptr,scode.datasize);
           end if;
-        #end if;
+      #end if;
 
         succ coff.sectioncount;
         maxrva:=max_unsigned(maxrva,((scode.virtualaddr+scode.virtualsize+sectalign-1) div sectalign)*sectalign);
@@ -666,11 +870,10 @@ class private linkimage_pe =
         os^.write(stypedesc);
 
       #if debug2 then;
-        if (debug_mode=tdit_codeview) and (debug_info<>nil) then
-          p_codeview(debug_info)^.register_segment(tseg_typedesc,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],
-                                                   stypedesc.dataptr,stypedesc.datasize);
+        if debug_mode=tdit_codeview and debug_info<>nil then
+          p_codeview(debug_info)^.register_segment(tseg_typedesc,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],stypedesc.dataptr,stypedesc.datasize);
           end if;
-        #end if;
+      #end if;
 
         succ coff.sectioncount;
         maxrva:=max_unsigned(maxrva,((stypedesc.virtualaddr+stypedesc.virtualsize+sectalign-1) div sectalign)*sectalign);
@@ -689,11 +892,10 @@ class private linkimage_pe =
         os^.write(sconst);
 
       #if debug2 then;
-        if (debug_mode=tdit_codeview) and (debug_info<>nil) then
-          p_codeview(debug_info)^.register_segment(tseg_const,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],
-                                                   sconst.dataptr,sconst.datasize);
+        if debug_mode=tdit_codeview and debug_info<>nil then
+          p_codeview(debug_info)^.register_segment(tseg_const,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read],sconst.dataptr,sconst.datasize);
           end if;
-        #end if;
+      #end if;
 
         succ coff.sectioncount;
         maxrva:=max_unsigned(maxrva,((sconst.virtualaddr+sconst.virtualsize+sectalign-1) div sectalign)*sectalign);
@@ -713,11 +915,10 @@ class private linkimage_pe =
         os^.write(sinit);
 
       #if debug2 then;
-        if (debug_mode=tdit_codeview) and (debug_info<>nil) then
-          p_codeview(debug_info)^.register_segment(tseg_init,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read,tcvsf_write],
-                                                   sinit.dataptr,sinit.datasize);
+        if debug_mode=tdit_codeview and debug_info<>nil then
+          p_codeview(debug_info)^.register_segment(tseg_init,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read,tcvsf_write],sinit.dataptr,sinit.datasize);
           end if;                    
-        #end if;
+      #end if;
 
         succ coff.sectioncount;
         maxrva:=max_unsigned(maxrva,((sinit.virtualaddr+sinit.virtualsize+sectalign-1) div sectalign)*sectalign);
@@ -737,11 +938,10 @@ class private linkimage_pe =
         os^.write(sdata);
 
       #if debug2 then;
-        if (debug_mode=tdit_codeview) and (debug_info<>nil) then
-          p_codeview(debug_info)^.register_segment(tseg_data,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read,tcvsf_write],
-                                                   sdata.dataptr,sdata.datasize);
+        if debug_mode=tdit_codeview and debug_info<>nil then
+          p_codeview(debug_info)^.register_segment(tseg_data,coff.sectioncount+1,[tcvsf_sel,tcvsf_32bit,tcvsf_read,tcvsf_write],sdata.dataptr,sdata.datasize);
           end if;
-        #end if;
+      #end if;
 
         succ coff.sectioncount;
         maxrva:=max_unsigned(maxrva,((sdata.virtualaddr+sdata.virtualsize+sectalign-1) div sectalign)*sectalign);
@@ -755,7 +955,7 @@ class private linkimage_pe =
         -- dump debug informaci
         debug_info^.linkimage(debuginfo_data,debuginfo_size);
         end if;
-      #end if;
+    #end if;
 
       -- sekce: Import Address Table (povinn‚)
       sicode_ofs:=os^.get_output_written;
@@ -791,6 +991,32 @@ class private linkimage_pe =
       simport.virtualsize:=((idirsize+ilookupsize+inamesize+sectalign-1) div sectalign)*sectalign;
       maxrva:=max_unsigned(maxrva,((simport.virtualaddr+simport.virtualsize+sectalign-1) div sectalign)*sectalign);
 
+#if #declared hynek; #and then; hynek then;
+      -- je co exportovat?
+      if resolver.export<>nil then
+        -- sekce: exporty
+        sexport_ofs:=os^.get_output_written;
+        sexport.name           :={%OFF}'.edata'\0\0{%ON};
+        sexport.virtualsize    :=0;
+        sexport.virtualaddr    :=maxrva;
+        sexport.datasize       :=0;
+        sexport.dataptr        :=0;
+        sexport.flags          :=IMAGE_SCN_CNT_INITIALIZED_DATA
+                              or IMAGE_SCN_MEM_READ
+                              or IMAGE_SCN_MEM_READ;
+                              
+        os^.write(sexport);
+        succ coff.sectioncount;
+
+        -- sestavit exportni tabulky
+        buildexport(base, resolver.export^,sexport.virtualaddr,edir,eaddr,eaddrsize,enameptrs,enameptrssize,eordinals,eordinalssize,enames,enamessize);
+
+        -- velikost exportnich tabulek
+        sexport.virtualsize:=max_unsigned(tpeedirentry:size+eaddrsize+enameptrssize+eordinalssize+enamessize, ((tpeedirentry:size+eaddrsize+enameptrssize+eordinalssize+enamessize-1) div sectalign)*sectalign);
+        maxrva:=max_unsigned(maxrva,((sexport.virtualaddr+sexport.virtualsize+sectalign-1) div sectalign)*sectalign);
+        end if;
+#end if;
+
       -- sekce: relokace (povinn‚)
       srelo_ofs:=os^.get_output_written;
       srelo.name             :={%OFF}'.reloc'\0\0{%ON};
@@ -823,7 +1049,7 @@ class private linkimage_pe =
         succ coff.sectioncount;
         maxrva:=max_unsigned(maxrva,((sdebug.virtualaddr+sdebug.virtualsize+sectalign-1) div sectalign)*sectalign);
         end if;
-      #end if;
+    #end if;
 
       -- velikost image
       winhdr.imagesize:=maxrva;
@@ -880,6 +1106,26 @@ class private linkimage_pe =
       dir.import.rva:=simport.virtualaddr;
       dir.import.size:=simport.virtualsize;{sectalign;}
 
+#if #declared hynek; #and then; hynek then;
+
+      if resolver.export<>nil then
+        -- exportni tabulky
+        sexport.dataptr:=os^.get_output_written;
+        sexport.datasize:=((tpeedirentry:size+eaddrsize+enameptrssize+eordinalssize+enamessize+filealign-1) div filealign)*filealign;
+        os^.writex(edir,tpeedirentry:size);
+        os^.writex(eaddr^,eaddrsize);
+        os^.writex(enameptrs^,enameptrssize);
+        os^.writex(eordinals^,eordinalssize);
+        os^.writex(enames^,enamessize);
+
+        falign(os,filealign);
+
+        dir.export.rva:=sexport.virtualaddr;
+        dir.export.size:=sexport.virtualsize;
+
+        end if;
+#end if;
+      
       -- relokace
       srelo.dataptr:=os^.get_output_written;
       srelo.datasize:=filealign;
@@ -891,7 +1137,7 @@ class private linkimage_pe =
       dir.baserelo.size:=sectalign;
 
     #if debug2 then;
-      if (debug_info<>nil) and (debug_mode=tdit_codeview) then
+      if debug_info<>nil and debug_mode=tdit_codeview then
         sdebug.dataptr:=os^.get_output_written;
         sdebug.datasize:=filealign;
 
@@ -902,10 +1148,10 @@ class private linkimage_pe =
         dir.debuginfo.rva:=sdebug.virtualaddr;{sdebug.dataptr;}
         dir.debuginfo.size:={sectalign}28;
         end if;
-      #end if;
+    #end if;
 
       -- zarovnat cel˜ soubor na velikost sekce
-      falign(os,sectalign); {%%X potenci ln¡ chyba, ne ? }
+      --falign(os,sectalign); {%%X potenci ln¡ chyba, ne ? }
 
       -- output stream u‘ nebude pot©eba
       discard os; {%%X}
@@ -938,6 +1184,12 @@ class private linkimage_pe =
       f.write(sicode_ofs,sicode,sicode:size);
       f.write(simport_ofs,simport,simport:size);
 
+#if #declared hynek; #and then; hynek then;
+      if resolver.export<>nil then
+        f.write(sexport_ofs,sexport,sexport:size);
+        end if;
+#end if;
+
     #if debug2 then;
       if debug_info<>nil then
         f.write(sdebug_ofs,sdebug,sdebug:size);
@@ -951,9 +1203,7 @@ class private linkimage_pe =
           f.write(f.get_size,debuginfo_data^,debuginfo_size);
           end if;
         end if;
-
-
-      #end if;
+    #end if;
 
       -- zav©¡t soubor
       f.close;

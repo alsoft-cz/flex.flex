@@ -1,2 +1,2 @@
-  out\fcc.exe q:\branches\4.0.1.3\flex\fcc\fcc.src -sdr:q:\branches\4.0.1.3\ -odx:out.1
-out.1\fcc.exe q:\branches\4.0.1.3\flex\fcc\fcc.src -sdr:q:\branches\4.0.1.3\ -odx:out.2
+  out\fcc.exe ..\fcc\fcc.src -sd:..\..\flex -sd:..\..\flex\fcc -sd:..\..\flex\rtl -sdr:..\..\lib -odx:out.1
+out.1\fcc.exe ..\fcc\fcc.src -sd:..\..\flex -sd:..\..\flex\fcc -sd:..\..\flex\rtl -sdr:..\..\lib -odx:out.2

@@ -7,7 +7,6 @@ module private ci_asm =
 ----------------------------------------------------------------------------------------------------
 
 with
-  standard,
   cc_def.cc_entity,
   cc_def.cc_unitype,
   cc_def.cc_var,
@@ -15,6 +14,10 @@ with
   cc_base,
   cc_base.cc_sym,
   cc_lex,
+  cx_expr,
+  cx_expr.cx_def,
+  cx_expr.cx_imm,
+  cx_expr.cx_compile,
   cb_block,
   cb_block.cb_def,
   cp_cpu.cp_32.cp_def,
@@ -22,47 +25,25 @@ with
   ci_code.ci_oper,
   ci_code.ci_instr;
 
+type
+  -- pseudoinstrukce
+  ipseudoinstr     = enum
+      ipi_insert;                                -- vlo‘en¡ sekvence byt–
+    --ipi_adjust;                                -- posuv IP o uvedenou hodnotu
+      end enum;
+
+var
+  -- n zvy pseudoinstrukc¡
+  ipseudoinstrtxt  : const array ipseudoinstr of tshortident := [
+      for ipi_insert use 'INSERT'{,
+      for ipi_adjust use 'ADJUST'}];
+
 ----------------------------------------------------------------------------------------------------
 #separate public ci_lex;
 #separate private ci_lex;
 -- Roz¨¡©en¡ lexik ln¡ho analyz toru pro inline assembler.
 ----------------------------------------------------------------------------------------------------
 
-{ % % FLEX
-----------------------------------------------------------------------------------------------------
-procedure searchasmlabel (
-    bl             : in blasm;                   -- uzel reprezentuj¡c¡ blok v inline assembleru
-    id             : in tentityident)            -- hledan‚ n vˆ¨t¡
-    return piasmlabellist =                      -- v˜sledek hled n¡
--- Pokus¡ se v pomocn‚m seznamu bloku vyhledat dan‚ n vˆ¨¡. Nenajde-li ho,
--- do seznamu ho dopln¡. Vr t¡ pointer na nalezen˜/doplnˆn˜ z znam.
-----------------------------------------------------------------------------------------------------
-var
-  p                : piasmlabellist;             -- polo‘ka seznamu instrukc¡
-
-begin
-  -- vyhledat n vˆ¨t¡ v seznamu pr vˆ zpracov van‚ho bloku
-  p:=piasmlabellist(bl.lfirst);
-  while (p<>nil) and (p^.name<>id) loop p:=p^.next; end loop;
-
-  -- nenalezeno -> vytvo©it novou polo‘ku v seznamu a za©adit
-  if p=nil then
-    -- alokovat pamˆŸ pro novou polo‘ku v seznamu
-    c_alloc(cmem_block,p,iasmlabellist:size);
-
-    -- inicializovat polo‘ku
-    p^.name:=id;
-    p^.target:=nil;
-    p^.next:=piasmlabellist(bl.lfirst);
-
-    -- za©adit do seznamu
-    piasmlabellist(bl.lfirst):=p;
-    end if;
-
-  -- n vratov  hodnota
-  result:=p;
-  end searchasmlabel;
-}
 
 
 ----------------------------------------------------------------------------------------------------
@@ -157,7 +138,7 @@ begin
     else piasmnode(bl.ifirst):=p;
     end if;
   piasmnode(bl.ilast):=p;
-    end p_asm_label;
+  end p_asm_label;
 
 
 
@@ -256,22 +237,68 @@ begin
   oper.rtype:=irt_symbol;
   oper.psym:=plabel;
   oper.size:=0;
-
-{
-{ % % FLEX
-  -- vyhledat/doplnit n vˆ¨t¡ v/do seznamu n vˆ¨t¡
-  pl:=searchasmlabel(inst,getlexid);
-}
-  -- do instrukce poznamenat typ operandu a odkaz na n vˆ¨t¡
-  oper.rtype:=irt_none;
-  oper.size:=0{auto};
-  oper.optype:=io_rel;
-{ % % FLEX
-  oper.lpos:=pl;
-}
-  oper.spos:=pos;
-}
   end asm_label_to_oper;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_asm_type_specifier (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    expr           : out pexpnode;               -- v˜raz pou‘it˜ jako specifik tor typu
+    opsize         : out t_unsigned) =           -- velikost operandu
+-- Specifik tor typu operandu.
+----------------------------------------------------------------------------------------------------
+label
+  n1;
+
+var
+  e                : tentityeval;
+  ui               : tuniint;
+
+begin
+  if checklex(curr,lex_lt) then
+    -- jm‚no typu
+    x_vyraz(curr,expr,es_name);
+    x_evaluate(curr,expr,ek_typename_or_const_integer,nil,eu_formal,true,e);
+    {%%X co kdy‘ se nevyhodnot¡ }
+
+    -- typ 
+    if expr^.nclass=nc_type then
+      -- typ mus¡ m¡t velikost
+      if not expr^.t.hassize then
+        ce^.seterror({CCERR=}000434,ce_i_type);
+        expr^.errpos;
+        goto n1;
+        end if;
+
+      -- p©evz¡t velikost          
+      opsize:=unidata_size_to_unsigned(expr^.t.getctype^.size);
+
+    -- konstanta
+    elsif expr^.ntype=nt_imm then
+      {%%TODO(DECLARE) declare var
+        ui         : tuniint;}
+      begin
+        -- na‡¡st hodnota
+        load_uniint(pexpimm(expr)^.imm,ui);
+
+        -- p©evz¡t
+        opsize:=uniint_to_unsigned(ui);
+        end {declare};
+
+    -- cokoliv jin‚ho se sem nemˆlo dostat
+    else
+      verify(644,true);
+      end if;
+
+  n1:
+    -- n sleduje prav  lomen  z vorka
+    if followlex(curr,lex_gt) then
+      ce^.seterror({CCERR=}000435,ce_x_gt);
+      ce^.loadpos;
+      end if;
+    end if;
+  end p_asm_type_specifier;
 
 
 
@@ -285,14 +312,7 @@ procedure p_asm_operand (
 ----------------------------------------------------------------------------------------------------
 with
   cc_base,
-  cc_base.cc_sym,
-  cx_expr,
-  cx_expr.cx_def,
-  cx_expr.cx_imm,
-  cx_expr.cx_compile;
-
-label
-  n1;
+  cc_base.cc_sym;
 
 var
   lex              : lexsym;                     -- lexik ln¡ prvek
@@ -302,39 +322,12 @@ var
   ui               : tuniint;                    -- z¡skan‚ ‡¡slo
   reg              : ireg;                       -- registr
   scale            : t_unsigned;                 -- mˆ©¡tko
-  expr             : pexpnode;                   -- v˜raz
   opsize           : t_unsigned;                 -- p©edepsan  velikost operandu (0=neuvedeno)
-  e                : tentityeval;
+  expr             : pexpnode;                   -- v˜raz pou‘it˜ jako specifik tor typu
 
 begin
   -- na za‡ tku operandu m–‘e b˜t uvedena specifikace typu (=velikosti)
-  opsize:=0;
-  if checklex(curr,lex_lt) then
-    -- jm‚no typu
-    x_vyraz(curr,expr,es_name);
-    x_evaluate(curr,expr,ek_typename,nil,eu_formal,true,e);
-    {%%X co kdy‘ se nevyhodnot¡ }
-
-    -- typ v˜razu
-    --x_get_type(curr,expr,ptyp);
-
-    -- typ mus¡ m¡t velikost
-    if not expr^.t.hassize then
-      ce^.seterror({CCERR=}000434,ce_i_type);
-      expr^.errpos;
-      goto n1;
-      end if;
-
-    -- p©evz¡t velikost
-    opsize:=unidata_size_to_unsigned(expr^.t.getctype^.size);
-
-  n1:
-    -- n sleduje prav  lomen  z vorka
-    if followlex(curr,lex_gt) then
-      ce^.seterror({CCERR=}000435,ce_x_gt);
-      ce^.loadpos;
-      end if;
-    end if;
+  p_asm_type_specifier(curr,expr,opsize);
 
   -- zpracovat zbytek operandu
   getlex(curr,lex);
@@ -347,7 +340,7 @@ begin
         oper.reg.reg:=ireg(getlexcode);
 
         -- odvodit typ operandu
-        if oper.reg.reg in ir_reg then oper.optype:=io_reg
+        if oper.reg.reg in ir_reg+ir_sti+ir_mmxi+ir_xmmi then oper.optype:=io_reg
         elsif oper.reg.reg in ir_seg then oper.optype:=io_seg
         elsif oper.reg.reg in ir_cri then oper.optype:=io_cri
         elsif oper.reg.reg in ir_dri then oper.optype:=io_dri; end if;
@@ -381,7 +374,10 @@ begin
           -- promˆnn 
           when et_var do
               oper.optype:=io_mem;
-              oper.size:=lpointer32;
+              case pentity_var(srch.psym)^.vmode
+                when vm_ref    do oper.size:=lpointer32;
+                when vm_direct do oper.size:=unidata_size_to_unsigned(pentity_var(srch.psym)^.typ.getctype^.size);
+                end case;
               oper.psym:=srch.psym;
               oper.rtype:=irt_symbol;
 
@@ -568,11 +564,11 @@ var
   p                : piasmnode_instr;            -- instrukce
   konec            : t_logical;                  -- konec operandu
   xpos             : lexposblock;
-  i                : piasmnode_instr^.op:range;
 
 begin
   -- alokovat pamˆŸ pro instrukci
   new p;
+  p^.ntype:=ian_instruction;
 
   -- zpracovat v¨echny prefixy, zat¡ sta‡¡ 1
   if prefixed then
@@ -598,8 +594,8 @@ begin
   getlexpos(p^.pos.b,ll_curr,false{=zacatek});
 
   -- zpracuj v¨echny operandy
-  i:=p^.op:first;
-  while i<=p^.op:last loop
+  -- %%TODO(DECLARE) Zmˆnit zase zpˆt na logi‡tˆj¨¡ DECLARE VAR i BEGIN i:=p^.op:first WHILE i<=p^.op:last LOOP ...
+  for i in p^.op:range loop
     -- mohl by nasledovat operand
     getlex(curr,lex);
 
@@ -628,7 +624,6 @@ begin
       ce^.loadpos;
       ce^.resumeerror;
       end if;
-    succ i;
     end loop;
 
   -- za instrukc¡ by mohl b˜t je¨tˆ st©edn¡k
@@ -669,6 +664,142 @@ catch
 
 
 ----------------------------------------------------------------------------------------------------
+procedure p_asm_insert (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    bl             : in out blasm) =             -- uzel reprezentuj¡c¡ blok v inline assembleru
+-- Pseudoinstrukce: vlo‘en¡ sekvence byt–.
+----------------------------------------------------------------------------------------------------
+var
+  p                : piasmnode_insert;           -- pseudoinstrukce vlo‘en¡ sekvence byt–
+  expr             : pexpnode;                   -- v˜raz pou‘it˜ jako specifik tor typu
+  opsize           : t_unsigned;                 -- velikost operandu
+  ui               : tuniint;                    -- hodnota vkl dan‚ho bytu
+  _bytes           : p^.bytes:type;
+
+begin
+  -- alokovat pamˆŸ pro pseudoinstrukci
+  new p;
+  p^.ntype:=ian_insert;
+
+  -- zapamatuj si pozici instrukce
+  getlexpos(p^.pos.b,ll_curr,false{=zacatek});
+
+  -- sekvence operand– jsou hodnoty vkl dan˜ch byt–
+  loop
+    -- volitelnˆ m–‘e b˜t uveden specifik tor typ
+    -- na za‡ tku operandu m–‘e b˜t uvedena specifikace typu (=velikosti)
+    p_asm_type_specifier(curr,expr,opsize);
+    if opsize<>0 and opsize<>1 and opsize<>2 and opsize<>4 then
+      {%%TOODO ...}
+      end if;
+  
+    -- ‡¡slo
+    if not checklex(curr,lex_numi) then
+      ce^.seterror({CCERR=}000000,ce_x_numi);
+      ce^.loadpos;
+      ce^.resumeerror;
+      end if;
+
+    -- hodnota ‡¡sla
+    ui:=getlexui;
+
+    -- jak jsme na tom s velikost¡ vkl dan‚ hodnoty ?
+    if opsize<>0 
+    
+      -- je pevnˆ dan  => zjistit, zda se ‡¡slo vejde 
+      then
+        if uniint_test_shrink(ui,opsize,false) then
+          ce^.seterror({CCERR=}000000,ce_numrange);
+          ce^.loadpos;
+          ce^.resumeerror;
+          end if;
+
+      -- m me si ji odvodit
+      else 
+        -- %%X Tohle tedy nen¡ dvakr t syst‚mov‚ ©e¨en¡...
+        if not uniint_test_shrink(ui,1,false) then opsize:=1
+      { Ondra 2.4.2003 : Do‡asnˆ (%%X) zru¨eno, proto‘e $0000_0025 je matouc¡. Pozdˆji roz¨¡©it
+        o detekci po‡tu znak– integerov‚ho liter lu a podle toho generovat varov n¡.
+
+        elsif not uniint_test_shrink(ui,2,false) then opsize:=2
+        elsif not uniint_test_shrink(ui,4,false) then opsize:=4
+      }
+        else
+          ce^.seterror({CCERR=}000000,ce_numrange);
+          ce^.loadpos;
+          ce^.resumeerror;
+          end if;
+        end if;
+
+    -- realokovat pamˆŸ
+    if p^.bytes=nil then
+      new p^.bytes range opsize;
+    elsif p^.bytes^:length+opsize>p^.bytes^:last then
+      --%%TODO(ADJUST) adjust p^.bytes range p^.bytes^:length+opsize;
+      new _bytes range p^.bytes^:length+opsize;
+      _bytes^:=p^.bytes^;
+      discard p^.bytes;
+      p^.bytes:=_bytes;
+      end if;
+
+    -- vlo‘it do sekvence byt–
+    for i in 0..opsize-1 loop
+      p^.bytes^ & uniint_get_nth_byte(ui,i);
+      end loop;
+    until not checklex(curr,lex_comma);
+
+  -- zapamatuj si pozici posledn¡ho operandu
+  getlexpos(p^.pos.e,ll_prev,true{=konec});
+
+  -- za©adit do seznamu
+  if bl.ifirst=nil
+    then piasmnode(bl.ifirst):=p;
+    else piasmnode(bl.ilast)^.next:=p;
+    end if;
+  bl.ilast:=p;
+  end p_asm_insert;
+
+
+{
+----------------------------------------------------------------------------------------------------
+procedure p_asm_adjust (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    bl             : in out blasm) =             -- uzel reprezentuj¡c¡ blok v inline assembleru
+-- Posuv IP o uvedenou hodnotu.
+----------------------------------------------------------------------------------------------------
+var
+  p                : piasmnode_adjust;           -- pseudoinstrukce posuv IP o uvedenou hodnotu
+
+begin
+  -- alokovat pamˆŸ pro pseudoinstrukci
+  new p;
+
+  -- jedin˜ parametr je hodnota posuvu
+
+  end p_asm_adjust;
+}
+
+
+----------------------------------------------------------------------------------------------------
+procedure p_asm_pseudoinstr (
+    curr           : in tcontext;                -- aktu ln¡ kontext
+    bl             : in out blasm) =             -- uzel reprezentuj¡c¡ blok v inline assembleru
+-- Pseudoinstrukce.
+----------------------------------------------------------------------------------------------------
+begin
+  case ipseudoinstr(getlexcode)
+    -- vlo‘en¡ sekvence byt–
+    when ipi_insert do p_asm_insert(curr,bl);
+ {
+    -- posuv IP o uvedenou hodnotu
+    when ipi_adjust do p_asm_adjust(curr,bl);
+}
+    end case;
+  end p_asm_pseudoinstr;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure p_asm : current module:ancestor.p_asm:base =
 -- Parser inline assembleru.
 ----------------------------------------------------------------------------------------------------
@@ -692,6 +823,9 @@ begin
 
       -- instrukce asembleru
       when lex_asm_instr do p_asm_instruction(curr,bl,false);
+
+      -- pseudoinstrukce
+      when lex_asm_pseudoinstr do p_asm_pseudoinstr(curr,bl);
 
       -- konec radku na teto urovni ignorujeme
       when lex_eoln do ;
@@ -728,37 +862,6 @@ begin
     srch.find_et_next;
     end loop;
 
-{ % % FLEX
-  -- zjistit, zda byla v¨echna pou‘it  n vˆ¨t¡ deklarov na
-  p:=piasmnodelist(bl.ifirst);
-  while p<>nil loop
-    case p^.nodetyp
-      -- instrukce
-      when ian_inst do
-          -- nen¡ nˆkter˜ parametr odkaz na n vˆ¨t¡?
-          for i in p^.op:first..p^.op:last loop
-            if p^.op[i].optype=io_rel then
-              -- nen¡-li definov n c¡l skoku -> konec
-              if piasmlabellist(p^.op[i].lpos)^.target=nil then
-                ce^.seterror({CCERR=}000247,ce_undeclared);
-                ce^.setparam(piasmlabellist(p^.op[i].lpos)^.name);
-                ce^.setpos(p^.op[i].spos);
-               {ce.resumeerror;}
-                end if;
-              end if;
-            end loop;
-          end ian_inst;
-
-      -- deklarace n vˆ¨t¡
-      when ian_asml do
-          -- ned  se nic zkontrolvat
-          end ian_asml;
-      when others do
-          verify(229,true);
-      end case;
-    p:=p^.next;
-    end loop;
-}
 leave
   -- zru¨it roz¨¡©en¡ lexik ln¡ anal˜zy
   lex_clear_behavior;

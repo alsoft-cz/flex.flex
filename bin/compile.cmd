@@ -1,1 +1,1 @@
-in\fcc.exe ..\fcc\fcc.src -sdr:..\.. -odx:out\
+in\fcc.exe ..\fcc\fcc.src -sd:src.system.to.stdcall -sdr:..\..\flex -sdr:..\..\lib -odx:out\
