@@ -1,1 +1,1 @@
-in\fcc32.exe ..\fcc\fcc.src -s..\ -s..\fcc -s..\rtl -s..\..\lib\smpl -s..\..\lib\ampl -s..\..\lib\sys -s..\..\lib\sys\win32 -aout\
+in\fcc.exe ..\fcc\fcc.src -sdr:..\.. -odx:out\
