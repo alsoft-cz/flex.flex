@@ -101,7 +101,7 @@ begin
     -- zpracovat nˆkter‚ metap©¡kazy
     case cmd
       -- za‡ tek p rov‚ho metap©¡kazu
-      when meta_if, meta_syntax, meta_template do 
+      when meta_if, meta_syntax, meta_expand, meta_template do 
           succ depth;
 
       -- konec p rov‚ho metap©¡kazu
@@ -1600,6 +1600,7 @@ begin
         then lexlast^.next:=lexnode;
         else ptemplate^.plex:=lexnode;
         end if;
+      lexnode^.prev:=lexlast;
       lexlast:=lexnode;
       end loop;
     end declare;
@@ -1651,6 +1652,9 @@ class public c_expand_parameter = extend c_lexer;
         col        : in lexcolumn;               -- sloupec na kterem je prvek
         length     : in lexlength);              -- delka prvku
     -- Do hodnoty parametru p©id  jeden lexik ln¡ element.
+    ------------------------------------------------------------------------------------------------
+    static trim_eols;
+    -- Od©¡zne v¨echny £vodn¡ a koncov‚ konce © dk–.
     ------------------------------------------------------------------------------------------------
     static reset;
     -- Resetuje expandova‡ na prvn¡ lexik ln¡ element.
@@ -1705,6 +1709,11 @@ class private c_expand_parameter =
       lexnode      : plexnode_lex;
 
     begin
+      -- £vodn¡ konce © dk– jsou nezaj¡mav‚, ba a‘ kontraproduktivn¡
+      if lex=lex_eoln and first=nil then 
+        return 
+        end if;
+
       -- alokovat pamˆŸ
       new lexnode;
       plexnode(lexnode)^._tag:=_tag_lex;
@@ -1721,8 +1730,30 @@ class private c_expand_parameter =
         then last^.next:=lexnode
         else first:=lexnode
         end if;
+      lexnode^.prev:=last;
       last:=lexnode;
       end add_element;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static trim_eols =
+    -- Od©¡zne v¨echny £vodn¡ a koncov‚ konce © dk–.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- sta‡¡ od©ezat ty koncov‚, £vodn¡ za n s o¨et©il [add_element]
+      while last<>nil and then last^.xlex=lex_eoln loop
+        declare var
+          p : plexnode_lex;
+        begin
+          p:=last;
+          last:=last^.prev;
+          if last=nil then first:=nil end if;
+        commit
+          discard p;
+          end declare;
+        end loop;
+      end trim_eols;
 
 
 
@@ -1845,11 +1876,16 @@ class private c_expand_template =
     -- Vyvo©¡ expandova‡ zadan‚ho parametru.
     ------------------------------------------------------------------------------------------------
     begin
-      -- vytvo©it expandova‡
-      new expander;
+      begin
+        -- vytvo©it expandova‡
+        new expander;
 
-      -- inicializovat
-      expander^.init(param);
+        -- inicializovat
+        expander^.init(param);
+      
+      rollback
+        discard expander;
+        end;
 
       -- za©adit do seznamu
       if last_param<>nil
@@ -1857,11 +1893,6 @@ class private c_expand_template =
         else first_param:=expander;
         end if;
       last_param:=expander;
-      
-  {%%TODO(ROLLBACK)
-    rollback
-      discard expander;
-  }
       end add_parameter;
 
 
@@ -2127,15 +2158,13 @@ begin
       ce^.resumeerror;
       end if;
 
-  {%%TODO(COMMIT) commit}
+  rollback
+    -- pokud se nˆco, tak expandova‡ zase poslat do h je
+    discard expander;
+
+  commit
     -- za©adit expandova‡ do lexik ln¡ anal˜zy
     lex_set_lexer(expander);
-
-  catch{%%TODO(ROLLBACK) rollback}
-    -- pokud se nˆco, tak expandova‡ zase poslat do h je
-    when others do
-        discard expander;
-        raise;
     end declare;
   end p_meta_expand;
 
@@ -2264,15 +2293,13 @@ begin
         end declare;
       end if;
 
-  {%%TODO(COMMIT) commit}
+  rollback
+    -- pokud se nˆco, tak expandova‡ zase poslat do h je
+    discard expander;
+
+  commit
     -- za©adit expandova‡ do lexik ln¡ anal˜zy
     lex_set_lexer(expander);
-
-  catch{%%TODO(ROLLBACK) rollback}
-    -- pokud se nˆco, tak expandova‡ zase poslat do h je
-    when others do
-        discard expander;
-        raise;
     end declare;
   end p_try_expand_template;
 

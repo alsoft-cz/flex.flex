@@ -13,44 +13,44 @@ with
   standard.classes,
   standard.classes.lists;
 
-
 type
   pp_char32ustr    = ^p_char32ustr;
 
+-- dop©edn‚ deklarace
+class c_cmdline_directory; type p_cmdline_directory = ^class c_cmdline_directory;
+class c_folder_list;       type p_folder_list       = ^class c_folder_list;
 
 ----------------------------------------------------------------------------------------------------
 class c_cmdline_directory = extend c_list_item;
 -- Polozka seznamu adresaru, ktere se budou prohledavat
 ----------------------------------------------------------------------------------------------------
+
     var
-      directory   : p_text_name;           -- konfiguracni adresar
-      recursive   : t_logical;             -- bude se prohledavat rekurzivne
+      directory    : protected p_text_name;      -- konfiguracni adresar
+      recursive    : protected t_logical;        -- bude se prohledavat rekurzivne
 
     ------------------------------------------------------------------------------------------------
-    static add_directory (
-      search_dir  : in t_text_name;      -- adresar k prohledavani
-      recursive   : in t_logical) =      -- bude se prohledavat rekurzivne
+    static set_directory (
+        search_dir : in t_text_name;             -- adresar k prohledavani
+        recursive  : in t_logical) =             -- bude se prohledavat rekurzivne
+    -- Nastav¡ jm‚no adres ©e.
     ------------------------------------------------------------------------------------------------
-      begin
-        new directory range search_dir:last;
-        directory^:=search_dir;
-        this.recursive:=recursive;
-      end add_directory;
+    begin
+      new directory range search_dir:last;
+      directory^:=search_dir;
+      this.recursive:=recursive;
+      end set_directory;
 
 
     ------------------------------------------------------------------------------------------------
     exit =
-    -- destructor, uvolni alokovanou pamet
+    -- Finalizace.
     ------------------------------------------------------------------------------------------------
     begin 
       discard directory;
       end exit;
-    ------------------------------------------------------------------------------------------------
 
     end c_cmdline_directory;
-----------------------------------------------------------------------------------------------------
-
-type p_cmdline_directory = ^class c_cmdline_directory;
 
 
 
@@ -58,24 +58,23 @@ type p_cmdline_directory = ^class c_cmdline_directory;
 class c_folder_list = extend c_list;
 -- Seznam adresaru, ktere se budou prohledavat
 ----------------------------------------------------------------------------------------------------
+
     ------------------------------------------------------------------------------------------------
     static add_directory (
-      search_dir  : in t_text_name;      -- adresar k prohledavani
-      recursive   : in t_logical) =      -- bude se prohledavat rekurzivne
+        search_dir : in t_text_name;             -- adresar k prohledavani
+        recursive  : in t_logical) =             -- bude se prohledavat rekurzivne
+    -- P©id  do seznamu jm‚no jednoho adres ©e.
     ------------------------------------------------------------------------------------------------
-      var
-        directory : p_cmdline_directory;
-      begin
-        new directory;
-        directory^.add_directory(search_dir, recursive);
-        insert(directory);
+    var
+      directory    : p_cmdline_directory;
+
+    begin
+      new directory;
+      directory^.set_directory(search_dir, recursive);
+      insert(directory);
       end add_directory;
 
     end c_folder_list;
-----------------------------------------------------------------------------------------------------
-
-type p_folder_list = ^class c_folder_list;
-
 
 
 
@@ -112,13 +111,41 @@ begin
 procedure retrieve_parameter (
     param          : in t_char32ustr;            -- testovan˜ parametr
     prefix         : in t_char32ustr;            -- prefix parametru
-    value          : out p_char32str) =          -- hodnota parametru
+    value          : out p_char32ustr) =         -- hodnota parametru
 -- Z parametru odseparuje jeho hodnotu
 ----------------------------------------------------------------------------------------------------
 begin
-  new value;
+  new value range param:length-prefix:length-1;
   value^:=str_copy(param,prefix:length+2,param:length);
   end retrieve_parameter;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure retrieve_number (
+    os             : in c_output_text_stream;    -- chybov˜ v˜stup
+    param          : in t_char32ustr;            -- testovan˜ parametr
+    prefix         : in t_char32ustr;            -- prefix parametru
+    first          : in t_unsigned;              -- minim ln¡ dovolen  hodnota
+    last           : in t_unsigned)              -- maxim ln¡ dovolen  hodnota
+    return t_unsigned =
+-- Z parametru odseparuje jeho hodnotu
+----------------------------------------------------------------------------------------------------
+with
+  standard.conversions;
+
+var
+  value            : t_unsigned;
+  error            : t_signed;
+
+begin
+  string_to_unsigned(str_copy(param,prefix:length+2,param:length),10,value,error);
+  if error<>0 then
+    os.write('Value of parameter "-');os.write(prefix);os.write('" out of range');
+    raise fcc_error;
+    end if;
+  result:=value;
+  end retrieve_number;
 
 
 
@@ -148,6 +175,7 @@ begin
   os.write_line('    -TS:<subsys> Target Subsystem');
   os.write_line('    -TC:<cpu>    Target CPU');
   os.write_line('    -TU:<id>     User defined variant');
+  os.write_line('    -XE:<ext>    target eXecutable Extension');
   os.write_line('');
   os.write_line('Directories:');
   os.write_line('    -SD:<dir>    Search Directory');
@@ -162,10 +190,11 @@ begin
   os.write_line('    -SCO         Syntax Check Only');
   os.write_line('');
   os.write_line('Miscellaneous:');
-  os.write_line('    -NS          No Shared file access');
-  os.write_line('    -H           prints this page');
-  os.write_line('    -VER         displays full version information');
   os.write_line('    -AHD         Allow scanning of Hidden Directories');
+  os.write_line('    -H           prints this page');
+  os.write_line('    -NS          No Shared file access');
+  os.write_line('    -VER         displays full version information');
+  os.write_line('    -VL:<level>  Verbosity Level (0 = low, 1 = default)');
   os.write_line('');
   os.write_line('All parameters are case-insensitive');
   os.write_line('See documentation for the list of supported values of specific parameters');
@@ -200,26 +229,26 @@ use
   cc_def,
   cc_def.cc_var,
   cc_def.cc_desc;
-
   
 var
   cmd_line         : p_command_line_parameters;  -- blok © dkov˜ch parametr–
   search_dir       : p_text_name;                -- adres © pro vyhled v n¡                               
   folder_list      : p_folder_list;              -- seznam adresaru pro prohledavani     
   directory_def    : p_cmdline_directory;      
-  os_family_name   : p_char32str;                -- vyplnena OS family
-  os_type_name     : p_char32str;                -- vyplneny OS type
-  os_subsystem_name: p_char32str;                -- vyplneny OS subsystem
-  cpu_arch_name    : p_char32str;                -- vyplnena CPU architektura
-  user_variant_name: p_char32str;                -- vyplnena uzivatelska varianta
+  os_family_name   : p_char32ustr;               -- vyplnena OS family
+  os_type_name     : p_char32ustr;               -- vyplneny OS type
+  os_subsystem_name: p_char32ustr;               -- vyplneny OS subsystem
+  cpu_arch_name    : p_char32ustr;               -- vyplnena CPU architektura
+  user_variant_name: p_char32ustr;               -- vyplnena uzivatelska varianta
 
---- %%TECH Konfigurace adres ©– --------------------------------------------------------------------
--- Prochazeni adresaru a sestaveni seznamu pouzitelnych filu je treba odlozit az po nacteni vsech
--- paramteru, protoze maji vliv na to ktere fily se pouziji. Tyka se to techto parametru
---    -AHD                   skryte adresare
---    -TO, TT, TS, TC, TU    prepinace platformy
-----------------------------------------------------------------------------------------------------
 begin
+  --- %%TECH Konfigurace adres ©– ------------------------------------------------------------------
+  -- Prochazeni adresaru a sestaveni seznamu pouzitelnych filu je treba odlozit az po nacteni vsech
+  -- paramteru, protoze maji vliv na to ktere fily se pouziji. Tyka se to techto parametru
+  --    -AHD                   skryte adresare
+  --    -TO, TT, TS, TC, TU    prepinace platformy
+  --------------------------------------------------------------------------------------------------
+
   -- z¡skat blok parametr–
   get_command_line_parameters(cmd_line);
 
@@ -325,9 +354,13 @@ begin
     elsif check_parameter(cmd_line^[i]^,'SCO',nil) then
       cc_def.cc_var.cfg_syntax_check_only:=true;
 
-    -- -AHD - Allow scanning of Hidden Directories
+    -- AHD - Allow scanning of Hidden Directories
     elsif check_parameter(cmd_line^[i]^,'AHD',nil) then
       p_file_source_external_files(cc_def.cc_var.cfg_files)^.allow_hidden_dirs:=true;
+
+    -- VL = Verbosity Level
+    elsif check_parameter(cmd_line^[i]^,'VL:',true) then
+      cc_def.cc_var.cfg_verbosity:=retrieve_number(os,cmd_line^[i]^,'VL:',cc_def.cc_var.cfg_verbosity:first,cc_def.cc_var.cfg_verbosity:last);
 
     -- H, ? = Help
     elsif check_parameter(cmd_line^[i]^,'H',nil) or check_parameter(cmd_line^[i]^,'?',nil) then

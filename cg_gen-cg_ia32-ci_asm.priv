@@ -303,7 +303,156 @@ var
   opsize           : t_unsigned;                 -- p©edepsan  velikost operandu (0=neuvedeno)
 
     ------------------------------------------------------------------------------------------------
-    procedure p_memory_address =
+    procedure p_selector ( 
+        default_context : pentity;               -- implicitn¡ kontext pro prohled v n¡
+        offset_only     : t_logical) =           -- zaj¡m  n s pouze offset, ‘ dn‚ konstanty
+    -- Selektor adresy ve tvaru Identifik tor { . Identifik tor }, kde Identifik tor je jm‚no
+    -- modulu, konstanty, typu, slo‘ky recordu/t©¡dy.
+    ------------------------------------------------------------------------------------------------
+    var
+      lex          : lexsym;                     -- lexik ln¡ prvek
+      context      : pentity;                    -- kontext pro prohled v n¡
+      value        : timm32;                     -- hodnota ur‡en  nalezenou entitou
+
+    begin
+      context:=default_context;
+      loop
+        -- p©e‡¡st identifik tor
+        getlex(curr,lex);
+        if lex<>lex_id then
+          ce^.seterror({CCERR=}000000,ce_x_id);
+          ce^.loadpos;
+          ce^.resumeerror;
+          end if;
+
+        -- vyhledat entitu
+        declare var
+          srch     : tentitysearch;              -- hled tko
+
+        begin
+          if context=nil
+
+            -- vyhledat glob lnˆ
+            then
+              srch.find_global(curr,getlexid^);
+            
+            -- vyhledat lok lnˆ v existuj¡c¡m kontextu
+            else 
+              declare var
+                vis : tentityvisibleset;
+
+              begin
+                -- zjistit £rove¤ viditelnosti
+                sym_get_visibility(curr.entity,context,vis);
+
+                -- nejsou povoleny ‘ dn‚ £rovnˆ viditelnosti => hled n¡ (selektor) je zak z no
+                -- %%X Tohle jsem opsal z cx_expr.cx_form.a_form_component.findinsymbol]. Nev¡m,
+                -- jestli je to relevantn¡ i pro assembler. Ondra.
+                if vis=tentityvisibleset:[] then
+                  ce^.seterror({CCERR=}000000,ce_i_selector);
+                  ce^.loadpos;
+                  ce^.resumeerror;
+                  end if;
+
+                -- vyhledat v existuj¡c¡m kontextu
+                srch.find_local(sym_primary_context(context^),getlexid^,vis);
+                end declare;
+              end if;
+
+          -- na¨lo se nˆco ?
+          if srch.psym=nil then
+            ce^.seterror({CCERR=}000000,ce_undeclared);
+            ce^.setparam(entityident_to_string(getlexid^));
+            ce^.loadpos;
+            ce^.resumeerror;
+            end if;
+
+          -- zpracovat
+          case srch.psym^.etype
+            -- modul, t©¡da, typ
+            when et_module, et_class, et_type do  
+                -- mus¡ n sledovat te‡ka
+                looklex(curr,lex);
+                if lex<>lex_dot then
+                  ce^.seterror({CCERR=}000000,ce_x_dot);
+                  ce^.loadpos;
+                  ce^.resumeerror;
+                  end if;                 
+
+                -- zresetovat hodnotu
+                value:=nil;
+
+            -- konstanta
+            when et_const do
+                -- jsou konstanty povoleny ?
+                if offset_only then
+                  ce^.seterror({CCERR=}000000,ce_i_symbol);
+                  ce^.loadpos;
+                  ce^.resumeerror;
+                  end if;
+
+                -- mus¡ b˜t diskr‚tn¡ho typu
+                if pentity_const(srch.psym)^.typ.getctype^.stype not in dts_u_ordinal then                      
+                  ce^.seterror({CCERR=}000000,ce_i_consttype);
+                  ce^.loadpos;
+                  ce^.resumeerror;
+                  end if;
+
+                -- hodnotu konstanty p©i‡¡st k hodnotˆ
+                declare var
+                  ui : tuniint;
+                begin
+                  -- zjistit hodnotu konstanty
+                  load_uniint(pentity_const(srch.psym)^.init.getimm^,ui);
+
+                  -- zjistit, jestli m  p©¡pustnou velikost
+                  if uniint_test_shrink(ui,value:size,uniint_sign(ui)) then
+                    ce^.seterror({CCERR=}000000,ce_numrange);
+                    ce^.loadpos;
+                    ce^.resumeerror;
+                    end if;
+
+                  -- nastavit hodnotu
+                  value:=uniint_to_imm32(ui);
+                  end declare;
+
+                -- za konstantou selektor u‘ ur‡itˆ kon‡¡
+                break;
+
+            -- slo‘ka t©¡dy nebo recordu
+            when et_var do
+                -- zkontrolovat pamˆŸovou t©¡du
+                if pentity_var(srch.psym)^.mclass not in memclassset:[mc_class,mc_record] then
+                  ce^.seterror({CCERR=}000000,ce_i_memclass);
+                  ce^.loadpos;
+                  ce^.resumeerror;
+                  end if;
+
+                -- offset promˆnn‚ p©i‡¡st k hodnotˆ
+                value+unidata_addr_to_imm32(pentity_var(srch.psym)^.addr);
+
+            -- jin‚ entity neum¡me
+            when others do
+                ce^.seterror({CCERR=}000000,ce_i_symbol);
+                ce^.loadpos;
+                ce^.resumeerror;
+            end case;
+
+          -- pro p©¡¨tˆ (bude-li nˆjak‚) zmˆnit kontext
+          context:=srch.psym;
+          end declare;
+        until not checklex(curr,lex_dot);
+
+      -- a na z vˆr konstantu aplikovat do operandu
+      oper.shift_displacement(imm32_to_signed(value));
+      end p_selector;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure p_memory_address (
+        continue   : t_logical;                  -- T-nezakl dat nov˜ operand, u‘ existuje
+        no_base    : t_logical) =                -- T-b zov˜ registr je (bude) obsazen
     -- Adresa v pamˆti ve tvaru: [ registr + registr * scale + offset ]
     ------------------------------------------------------------------------------------------------
     var
@@ -311,7 +460,9 @@ var
 
     begin
       -- p©ipravit operand
-      oper.create_memory_address_low_level(edt_binary,opsize);
+      if not continue then
+        oper.create_memory_address_low_level(edt_binary,opsize);
+        end if;
 
       loop
         -- registr, ‡¡slo nebo +/-
@@ -396,7 +547,7 @@ var
                       -- jen registr
                       else
                         -- zkusit b zi
-                        if oper.base.reg=ir_none then oper.shift_by_base_low_level(reg)
+                        if not no_base and oper.base.reg=ir_none then oper.shift_by_base_low_level(reg)
                         -- zkusit index
                         elsif oper.index.reg=ir_none then oper.shift_by_index_low_level(reg,1)
                         -- moc registr–
@@ -412,6 +563,11 @@ var
               when lex_numi do
                   -- z¡skat hodnotu a p©i‡¡st k dosud nakumulovan‚ hodnotˆ
                   oper.shift_displacement(uniint_to_signed(getlexui));
+
+              -- konstanta
+              when lex_id do
+                  ungetlex;
+                  p_selector(nil,false);
 
               -- nic jin‚ho neum¡m
               when others do
@@ -429,6 +585,12 @@ var
         ce^.seterror({CCERR=}000242,ce_x_rbra);
         ce^.loadpos;
         end if;
+
+      -- m–‘e n sledovat selektor polo‘ky recordu
+      if checklex(curr,lex_dot) then
+        p_selector(nil,true);
+        end if;
+
     {
       -- pokud si to u‘ivatel p©eje, tak zmˆn¡me implicitn¡ velikost operandu
       if opsize<>0 then
@@ -474,17 +636,13 @@ begin
               instr.segment:=reg;
 
               -- lev  hranat  z vorka
-            #if #declared lex_lbra; then;
               if followlex(curr,lex_lbra) then
-            #else;
-              if followlex(curr,lex_rbra) then
-            #end if;
                 ce^.seterror({CCERR=}000000,ce_x_lbra);
                 ce^.loadpos;
                 end if;
 
               -- p©elo‘it adresu
-              p_memory_address;
+              p_memory_address(false,false);
 
             -- registr samotn˜
             else
@@ -544,6 +702,11 @@ begin
                   end case;
                 oper.set_relo_entity(srch.psym);
 
+                -- v nˆkter˜ch p©¡padech m–‘e n sledovat index
+                if pentity_var(srch.psym)^.vmode=vm_direct and then checklex(curr,lex_lbra) then
+                  p_memory_address(true,pentity_var(srch.psym)^.mclass=mc_auto);
+                  end if;
+
             -- konstanta
             when et_const do
                 declare var
@@ -556,6 +719,12 @@ begin
                   -- ze z¡skan‚ hodnoty vytvo© operand instrukce
                   oper.create_imm(edt_unsigned,0,uniint_to_imm32(ui));
                   end declare;
+
+            -- procedura
+            when et_procedure, et_static do
+                -- vytvo©it operand
+                oper.create_relative_address_low_level(4);
+                oper.set_relo_entity(srch.psym);
 
             when others do verify(192,true);
             end case;
@@ -596,7 +765,7 @@ begin
 
     -- [ registr + registr * scale + offset ]
     when lex_lbra do
-        p_memory_address;
+        p_memory_address(false,false);
 
     when others do
         ce^.seterror({CCERR=}000243,ce_g_x_operand);
