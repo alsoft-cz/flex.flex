@@ -23,7 +23,7 @@ mkdir release\lib
 mkdir release\bin
 del /q release\lib\*.*
 del /q release\bin\*.*
-in\fjitc.exe %release_params% release_script.txt %*
+out.2\fjitc.exe %release_params% release_script.txt
 
 
 rem %%TODO(ECLIPSE) Vybuildovat Eclipse

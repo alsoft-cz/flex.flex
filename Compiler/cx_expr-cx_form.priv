@@ -572,9 +572,9 @@ begin
           while srch.psym<>nil loop
 
             -- prohledat všechny přetížené procedury 
-            for i in pentity_overload(srch.psym)^.table^:range loop
+            for i in pentity_overload0(srch.psym)^.table^:range loop
               -- popis přetížené procedury 
-              pdesc:=^pentity_overload(srch.psym)^.table^[i];
+              pdesc:=^pentity_overload0(srch.psym)^.table^[i];
 
               -- zajímají nás jen binární (ne)přiřazovací operátory 
               if pdesc^.arity=toa_binary and pdesc^.assign=expr^.assign then
@@ -726,9 +726,9 @@ begin
       while srch.psym<>nil loop
 
         -- prohledat všechny přetížené procedury 
-        for i in pentity_overload(srch.psym)^.table^:range loop
+        for i in pentity_overload0(srch.psym)^.table^:range loop
           -- popis přetížené procedury 
-          pdesc:=^pentity_overload(srch.psym)^.table^[i];
+          pdesc:=^pentity_overload0(srch.psym)^.table^[i];
 
           -- zajímají nás jen binární (ne)přiřazovací operátory 
           if (pdesc^.arity=toa_unary) and (pdesc^.assign=expr^.assign) then
@@ -1500,10 +1500,6 @@ procedure a_form_component_finalize (
 -- Dokončení formální kontroly komponenty.
 ----------------------------------------------------------------------------------------------------
 
-{with
-  standard.console,
-  standard.conversions;}
-
     ------------------------------------------------------------------------------------------------
     procedure create_this =
     -- Coby EXPR^.SUB doplní uzel reprezentující THIS.
@@ -1523,20 +1519,6 @@ var
 begin
   -- zkontrolovat bezpečnostní úrovně
   if curr.entity^.sec_level>expr^.s.psym^.sec_required then
-    {
-    write(entityident_to_string(curr.entity^.id^));
-    write(' has sec_level=');
-    write(unsigned_to_string(curr.entity^.sec_level));
-    write(', but ');
-    write(entityident_to_string(expr^.id^));
-    write(' requires ');
-    write_line(unsigned_to_string(expr^.s.psym^.sec_required));
-
-    write_line('sec_required,sec_level:');
-    write_line(unsigned_to_string(curr.entity^.sec_required));
-    write_line(unsigned_to_string(expr^.s.psym^.sec_level));
-    }
-
     cc_var.ce^.seterror({CCERR=}000662,cc_codes.ce_forbidden_entity);
     cc_var.ce^.setparam(entityident_to_string(expr^.id^));
     cc_var.ce^.loadpos;
@@ -1745,6 +1727,143 @@ begin
           end if;
 
     -- přetížení
+    when et_overload do
+        declare var
+          poverload: pentity_overload;           -- příslušně typovaný [expr^.s.psym]
+          srch     : tentitysearch;              -- hledátko pro přetížené procedury
+          pdesc    : poverloaddesc;              -- popis přetížení
+          a_param  : pexpnode;                   -- předávaný (skutečný) parametr
+          at       : ptypeview;                  -- a jeho typ
+          f_param  : pentity_param;              -- formální parametr
+          ft       : ptypeview;                  -- a jeho typ
+          srch_par : tentitysearch;              -- hledátko pro formální parametry
+          ok       : t_logical;                  -- je typ OK?
+          at_idx   : t_unsigned;                 -- proměnná cyklu přes typy
+          at_cnt   : t_unsigned;                 -- počet typů skutečného parametru
+          found    : pentity_subprogram;         -- nalezená implementující procedura
+          prestype : pentity_type;               -- typ výsledku
+
+        begin
+          -- hledat implementaci přetížené funkce
+          poverload:=pentity_overload(expr^.s.psym);
+
+          -- prohledat všechny přetížené procedury
+          srch.find_id_first(curr,expr^.id);
+          while srch.psym<>nil loop
+
+            -- prohledat všechny přetížené procedury
+            for i in pentity_overload0(srch.psym)^.table^:range loop
+              -- popis přetížené procedury 
+              pdesc:=^pentity_overload0(srch.psym)^.table^[i];
+
+              -- přetížená procedura 
+              pproc:=pentity_subprogram(pdesc^.psym.getcentity);
+
+              -- typ procedury
+              ptyp:=pproc^.typ.getctype;
+
+              -- zkontrolovat kompatibilitu parametrů
+              ok:=true;
+              a_param:=expr^.splitted_next;
+              srch_par.find_et_first(ptyp,rc_primary,et_param,tesearchflagset:[]);
+              while srch_par.psym<>nil loop
+                -- sedí počet parametrů?
+                if a_param=nil then
+                  -- ne => tato implementace nevyhovuje
+                  ok:=false;
+                  break;
+                  end if;
+                
+                -- kontrolovaný formální parametr
+                f_param:=pentity_param(srch_par.psym);
+
+                -- nebyla již procedura jednou úspěšně zpracována ?  -- %%TODO?????? %%X ????????????????
+                --if not expr^.checktype(pproc) then
+                  -- kontrola parametru: alespoň jeden z typů aktuálního parametru musí být kompatibilní
+                  -- s příslušným formálním parametrem
+
+                  -- iterace přes všechny typy aktuálního parametru
+                  at_cnt:=a_param^.gettypecount;
+                  at_idx:=0;
+                  while at_idx<at_cnt loop
+                    -- typ parametru
+                    a_param^.gettype(at_idx,at);
+
+                    -- kontrola parametru
+                    checkparam(curr,f_param,a_param,at^,ok);
+
+                    -- parametr odpovídá, OK, můžeme jít na další
+                    if ok then
+                      break;
+                      end if;
+
+                    -- další typ
+                    succ at_idx;
+                    end loop;
+
+                  -- nalezli jsme alespoň jeden vyhovující typ?
+                  if not ok then 
+                    -- ne => tato implementace neodpovídá
+                    break;
+                    end if;
+                  --end if;
+
+                -- OK, tento parametr odpovídá, jdeme zkontrolovat další
+                srch_par.find_et_next;
+                a_param:=a_param^.next;
+                end loop;
+
+              -- sedí počet parametrů?
+              if a_param<>nil then
+                -- ne => tato implementace nevyhovuje
+                ok:=false;
+                end if;
+
+              -- nalezli jsme odpovídající implementaci?
+              if ok then
+                -- ano => hurá
+                if found<>nil then
+                  -- ale my už něco našli předtím => chyba
+                  ce^.seterror({CCERR=}000675,cc_codes.ce_ambiguous_call);
+                  ce^.setparam(entityident_to_string(expr^.id^));
+                  expr^.errpos;
+                  {%%RESUME ce^.raiseerror;}
+                  ce^.resumeerror;
+                  end if;
+
+                -- uložit nalezenou implementaci
+                found:=pproc;
+                end if;
+              end loop;
+
+            -- zkusit další proceduru
+            srch.find_id_next;
+            end loop;
+
+          -- nalezli jsme vyhovující implementaci??
+          if found=nil then
+            -- ne => ohlaš chybu
+            ce^.seterror({CCERR=}000674,cc_codes.ce_no_such_overload);
+            ce^.setparam(entityident_to_string(expr^.id^));
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+
+          -- všechno je OK
+
+          -- třída: procedura
+          expr^.nclass:=nc_proc;
+
+          -- typ výsledku
+          expr^.settype(curr,found^.typ.getutype);
+
+          -- kterou implementaci jsme zvolili?
+          expr^.s.set_entity(found);
+
+          -- formální kontrola úspěšně dokončena
+          expr^.zprac:=ep_form;
+          end declare;
 
     -- speciální metoda
 
@@ -2142,20 +2261,21 @@ var
 
 begin
   ----- %%TECH -------------------------------------------------------------------------------------
-  -- Formální kontrolu mohu provést nezávisle pro prefix i pro všechny argumenty, takže se případné 
-  -- nevyhodnocení detekuje až po zpracování všech podvýrazů.                                                         
-  -- Srovnej s CX_TYPE.A_TYPE_CALL, CX_OPT.A_OPT_CALL                         
-  --                                                                          
-  -- %%X a přeci - nemělo by se to pro každý typ dělat znova ? Třeba ve formální kontrole volání 
-  -- procedury se stejně v cyklu kontrolují parametry.                                                               
+  -- Formální kontrolu mohu provést nezávisle pro prefix i pro všechny argumenty, takže se případné
+  -- nevyhodnocení detekuje až po zpracování všech podvýrazů.
+  -- Srovnej s CX_TYPE.A_TYPE_CALL, CX_OPT.A_OPT_CALL
+  -- 10.6.2004 (PetrK): Nejdříve musím zpracovat argumenty, teprve potom prefix, protože prefix může
+  -- označovat přetížení, ke zpracování kterého musím znát argumenty.
+  --
+  -- %%X a přeci - nemělo by se to pro každý typ dělat znova ? Třeba ve formální kontrole volání
+  -- procedury se stejně v cyklu kontrolují parametry.
   --------------------------------------------------------------------------------------------------
 
   -- rozdělit 
   expr^.split(el,arglist);
 
-  -- formální kontrola řídícího výrazu 
-  a_form(curr,el,info);
-  vyhodnoceno:=el^.zprac>=ep_form;
+  -- buďme optimisty
+  vyhodnoceno:=true;
 
   -- vyhodnotit argumenty 
   x:=arglist;
@@ -2174,6 +2294,16 @@ begin
     -- další podvýraz 
     x:=pexpitem(x^.next);
     end loop;
+
+  -- %%X Tohle je tak trochu ošklivá záplata, jenže pokud prefix popisuje přetížení, _potřebuji_
+  --     znát parametry, jenže expr^.split mi je odříznul a expr^.join se dá zavolat až po a_form.
+  if el^:tag=expcomponent:tag then
+    pexpcomponent(el)^.splitted_next:=arglist;
+    end if;
+
+  -- formální kontrola řídícího výrazu 
+  a_form(curr,el,info);
+  vyhodnoceno:=vyhodnoceno and el^.zprac>=ep_form;
 
   -- sloučit 
   expr^.join(el,arglist);
@@ -3101,6 +3231,11 @@ begin
             or else (is_of_type_view(ttypeviewset:[tview_partial]) and then set_attribute(ata_type_size      ,atc_static ,tt_uniint,nc_value))
             or else (is_attribute   (atf_designated,atc_dynamic)   and then set_attribute(ata_designated_size,atc_dynamic,tt_size,nc_value));
 
+        -- :as_ancestor
+        when atf_as_ancestor do 
+            -- :as_ancestor je povoleno pouze ve formě "this:as_ancestor"
+            check:= expr^.sub^:tag=expthis:tag and then set_attribute(ata_expr_as_ancestor,atc_static,tt_ancestor,expr^.sub^.nclass);
+
         when others               do verify({VERIFY=}000114,true);
         end case;
 
@@ -3108,7 +3243,10 @@ begin
       if not check then
         ce^.seterror({CCERR=}000464,ce_i_attr);
         ce^.setparam(entityident_to_string(expr^.id^));
-        {%%X doplnit hint pro každý atribut }
+        case expr^.atf
+          when atf_as_ancestor  do ce^.setinfo(hint_attr_as_ancestor);
+          when others           do {%%X doplnit hint pro každý atribut };
+          end case;
         expr^.errpos;
         {%%RESUME ce^.raiseerror;}
         ce^.resumeerror;

@@ -393,6 +393,7 @@ var
   op_edx           : c_operand;                  -- registr EDX pro 64bitové rozšíření
   op_dx            : c_operand;                  -- registr DX pro 32bitové rozšíření
   op_ah            : c_operand;                  -- registr AH pro 8bitové rozšíření
+  op_eax           : c_operand;                  -- registr EAX/AX/AL
 
     ------------------------------------------------------------------------------------------------
     procedure adjust_high =
@@ -465,6 +466,20 @@ var
   newcontext       : iexprcontext;               -- kontext podvýrazů
 
 begin
+  -- %%TODO %%X !!! Cele reseni s [op_eax], treba ten mov o kousek nize,
+  --            je hnusna zaplata, ale bez ni to nechodi a chodit nemuze,
+  --            protoze to, ze se pri load s lm_reg_eax neco nahodou ulozilo
+  --            do EAX je fajn, jenze o tom nikdo (zvlast alokator registru) nevi,
+  --            takze se hned pri nacitani druheho operandu eax prepise a vyrabime
+  --            instrukce typu DIV EAX. (== EAX:=1;EDX:=0;)
+  --
+  --            Ted to cele predelavat nebudu, ale casem by se to melo vylepsit
+  --            (a pri te prilezitosti by se mohl addii na ii_(i)div upravit tak, aby
+  --            vyzadoval dva operandy, z nichz prvni je povinne EAX/AX, nebo tak neco,
+  --            priste by si totiz treba nekdo vsiml, ze prvni operand nemame ulozeny
+  --            v EAX, ale kdekoli jinde, jenom s tim, ze ho kdysi nahodou nekdo do EAX
+  --            okopiroval.)
+
   -- první dva operandy
   expr^.get(el,er);
 
@@ -472,16 +487,28 @@ begin
   rsize:=value_size_from_expr(expr);
 
   -- první operand načíst do EAX
-  i_newcontext(context,newcontext,lm_reg_eax,expr^.t.getctype);
+  i_newcontext(context,newcontext,lm_gen{lm_reg_eax},expr^.t.getctype);
   i_load(inst,info,newcontext,context{lm_reg_eax,expr^.t.getutype},el,op1);
 
   -- rezervovat další registry potřebné při dělení (EDX/DX/AH)
   case rsize
-    when 4 do op_edx.create_use_register(inst,info,context,op1.edtype,ir_edx);
-    when 2 do op_dx.create_use_register(inst,info,context,op1.edtype,ir_dx);
-    when 1 do op_ah.create_use_register(inst,info,context,op1.edtype,ir_ah);
+    when 4 do
+        op_edx.create_use_register(inst,info,context,op1.edtype,ir_edx);
+        op_eax.create_use_register(inst,info,context,op1.edtype,ir_eax);
+
+    when 2 do
+        op_dx.create_use_register(inst,info,context,op1.edtype,ir_dx);
+        op_eax.create_use_register(inst,info,context,op1.edtype,ir_ax);
+
+    when 1 do
+        op_ah.create_use_register(inst,info,context,op1.edtype,ir_ah);
+        op_eax.create_use_register(inst,info,context,op1.edtype,ir_al);
+
     when others do verify({VERIFY=}001261);
     end case;
+
+  -- přesunout první operand do EAX/AX/AL
+  addii(inst,info,ii_mov,op_eax,op1,op0);
 
   -- připravit horní polovinu operandu
   adjust_high;
@@ -496,7 +523,7 @@ begin
       i_load(inst,info,newcontext,context{lm_reg_all,expr^.t.getutype},er,op2);
 
       -- obnovit registry
-      op1.refresh(inst,info,context);
+      op_eax{op1}.refresh(inst,info,context);
       op2.refresh(inst,info,context);
       refresh_high_part;
 
@@ -521,12 +548,12 @@ begin
         case rsize
           -- EAX := EDX; SAR EDX,31
           when 4 do
-              addii(inst,info,ii_mov,op1,op_edx,op0);
+              addii(inst,info,ii_mov,{op1}op_eax,op_edx,op0);
               addii(inst,info,ii_sar,op_edx,op_31,op0);
 
           -- AX := DX; SAR DX,15
           when 2 do
-              addii(inst,info,ii_mov,op1,op_dx,op0);
+              addii(inst,info,ii_mov,{op1}op_eax,op_dx,op0);
               addii(inst,info,ii_sar,op_dx,op_15,op0);
 
           -- AL := AH; SAR AH,7 => SAR AX,8
@@ -548,17 +575,17 @@ begin
         case rsize
           -- EAX := EDX; SAR EDX,31
           when 4 do
-              addii(inst,info,ii_mov,op1,op_edx,op0);
+              addii(inst,info,ii_mov,{op1}op_eax,op_edx,op0);
               addii(inst,info,ii_mov,op_edx,op_0,op0);
 
           -- AX := DX; SAR DX,15
           when 2 do
-              addii(inst,info,ii_mov,op1,op_dx,op0);
+              addii(inst,info,ii_mov,{op1}op_eax,op_dx,op0);
               addii(inst,info,ii_mov,op_dx,op_0,op0);
 
           -- AL := AH; MOV AH,0
           when 1 do
-              addii(inst,info,ii_mov,op1,op_ah,op0);
+              addii(inst,info,ii_mov,{op1}op_eax,op_ah,op0);
               addii(inst,info,ii_mov,op_ah,op_0,op0);
 
           when others do verify({VERIFY=}001263);
@@ -600,7 +627,7 @@ begin
         -- dělení
         else
           -- podíl je v EAX/AX/AL => přesunout do levého operandu
-          addii(inst,info,ii_mov,op2,op1,op0)
+          addii(inst,info,ii_mov,op2,{op1}op_eax,op0)
           end if;
 
     leave
@@ -631,7 +658,7 @@ begin
             leave
               op_ax.free(info,context);
               end declare;
-            vysl.transfer(op1);
+            vysl.transfer({op1}op_eax);
 
         when others do verify({VERIFY=}001265);
         end case;
@@ -639,12 +666,13 @@ begin
     -- dělení
     else
       -- výsledek je v EAX/AX/AL
-      vysl.transfer(op1);
+      vysl.transfer({op1}op_eax);
       end if;
 
 leave
   -- uvolnit operandy
   op1.free(info,context);
+  op_eax.free(info,context);
   case rsize 
     when 4 do op_edx.free(info,context);
     when 2 do op_dx.free(info,context);
