@@ -800,11 +800,11 @@ begin
                 use_displacement(vysl,ii_mov);
 
               -- index*1 + displacement => LEA, ADD nebo MOV podle shody s cílovým registrem
-              elsif op.base.reg=ir_none and op.scale=1 then
+              elsif op.base.reg=ir_none and op._scale=1 then
                 add_lea_or_add_displacement(vysl,op.index.reg);
 
-              -- index*(scale>1) + displacement => LEA nebo SHL podle shody s cílovým registrem
-              elsif op.base.reg=ir_none and op.scale>1 then
+              -- index*(_scale>1) + displacement => LEA nebo SHL podle shody s cílovým registrem
+              elsif op.base.reg=ir_none and op._scale>1 then
                 add_lea_or_shl_scale(vysl,op.index.reg);
 
               -- báze + displacement => LEA, ADD nebo MOV podle shody s cílovým registrem
@@ -1650,6 +1650,7 @@ procedure i_gen_mul_reg =
 var
   n                : t_unsigned32;               -- shift
   op2              : c_operand;                  -- pracovní operand
+  power_of_2       : t_logical;                  -- výsledek kontroly konstanty
 
 begin
   verify({VERIFY=}000341,imm=timm32(0) or op1.optype<>io_reg or op1.reg.reg not in ir_r32);
@@ -1658,7 +1659,8 @@ begin
   if imm=timm32(1) then return; end if;
 
   -- násobení 2^n
-  if imm32_is_power_of_2(imm,n) then
+  imm32_is_power_of_2(imm,n,power_of_2);
+  if power_of_2 then
     -- připravit druhý operand
     op2.create_imm(edt_unsigned,1,unsigned_to_imm32(n));
 
@@ -1699,15 +1701,17 @@ procedure i_gen_div_reg =
 ----------------------------------------------------------------------------------------------------
 var
   n                : t_unsigned32;               -- shift
+  power_of_2       : t_logical;                  -- výsledek kontroly konstanty
 
 begin
-  verify({VERIFY=}000346,imm=timm32(0) or (op1.optype<>io_reg) or not (op1.reg.reg in ir_r32));
+  verify({VERIFY=}001319,imm=timm32(0) or (op1.optype<>io_reg) or not (op1.reg.reg in ir_r32));
 
   -- je čím dělit ?
   if imm=timm32(1) then return; end if;
 
   -- dělení 2^n
-  if imm32_is_power_of_2(imm,n) then
+  imm32_is_power_of_2(imm,n,power_of_2);
+  if power_of_2 then
     declare var
       op2          : c_operand;                  -- operandy
 
@@ -1725,7 +1729,7 @@ begin
 
   -- normální dělení
   else
-    unimplemented({UNIMP=}000117);
+    unimplemented({UNIMP=}000284);
 {
     -- na Intelu nelze dělit konstantou, jen násobit...
 
@@ -1749,6 +1753,44 @@ begin
 
   -- první operand neuvolňovat (registr se používá dál ve volající rutině)
   end i_gen_div_reg;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_idiv_edx_eax =
+-- Dělení EDX:EAX konstantou (signed).
+----------------------------------------------------------------------------------------------------
+var
+  n                : t_unsigned32;               -- shift
+  op2              : c_operand;                  -- 2. operand
+  optemp           : c_operand;                  -- pracovní operand
+
+begin
+  verify({VERIFY=}001320,imm=timm32(0));
+
+  -- je proč dělit ?
+  if imm=timm32(1) then return; end if;
+
+  -- na Intelu nelze dělit konstantou, jen násobit...
+
+  -- připravit dělitele
+  op2.create_imm(edt_signed,4,imm);
+
+  -- alokovat pracovní registr
+  optemp.create_new_register(inst,info,context,op2.edtype,op2.size);
+
+  -- naplnit registr
+  addii(inst,info,ii_mov,optemp,op2,op0);
+
+  -- EAX <- EDX:EAX/[denom]
+  addii(inst,info,ii_idiv,optemp,op0,op0);
+
+  -- uvolnit pracovní operand
+  optemp.free(info,context);
+
+  -- uvolnit druhý operand
+  op2.free(info,context);
+  end i_gen_idiv_edx_eax;
 
 
 

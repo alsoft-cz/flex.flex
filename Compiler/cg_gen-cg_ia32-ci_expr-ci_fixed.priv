@@ -1,0 +1,820 @@
+﻿----------------------------------------------------------------------------------------------------
+module private ci_fixed =
+-- Překladač Flexu.
+-- Fixed point aritmetika.
+----------------------------------------------------------------------------------------------------
+
+----- %%TECH fixed point operations ----------------------------------------------------------------
+-- This procedure does (patrial) code generation of all fixed point operations.
+-- N-ary subtraction and division can be naturally transformed to 1 binary subtraction/division
+-- and 1 (n-1)-ary addition/multiplication, respectively.
+-- Addition and multiplication have to be treated the same way in general, due to the
+-- possibility of short assign operation.
+-- This procedure does the (n-1)-ary tail for the operations.
+--
+-- The skelet of n-ary addition and multiplication is very similar:
+--
+--  Let D be the common denominator. Then
+--
+--                      b*D           b*D
+--                     -----     a + -----
+--   a     b     a       d             d
+--  --- + --- = --- + ------- = -----------
+--   D     d     D       D          D
+--
+--                                      a*b
+--                                     -----
+--   a     b     a     D*b     a*b       d
+--  --- * --- = --- * ----- = ----- = -------
+--   D     d     D     D*d     d*D       D
+--
+--
+-- So, as can be seen, 1 multiplication and 1 division have to be done, for n-ary addition
+-- one more addition has to be done. These expressions shows exactly the computation method
+-- used. Allways, multiplication has to be done before division resulting in adequate
+-- precision (bit-width) of operands and no unwanted loss of result precision, too.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_rounded_idiv_reg32 (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- code generation process information
+    context        : in out iexprcontext;        -- expression generation context
+    op1_edx        : in out c_operand;           -- dividend (MSDW in EDX)
+    op1_eax        : in out c_operand;           -- dividend (LSDW in EAX)
+    op_divider     : in out c_operand) =         -- divider
+-- Generates code for 32-bit signed division with rounding in accordance to the reminder.
+-- Rounds to nearest integer.
+-- Double precision dividend has to be in EDX:EAX.
+-- Result is stored into EAX.
+----------------------------------------------------------------------------------------------------
+var
+  op_30            : c_operand;                  -- 30
+  op_31            : c_operand;                  -- 31
+  op_0x40000000    : c_operand;                  -- 0x40000000
+  op_tmp           : c_operand;                  -- auxiliary operand
+  op2_reg          : ^c_operand;                 -- divider
+
+begin
+  -- input operands types check
+  verify({VERIFY=}001326,op1_edx.optype<>io_reg or else op1_edx.get_register()<>ir_edx);
+  verify({VERIFY=}001327,op1_eax.optype<>io_reg or else op1_eax.get_register()<>ir_eax);
+  verify({VERIFY=}001332,op_divider.size<>4);
+
+  -- divider not in register
+  if op_divider.optype<>io_reg
+    -- move divider into a register
+    then
+      -- create new register
+      new op2_reg;
+      op2_reg^.create_new_register(inst,info,context,op_divider.edtype,op_divider.size);
+
+      -- move operand into register
+      addii(inst,info,ii_mov,op2_reg^,op_divider,op0);
+
+    -- use divider's register
+    else
+      op2_reg:=^op_divider;
+      end if;
+
+  -- create constant operands
+  op_30.create_imm(edt_unsigned,1,unsigned_to_imm32(30));
+  op_31.create_imm(edt_unsigned,1,unsigned_to_imm32(31));
+  op_0x40000000.create_imm(edt_unsigned,4,unsigned_to_imm32($40000000));
+
+  ---- divide ----
+
+  -- EAX <- dividend / divider ;   EDX <- dividend % divider
+  addii(inst,info,ii_idiv,op2_reg^,op0,op0);
+
+  ---- round ----
+
+  -- EDX <- (dividend % divider) * 2
+  addii(inst,info,ii_sal,op1_edx,op_1,op0);
+
+  -- create aux. operand as a register
+  op_tmp.create_new_register(inst,info,context,edt_signed,op1_edx.size);
+
+  -- EDX <- abs((dividend % divider) * 2)
+  addii(inst,info,ii_mov,op_tmp,op1_edx,op0);
+  addii(inst,info,ii_sar,op_tmp,op_31,op0);
+  addii(inst,info,ii_xor,op1_edx,op_tmp,op0);
+  addii(inst,info,ii_sub,op1_edx,op_tmp,op0);
+
+  -- EBX <- abs(divider)
+  addii(inst,info,ii_mov,op_tmp,op2_reg^,op0);
+  addii(inst,info,ii_sar,op_tmp,op_31,op0);
+  addii(inst,info,ii_xor,op2_reg^,op_tmp,op0);
+  addii(inst,info,ii_sub,op2_reg^,op_tmp,op0);
+
+  -- free aux. operand
+  op_tmp.free(info,context);
+
+  -- EBX <- (abs((dividend % divider) * 2) >= abs(divider))? -1 : 0
+  addii(inst,info,ii_sub,op2_reg^,op1_edx,op0);
+  addii(inst,info,ii_dec,op2_reg^,op0,op0);
+  addii(inst,info,ii_sar,op2_reg^,op_31,op0);
+
+  -- EDX <- sign(dividend / divider) = ((dividend / divider) < 0)? -1 : 1
+  addii(inst,info,ii_mov,op1_edx,op1_eax,op0);
+  addii(inst,info,ii_or,op1_edx,op_0x40000000,op0);
+  addii(inst,info,ii_sar,op1_edx,op_30,op0);
+
+  -- EAX += (abs((dividend % divider) * 2) >= abs(divider))? sign(dividend / divider) : 0
+  addii(inst,info,ii_and,op1_edx,op2_reg^,op0);
+  addii(inst,info,ii_add,op1_eax,op1_edx,op0);
+
+  -- free constant operands
+  op_0x40000000.free(info,context);
+  op_31.free(info,context);
+  op_30.free(info,context);
+
+  -- divider was not in register
+  if op_divider.optype<>io_reg then
+    -- free the register
+    op2_reg^.free(info,context);
+    discard op2_reg;
+    end if;
+  end i_gen_rounded_idiv_reg32;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_convert_fixed_eax (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- code generation process information
+    context        : in out iexprcontext;        -- expression generation context
+    inv_delta      : in tuniint;                 -- destination precision
+    cop            : in pexpnode;                -- corresponding expression
+    op_eax_        : in out c_operand) =         -- numerator (in EAX)
+-- Generate fixed point numerator conversion to common denominator.
+-- Keep the result in EAX.
+----------------------------------------------------------------------------------------------------
+with
+  ci_rcheck;
+
+var
+  op_edx           : c_operand;                  -- EDX
+  op_tmp           : c_operand;                  -- auxiliary operand
+  op_tmp_reg       : c_operand;                  -- auxiliary operand (register)
+      
+begin
+  verify({VERIFY=}001322,op_eax_.optype<>io_reg or else op_eax_.get_register<>ir_eax);
+
+  -- natural precision extension
+  if uniint_is_multiple(inv_delta,cop^.t.getctype()^.fxp.fx_inv_delta)
+    -- generate optimized conversion code
+    then
+      -- reserve EDX for further use
+      op_edx.create_use_register(inst,info,context,edt_signed,ir_edx);
+
+      -- load denominator extension factor into register
+      op_tmp.create_imm(edt_signed,4,uniint_to_imm32(inv_delta div cop^.t.getctype()^.fxp.fx_inv_delta));
+      op_tmp_reg.create_new_register(inst,info,context,edt_signed,op_tmp.size);
+      addii(inst,info,ii_mov,op_tmp_reg,op_tmp,op0);
+
+      -- free aux. operand
+      op_tmp.free(info,context);
+
+      -- EDX:EAX <- EAX*denominator_extension_factor
+      addii(inst,info,ii_imul,op_tmp_reg,op0,op0);
+
+      -- free aux. operand
+      op_tmp_reg.free(info,context);
+
+      -- free EDX
+      op_edx.free(info,context);
+
+      -- do multiplication runtime check
+      ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,cop^,op_eax_);
+
+    -- generate full general conversion code
+    else
+      declare var
+        op_tmp2    : c_operand;                  -- auxiliary operand
+
+      begin
+        -- reserve EDX for further use
+        op_edx.create_use_register(inst,info,context,edt_signed,ir_edx);
+
+        -- load common denominator into register
+        op_tmp.create_imm(edt_signed,4,uniint_to_imm32(inv_delta));
+        op_tmp_reg.create_new_register(inst,info,context,edt_signed,op_tmp.size);
+        addii(inst,info,ii_mov,op_tmp_reg,op_tmp,op0);
+
+        -- free aux. operand
+        op_tmp.free(info,context);
+
+        -- EDX:EAX <- EAX*common_denominator
+        addii(inst,info,ii_imul,op_tmp_reg,op0,op0);
+
+        -- free aux. operand
+        op_tmp_reg.free(info,context);
+
+        -- create denominator
+        op_tmp2.create_imm(edt_signed,value_size_from_expr(cop),uniint_to_imm32(cop^.t.getctype()^.fxp.fx_inv_delta));
+
+        -- EAX <- EDX:EAX/denominator with rounding in accordance to the reminder
+        i_gen_rounded_idiv_reg32(inst,info,context,op_edx,op_eax_,op_tmp2);
+
+        -- free aux. operand
+        op_tmp2.free(info,context);
+
+        -- free EDX
+        op_edx.free(info,context);
+
+        -- do division runtime check
+        ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,cop^,op_eax_);
+        end declare;
+      end if;
+  end i_gen_convert_fixed_eax;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_convert_fixed_reg (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- code generation process information
+    context        : in out iexprcontext;        -- expression generation context
+    inv_delta      : in tuniint;                 -- destination precision
+    cop            : in pexpnode;                -- corresponding expression
+    op_num         : in out c_operand) =         -- numerator
+-- Generate fixed point numerator conversion to common denominator.
+----------------------------------------------------------------------------------------------------
+var
+  op_eax_          : c_operand;                  -- EAX
+
+begin
+  verify({VERIFY=}001335,op_num.optype<>io_reg);
+
+  if op_num.get_register()<>ir_eax
+    -- operand not in EAX
+    then
+      op_eax_.create_use_register(inst,info,context,edt_fixed,ir_eax);
+      -- exchange EAX and operand
+      addii(inst,info,ii_xchg,op_eax_,op_num,op0);
+    
+      -- convert operand in EAX
+      i_gen_convert_fixed_eax(inst,info,context,inv_delta,cop,op_eax_);
+
+      -- exchange registers back
+      addii(inst,info,ii_xchg,op_eax_,op_num,op0);
+
+      -- free EAX
+      op_eax_.free(info,context);
+
+    -- operand in EAX
+    else
+      -- convert operand in EAX
+      i_gen_convert_fixed_eax(inst,info,context,inv_delta,cop,op_num);
+      end if;
+  end i_gen_convert_fixed_reg;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_convert_fixed =
+-- Fixed-point conversions.
+----------------------------------------------------------------------------------------------------
+begin
+  -- original type
+  case vysl.size
+    -- 32-bit fixed-point --> fixed-point
+    when  4 do
+        -- load operand into register (EAX preferred)
+        i_gen_load_value_to_register(inst,info,context,context.orgtyp{expr^.t.getctype()},vysl,true,in_eax);
+
+        -- destination type
+        case unidata_size_to_unsigned(context.outtyp.size)
+          -- 32-bit fixed-point
+          when  4 do
+              -- convert value in register
+              i_gen_convert_fixed_reg(inst,info,context,context.outtyp.fx_inv_delta,expr,vysl);
+          
+          -- 64-bit fixed-point
+          when  8 do
+              unimplemented({UNIMP=}000303);
+
+          -- 128-bit fixed-point
+          when 16 do
+              unimplemented({UNIMP=}000306);
+          
+          -- other sizes are not valid fixed-point type sizes
+          when others do verify({VERIFY=}001418,true);
+          end case;
+
+    -- 64-bit fixed-point --> fixed point
+    when  8 do
+        unimplemented({UNIMP=}000304);
+
+    -- 128-bit fixed-point --> fixed point
+    when 16 do
+        unimplemented({UNIMP=}000305);
+
+    -- other sizes are not valid fixed-point type sizes
+    when others do verify({VERIFY=}001417,true);
+    end case;
+  end i_gen_convert_fixed;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_fixed_mul_eax (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- code generation process information
+    context        : in out iexprcontext;        -- expression generation context
+    expr           : in pexpoper;                -- operator
+    vysl           : in out c_operand;           -- operand
+    cop            : in pexpnode) =              -- operand to multiply with
+-- Multiply EAX with the operand.
+----------------------------------------------------------------------------------------------------
+with
+  ci_rcheck;
+
+var
+  op_edx           : c_operand;                  -- EDX
+  op_tmp           : c_operand;                  -- auxiliary operand
+  op_tmp2          : c_operand;                  -- auxiliary operand
+  newcontext       : iexprcontext;               -- new context
+
+begin
+  -- reserve EDX for further use
+  op_edx.create_use_register(inst,info,context,edt_signed,ir_edx);
+
+  -- load numerator
+  i_newcontext(context,newcontext,lm_conv,cop^.t.getctype());
+  i_load(inst,info,newcontext,context,cop,op_tmp);
+
+  -- refresh registers
+  vysl.refresh(inst,info,context);
+  op_tmp.refresh(inst,info,context);
+
+  -- EDX:EAX <- EAX*numerator
+  addii(inst,info,ii_imul,op_tmp,op0,op0);
+
+  -- free aux. operand
+  op_tmp.free(info,context);
+
+  -- create denominator
+  op_tmp2.create_imm(edt_signed,value_size_from_expr(cop),uniint_to_imm32(cop^.t.getctype()^.fxp.fx_inv_delta));
+
+  -- EAX <- EDX:EAX/denominator with rounding in accordance to the reminder
+  i_gen_rounded_idiv_reg32(inst,info,context,op_edx,vysl,op_tmp2);
+
+  -- free aux. operand
+  op_tmp2.free(info,context);
+
+  -- free EDX
+  op_edx.free(info,context);
+
+  -- do division runtime check
+  ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,pexpnode(expr)^,vysl);
+  end i_gen_op_fixed_mul_eax;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_assign_store (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- code generation process information
+    context        : in out iexprcontext;        -- expression generation context
+    expr           : in pexpoper;                -- operator
+    vysl           : in c_operand;               -- operand to store
+    operand        : in pexpnode) =              -- operand expression
+-- Store result of operation if a short assignement.
+----------------------------------------------------------------------------------------------------
+with
+  ci_rcheck;
+
+var
+  op_assign        : c_operand;                  -- assignement operand
+  newcontext       : iexprcontext;               -- new context
+   
+begin
+  if expr^.assign then
+    -- load dest. operand
+    i_newcontext(context,newcontext,lm_gen,operand^.t.getctype);
+    i_load(inst,info,newcontext,context,operand,op_assign);
+
+    -- refresh registers
+    op_assign.refresh(inst,info,context);
+    vysl.refresh(inst,info,context);
+      
+    -- do runtime assignement checks
+    ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_load,pexpnode(expr)^,vysl);
+
+    -- assign
+    addii(inst,info,ii_mov,op_assign,vysl,op0);
+
+    -- free dest. operand
+    op_assign.free(info,context);
+    end if;
+  end i_gen_op_assign_store;
+
+    
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_fixed_n_add (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- code generation process information
+    context        : in out iexprcontext;        -- expression generation context
+    expr           : in pexpoper;                -- operator
+    vysl           : in out c_operand;           -- result
+    operands       : in pexpnode) =              -- list of operands
+-- Generate N-ary fixed-point addition operation code.
+----------------------------------------------------------------------------------------------------
+with
+  ci_rcheck;
+
+var
+  c                : pexpnode;                   -- constant operand
+  operand          : pexpnode;                   -- operand
+  op_eax_          : c_operand;                  -- auxiliary operand, for EAX reservation only
+  ui               : tuniint;                    -- const. operand value
+  denom            : tuniint;                    -- common denominator
+  newcontext       : iexprcontext;               -- new context
+
+begin
+  -- find constant (if any, it will be at the end of list)
+  c:=operands;
+  operand:=operands;
+  while c^.next<>nil loop
+    -- next operand
+    c:=c^.next;
+    end loop;
+
+  -- common denominator
+  denom:=expr^.t.getctype()^.fxp.fx_inv_delta;
+
+  -- constant operand found
+  if c^.ntype=nt_imm
+    then 
+      -- prepare const. operand numerator in common denominator
+      ui:=unireal_round((pexpimm(c)^.imm.ur*uniint_to_unireal(denom)));
+
+    else c:=nil;
+    end if;
+
+  -- load const. operand into register (ommit addition of zero)
+  if c<>nil and then (ui<>ui_0 or operands=c)
+    then
+      declare var
+        op_tmp     : c_operand;                  -- auxiliary operand
+      
+      begin
+        -- reserve EAX
+        op_eax_.create_use_register(inst,info,context,edt_fixed,ir_eax);
+
+        -- generate numerator
+        op_tmp.create_imm(edt_fixed,value_size_from_expr(expr),uniint_to_imm32(ui));
+        vysl.create_new_register(inst,info,context,edt_fixed,op_tmp.size);
+
+        -- load numerator
+        addii(inst,info,ii_mov,vysl,op_tmp,op0);
+
+        -- free aux. operand
+        op_tmp.free(info,context);
+
+        -- free EAX
+        op_eax_.free(info,context);
+        end declare;
+  
+    -- load 1st operand into register
+    else
+      -- operand not in common denominator
+      if operand^.t.getctype()^.fxp.fx_inv_delta<>denom
+        -- convert it
+        then          
+          -- load the operand into EAX
+          i_newcontext(context,newcontext,lm_reg_eax,operand^.t.getctype());
+          i_load(inst,info,newcontext,context,operand,op_eax_);
+
+          -- refresh registers
+          op_eax_.refresh(inst,info,context);
+
+          -- convert operand
+          i_gen_convert_fixed_eax(inst,info,context,expr^.t.getctype()^.fxp.fx_inv_delta,operand,op_eax_);
+
+          -- store EAX into operand
+          vysl.create_new_register(inst,info,context,edt_fixed,op_eax_.size);
+          addii(inst,info,ii_mov,vysl,op_eax_,op0);
+
+        -- load it straight
+        else
+          -- reserve EAX
+          op_eax_.create_use_register(inst,info,context,edt_fixed,ir_eax);
+
+          -- load the operand into register
+          i_newcontext(context,newcontext,lm_reg_all,operand^.t.getctype);
+          i_load(inst,info,newcontext,context,operand,vysl);
+
+          -- refresh registers
+          op_eax_.refresh(inst,info,context);
+          vysl.refresh(inst,info,context);
+          end if;
+
+      -- free EAX
+      op_eax_.free(info,context);
+ 
+      -- next operand
+      operand:=operand^.next;
+      end if;
+
+  ---- handle remaining operands ----
+  while operand<>c loop
+    declare var
+      op_tmp       : c_operand;                  -- auxiliary operand
+
+    begin
+      -- load operand
+      if operand^.t.getctype()^.fxp.fx_inv_delta<>denom
+        -- load the operand into EAX
+        then
+          i_newcontext(context,newcontext,lm_reg_eax,operand^.t.getctype);
+          i_load(inst,info,newcontext,context,operand,op_tmp);
+
+          -- refresh aux. operand
+          op_tmp.refresh(inst,info,context);
+
+          -- convert operand
+          i_gen_convert_fixed_eax(inst,info,context,expr^.t.getctype()^.fxp.fx_inv_delta,operand,op_tmp);
+        
+        -- leave operand in memory
+        else
+          i_newcontext(context,newcontext,lm_gen,operand^.t.getctype());
+          i_load(inst,info,newcontext,context,operand,op_tmp);
+
+          -- refresh aux. operand
+          op_tmp.refresh(inst,info,context);
+          end if;
+
+      -- refresh aux. operand
+      vysl.refresh(inst,info,context);
+
+      -- add operands
+      addii(inst,info,ii_add,vysl,op_tmp,op0);
+
+      -- free aux. operand
+      op_tmp.free(info,context);
+
+      -- do addition runtime check
+      ci_rcheck.i_gen_runtime_checks(inst,info,context,rchcl_gen,pexpnode(expr)^,vysl);
+      end declare;
+
+    -- další operand
+    operand:=operand^.next;
+    end loop;
+  end i_gen_op_fixed_n_add;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_fixed_n_mul (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- code generation process information
+    context        : in out iexprcontext;        -- expression generation context
+    expr           : in pexpoper;                -- operator
+    vysl           : in out c_operand;           -- result
+    operands       : in pexpnode) =              -- list of operands
+-- Generate N-ary fixed-point multiplication operation code.
+----------------------------------------------------------------------------------------------------
+var
+  c                : pexpnode;                   -- constant operand
+  operand          : pexpnode;                   -- operand
+--  op_edx           : c_operand;                  -- auxiliary operand, for EDX reservation only
+  ui               : tuniint;                    -- const. operand value
+  denom            : tuniint;                    -- common denominator
+  newcontext       : iexprcontext;               -- new context
+
+begin
+  -- find constant (if any, it will be at the end of list)
+  c:=operands;
+  operand:=operands;
+  while c^.next<>nil loop
+    -- next operand
+    c:=c^.next;
+    end loop;
+
+  -- common denominator
+  denom:=expr^.t.getctype()^.fxp.fx_inv_delta;
+
+  -- constant operand found
+  if c^.ntype=nt_imm
+    then 
+      -- prepare const. operand numerator in common denominator
+      ui:=unireal_round((pexpimm(c)^.imm.ur*uniint_to_unireal(denom)));
+
+    else c:=nil;
+    end if;
+
+  -- reserve EDX for further use
+--  op_edx.create_use_register(inst,info,context,edt_signed,ir_edx);
+
+  -- load operand into EAX
+  if c<>nil and then (ui<>ui_1 or operand=c)
+    -- load const. operand into EAX (ommit multiplication by 1)
+    then
+      declare var
+        op_tmp     : c_operand;                  -- auxiliary operand
+      
+      begin
+        -- prepare EAX
+        vysl.create_use_register(inst,info,context,edt_fixed,ir_eax);
+
+        -- generate numerator
+--        i_newcontext(context,newcontext,lm_reg_eax,expr^.t.getctype());
+        op_tmp.create_imm(edt_fixed,value_size_from_expr(expr),uniint_to_imm32(ui));
+
+        -- load numerator
+        addii(inst,info,ii_mov,vysl,op_tmp,op0);
+
+        -- free aux. operand
+        op_tmp.free(info,context);
+
+        -- optimization for multiplication by 0
+        if ui=ui_0 then
+--          op_edx.free(info,context);
+          return;
+          end if;
+        end declare;
+  
+    -- load 1st operand into EAX
+    else
+      -- load the operand into EAX
+      i_newcontext(context,newcontext,lm_reg_eax,operand^.t.getctype());
+      i_load(inst,info,newcontext,context,operand,vysl);
+
+      -- refresh registers
+      vysl.refresh(inst,info,context);
+
+      -- operand not in common denominator
+      if operand^.t.getctype()^.fxp.fx_inv_delta<>denom then
+        -- convert operand
+        i_gen_convert_fixed_eax(inst,info,context,expr^.t.getctype()^.fxp.fx_inv_delta,operand,vysl);
+        end if;
+
+      -- next operand
+      operand:=operand^.next;
+      end if;
+
+  ---- handle remaining operands ----
+  while operand<>c loop
+    -- multiply EAX with operand
+    i_gen_op_fixed_mul_eax(inst,info,context,expr,vysl,operand);
+
+    -- další operand
+    operand:=operand^.next;
+    end loop;
+
+  -- free EDX
+--  op_edx.free(info,context);
+  end i_gen_op_fixed_n_mul;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_fixed_add =
+-- Fixed point addition.
+----------------------------------------------------------------------------------------------------
+begin
+  -- add all operands
+  i_gen_op_fixed_n_add(inst,info,context,expr,vysl,expr^.sub);
+
+  -- deal with possible short assignement
+  -- POZN: lepsi reseni mechanismem [i_gen_op_fixed_sub]
+  i_gen_op_assign_store(inst,info,context,expr,vysl,expr^.sub);
+  end i_gen_op_fixed_add;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_fixed_sub =
+-- Fixed point subtraction.
+----------------------------------------------------------------------------------------------------
+var
+  op_subtrahend    : c_operand;                  -- subtraction right operand
+  newcontext       : iexprcontext;               -- new context
+
+begin
+  
+  -- add n-1 operands from tail
+  i_gen_op_fixed_n_add(inst,info,context,expr,op_subtrahend,expr^.sub^.next);
+
+  -- load minuend
+  if expr^.assign
+    -- load minuend generically
+    then
+      -- leave minuend in memory
+      i_newcontext(context,newcontext,lm_gen,expr^.sub^.t.getctype());
+      i_load(inst,info,newcontext,context,expr^.sub,vysl);
+
+      -- refresh registers
+      vysl.refresh(inst,info,context);
+
+    -- load minuend into register
+    else
+      i_newcontext(context,newcontext,lm_reg_all,expr^.sub^.t.getctype);
+      i_load(inst,info,newcontext,context,expr^.sub,vysl);
+
+      -- refresh registers
+      vysl.refresh(inst,info,context);
+
+      -- convert to common denominator
+      if expr^.t.getctype()^.fxp.fx_inv_delta<>expr^.sub^.t.getctype()^.fxp.fx_inv_delta then
+        i_gen_convert_fixed_reg(inst,info,context,expr^.t.getctype()^.fxp.fx_inv_delta,expr^.sub,vysl);
+        end if;
+    end if;
+
+  -- refresh registers
+  op_subtrahend.refresh(inst,info,context);
+
+  -- subtraction
+  addii(inst,info,ii_sub,vysl,op_subtrahend,op0);
+
+  -- free subtrahend
+  op_subtrahend.free(info,context);  
+  end i_gen_op_fixed_sub;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_fixed_mul =
+-- Fixed point multiplication.
+----------------------------------------------------------------------------------------------------
+begin
+  -- multiply all operands
+  i_gen_op_fixed_n_mul(inst,info,context,expr,vysl,expr^.sub);
+
+  -- deal with possible short assignement
+  i_gen_op_assign_store(inst,info,context,expr,vysl,expr^.sub);
+  end i_gen_op_fixed_mul;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_op_fixed_div =
+-- Fixed point division.
+----------------------------------------------------------------------------------------------------
+var
+  op_divider       : c_operand;                  -- division right operand
+  op_edx           : c_operand;                  -- EDX
+  op_31            : c_operand;                  -- 31
+  newcontext       : iexprcontext;               -- new context
+
+begin
+  -- multiply n-1 operands from tail
+  i_gen_op_fixed_n_mul(inst,info,context,expr,op_divider,expr^.sub^.next);
+
+  ---- divide 1st operand by the result ----
+
+  -- load dividend into EAX
+  i_newcontext(context,newcontext,lm_reg_eax,expr^.sub^.t.getctype);
+  i_load(inst,info,newcontext,context,expr^.sub,vysl);
+
+  -- refresh registers
+  vysl.refresh(inst,info,context);
+  op_divider.refresh(inst,info,context);
+
+  -- no short assignement
+  if not expr^.assign and then
+  -- operand not in common denominator
+  expr^.t.getctype()^.fxp.fx_inv_delta<>expr^.sub^.t.getctype()^.fxp.fx_inv_delta
+    -- convert to common denominator
+    then
+      i_gen_convert_fixed_eax(inst,info,context,expr^.t.getctype()^.fxp.fx_inv_delta,expr^.sub,vysl);
+      end if;
+
+  -- swap operands
+--  addii(inst,info,ii_xchg,vysl,op_divider,op0);
+
+  -- prepare constant operand
+  op_31.create_imm(edt_unsigned,1,unsigned_to_imm32(31));
+
+  -- reserve EDX for dividend MS1/2
+  op_edx.create_use_register(inst,info,context,edt_signed,ir_edx);
+
+  -- convert EAX to double precision (arithmetic extension into EDX)
+  addii(inst,info,ii_mov,op_edx,vysl,op0);
+  addii(inst,info,ii_sar,op_edx,op_31,op0);
+
+  -- free constant operand
+  op_31.free(info,context);
+
+  -- load divider into a register (other than EAX or EDX)
+  i_gen_load_value_to_register(inst,info,context,expr^.t.getctype(),op_divider,true);
+
+  -- EAX <- EDX:EAX/divider with rounding in accordance to the reminder
+  i_gen_rounded_idiv_reg32(inst,info,context,op_edx,vysl,op_divider);
+
+  -- free divider
+  op_divider.free(info,context);  
+
+  -- free EDX
+  op_edx.free(info,context);
+
+  -- deal with possible short assignement
+  i_gen_op_assign_store(inst,info,context,expr,vysl,expr^.sub);
+  end i_gen_op_fixed_div;
+
+
+end ci_fixed;

@@ -758,7 +758,7 @@ label
               end if;
         }
 
-        when others do verify({VERIFY=}000039,true);
+        when others do verify({VERIFY=}001283,true);
         end case;
       end opt;
 
@@ -861,7 +861,7 @@ begin
                   if b=ui_0 then
                     goto k0;
                     end if;
-                  verify({VERIFY=}000132,not first);
+                  verify({VERIFY=}001284,not first);
                   {%%X Doplnit: X mod C1 mod C2, C1<C2 --> X mod C1 }
                   a mod b;
 
@@ -912,7 +912,7 @@ begin
               -- bitový xor
               when op_bitxor do a xor b;
 
-              when others    do verify({VERIFY=}000038,true);
+              when others    do verify({VERIFY=}001285,true);
               end case;
 
             -- další uzel
@@ -1018,6 +1018,305 @@ k1:
 
 
 ----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_faritm : toperopt =
+-- Floating point and fixed point arithmetic operations.
+----------------------------------------------------------------------------------------------------
+
+----- %%TECH n-ary operators optimization method ---------------------------------------------------
+-- See [a_opt_oper_iaritm].
+----------------------------------------------------------------------------------------------------
+
+label
+  k0;
+  k1;
+
+    ------------------------------------------------------------------------------------------------
+    procedure opt (
+        el         : in pexpnode;                -- levý podvýraz
+        er         : in pexpnode;                -- pravý podvýraz
+        A          : in out tunireal;            -- hodnota konstantního operandu
+        left       : in t_logical;               -- T- 0 + X, F- X + 0
+        first      : in t_logical;               -- T-jsou to první dva operandy v řadě
+        newexpr    : out pexpnode;               -- nový výraz
+        all        : out t_logical) =            -- T-nový výraz nahrazuje vše
+    -- jednostranné optimalizace
+    ------------------------------------------------------------------------------------------------
+    var
+      x            : pexpnode;
+      ur           : tunireal;
+      i            : t_unsigned32;
+
+    begin
+      all:=false;
+
+      case expr^.oper
+        when op_add  do
+            -- X + 0.0 --> X
+            if a=ur_0 then
+              newexpr:=el;
+              end if;
+
+        when op_sub  do
+            if left
+              -- const - X
+              then
+                -- 0.0 - X -- > -X
+                if a=ur_0 then
+                  x_addunary(pexpunary(newexpr),expr,un_minus,false,er,info);
+                  a_opt_reoptimize(curr,newexpr,info);
+                  end if;
+              -- X - const
+              else
+                -- X - 0.0 --> X
+                if a=ur_0 then
+                  newexpr:=el;
+                  end if;
+                end if;
+
+        when op_mul  do
+            -- X * 0.0 --> 0.0
+            if a=ur_0 then
+              newexpr:=er;
+              all:=true;
+
+              -- výsledek je přímou hodnotou v důsledku optimalizace
+              newexpr^.nflags-nodeflagset:[nf_const];
+            -- X * 1.0 --> X
+            elsif a=ur_1 then
+              newexpr:=el;
+            -- X * (-1.0) --> -X
+            elsif a=ur_minus_1 then
+              x_addunary(pexpunary(newexpr),expr,un_minus,first,el,info);
+              a_opt_reoptimize(curr,newexpr,info);
+              end if;
+
+        when op_div do
+            if left
+              -- const - X
+              then
+                -- 0.0 / X --> 0.0
+                if a=ur_0 then
+                  newexpr:=el;
+                  all:=true;
+
+                  -- výsledek je přímou hodnotou v důsledku optimalizace
+                  newexpr^.nflags-nodeflagset:[nf_const];
+                  end if;
+              -- X - const
+              else
+                -- X div 1.0 --> X
+                if a=ur_1 then
+                  newexpr:=el;
+                -- X div (-1.0) --> -X
+                elsif a=ur_minus_1 then
+                  x_addunary(pexpunary(newexpr),expr,un_minus,first,el,info);
+                  a_opt_reoptimize(curr,newexpr,info);
+                  end if;
+                end if;
+
+        when others do verify({VERIFY=}001286,true);
+        end case;
+      end opt;
+
+var
+  ep               : pexpnode;                   -- předchozí podvýraz
+  el               : pexpnode;                   -- levý podvýraz
+  er               : pexpnode;                   -- pravý podvýraz
+  en               : pexpnode;                   -- následující podvýraz
+  a                : tunireal;                   -- hodnoty operandů
+  b                : tunireal;                   -- hodnoty operandů
+  first            : t_logical;                  -- T-EL je skutečně první (levý) operand
+  node             : pexpnode;                   -- nový uzel
+  all              : t_logical;                  -- T-nahradit celý výraz novým uzlem
+  left             : t_logical;                  -- T-tvar 0 + X, F-tvar X + 0
+  x                : pexpnode;
+
+begin
+  -- přerovnat na n-ární vyjádření
+  a_opt_reorder(curr,expr,^a_opt_reorder_type,expr^.t{.typ},info);
+
+  -- optimalizovat podvýrazy
+  a_opt_sequence(curr,expr,all,info);
+
+  -- povedla se optimalizace všech operandů ?
+  if not all then return; end if;
+
+  -- přerovnat konstantní operandy (p-)komutativních
+  -- a (p-)asociativních operandů
+  -- POZN: proč mi nestačí (p-)komutativita?
+  if (expoperinfo[expr^.oper].com in expopercomset:[eoc_full,eoc_pfull])
+  and (expoperinfo[expr^.oper].asoc in expoperasocset:[eoa_full,eoa_pfull]) then
+    a_opt_reorder_imm(expr);
+    end if;
+
+  -- vyhodnotit konstantní operandy
+  -- %%X Kostra algoritmu je stejná jako pro množinové operátory, sloučit do #template
+  ep:=nil;
+  el:=expr^.sub;
+  first:=true;
+  while el<>nil loop
+    -- poznamenat si následující podvýraz
+    er:=el^.next;
+
+    if el^.ntype=nt_imm then
+      -- načíst hodnotu levého podvýrazu
+      load_unireal(pexpimm(el)^.imm,a);
+
+      --- vyhodnotit asociativní a p-asociativní operátory ---
+      if expoperinfo[expr^.oper].asoc in expoperasocset:[eoa_full,eoa_pfull]
+      --- a první dvojici neasociativních operátorů ---
+      or (first and expoperinfo[expr^.oper].asoc=eoa_none) then
+        declare var
+          all_const: t_logical;                  -- příznak konstantnosti, ne z důvodu optimalizace,
+                                                 -- všech konstantních operandů v sekvenci
+        begin
+          -- T-levý podvýraz je konstantní, ne z důvodu optimalizace
+          all_const:=nf_const in el^.nflags;
+
+          -- zpracovat všechny pravé konstantní operandy
+          while er<>nil and then er^.ntype=nt_imm loop
+            -- T-doposud všechny podvýrazy konstantní, ne z důvodu optimalizace
+            all_const and nf_const in er^.nflags;
+
+            -- načíst hodnotu pravého podvýrazu
+            load_unireal(pexpimm(er)^.imm,b);
+
+            -- vypočítat
+            case expr^.oper
+              -- sčítání
+              when op_add  do a+b;
+
+              -- odčítání
+              when op_sub  do
+                  if first
+                    -- A - B - ... --> (A - B) - ...
+                    then a-b
+                    -- ... - A - B - ... --> ... - (A + B) - ...
+                    else a+b;
+                    end if;
+
+              -- násobení
+              when op_mul  do a*b;
+
+              -- dělení
+              when op_div do
+                  -- nesmí se dělit nulou => ukončit opt. fázi, ve finalizaci bude hlášena chyba
+                  if b=ur_0 then
+                    goto k0;
+                    end if;
+                  if first
+                    -- A div B div ... --> (A div B) div ...
+                    then a/b
+                    -- ... div A div B - ... --> ... div (A * B) div ...
+                    else a*b;
+                    end if;
+
+              when others    do verify({VERIFY=}001288,true);
+              end case;
+
+            -- další uzel
+            er:=er^.next;
+            end loop;
+
+          -- vytvořit nový uzel
+          {%%X Tímto příkazem se nastaví pozice NODE na celý EXPR. }
+          x_addur(pexpimm(node),expr,a,info,all_const);
+          end declare;
+
+        -- zařadit
+        if ep<>nil
+          then ep^.next:=node
+          else expr^.sub:=node;
+          end if;
+        node^.next:=er;
+        el:=node;
+        end if;
+      end if;
+
+    -- další operand  
+    ep:=el;
+    el:=er{el^.next};
+    first:=false;
+    end loop;
+
+  -- jednostranné optimalizace
+  ep:=nil;
+  el:=expr^.sub;
+  first:=true;
+  while el<>nil loop
+    -- poznamenat si následující podvýrazy
+    er:=el^.next;
+    if er<>nil then
+      en:=er^.next;
+      end if;
+
+    node:=nil; 
+    all:=false;
+
+    -- levý operand je konstantní
+    if el^.ntype=nt_imm then
+      -- načíst hodnotu levého podvýrazu
+      load_unireal(pexpimm(el)^.imm,a);
+
+      if er<>nil then
+        -- pro komutativní operátory přehodit operandy
+        if expoperinfo[expr^.oper].com=eoc_full
+          then opt(er,el,a,false,true,node,all);
+          else opt(el,er,a,true,true,node,all);
+          end if;
+        end if;
+
+    -- pravý operand je konstantní
+    elsif er<>nil and then er^.ntype=nt_imm then
+      -- načíst hodnotu pravého podvýrazu
+      load_unireal(pexpimm(er)^.imm,a);
+
+      -- optimalizace
+      opt(el,er,a,false,first,node,all);
+      end if;
+
+    -- konsolidace operandů
+    if node<>nil
+      -- nahradit operandy novým uzlem
+      then
+        if all
+          -- nahradit celý výraz
+          then
+            pexpnode(expr):=node;
+            node^.next:=nil;
+            goto k1;
+
+          -- nahradit pouze optimalizované operandy
+          else
+            -- [el] byl nejlevější operand
+          if first
+            then expr^.sub:=node;
+            else ep^.next:=node;
+            end if;
+          node^.next:=en;
+          end if;
+
+        -- posun o 1 operand vpravo: [ep] stávající, [el] na [node]
+        el:=node;
+
+      -- nic se nezměnilo
+      else
+        -- posun o 1 operand vpravo: [ep] na [el], [el] na [er]
+        ep:=el;
+        el:=er;
+        first:=false;
+        end if;
+    end loop;
+k0:
+  -- dokončit optimalizaci n-árního operátoru
+  a_opt_finalize_sequence(expr);
+
+k1:
+  end a_opt_oper_faritm;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure a_opt_oper_ordinal_rel : toperopt =
 -- Ordinální relační operace.
 ----------------------------------------------------------------------------------------------------
@@ -1031,7 +1330,6 @@ var
   a                : tuniint;                    -- hodnoty operandů
   b                : tuniint;                    -- hodnoty operandů
   vysl             : t_logical;                  -- výsledek porovnání
-  ui               : tuniint;
 
 begin
   -- rozdělit podvýrazy
@@ -1086,6 +1384,77 @@ k1:
     else pexpnode(expr):=newexpr;
     end if;
   end a_opt_oper_ordinal_rel;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_oper_real_rel : toperopt =
+-- Real relation operations.
+----------------------------------------------------------------------------------------------------
+label
+  k1;
+
+var
+  el               : pexpnode;                   -- left subexpression
+  er               : pexpnode;                   -- right subexpression
+  newexpr          : pexpnode;                   -- new expression
+  a                : tunireal;                   -- operand value
+  b                : tunireal;                   -- operand value
+  vysl             : t_logical;                  -- comparation result
+
+begin
+  -- split subexpressions
+  expr^.split(el,er);
+
+  -- optimize subexpressions
+  a_opt(curr,el,info);
+  a_opt(curr,er,info);
+
+  -- optimization failed
+  if (el^.zprac<ep_opt) or (er^.zprac<ep_opt) then goto k1; end if;
+
+  -- load left subexpr. value
+  if el^.ntype=nt_imm then
+    load_unireal(pexpimm(el)^.imm,a);
+    end if;
+
+  -- load right subexpr. value
+  if er^.ntype=nt_imm then
+    load_unireal(pexpimm(er)^.imm,b);
+    end if;
+
+  ----- both operands const. -----------------------------------------------------------------------
+  if (el^.ntype=nt_imm) and (er^.ntype=nt_imm) then
+    -- compare
+    imm_cmp(pexpimm(el)^.imm,pexpimm(er)^.imm,expoperinfo[expr^.oper].cmp,vysl,nil,nil);
+
+    -- store comparation result
+    x_addul(pexpimm(newexpr),expr,logical_to_unilogical(vysl),info,nf_const in el^.nflags and nf_const in er^.nflags);
+
+  ----- left operand const. ------------------------------------------------------------------------
+  elsif (el^.ntype=nt_imm) then
+    {%%X dodělat }
+
+
+  ----- right operand const. -----------------------------------------------------------------------
+  elsif (er^.ntype=nt_imm) then
+    {%%X dodělat }
+    end if;
+
+  -- optimization went ok
+  if newexpr=nil
+    then expr^.zprac:=ep_opt
+    else newexpr^.zprac:=ep_opt;
+    end if;
+
+k1:
+  if newexpr=nil
+    -- join subexpressions (if superset node unchanged)
+    then expr^.join(el,er)
+    -- adopt new expression
+    else pexpnode(expr):=newexpr;
+    end if;
+  end a_opt_oper_real_rel;
 
 
 
@@ -2178,7 +2547,7 @@ begin
       when un_pred   do pred a;
       {%%X kolik bitů se má invertovat, když je číslo záporné ? }
       when un_bitnot do not a;
-      when others    do verify({VERIFY=}000045,true);
+      when others    do verify({VERIFY=}001412,true);
       end case;
 
     -- uložit hodnotu
@@ -2200,10 +2569,56 @@ begin
       when un_succ   do { nic nedělat };
       when un_pred   do { nic nedělat };
       when un_bitnot do { nic nedělat };
-      when others    do verify({VERIFY=}000044,true);
+      when others    do verify({VERIFY=}001413,true);
       end case;
     end if;
   end a_opt_unary_iaritm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_opt_unary_raritm : tunaryopt =
+-- Reálné unární aritmetické operace.
+----------------------------------------------------------------------------------------------------
+var
+  a                : tunireal;                   -- hodnota operadu
+
+begin
+  -- předpoklad, uzel se nezmění
+  result:=nil;
+
+  ----- operand konstantní -------------------------------------------------------------------------
+  if el^.ntype=nt_imm then
+    -- načíst hodnotu podvýrazu
+    load_unireal(pexpimm(el)^.imm,a);
+
+    -- vypočítat
+    case expr^.oper
+      when un_plus   do { nic nedělat };
+      when un_minus  do -a;
+      when un_abs    do abs a;
+      when others    do verify({VERIFY=}001414,true);
+      end case;
+
+    -- uložit hodnotu
+    store_real(pexpimm(el)^.imm,a);
+
+    -- typ výsledeku
+    el^.t:=expr^.t;
+
+    -- předat výsledek
+    result:=el;
+
+  ----- operand nekonstantní -----------------------------------------------------------------------
+  else
+    case expr^.oper
+      when un_plus   do result:=el;
+      when un_minus  do { nic nedělat };
+      when un_abs    do { nic nedělat };
+      when others    do verify({VERIFY=}001415,true);
+      end case;
+    end if;
+  end a_opt_unary_raritm;
 
 
 
@@ -3734,8 +4149,14 @@ begin
   --oset1s(opertab,op_add,sts_u_integer,^a_opt_oper_iaritm_add);
   osetss(opertab,expopertypeset:[op_add,op_sub,op_mul,op_div,op_idiv,op_imod,op_shl,op_shr,op_bitand,op_bitor,op_bitxor],dts_u_integer,^a_opt_oper_iaritm);
 
+  -- floating point and fixed point arithmetic operations
+  osetss(opertab,expopertypeset:[op_add,op_sub,op_mul,op_div],dts_u_float+dts_u_fixed,^a_opt_oper_faritm);
+
   -- ordinální relační operace
   osetss(opertab,expopertypeset:[op_eq,op_ne,op_lt,op_le,op_gt,op_ge],dts_u_ordinal,^a_opt_oper_ordinal_rel);
+
+  -- real relation operations
+  osetss(opertab,expopertypeset:[op_eq,op_ne,op_lt,op_le,op_gt,op_ge],dts_u_float+dts_u_fixed,^a_opt_oper_real_rel);
 
   -- logické operace
   osetss(opertab,expopertypeset:[op_and,op_or,op_and_then,op_or_else],dts_u_logical,^a_opt_oper_logical);
@@ -3778,6 +4199,9 @@ procedure initunarytab =
 begin
   -- celočíselné aritmetické operace
   usetss(unarytab,expunarytypeset:[un_plus,un_minus,un_succ,un_pred,un_not,un_bitnot,un_abs],dts_u_integer,^a_opt_unary_iaritm);
+
+  -- reálné aritmetické operace
+  usetss(unarytab,expunarytypeset:[un_plus,un_minus,un_abs],dts_u_float+dts_u_fixed,^a_opt_unary_raritm);
 
   -- výčtové unární operace
   usetss(unarytab,expunarytypeset:[un_succ,un_pred],dts_enum,^a_opt_unary_iaritm);

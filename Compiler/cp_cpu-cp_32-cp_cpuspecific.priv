@@ -143,6 +143,85 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+override getfixedparams =
+-- Z bits a delta odvodí další strojově závislé hodnoty.
+----------------------------------------------------------------------------------------------------
+with
+  advanced,
+  advanced.low_level;
+
+use
+  advanced.low_level.bit_operations;
+
+var
+  x                : t_unsigned32;
+
+begin
+  -- nepřípustná bitová velikost čísla
+  if bits<>udb_32 and bits<>udb_64 and bits<>udb_128 then
+    ce^.seterror({CCERR=}000552,ce_im_fixedsize);
+    ce^.setinfo(hint_im_fixedsize);
+    {%%POS}
+    ce^.raiseerror;
+    end if;
+  
+  -- velikost čísla v bytech
+  size:=unidata_bits_to_bytes(bits);
+  x:=unidata_bitsize_to_unsigned(bits);
+  x div 8;
+  x:=t_unsigned(bit_operations.bit_search_first_one(x));
+
+  -- vyčíslit delta, resp. její inverzi (v závislosti na tvaru definice typu)
+  if dfxtype=fxdt_scale_mod
+    -- dán společný jmenovatel
+    then
+      -- nepřípustný jmenovatel
+      if params.fx_inv_delta<=ui_0 then
+      ce^.seterror({CCERR=}000553,ce_numrange);
+      ce^.setinfo(hint_fixed_denominator);
+      {%%POS}
+      ce^.raiseerror;
+      end if;
+
+      -- nastavit delta hodnotu
+      params.fxdelta:=ur_1/uniint_to_unireal(params.fx_inv_delta);
+
+      -- nastavit min. hodnotu typu na podíl min. int. hodnoty a sp. jmenovatele
+      params.low:=uniint_to_unireal(cpu32_intrange[x,true,1])/uniint_to_unireal(params.fx_inv_delta);
+
+      -- nastavit max. hodnotu typu na podíl max. int. hodnoty a sp. jmenovatele
+      params.high:=uniint_to_unireal(cpu32_intrange[x,true,2])/uniint_to_unireal(params.fx_inv_delta);
+
+    -- dána přesnost
+    else
+      -- nepřípustná přesnost
+      if params.fxdelta<=ur_0 or params.fxdelta>ur_1 then
+      ce^.seterror({CCERR=}000634,ce_numrange);
+      ce^.setinfo(hint_fixed_delta);
+      {%%POS}
+      ce^.raiseerror;
+      end if;
+
+      -- nastavit hodnotu inverze delta
+      params.fx_inv_delta:=unireal_round(ur_1/params.fxdelta);
+
+      -- nastavit min. hodnotu typu na součin min. int. hodnoty a delta
+      params.low:=uniint_to_unireal(cpu32_intrange[x,true,1])*params.fxdelta;
+
+      -- nastavit max. hodnotu typu na součin max. int. hodnoty a delta
+      params.high:=uniint_to_unireal(cpu32_intrange[x,true,2])*params.fxdelta;
+      end if;      
+
+  -- zaokrouhlování
+  params.rounding:=true;
+
+  -- přetečení způsobí [constraint_error]
+  params.oflw:=true;
+  end getfixedparams;
+
+
+
+----------------------------------------------------------------------------------------------------
 override getstrparams =
 -- Z velikosti řetězce odvodí velikost.
 ----------------------------------------------------------------------------------------------------
@@ -453,7 +532,21 @@ begin
         uniint_store(imm.ui,bin,{%%X}unidata_size_to_unsigned(binsize));
 
     -- reálné číslo
-    when ic_real      do unimplemented({UNIMP=}000096);
+    when ic_real      do
+        case ptyp^.stype
+          -- fixed-point
+          when dt_fixed do
+              verify({VERIFY=}001401,unidata_size_to_unsigned(binsize)<>4 and unidata_size_to_unsigned(binsize)<>8 and unidata_size_to_unsigned(binsize)<>16{%%TODO(SET) not in [4,8,16]});
+              unireal_store_fixed(imm.ur,bin,unidata_size_to_unsigned(binsize),ptyp^.fxp.fx_inv_delta);
+
+          -- floating-point
+          when dt_float do
+              verify({VERIFY=}001402,unidata_size_to_unsigned(binsize)<>4 and unidata_size_to_unsigned(binsize)<>8 and unidata_size_to_unsigned(binsize)<>10{%%TODO(SET) not in [4,8,10]});
+              unireal_store_float(imm.ur,bin,unidata_size_to_unsigned(binsize));
+
+          -- vše ostatní je chyba
+          when others do verify({VERIFY=}001403,true);
+          end case;
 
     -- kondenzované pole
     when ic_condensed do

@@ -382,6 +382,18 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure i_gen_typecast_fixed (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- code generation run info
+    context        : in out iexprcontext;        -- expression code generation context
+    expr           : in pexpnode;                -- expression
+    vysl           : in out c_operand);          -- operand
+-- Generate fixed-point value type conversion.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_load (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
@@ -470,10 +482,27 @@ begin
 
     -- konvertovat na typ výsledku
     when lm_conv        do
-        -- liší-li se od velikosti podvýrazu...
-        if subcontext.rsize<>vysl.size then
-          i_gen_load_value_to_register(inst,info,subcontext,sub^.t.getctype,vysl,for force_reg use vysl.optype=io_cc and subcontext.outpref<>iop_cc);
-          end if;
+        -- rozhodnout podle datového typu výrazu
+        case sub^.t.getctype()^.stype
+          -- fixed-point
+          when dt_fixed do
+              -- generate conversion
+              i_gen_typecast_fixed(inst,info,subcontext,sub,vysl);
+
+          -- floating-point
+          when dt_float do
+              unimplemented({UNIMP=}000302);
+              -- generate conversion
+              --i_gen_typecast_float(inst,info,subcontext,sub,vysl);
+          
+          -- ostatní načíst do registru
+          -- %%TODO(fixed-point) upravit --- zjistit, co tady muze prijit a udelat vetev when...
+          when others do
+              -- liší-li se od velikosti podvýrazu...
+              if subcontext.rsize<>vysl.size then
+                i_gen_load_value_to_register(inst,info,subcontext,sub^.t.getctype,vysl,for force_reg use vysl.optype=io_cc and subcontext.outpref<>iop_cc);
+                end if;
+          end case;
 
     -- konvertovat a načíst do registru
     when lm_reg         do i_gen_load_value_to_register(inst,info,subcontext,sub^.t.getctype,vysl);
@@ -661,6 +690,7 @@ procedure i_gen_op_compare_ordinal : topergen =
 -- Porovnávání diskrétních výrazů.
 -- Tato procedura se používá i pro porovnání (pouze = <>) obecných birnátní
 -- bloků příznivé velikosti (1,2,4; viz I_GEN_OP_COMPARE_BINARY).
+-- Rovněž se používá pro generování kódu porovnávání fixed-point hodnot.
 ----------------------------------------------------------------------------------------------------
 var
   el               : pexpnode;                   -- levý podvýraz
@@ -686,7 +716,7 @@ begin
   addii(inst,info,ii_cmp,op1,op2,op0);
 
   -- podmínka
-  cc:=op2cc[expr^.oper,rest.stype=dt_signed{(el^.t.stype=dt_signed) or (er^.t.stype=dt_signed)}];
+  cc:=op2cc[expr^.oper,rest.stype in tdatatypeset:[dt_signed,dt_fixed]];
 
   -- zkrácené přiřazení ?
   if expr^.assign then addset(inst,info,context,cc,op1); end if;
@@ -947,6 +977,14 @@ begin
 #separate public ci_integer;
 #separate private ci_integer;
 -- Celočíselná aritmetika.
+----------------------------------------------------------------------------------------------------
+#separate public ci_fixed;
+#separate private ci_fixed;
+-- Fixed-point aritmetika.
+----------------------------------------------------------------------------------------------------
+#separate public ci_float;
+#separate private ci_float;
+-- Floating-point aritmetika.
 ----------------------------------------------------------------------------------------------------
 #separate public ci_logical;
 #separate private ci_logical;
@@ -1260,7 +1298,7 @@ begin
             declare var
               op2  : c_operand;                  -- pravý operand
             begin
-              if size=1 or size=2 or size=4{%%TODO(SET) size in [1,2,4]}
+              if size=1 or size=2 or size=4 {%%TODO(SET) size in [1,2,4]}
 
                 -- příznivá velikost
                 then
@@ -1850,11 +1888,88 @@ begin
             vysl.create_memory_address(inst,info,context,edtype,value_size_from_expr(expr),ir_none,0);
             vysl.set_relo_imm(expr);
 
+        -- real number (fixed-point or floating-point)
+        when ic_real do
+            case edtype
+              -- fixed-point
+              when edt_fixed do
+                  declare var
+                    ui     : tuniint;            -- aux. var
+
+                  begin
+                    -- convert real value internal representation to fixed-point value
+                    unireal_store_fixed(expr^.imm.ur,ui,value_size_from_expr(expr),expr^.t.getctype()^.fxp.fx_inv_delta);
+
+                    -- store value into operand
+                    case value_size_from_expr(expr)
+                        -- 32-bit fixed-point operand
+                        when  4 do vysl.create_imm(edt_fixed,value_size_from_expr(expr),uniint_to_imm32(ui));
+
+                        -- 64-bit fixed-point operand
+                        when  8 do unimplemented({UNIMP=}000295);
+
+                        -- 128-bit fixed-point constant value
+                        when 16 do unimplemented({UNIMP=}000296);
+
+                        -- other sizes mean an internal error
+                        when others do verify({VERIFY=}001404,true);
+                      end case;
+                    end declare;
+
+              -- floating-point
+              when edt_float do
+                  declare var
+                    ui     : tuniint;            -- aux. var
+
+                  begin
+                    -- convert real value internal representation to floating-point value
+                    unireal_store_float(expr^.imm.ur,ui,value_size_from_expr(expr));
+
+                    -- store value into operand
+                    case value_size_from_expr(expr)
+                        -- 32-bit floating-point operand
+                        when  4 do vysl.create_imm(edt_float,value_size_from_expr(expr),uniint_to_imm32(ui));
+
+                        -- 64-bit or 80-bit floating-point operand
+                        when  8,10 do
+                            vysl.create_memory_address(inst,info,context,edt_float,value_size_from_expr(expr),ir_none,0);
+                            vysl.set_relo_imm(expr);
+
+                        -- other sizes mean an internal error
+                        when others do verify({VERIFY=}001405,true);
+                      end case;
+                    end declare;
+
+              -- internal error otherwise
+              when others do verify({VERIFY=}001393,true);
+              end case;
+
         -- %%X
         when others do verify({VERIFY=}000072,true);
         end case;
       end if;
   end i_gen_imm;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_typecast_fixed =
+-- Generate fixed-point value type conversion.
+----------------------------------------------------------------------------------------------------
+begin
+  -- requested size doesn't match operand
+  if context.orgtyp^.size<>context.outtyp.size
+  -- requested precision doesn't match operand
+--  or context.outtyp.base^.fxp.fxdelta<>expr^.t.getctype()^.fxp.fxdelta
+  or context.orgtyp^.fxp.fx_inv_delta<>context.outtyp.fx_inv_delta
+    -- conversion is necesarry
+    then
+      ci_fixed.i_gen_convert_fixed(inst,info,context,expr,vysl);
+
+    {else
+      -- do nothing}
+      end if;
+  end i_gen_typecast_fixed;
 
 
 
@@ -2720,7 +2835,7 @@ begin
           newtarget(info,tg_end);
 
           -- je součástí adresy nějaký registr ?
-          if vysl.base.reg<>ir_none or (vysl.scale=1 and vysl.index.reg<>ir_none)
+          if vysl.base.reg<>ir_none or (vysl._scale=1 and vysl.index.reg<>ir_none)
 
             -- ano => přičíst k němu
             then
@@ -3227,6 +3342,16 @@ begin
                     optemp.free(info,context);
                     end declare;
                   end if;
+
+              -- fixed-point --> fixed-point
+              elsif er^.t.stype in dts_fixed and el^.t.stype in dts_fixed then
+                -- načíst hodnotu
+                i_newcontext(context,newcontext,lm_conv,el^.t.getctype);
+                i_load(inst,info,newcontext,context,er,vysl);
+              
+              -- floating-point --> floating-point
+              elsif er^.t.stype in dts_float and el^.t.stype in dts_float then
+                unimplemented({UNIMP=}000301);
 
               -- jiné konverze neumíme
               else 
@@ -3883,6 +4008,7 @@ procedure initopertab =
 ----------------------------------------------------------------------------------------------------
 with 
   ci_integer,
+  ci_fixed,
   ci_logical,
   ci_pointer,
   ci_string,
@@ -3902,6 +4028,28 @@ begin
 
   -- :=
   oset1s(opertab,op_assign,dts_integer,^i_gen_op_assign);
+
+
+  ---- fixed-point ----
+  -- *
+  oset1s(opertab,op_mul,dts_fixed,^i_gen_op_fixed_mul);
+
+  -- /
+  oset1s(opertab,op_div,dts_fixed,^i_gen_op_fixed_div);
+
+  -- +
+  oset1s(opertab,op_add,dts_fixed,^i_gen_op_fixed_add);
+
+  -- -
+  oset1s(opertab,op_sub,dts_fixed,^i_gen_op_fixed_sub);
+
+  -- :=
+  oset1s(opertab,op_assign,dts_fixed,^i_gen_op_assign);
+
+
+  ---- floating-point ----
+  -- :=
+  oset1s(opertab,op_assign,dts_float,^i_gen_op_assign);
 
 
   ---- znakové ----
@@ -3928,6 +4076,11 @@ begin
   ---- ordinální typy obecně ----
   -- < <= > >= <> =
   osetss(opertab,[op_lt,op_le,op_gt,op_ge,op_ne,op_eq],dts_ordinal,^i_gen_op_compare_ordinal);
+
+
+  ---- fixed-point relation operations ----
+  -- < <= > >= <> =
+  osetss(opertab,[op_lt,op_le,op_gt,op_ge,op_ne,op_eq],dts_fixed,^i_gen_op_compare_ordinal);
 
 
   ---- pointery ----

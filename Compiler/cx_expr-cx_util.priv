@@ -151,6 +151,41 @@ begin
   elsif t1.stype=dt_tag and t2.stype=dt_tag then
     result:=t1;
 
+  -- fixed-point -- fixed-point
+  elsif t1.stype=dt_fixed and t2.stype=dt_fixed then
+    ----- %TECH: Implicit fixed-point type conversions -------------------------------------------
+    -- If implicit typecast is needed, the more precise type is allways chosen.
+    -- This may generally result in 4 cases:
+    --
+    -- 1/ the chosen type includes the other type
+    -- 2/ the chosen type can represent all values of the other type within its range,
+    --    but the other type range is wider
+    -- 3/ the chosen type value range is wide enough, but (some) values of the other type
+    --    can't be represented
+    -- 4/ the chosen type can't represent all the other type values within its range
+    --    and the other type range is wider
+    --
+    -- ad 1: no problem
+    --       (ex: fixed 32 scale mod 2  -->  fixed 64 scale mod 4)
+    -- ad 2: run-time error can occur if value won't be possible to convert.
+    --       if program ends, semantics is ok elseway an exception is thrown during the run
+    --       (ex: fixed 32 scale mod 2  -->  fixed 32 scale mod 4)
+    -- ad 3 and 4: run-time roundings would necessary, so semantics change is possible
+    --             This is now forbidden by typechecks
+    --             (ex 3: fixed 32 scale mod 2  -->  fixed 64 scale mod 3)
+    --             (ex 4: fixed 32 scale mod 2  -->  fixed 32 scale mod 3)
+    ----------------------------------------------------------------------------------------------
+
+    -- more precise type will be the resulting one
+    if t1.getctype()^.fxp.fxdelta<t2.getctype()^.fxp.fxdelta
+      then result:=t1;
+      else result:=t2;
+      end if;
+
+    -- check again if resulting type deprecate precision 
+    -- paranoia, should be ok if passed typechecks
+    verify({VERIFY=}001423,not (uniint_is_multiple(result.getctype()^.fxp.fx_inv_delta,t1.getctype()^.fxp.fx_inv_delta) or uniint_is_multiple(result.getctype()^.fxp.fx_inv_delta,t2.getctype()^.fxp.fx_inv_delta)));
+
   -- univerzální -- univerzální
   -- Sem už by měly dorazit kompatibilní typy, takže není třeba testovat, zda
   -- se jedná o _kompatibilní_ univerzální typy a stačí vrátit jeden z nich.
@@ -315,6 +350,24 @@ begin
   -- uložit konstantu 
   store_ordinal(pexpimm(newexpr)^.imm,ui);
   end x_addui;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_addur =
+-- Doplní univerzální real. Typ uzlu převezme z původního výrazu.          
+-- Třídu nastaví na NC_VALUE.                                                 
+----------------------------------------------------------------------------------------------------
+begin
+  -- vznikl nový uzel 
+  derivenode(pexpnode(newexpr),oldexpr,info,nt_imm,is_const);
+
+  -- třída uzlu 
+  newexpr^.nclass:=nc_value;
+
+  -- uložit konstantu 
+  store_real(pexpimm(newexpr)^.imm,ur);
+  end x_addur;
 
 
 

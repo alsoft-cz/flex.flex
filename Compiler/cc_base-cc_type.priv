@@ -7,7 +7,7 @@ module private cc_type =
 ----------------------------------------------------------------------------------------------------
 
 with
-  cc_sym,cc_def.cc_codes;
+  cc_sym,cc_def.cc_codes{,cc_def.cc_var};
 
 ----------------------------------------------------------------------------------------------------
 procedure vset111 (
@@ -272,7 +272,7 @@ begin
   set111(toc_assign     ,true ,dt_unsigned  ,dt_unsigned  ,ttc_iaritm_check     ,trt_left);
   set1s1(toc_assign     ,true ,dts_integer  ,dt_uniint    ,ttc_convertible      ,trt_left);
 
-  ----- floating-point : = numerický -----
+  ----- floating-point := numerický -----
   set111(toc_assign     ,true ,dt_float     ,dt_float     ,ttc_raritm_check     ,trt_left);
   set111(toc_assign     ,true ,dt_float     ,dt_unireal   ,ttc_convertible      ,trt_left);
 
@@ -1517,6 +1517,100 @@ begin
         level:=tcl_convertible;
         end test_modaritm_left;
 
+
+
+      ----------------------------------------------------------------------------------------------
+      procedure test_raritm (
+          t1       : in typeview;
+          t2       : in typeview) =
+      -- Real types compatibility test.
+      -- None of the types can be universal.
+      ----------------------------------------------------------------------------------------------
+      begin
+        -- identical types
+        if t_equal(t1,t2) then level:=tcl_identical;
+
+        -- T1 is ancestor of T2 --> statically binary equal
+        elsif t_ancestor(context,t1,t2) then level:=tcl_static_identical;
+
+        -- T1 is descendant of T2 --> dynamically binary equal (ranges check)
+        elsif t_descendant(context,t1,t2) then level:=tcl_dynamic_identical;
+
+        -- fixed-point -- fixed-point
+        elsif t1.stype()=dt_fixed and t2.stype()=dt_fixed then
+          declare var
+            t1_to_t2   : t_logical := false;     -- T-T1 -> T2 conversion possible
+            t2_to_t1   : t_logical := false;     -- T-T2 -> T1 conversion possible
+
+          begin
+            -- in accordance to operation
+            case oclass
+              -- assignement and value transformation
+              when toc_assign,toc_transform do
+                  -- check if T2 -> T1 conversion is possible
+                  t2_to_t1:=uniint_is_multiple(t1.getctype()^.fxp.fx_inv_delta,t2.getctype()^.fxp.fx_inv_delta);
+
+              -- arithmetic operators
+              when toc_aritm,toc_raritm do
+                  -- in case of short assignement T2 -> T1 conversion has to be possible
+                  -- else one of T2 -> T1 or T1 -> T2 conversions have to be possible
+                  t2_to_t1:=uniint_is_multiple(t1.getctype()^.fxp.fx_inv_delta,t2.getctype()^.fxp.fx_inv_delta);
+                  t1_to_t2:=(not assign) and uniint_is_multiple(t2.getctype()^.fxp.fx_inv_delta,t1.getctype()^.fxp.fx_inv_delta);
+
+              -- relation operators
+              when toc_rel_compare,toc_rel_order do
+                  -- check if T2 -> T1 or T1 -> T2 conversion possible
+                  t2_to_t1:=uniint_is_multiple(t1.getctype()^.fxp.fx_inv_delta,t2.getctype()^.fxp.fx_inv_delta);
+                  t1_to_t2:=uniint_is_multiple(t2.getctype()^.fxp.fx_inv_delta,t1.getctype()^.fxp.fx_inv_delta);
+
+              -- elseway convertible, don't check conversion run-time safety (don't know how,
+              -- because we don't know, which type will be chosen, so ambiguous warnings could
+              -- occur)
+              when others do
+                t1_to_t2:=true;
+                t2_to_t1:=true;
+              end case;
+
+            {%%X(fixed-point) bylo by fajn nekde hlasit tenhle warning, ale tady to neni moc
+                              vhodne, jelikoz asi nemam k dispozici pozici ve zdrojaku;
+                              jak to resit?    vasekk
+            -- check if conversion is run-time safe
+            if t2_to_t1 xor t1_to_t2 then
+              -- T2 -> T1 conversion
+              if (t2_to_t1 and then
+              -- T2 not inclusively in T1
+              (t2.get_fxplow()<t1.get_fxplow() or t2.get_fxphigh()>t1.get_fxphigh()))
+              -- T1 -> T2 conversion
+              or (t1_to_t2 and then
+              -- T1 not inclusively in T2
+              (t1.get_fxplow()<t2.get_fxplow() or t1.get_fxphigh()>t2.get_fxphigh()))
+                then
+                  -- warning, run-time unstable conversion (run-time error can occur
+                  -- for value outside available value range of resulting type)
+                  ce^.setwarning(context,{CCERR=}000673,cw_unstable_conversion);
+
+                  -- tohle nefunguje, pozice se nastavi na konec fajlu... :-(
+                  -- expnody, nebo neco podobneho tady k dispozici nemam a info o vyslednem
+                  -- typu ven nevypropaguju. Kde by systematicky mel ten warning byt?
+                  ce^.loadpos();
+                  end if;
+                end if;
+            }
+              
+            -- conversion possible and allowed
+            if t1_to_t2 or t2_to_t1
+              then level:=tcl_convertible;
+              else level:=tcl_incompatible;
+              end if;
+            end declare;
+
+        -- convertible types
+        else level:=tcl_convertible;
+        end if;
+        end test_raritm;
+
+
+
     begin
       -- kontrola na přiřazení
       if assign>typecheck[oclass,t1.stype,t2.stype].a then
@@ -1549,16 +1643,7 @@ begin
         when ttc_modaritm_left_check do test_modaritm_left(t1,t2);
 
         -- kontrola kompatibility reálných typů
-        when ttc_raritm_check do
-            -- identické typpy
-            if t_equal(t1,t2) then level:=tcl_identical
-            -- T1 je předek T2 --> staticky binárně shodné
-            elsif t_ancestor(context,t1,t2) then level:=tcl_static_identical
-            -- T1 je potomek T2 --> dynamicky binárně shodné (kontrola mezí)
-            elsif t_descendant(context,t1,t2) then level:=tcl_dynamic_identical
-            -- konvertibilní typy
-            else level:=tcl_convertible;
-            end if;
+        when ttc_raritm_check   do test_raritm(t1,t2);
 
         -- jednoduchá kontrola dědičnosti
         when ttc_simple_check do

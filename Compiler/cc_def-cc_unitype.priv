@@ -47,12 +47,19 @@ const
   ui_1_1           = [1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
   ui_2_0           = [0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
 
+  -- rozsah univerzálního celého čísla
+  ui_first         = [for 1..(uniint_precision div 8)-1 use $00, for others use $80];
+  ui_last          = [for 1..(uniint_precision div 8)-1 use $FF, for others use $7F];
+
   -- rozsah univerzálního znaku jako univerzální integer
   ui_unichar_first = [for others use 0];
   ui_unichar_last  = [for tuniint:first..tuniint:first+tunichar:size-1 use $FF,for others use 0];
 
   -- malá reálná čísla
-  ur_0             = [for sign use false, for mantissa use ui_0, for exponent use ui_0];
+  ur_minus_1       = [for negative use true,  for mantissa use ui_1, for exponent use ui_0];
+  ur_0             = [for negative use false, for mantissa use ui_0, for exponent use ui_0];
+  ur_1             = [for negative use false, for mantissa use ui_1, for exponent use ui_0];
+  ur_10            = [for negative use false, for mantissa use ui_5, for exponent use ui_1];
 
   -- významné adresy
   uda_0            = tunidata_addr(0);
@@ -71,6 +78,7 @@ const
   udb_32           = tunidata_bitsize(32);
   udb_64           = tunidata_bitsize(64);
   udb_80           = tunidata_bitsize(80);
+  udb_128          = tunidata_bitsize(128);
 
   -- logické hodnoty
   ul_false         = tunilogical:false;
@@ -215,9 +223,35 @@ begin
     mov        result,eax
     #end asm;
 #else;
-  neimplementovano
+  #error 'neimplementovano';
   #end if;
   end uniint_to_unsigned;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure uniint_to_unsigned64 =
+-- Převod UI na T_UNSIGNED64.
+----------------------------------------------------------------------------------------------------
+begin
+#if result:size=8 then;
+  #syntax asm;
+    -- get source and destination addresses
+    mov        esi,ui
+    mov        edi,result
+
+    -- copy 1st LSDW
+    mov        eax,[esi]
+    mov        [edi],eax
+
+    -- copy 2nd LSDW
+    mov         eax,[esi+4]
+    mov         [edi+4],eax
+    #end asm;
+#else;
+  #error 'neimplementovano';
+  #end if;
+  end uniint_to_unsigned64;
 
 
 
@@ -259,11 +293,22 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure unireal_normalize (
+    ur             : in out tunireal);           -- nenormalizovaná reálná hodnota
+-- Zarovná nejméně významný bit mantisy doprava. Pokud je mantisa = ui_0, vrátí ur_0.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure uniint_to_unireal =
--- Převod UI na UR.
+-- Převod [ui] na [ur].
 ----------------------------------------------------------------------------------------------------
 begin
-  raise feature_not_implemented;
+  result.negative:=uniint_sign(ui);
+  result.mantissa:=abs ui;
+  result.exponent:=ui_0;
+  unireal_normalize(result);
   end uniint_to_unireal;
 
 
@@ -1354,6 +1399,17 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure uniint_div =
+-- A div B
+----------------------------------------------------------------------------------------------------
+begin
+  result:=A;
+  uniint_div_assign(result,B);
+  end uniint_div;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure uniint_mod_assign =
 -- A := A mod B
 ----------------------------------------------------------------------------------------------------
@@ -1514,6 +1570,115 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure uniint_mod =
+-- A mod B
+----------------------------------------------------------------------------------------------------
+begin
+  result:=A;
+  uniint_mod_assign(result,B);
+  end uniint_mod;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure uniint_shl_assign =
+-- [a] := [a] shl [b]
+----------------------------------------------------------------------------------------------------
+const
+  uniint_words     = uniint_precision div 16;
+  uniint_words_1   = uniint_words-1;
+
+begin
+  #syntax asm;
+    -- load shift count into ECX
+    mov         esi,b
+    mov         ecx,[esi]
+    
+    -- load 1st operand address
+    mov         edi,a
+    mov         esi,edi
+
+    -- separate word-shift count and (0..15) bit shift count into CH and CL
+    shl         cx,<t_unsigned8>4
+    shr         cl,<t_unsigned8>4
+
+    -- load word-shift to EBX
+    xor         ebx,ebx
+    mov         bx,cx
+    shr         bx,<t_unsigned8>8
+
+    -- compute operand source/destination addresses
+    mov         eax,ebx
+    shl         eax,<t_unsigned8>1
+    add         edi,eax
+
+    -- compute number of iterations
+    neg         bl
+    add         bl,<t_unsigned8>uniint_words_1
+
+    -- load initial word
+    xor         edx,edx
+    mov         dx,[esi+ebx*2]
+
+    -- bit shift, discard MSW and save LSW into MSW of EAX
+    shl         edx,cl
+    mov         ax,dx
+    shl         eax,<t_unsigned8>16
+
+    -- iteration
+  @nextW:
+    dec         bl
+    js          @finalW
+
+    -- load word
+    xor         edx,edx
+    mov         dx,[esi+ebx*2]
+
+    -- bit shift, add carry to previously saved word, store it to destination and save the current one
+    shl         edx,cl
+    xor         ax,ax
+    or          eax,edx
+    rol         eax,<t_unsigned8>16
+    mov         [edi+ebx*2+2],ax
+    jmp         @nextW
+
+    -- store final word
+  @finalW:
+    shr         eax,<t_unsigned8>16
+    mov         [edi],ax
+
+    -- load word-shift count to ECX
+    shr         cx,<t_unsigned8>8
+
+    -- zero-pad remaining words
+  @zero_pad:
+    xor         eax,eax
+
+  @nextW_0:
+    dec         cl
+    js          @end
+    mov         [esi+ecx*2],ax
+    jmp         @nextW_0
+
+  @end:
+  #end asm;
+  end uniint_shl_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure uniint_shl =
+-- [a] shl [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a;
+  uniint_shl_assign(result,b);
+  end uniint_shl;
+
+
+
+{
+----------------------------------------------------------------------------------------------------
 procedure uniint_shl_assign =
 -- A := A shl B
 ----------------------------------------------------------------------------------------------------
@@ -1542,17 +1707,27 @@ begin
       @nextstep:
         xor        ebx,ebx
         mov        ecx,uniint_dwords
+
+      -- clear carry and save flags
         clc
+        pushf
 
       -- posun uniint o 1 bit
       @nextdword:
         mov        eax,[esi+ebx]
+
+      -- load flags, rotate through carry and save flags
+        popf
         rcl        eax,1
+        pushf
+
+      -- next dw
         mov        [esi+ebx],eax
         add        ebx,4
-        dec        ecx
-        jecxz      @k1
-        jmp        @nextdword
+        loop       @nextdword
+
+      -- clean stack
+        popf
 
       @k1:
         dec        edx
@@ -1639,9 +1814,116 @@ begin
       end if;
     end if;
   end uniint_shl_assign;
-
+}
   
 
+
+----------------------------------------------------------------------------------------------------
+procedure uniint_shr_assign =
+-- [a] := [a] shr [b]
+----------------------------------------------------------------------------------------------------
+const
+  uniint_words     = uniint_precision div 16;
+  uniint_words_1   = uniint_words-1;
+
+begin
+  #syntax asm;
+    -- load shift count into ECX
+    mov         esi,b
+    mov         ecx,[esi]
+    
+    -- load 1st operand address
+    mov         edi,a
+    mov         esi,edi
+
+    -- separate word-shift count and (0..15) bit shift count into CH and CL
+    shl         cx,<t_unsigned8>4
+    shr         cl,<t_unsigned8>4
+
+    -- load word-shift to EBX
+    xor         ebx,ebx
+    mov         bx,cx
+    shr         bx,<t_unsigned8>8
+
+    -- CL <- 16-CL
+    neg         cl
+    add         cl,<t_unsigned8>16
+
+    -- compute operand source/destination addresses
+    mov         eax,ebx
+    shl         eax,<t_unsigned8>1
+    add         esi,eax
+
+    -- compute number of iterations
+    neg         bl
+    add         bl,<t_unsigned8>uniint_words_1
+
+    -- load initial word
+    xor         edx,edx
+    mov         dx,[esi]
+
+    -- bit shift, discard LSW and save MSW into LSW of EAX
+    shl         edx,cl
+    shr         edx,<t_unsigned8>16
+    mov         eax,edx
+
+    -- iteration
+  @nextW:
+    dec         bl
+    js          @finalW
+
+    -- load word
+    inc         esi
+    inc         esi
+    xor         edx,edx
+    mov         dx,[esi]
+
+    -- bit shift, add carry to previously saved word, store it to destination and save the current one
+    shl         edx,cl
+    or          eax,edx
+    mov         [edi],ax
+    inc         edi
+    inc         edi
+    shr         eax,<t_unsigned8>16
+    jmp         @nextW
+
+    -- store final word
+  @finalW:
+    mov         [edi],ax
+
+    -- load word-shift count to ECX
+    shr         cx,<t_unsigned8>8
+
+    -- zero-pad remaining words
+  @zero_pad:
+    xor         eax,eax
+
+  @nextW_0:
+    dec         cl
+    js          @end
+    inc         edi
+    inc         edi
+    mov         [edi],ax
+    jmp         @nextW_0
+
+  @end:
+  #end asm;
+  end uniint_shr_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure uniint_shr =
+-- [a] shr [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a;
+  uniint_shr_assign(result,b);
+  end uniint_shr;
+
+
+
+{
 ----------------------------------------------------------------------------------------------------
 procedure uniint_shr_assign =
 -- A := A shr B
@@ -1669,19 +1951,15 @@ begin
 
       -- posun
       @nextstep:
-        mov        ebx,uniint_lastdword
         mov        ecx,uniint_dwords
         clc
 
       -- posun uniint o 1 bit
       @nextdword:
-        mov        eax,[esi+ebx]
+        mov        eax,[esi+ecx*4-4]
         rcr        eax,1
-        mov        [esi+ebx],eax
-        sub        ebx,4
-        dec        ecx
-        jecxz      @k1
-        jmp        @nextdword
+        mov        [esi+ecx*4-4],eax
+        loop       @nextdword
 
       @k1:
         dec        edx
@@ -1770,6 +2048,7 @@ begin
       end if;
     end if;
   end uniint_shr_assign;
+}
 
   
 
@@ -1798,6 +2077,17 @@ begin
     loop       @next
     #end asm;
   end uniint_and_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure uniint_and =
+-- A and B
+----------------------------------------------------------------------------------------------------
+begin
+  result:=A;
+  uniint_and_assign(result,B);
+  end uniint_and;
 
 
 
@@ -1919,6 +2209,30 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure uniint_not =
+-- not A
+----------------------------------------------------------------------------------------------------
+const
+  uniint_dwords    = uniint_precision div 8 div 4;
+
+begin
+  result:=A;
+  #syntax asm;
+    -- adresy operandů a výsledku 
+    mov        edi,result
+
+    -- inicializace
+    mov        ecx,uniint_dwords
+
+    -- znegovat
+@1: not        <t_unsigned32>[edi+ecx*4-4]
+    loop       @1
+    #end asm;
+  end uniint_not;
+
+
+  
+----------------------------------------------------------------------------------------------------
 procedure uniint_not_assign =
 -- A := not A
 ----------------------------------------------------------------------------------------------------
@@ -1960,7 +2274,7 @@ begin
     jnb        @konec
     mov        ecx,uniint_dwords
 
-    -- A je zaporne, prevede se na kladne 
+    -- A je zaporne, prevede se na kladne
   @ma:
     mov        ebx,[esi]
     not        ebx
@@ -1973,6 +2287,17 @@ begin
   @konec:
     #end asm;
   end uniint_abs_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure uniint_abs =
+-- abs [a]   
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a;
+  uniint_abs_assign(result);
+  end uniint_abs;
 
 
 
@@ -2336,6 +2661,16 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure uniint_is_multiple =
+-- True if and only if [ui] = x*[base], x from N0.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=ui_0=(ui mod base);
+  end uniint_is_multiple;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure uniint_is_power2 =
 -- True, je-li A nějaká mocnina dvojky.
 ----------------------------------------------------------------------------------------------------
@@ -2577,6 +2912,27 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure uniint_exp10 =
+-- 10^[ui] (signed)
+----------------------------------------------------------------------------------------------------
+begin
+  -- 10^0 = 1
+  result:=ur_1;
+
+  -- 10^[ui] = (10^abs([ui]))^sign([ui])
+  for i in 1..uniint_to_unsigned(abs(ui)) loop
+    result*ur_10;
+    end loop;
+
+  -- inversion, if needed
+  if uniint_sign(ui) then
+    result:=ur_1/result;
+    end if;
+  end uniint_exp10;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure char_to_unichar =
 -- Převod C na TUNICHAR.
 ----------------------------------------------------------------------------------------------------
@@ -2597,12 +2953,1080 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure unireal_round =
+-- Zaokrouhlit [ur] na nejbližší celé číslo.
+----------------------------------------------------------------------------------------------------
+var
+  ceil             : t_logical;
+
+begin
+  -- shift mantissa to get exponent 0
+  if ur.exponent<ui_0
+    -- right shift
+    then
+      result:=ur.mantissa shr (-ur.exponent-ui_1);
+
+      -- check if rounding needed
+      ceil:=(result and ui_1)<>ui_0;
+
+      result shr ui_1;
+
+      -- rounding
+      if ceil then succ result; end if;
+
+    -- left shift (beware, there's no overflow detection)
+    else
+      result:=ur.mantissa shl ur.exponent;
+      end if;
+
+  -- add sign
+  if ur.negative then -result; end if;
+  end unireal_round;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_store_fixed =
+-- Stores binary value of fixed-point type.
+----------------------------------------------------------------------------------------------------
+begin
+  uniint_store(unireal_round(ur*uniint_to_unireal(inv_delta)),val,size);
+  end unireal_store_fixed;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_store_float =
+-- Stores binary value of float-point type.
+----------------------------------------------------------------------------------------------------
+type
+  t_float_precision = enum
+    single_prec;
+    double_prec;
+    extended_prec;
+    end enum;
+
+  t_float_parameter = enum
+    bits;
+    signif_bits;
+    exp_bits;
+    exp_max;
+    end enum;
+
+const
+  fpars_tab        : array t_float_precision,t_float_parameter of t_signed32 =
+                   [for single_prec   use [32, 24,  8,   127],
+                    for double_prec   use [64, 53, 11,  1023],
+                    for extended_prec use [80, 64, 15, 16383]];
+
+#template sign_index(float_prec);
+  (fpars_tab[(float_prec),bits]-1)
+  #end sign_index;
+
+#template exponent_index(float_prec);
+  (fpars_tab[(float_prec),signif_bits])
+  #end exponent_index;
+
+#template bitsize(float_prec);
+  (fpars_tab[(float_prec),bits])
+  #end bitsize;
+
+#template significand_bits(float_prec);
+  (fpars_tab[(float_prec),signif_bits])
+  #end significand_bits;
+
+#template exponent_bits(float_prec);
+  (fpars_tab[(float_prec),exp_bits])
+  #end exponent_bits;
+
+#template exponent_max(float_prec);
+  (fpars_tab[(float_prec),exp_max])
+  #end exponent_max;
+
+#template exponent_min(float_prec);
+  (-fpars_tab[(float_prec),exp_max]+1)
+  #end exponent_min;
+
+#template exponent_bias(float_prec);
+  (fpars_tab[(float_prec),exp_max])
+  #end exponent_bias;
+
+var
+  mask             : tuniint;                    -- bit mask
+  deltab           : t_signed32;                 -- bit width difference
+  buffer           : tuniint;                    -- working space
+  exp              : tuniint;                    -- (biased) exponent
+  prec             : t_float_precision;          -- desired precision
+
+begin
+  -- set desired precision
+  case size
+      when  4 do     prec:=  single_prec;
+      when  8 do     prec:=  double_prec;
+      when 10 do     prec:=extended_prec;
+      -- unexpected type size
+      when others do verify({VERIFY=}001399,true);
+    end case;
+
+  -- handle 0.0
+  if ur=ur_0 then
+    -- 0.0 will be stored
+    return;
+    end if;
+
+  -- load working variables
+  buffer:=ur.mantissa;
+  exp:=ur.exponent;
+
+  -- count inner-representation msb position
+  mask:=ui_first;
+  deltab:=uniint_precision;
+  while (mask and buffer)=ui_0 loop
+    mask shr ui_1;
+    pred deltab;
+    end loop;
+
+  -- normalize exponent
+  exp+signed_to_uniint(deltab-1);
+
+  -- count desired precision to inner rep. binary digits difference
+  deltab:=significand_bits(prec)-deltab;
+
+  -- set significand
+  if deltab<0
+    -- mantissa is too long to fit significiand
+    then
+      -- shrink and round mantissa
+      declare var
+        carry_flag : tuniint;                    -- carry flag
+
+      begin
+        -- fetch carry flag
+        if ((mask shr signed_to_uniint(significand_bits(prec))) and buffer)<>ui_0 then
+          carry_flag:=ui_1;
+          end if;
+
+        -- shrink mantissa
+        buffer shr signed_to_uniint(-deltab);
+
+        -- round mantissa
+        buffer+carry_flag;
+        end declare;
+
+      -- check for overflow
+      mask shr signed_to_uniint(-(deltab+1));
+      if (mask and buffer)<>ui_0 then
+        -- handle overflow
+        succ exp;
+
+        -- clear overflow
+        buffer xor mask;
+        end if;
+
+    -- mantissa is short enough to fit significand
+    else
+      -- expand mantissa
+      buffer shl signed_to_uniint(deltab);
+      end if;
+
+  -- exponent too high
+  if exp>signed_to_uniint(exponent_max(prec)) then
+    -- dump error
+
+  -- exponent too small
+  elsif exp<signed_to_uniint(exponent_min(prec)) then
+    -- dump warning
+
+    -- 0.0 will be stored
+    return;
+
+  -- exponent in range, assemble the result
+  else
+    -- handle implicit integer bit and include biased exponent
+    mask:=ui_1 shl signed_to_uniint(significand_bits(prec)-1);
+    exp+signed_to_uniint(exponent_bias(prec));
+    if prec<>extended_prec
+      -- clear implicit integer bit for single and double precision, shift [exp] accordingly
+      then
+        buffer xor mask;
+        exp shl signed_to_uniint(significand_bits(prec)-1);
+
+      -- set implicit integer bit for extended precision, shift [exp] accordingly
+      else
+        buffer or mask;
+        exp shl signed_to_uniint(significand_bits(prec));
+        end if;
+    buffer or exp;
+
+    -- set sign bit for negative value
+    if unireal_sign(ur) then
+      mask:=ui_1 shl signed_to_uniint(sign_index(prec));
+      buffer or mask;
+      end if;
+    end if;
+
+  -- copy [buffer] to [val]
+  uniint_store(buffer,val,size);
+  end unireal_store_float;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_sign =
+-- T-[a] je záporné
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a.negative;
+  end unireal_sign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_abs_assign =
+-- [a] := abs([a])
+----------------------------------------------------------------------------------------------------
+begin
+  a.negative:=false;
+  end unireal_abs_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_abs =
+-- abs([a])
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a;
+  result.negative:=false;
+  end unireal_abs;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure unireal_le =
 -- A <= B
 ----------------------------------------------------------------------------------------------------
+var
+  tmp              : tunireal;
+
 begin
-  raise feature_not_implemented;
+  tmp:=A-B;
+  result:=unireal_sign(tmp) or tmp=ur_0;
   end unireal_le;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_lt =
+-- [a] < [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=unireal_sign(a-b);
+  end unireal_lt;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_ge =
+-- [a] >= [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=not unireal_lt(a,b);
+  end unireal_ge;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_gt =
+-- [a] > [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=not unireal_le(a,b);
+  end unireal_gt;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_neg_assign =
+-- [a] := -[a]
+----------------------------------------------------------------------------------------------------
+begin
+  not a.negative;
+  end unireal_neg_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_neg =
+-- -[a]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a;
+  not result.negative;
+  end unireal_neg;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_normalize =
+-- Zarovnat nejméně významný bit mantisy doprava. Pokud je mantisa = ui_0, vrátit ur_0.
+-- Dále zajist, aby znaménkový bit byl 0.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure minimize_mantissa (
+        m          : in out tuniint;
+        exp        : in out tuniint) =
+    -- Shift mantissa right until lsb is 1.
+    ------------------------------------------------------------------------------------------------
+    var
+      e            : t_signed32;
+
+    begin
+      -- count left-side zeros
+      #syntax asm;
+        -- get addresses
+        mov         esi,m
+        lea         edi,e
+
+        -- keep shift count at top of stack
+        xor         ecx,ecx
+        push        ecx
+
+        -- while(![a]&1) [exp]++;
+        mov         eax,32
+
+      @next_dw:
+        xor         edx,edx
+        or          edx,[esi+ecx*4]
+        jnz         @per_bit
+        add         [esp],eax
+        inc         ecx
+        jmp         @next_dw
+
+      @per_bit:
+        mov         eax,<t_unsigned32>1
+
+      @next_bit:
+        mov         ebx,edx
+        and         ebx,eax
+        jnz         @end
+        mov         ebx,[esp]
+        inc         ebx
+        mov         [esp],ebx
+        shl         eax,1
+        jmp         @next_bit
+
+        -- store shift count to [e]
+      @end:
+        pop         ecx
+        mov         [edi],ecx
+      #end asm;
+
+      -- shr to get lsb=1
+      m shr signed_to_uniint(e);
+      exp+signed_to_uniint(e);
+      end minimize_mantissa;  
+
+begin
+  if ur.mantissa=ui_0
+    then 
+      -- výsledek je 0
+      ur:=ur_0;
+
+    else
+      -- shr [ur.mantissa] until lsb([ur.mantissa])=1
+      minimize_mantissa(ur.mantissa,ur.exponent);
+
+      -- zn. bit je 1 => zkrátit mantisu o 1bit se zaokrouhlením nahoru (ořezaný bit je 1)
+      if uniint_sign(ur.mantissa) then
+        ur.mantissa shr ui_1;
+        if ur.mantissa=ui_last
+          then
+            ur.mantissa:=ui_1;
+            ur.exponent+unsigned_to_uniint(uniint_precision);
+          else
+            succ ur.mantissa;
+            succ ur.exponent;
+
+            -- shr [ur.mantissa] until lsb([ur.mantissa])=1
+            minimize_mantissa(ur.mantissa,ur.exponent);
+            end if;
+        end if;
+      end if;
+  end unireal_normalize;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_add =
+-- [a] + [b]
+----------------------------------------------------------------------------------------------------
+const
+  -- bit mask (signed) uniint MSb
+  msb_mask         : tuniint = [for uniint_precision div 8 use $40, for others use 0];
+
+var
+  mant2            : tuniint;                    -- mantisa 2. operandu (1. op. je výsledek)
+  deltaexp         : tuniint;                    -- rozdíl většího a menšího exponentu
+  neg2             : t_logical;                  -- sign of 2nd operand
+
+begin
+  -- [a] + [b] = [a.mantissa]*2^[a.exponent] + [b.mantissa]*2^[b.exponent]
+  --           = 2^[a.exponent] * ([a.mantissa] + [b.mantissa]*2^([b.exponent]-[a.exponent]))
+
+  -- 1. argument buď ten s větším exponentem
+  if a.exponent>b.exponent
+    then
+      result.mantissa:=a.mantissa;
+      mant2:=b.mantissa;
+      result.exponent:=a.exponent;
+      deltaexp:=a.exponent-b.exponent;
+      result.negative:=a.negative;
+      neg2:=b.negative;
+  
+    else
+      result.mantissa:=b.mantissa;
+      mant2:=a.mantissa;
+      result.exponent:=b.exponent;
+      deltaexp:=b.exponent-a.exponent;
+      result.negative:=b.negative;
+      neg2:=a.negative;
+    end if;
+
+  -- shift 1st operand's mantissa left without loss of precision
+  while (msb_mask and result.mantissa)=ui_0 and deltaexp>ui_0 loop
+    result.mantissa shl ui_1;
+    pred deltaexp;
+    pred result.exponent;
+    end loop;
+
+  -- shift 2nd operand's mantissa right (if needed)
+  mant2 shr deltaexp;
+
+  -- add mantissas  (method actually depends on signs)
+  if result.negative xor neg2
+    -- subtraction
+    then
+      if result.negative
+        -- [mant2] - [result.mantissa]
+        then result.mantissa:=mant2-result.mantissa;
+
+        -- [result.mantissa] - [mant2]
+        else result.mantissa-mant2;
+        end if;
+
+      -- sign of result
+      if uniint_sign(result.mantissa)
+        then
+          -result.mantissa;
+          result.negative:=true;
+        else
+          result.negative:=false;
+          end if;
+
+    -- addition
+    else
+      result.mantissa+mant2;
+      end if;
+
+  -- normalize [result]
+  unireal_normalize(result);
+  end unireal_add;
+
+ 
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_add_assign =
+-- [a] := [a] + [b]
+----------------------------------------------------------------------------------------------------
+begin
+  a:=unireal_add(a,b);
+  end unireal_add_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_sub_assign =
+-- [a] := [a] - [b]
+----------------------------------------------------------------------------------------------------
+begin
+  unireal_add_assign(a,-b);
+  end unireal_sub_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_sub =
+-- [a] - [b]
+----------------------------------------------------------------------------------------------------
+begin
+  -- [a]-[b] = [a]+(-[b]) = -(-[a]+[b])
+
+  result:=-b;
+  unireal_add_assign(result,a);
+  end unireal_sub;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_mul_assign =
+-- [a] := [a] * [b]
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure uniint_mul_assign_double (
+        _a         : in out tuniint;
+        _b         : in tuniint;
+        _exp       : out tuniint) =
+    -- [_a] := MSbits([_a] * [_b]);
+    -- Works in double precision.
+    -- The result is rounded to fit [tuniint], returns exponent in [_exp].
+    ------------------------------------------------------------------------------------------------
+    const
+      uniint_sign_bit  = uniint_precision-1;     -- bit index of uniint sign bit
+      uniint_dwords    = uniint_precision div 32;-- uniint precision in dwords
+      uniint_bytes     = uniint_dwords*4;        -- uniint precision in bytes
+      uniint_MSdw      = uniint_dwords-1;        -- dword index of the uniint MSdword
+      uniint_MSdw_index= uniint_MSdw*4;          -- byte index of the uniint MSdword
+      uniint_2x_MSdw   = uniint_dwords*2-1;      -- dword index of the uniint MSdword
+
+    var
+      sum2x        : array 0..uniint_2x_MSdw of t_unsigned32 := [for others use 0];
+
+    begin
+      #syntax asm;
+        -- initialisation
+        lea        edi,sum2x                     -- EDI <- addr([sum2x])
+
+        -- iteration over [_a]
+        xor        ecx,ecx                       -- k=0,..,uniint_MSdw
+
+      @next_a:
+        mov        esi,_a                        -- ESI <- addr([_a])
+        mov        ebx,[esi+ecx*4]               -- EBX <- [_a]_k
+        push       ecx                           -- save k
+
+        -- iteration over [_b]
+        xor        ecx,ecx                       -- l=0,..,uniint_MSdw
+        mov        esi,_b                        -- ESI <- addr([_b])
+      @next_b:
+
+        -- destination index pre-preparation
+        pop        edx                           -- EDX <- k
+        push       edx                           -- save k
+        push       ecx                           -- save l
+
+        -- dwords multiplication
+        mov        eax,[esi+ecx*4]               -- EAX <- [_b]_l
+        add        ecx,edx                       -- ECX <- ECX+EDX = l+k
+        xor        edx,edx                       -- EDX <- 0
+        mul        ebx                           -- EDX:EAX <- EAX*EBX = [_b]_l*[_a]_k
+        add        [edi+ecx*4],eax               -- [sum2x]_(l+k) += LSDW([_b]_l*[_a]_k)
+        inc        ecx                           -- ECX <- ECX+1 = l+k+1
+        adc        [edi+ecx*4],edx               -- [sum2x]_(l+k+1) += MSdw([_b]_l*[_a]_k)+CF
+
+        -- CF additions (note that [EDI+ECX*4] address can never exceed [sum2x] bounds)
+      @add_cf:
+        jnc        @dw_multiplied                -- CF=0 => dw multiplication done
+        inc        ecx                           -- ECX++
+        mov        eax,[edi+ecx*4]               -- [sum2x]_(l+k+...) += CF
+        adc        eax,0
+        mov        [edi+ecx*4],eax
+        jmp        @add_cf                       -- goto @add_cf
+      @dw_multiplied:
+
+        -- next l
+        pop        ecx                           -- ECX <- l
+        inc        ecx                           -- l++
+        cmp        ecx,uniint_dwords             -- k-[uniint_dwords]
+        jne        @next_b                       -- if(k!=[uniint_dwords]) goto @next_b;
+
+        -- next k
+        pop        ecx                           -- ECX <- k
+        inc        ecx                           -- k++
+        cmp        ecx,uniint_dwords             -- k-[uniint_dwords]
+        jne        @next_a                       -- if(k!=[uniint_dwords]) goto @next_a;
+
+        -- count dw shifts and bit shifts
+        lea        esi,sum2x                     -- ESI <- addr([sum2x])
+        mov        ecx,uniint_dwords             -- ECX will accumulate dw-shift count
+
+        -- find the most significient dw of result
+      @load_dw:
+        dec        ecx                           -- ECX--
+        mov        eax,[esi+ecx*4+uniint_bytes]  -- EAX <- dw from MS1/2 of [sum2x], order top-bottom
+        xor        ebx,ebx                       -- EBX <- 0
+        or         ebx,eax                       -- test for EAX<>0 (=> a significient bit found)
+        jnz        @shifts                       -- EAX contains the MS dw of [sum2x]
+
+        -- no significient bit in tested dw
+        or         eax,ecx                       -- test if ECX==0
+        jz         @result                       -- if all MS1/2 dws are 0 then goto @result
+        jmp        @load_dw                      -- next dw
+
+        -- find the most significient bit in the MS dw
+      @shifts:
+        clc                                      -- CF <- 0
+        xor        ebx,ebx                       -- EBX will accumulate trading zeros count
+
+      @next_shl:
+        shl        eax,1                         -- EAX<<=1
+        inc        ebx                           -- EBX++
+        jnc        @next_shl                     -- if(!CF) goto @next_shl;
+
+        -- the MS bit of the MS dw is its top-most bit
+        cmp        ebx,1                         -- test if EBX==1
+        jne        @count_bits                   -- if(EBX!=1) goto @count_bits;
+        xor        ebx,ebx                       -- else EBX <- 0;
+        inc        ecx                           --      ECX++
+        jmp        @store_exponent               -- goto @exponent
+
+        -- count position of MS bit
+      @count_bits:
+        neg        ebx                           -- EBX <- -EBX
+        add        ebx,33                        -- EBX+=32+1, EBX contains bit-shift count
+
+        -- store the exponent (32*ECX+EBX)
+      @store_exponent:
+        mov        eax,ecx                       -- EAX <- ECX
+        shl        eax,<t_unsigned8>5            -- EAX*=32
+        add        eax,ebx                       -- EAX+=EBX
+        mov        edi,_exp                      -- EDI <- addr([_exp])
+        mov        [edi],eax                     -- [_exp] <- EAX
+
+        -- shift right the result to get the MS bit to LS1/2 of the result
+        lea        edi,sum2x                     -- EDI <- addr([sum2x])
+        xor        eax,eax                       -- EAX <- 0
+        or         eax,ecx                       -- test if ECX==0  (also note that EAX <- ECX)
+        jz         @per_bit_shifts               -- if(!ECX) goto @per_bit_shifts;
+
+        -- shift per dw iteration
+        mov        esi,edi                       -- ESI <- addr([sum2x])
+        shl        eax,<t_unsigned8>2            -- EAX*=4
+        add        esi,eax                       -- ESI+=EAX
+
+        add        eax,uniint_bytes              -- EAX contains break index for the loop
+        xor        ecx,ecx                       -- ECX <- 0
+
+      @next_dw_mov:
+        mov        edx,[esi+ecx]                 -- EDX <- [ESI+ECX]
+        mov        [edi+ecx],edx                 -- dw shift
+        add        ecx,4                         -- ECX+=4
+        cmp        eax,ecx                       -- test if ECX reached the break index
+        jne        @next_dw_mov                  -- if(EAX!=ECX) goto @next_dw_mov
+
+        -- shift per 1 bit iteration
+      @per_bit_shifts:
+        xor        eax,eax                       -- EAX <- 0
+        or         eax,ebx                       -- test if EBX==0
+        jz         @result                       -- if(EBX==0) goto @result;
+
+        -- shift [sum2x] 1 bit right
+        mov        ecx,uniint_dwords             -- ECX <- [uniint_dwords]
+        clc                                      -- CF <- 0
+
+      @next_dw_shr:
+        mov        eax,[edi+ecx*4]               -- EAX <- [EDI+ECX*4]
+        rcr        eax,1                         -- CF,EAX>>1
+        mov        [edi+ecx*4],eax               -- [EDI+ECX*4] <- EAX
+        dec        ecx                           -- ECX--
+        jns        @next_dw_shr                  -- if(ECX>=0) goto @next_dw_shr;
+
+        dec        ebx                           -- EBX--
+        jmp        @per_bit_shifts               -- goto @per_bit_shifts
+
+      @result:
+        -- if sign bit is set then do one more shr
+        lea        edi,sum2x                     -- EDI <- addr([sum2x])
+        mov        eax,[edi+uniint_MSdw_index]   -- EAX <- MSdw([sum2x])
+        and        eax,$80000000                 -- test if MSb([sum2x]) is set
+        jz         @end                          -- if(!MSb([sum2x])) goto @end;
+
+        -- shift result 1 bit right
+        mov        ebx,1                         -- EBX <- 1
+        xor        edx,edx                       -- EDX <- 0
+        mov        ecx,uniint_MSdw               -- ECX <- [uniint_MSdw]
+        clc                                      -- CF <- 0
+
+      @next_dw_shr_:
+        mov        eax,[edi+ecx*4]               -- EAX <- [EDI+ECX*4]
+        rcr        eax,1                         -- CF>>EAX>>1
+        mov        [edi+ecx*4],eax               -- [EDI+ECX*4] <- EAX
+        dec        ecx                           -- ECX--
+        jns        @next_dw_shr_                 -- if(ECX>=0) goto @next_dw_shr_;
+
+        -- round result
+        pushf                                    -- push flags to the stack
+        xor        ecx,ecx                       -- ECX <- 0
+        mov        eax,uniint_dwords             -- EAX <- [uniint_dwords]
+
+      @next_dw_add_:
+        popf                                     -- pop flags from stack
+        jnc        @inc_exponent                 -- if(!CF) goto @inc_exponent
+        mov        edx,[edi+ecx*4]               -- EDX <- [EDI+ECX*4]
+        adc        edx,0                         -- EDX+=CF
+        mov        [edi+ecx*4],edx               -- [EDI+ECX*4] <- EDX
+        pushf                                    -- push flags to stack
+        inc        ecx                           -- ECX++
+        cmp        eax,ecx                       -- test if ECX reached the break
+        jne        @next_dw_add_                 -- if(EAX!=ECX) goto @next_dw_add;
+
+        popf                                     -- pop flags from stack
+        jns        @inc_exponent                 -- if(!SF) goto @inc_exponent;
+
+        -- SF => result is 1*2^(exponent+1+[uniint_precision]-1)
+        xor        edx,edx                       -- EDX <- 0
+        mov        [edi+uniint_MSdw_index],edx   -- store MSdw([sum2x]) == 0
+        inc        edx                           -- EDX <- 1
+        mov        [edi],edx                     -- store LSdw([sum2x]) == 1
+        add        ebx,uniint_sign_bit           -- EBX+=[uniint_precision]-1
+
+        -- increment exponent
+      @inc_exponent:
+        mov        edi,_exp                      -- EDI <- addr([_exp])
+        mov        edx,[edi]                     -- EDX <- [_exp]
+        add        edx,ebx                       -- EDX+=EBX
+        mov        [edi],edx                     -- [e] <- EDX
+
+        -- copy LS1/2 of [sum2x] to [_a]
+      @end:
+        lea        esi,sum2x                     -- ESI <- addr([sum2x])
+        mov        edi,_a                        -- EDI <- addr([_a])
+        mov        ecx,uniint_dwords             -- ECX <- [uniint_dwords]
+
+      @l:
+        dec        ecx                           -- ECX--
+        mov        edx,[esi+ecx*4]               -- EDX <- [ESI+ECX*4]
+        mov        [edi+ecx*4],edx               -- copy dw
+        jnz        @l                            -- if(ECX) goto @l;
+      #end asm;
+      end uniint_mul_assign_double;
+
+
+var
+  delta_exp        : tuniint;                    -- exponent difference
+
+begin
+  -- [a] * [b] = [a.mantissa]*2^[a.exponent] * [b.mantissa]*2^[b.exponent]
+  --           = [a.mantissa]*[b.mantissa] * 2^([a.exponent]+[b.exponent])
+
+  -- znaménko výsledku
+  a.negative xor b.negative;
+
+  -- mantisa výsledku
+  uniint_mul_assign_double(a.mantissa,b.mantissa,delta_exp);
+
+  -- exponent výsledku
+  a.exponent+(b.exponent+delta_exp);
+
+  -- normalizovat výsledek
+  unireal_normalize(a);
+  end unireal_mul_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_mul =
+-- [a] * [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a;
+  unireal_mul_assign(result,b);
+  end unireal_mul;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_div_assign =
+-- [a] := [a] / [b] pomocí Euklidova algoritmu
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure euklides_assign (
+        _a             : in out tuniint;
+        b              : in tuniint;
+        exp            : in out tuniint) =
+    ------------------------------------------------------------------------------------------------
+    const
+      dw_prec      = uniint_precision div 32;
+      dw_prec_min_1= dw_prec-1;
+      MSDW_index   = 4*dw_prec_min_1;
+
+    var
+      a            : tuniint;
+      e            : t_signed32;
+      bitpipe      : tuniint;
+
+    begin
+      -- copy numerator
+      a:=_a;
+
+      -- clear result
+      _a:=ui_0;
+
+      #syntax asm;
+        lea         edi,a
+        mov         esi,b
+
+        -- if(![a]) return;
+        mov         ecx,dw_prec_min_1
+        xor         edx,edx
+
+      @init_test_loop:
+        or          edx,[edi+ecx*4]
+        jnz         @fill_bitpipe
+        dec         ecx
+        jns         @init_test_loop
+
+        -- shr [a] through [bitpipe] until [a]<2*[b]
+      @fill_bitpipe:
+
+        -- keep [bitpipe] length on the stack
+        xor         ecx,ecx
+        push        ecx
+
+        -- [b]*=2
+        mov         ebx,dw_prec_min_1
+        xor         ah,ah
+
+      @fill_bitpipe_cond_shl:
+        mov         edx,[esi+ecx*4]
+        sahf
+        rcl         edx,1
+        lahf
+        mov         [esi+ecx*4],edx
+        inc         ecx
+        cmp         ecx,ebx
+        jng         @fill_bitpipe_cond_shl
+
+        -- if([a]<2*[b]) goto @main_loop_init;
+      @fill_bitpipe_test:
+        mov         ecx,dw_prec_min_1
+  
+      @fill_bitpipe_test_loop:
+        mov         eax,[edi+ecx*4]
+        mov         ebx,[esi+ecx*4]
+        cmp         eax,ebx
+        jb          @main_loop_init
+        ja          @fill_bitpipe_body
+        dec         ecx
+        jns         @fill_bitpipe_test_loop
+
+        -- [a]>>1
+      @fill_bitpipe_body:
+        mov         ecx,dw_prec_min_1
+        clc
+
+      @fill_bitpipe_body_shr_loop:
+        mov         edx,[edi+ecx*4]
+        rcr         edx,1
+        mov         [edi+ecx*4],edx
+        dec         ecx
+        jns         @fill_bitpipe_body_shr_loop
+
+        -- push CF to bitpipe
+        lahf
+        xor         ecx,ecx
+        lea         edi,bitpipe
+        mov         ebx,dw_prec_min_1
+
+      @fill_bitpipe_body_push_loop:
+        mov         edx,[edi+ecx*4]
+        sahf
+        rcl         edx,1
+        lahf
+        mov         [edi+ecx*4],edx
+        inc         ecx
+        cmp         ecx,ebx
+        jng         @fill_bitpipe_body_push_loop
+
+        -- increment [bitpipe] length
+        mov         ecx,[esp]
+        inc         ecx
+        mov         [esp],ecx
+
+        -- next bit
+        lea         edi,a
+        jmp         @fill_bitpipe_test
+
+        -- [b]/=2
+      @main_loop_init:
+        mov         ecx,dw_prec_min_1
+        clc
+  
+      @main_loop_init_loop:
+        mov         edx,[esi+ecx*4]
+        rcr         edx,1
+        mov         [esi+ecx*4],edx
+        dec         ecx
+        jns         @main_loop_init_loop
+
+        -- if([a]>=[b]) goto @main_loop_sub;
+      @main_loop_sub_test:
+        lea         edi,a
+        mov         esi,b
+        mov         ecx,dw_prec_min_1
+
+      @main_loop_sub_test_loop:
+        mov         eax,[edi+ecx*4]
+        mov         ebx,[esi+ecx*4]
+        cmp         eax,ebx
+        jb          @main_loop_test
+        ja          @main_loop_sub
+        dec         ecx
+        jns         @main_loop_sub_test_loop
+
+        -- [_a]|=1
+      @main_loop_sub:
+        mov         edi,_a
+        mov         eax,[edi]
+        or          eax,1
+        mov         [edi],eax
+
+        -- [a]-=[b]
+        lea         edi,a
+        mov         ebx,dw_prec_min_1
+        xor         ecx,ecx
+        xor         ah,ah
+
+      @main_loop_sub_loop:
+        mov         edx,[esi+ecx*4]
+        sahf
+        sbb         [edi+ecx*4],edx
+        lahf
+        inc         ecx
+        cmp         ecx,ebx
+        jng         @main_loop_sub_loop
+
+        -- if(full([_a]) || empty([bitpipe]) && ![a]) goto @free;
+      @main_loop_test:
+        mov         esi,_a
+        mov         ebx,dw_prec_min_1
+        mov         eax,<t_unsigned32>$80000000
+        and         eax,[esi+MSDW_index]
+        jnz         @free
+
+        mov         ecx,[esp]
+        cmp         ecx,0
+        jg          @main_loop_bitpipe_length_dec
+
+        -- save flags for further optimization
+        clc
+        lahf
+
+        xor         ecx,ecx
+        xor         edx,edx
+
+      @main_loop_test_loop:
+        or          edx,[edi+ecx*4]
+        jnz         @main_loop_bitpipe_length_dec
+        inc         ecx
+        cmp         ecx,ebx
+        jng         @main_loop_test_loop
+
+        -- goto @free
+        jmp         @free
+
+        -- decrement [bitpipe] length
+      @main_loop_bitpipe_length_dec:
+        mov         ecx,[esp]
+        dec         ecx
+        mov         [esp],ecx
+
+        -- if(empty([bitpipe])) skip [bitpipe] shifting;
+        sahf
+        jng         @main_loop_shl_shr_bitpipe_skip
+
+        -- [a]<<1 through [bitpipe]
+      @main_loop_shl:
+
+        -- [bitpipe]>>1
+        lea         esi,bitpipe
+        mov         ecx,ebx
+        clc
+
+      @main_loop_shl_shr_bitpipe:
+        mov         edx,[esi+ecx*4]
+        rcr         edx,1
+        mov         [esi+ecx*4],edx
+        dec         ecx
+        jns         @main_loop_shl_shr_bitpipe
+
+        -- [a]<<1 through CF
+        lahf
+
+      @main_loop_shl_shr_bitpipe_skip:
+        xor         ecx,ecx
+  
+      @main_loop_shl_loop:
+        mov         edx,[edi+ecx*4]
+        sahf
+        rcl         edx,1
+        lahf
+        mov         [edi+ecx*4],edx
+        inc         ecx
+        cmp         ecx,ebx
+        jng         @main_loop_shl_loop
+
+        -- [_a]<<1
+        mov         edi,_a
+        xor         ecx,ecx
+        xor         ah,ah
+
+      @main_loop_shl_result:
+        mov         edx,[edi+ecx*4]
+        sahf
+        rcl         edx,1
+        lahf
+        mov         [edi+ecx*4],edx
+        inc         ecx
+        cmp         ecx,ebx
+        jng         @main_loop_shl_result
+
+        -- goto @main_loop_sub_test
+        jmp         @main_loop_sub_test
+
+        -- store [bitpipe] length
+      @free:
+        pop         ecx
+        lea         edi,e
+        mov         [edi],ecx
+    
+      @end:
+      #end asm;
+
+      -- adjust exponent by [bitpipe] length
+      exp+signed_to_uniint(e);
+      end euklides_assign;
+
+begin
+  -- [a]/[b] = [a.mantissa]*2^[a.exponent] / [b.mantissa]*2^[b.exponent]
+  --         = ([a.mantissa]/[b.mantissa])*2^[a.exponent-b.exponent]
+
+  -- znaménko výsledku
+  a.negative xor b.negative;
+
+  -- exponent výsledku
+  a.exponent-b.exponent;
+
+  -- Euklidův algoritmus pro výpočet podílu mantis [a] a [b]
+  euklides_assign(a.mantissa,b.mantissa,a.exponent);
+
+  -- normalizovat [a]
+  unireal_normalize(a);
+  end unireal_div_assign;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure unireal_div =
+-- [a] / [b]
+----------------------------------------------------------------------------------------------------
+begin
+  result:=a;
+  unireal_div_assign(result,b);
+  end unireal_div;
 
 
 

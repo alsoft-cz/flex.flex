@@ -813,8 +813,66 @@ begin
 procedure e_spec_fixed : tevalspecproc =
 -- Vyhodnotí definici fixed-point typu.
 ----------------------------------------------------------------------------------------------------
+-- %%TECH Fixed-point číslo je racionální číslo se signed čitatelem max. šířky [b]
+-- a jmenovatelem [d] (min. nenulová abs. hodnota typu --- delta --- je tedy 1/[d]).
+-- Definice fixed-point typu má tvar "fixed [b] scale <def. přesnosti>"
+-- Definice přesnosti je buďto "mod [d]", kde [d] je přirozené číslo,
+-- nebo "[f]", kde [f] je reálná hodnota představující min. nenulovou abs. hodnotu typu (delta)
+----------------------------------------------------------------------------------------------------
+var
+  width            : pexpnode;                   -- definice bitové šířky čitatele
+  prec             : pexpnode;                   -- def. přesnosti typu
+  size             : tunidata_size;              -- vypočtená velikost
+  e                : tentityeval;                -- vyhodnocení výrazu
+  bits             : tuniint;                    -- bitová šířka čitatele
+  ui               : tuniint;
+  ur               : tunireal;
+
 begin
-  unimplemented({UNIMP=}000210);
+  -- vyhodnocení již jednou proběhlo
+  if curr.seval>ete_none then return; end if;
+
+  -- nastavit podvýrazy
+  verify({VERIFY=}000901,not curr.expr.isset());
+  width:=curr.expr.getcexpr();
+  prec:=width^.next;
+
+  -- vyhodnotit výraz (bitová šířka mantisy)
+  x_evaluate(curr_context,width,ek_const_int,nil,eu_read,final,e);
+  if e_part(curr.seval,e) then return; end if;
+
+  -- načíst hodnotu
+  x_const_int(width,bits);
+
+  -- podle tvaru definice typu vyhodnotit definici přesnosti
+  if curr.dfxtype=fxdt_scale_mod
+    -- tvar "fixed [b] scale mod [d]"
+    then
+      -- vyhodnotit výraz (jmenovatel)
+      x_evaluate(curr_context,prec,ek_const_int,nil,eu_read,final,e);
+      if e_part(curr.seval,e) then return; end if;
+
+      -- načíst hodnotu
+      x_const_int(prec,curr.fxp.fx_inv_delta);
+
+    -- tvar "fixed [b] scale [f]"
+    else
+      -- vyhodnotit výraz (delta)
+      x_evaluate(curr_context,prec,ek_const_real,nil,eu_read,final,e);
+      if e_part(curr.seval,e) then return; end if;
+
+      -- načíst hodnotu
+      x_const_real(prec,curr.fxp.fxdelta);
+      end if;
+
+  -- zkontrolovat a doplnit meze
+  cpu^.getfixedparams(uniint_to_unidata_bitsize(bits),size{curr.size},curr.fxp,curr.dfxtype);
+
+  -- doplnit velikost
+  type_setsize(curr,size);
+
+  -- dosadit velikost v bitech
+  curr.bits:=uniint_to_unidata_bitsize(bits);
   end e_spec_fixed;
 
 
@@ -1500,6 +1558,8 @@ begin
         curr.dtype   :=ancestor^.dtype;
       }
         curr.fp      :=ancestor^.fp;
+        curr.dfxtype :=ancestor^.dfxtype;
+        curr.fxp     :=ancestor^.fxp;
         curr.srange  :=ancestor^.srange;
         curr.pflags  :=ancestor^.pflags;
         curr.pclass  :=ancestor^.pclass;
