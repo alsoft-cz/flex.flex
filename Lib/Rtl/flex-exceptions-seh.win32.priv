@@ -7,9 +7,6 @@ module private seh =
 
 ----------------------------------------------------------------------------------------------------
 procedure winnt_except_handler : t_winnt_except_handler;
-#pragma convention(winnt_except_handler,system{%%TODO cdecl});
-#pragma stackframe(winnt_except_handler,stack_pointer_relative);                        
-#pragma no_return(rtl_raise_system_exception);
 ----------------------------------------------------------------------------------------------------
 
 
@@ -130,19 +127,11 @@ var
   edata            : t_rtl_pointer;
 
 begin
-  #syntax asm;
-    mov eax,exceptionrecord
-    mov ebx,winnt_exception_noncontinuable
-    cmp [eax+t_winnt_exception_record.exceptionflags],ebx
-    jne @2
+  result:=1;{exceptioncontinuesearch}
+  if exceptionrecord^.exceptionflags=winnt_exception_noncontinuable then
+    return
+    end if;
 
-    mov eax,1{exceptioncontinuesearch}
-    ret
-
-@2:
-     get_stacktop
-    alloc_estackrow
-    #end asm;
   case exceptionrecord^.exceptioncode
     when exception_access_violation do
         edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
@@ -151,14 +140,42 @@ begin
         rtl_dump_exception(msg_memory,etag,t_rtl_unsigned32(edata:unchecked));
         #end if;
 
+    when exception_noncontinuable_exception do
+        etag:=t_rtl_tag(exceptionrecord^.exceptioncode:unchecked);
+        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_noncont_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
+        result:=1;
+        return;
+
+    when exception_breakpoint do
+        #if rtl_breakpoints_without_debuger then;
+        result:=1;
+        return;
+        #else;
+        contextrecord^.reip + 1;
+        result:=0;
+        return;
+        #end if;
+
     when exception_array_bounds_exceeded do
         etag:=constraint_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 
     when exception_stack_overflow do
         etag:=memory_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 
     when exception_datatype_misalignment do
         etag:=constraint_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 {
     when exception_flt_denormal_operand do
       etag:=fp_denormal_operand:tag;
@@ -177,48 +194,44 @@ begin
 }
     when exception_illegal_instruction do
         etag:=implementation_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 
     when exception_in_page_error do
         etag:=memory_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 
     when exception_int_divide_by_zero do
         etag:=numeric_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 
     when exception_int_overflow do
         etag:=numeric_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 
     when exception_invalid_disposition do
         etag:=implementation_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 
     when exception_priv_instruction do
         etag:=implementation_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
 
     when exception_single_step do
         etag:=implementation_error:tag;
-
-    when exception_noncontinuable_exception do
-        etag:=t_rtl_tag(exceptionrecord^.exceptioncode:unchecked);
-        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
         #if rtl_debug_dump_on_exception then;
-        rtl_dump_exception(msg_noncont_system,etag,t_rtl_unsigned32(edata:unchecked));
-        #end if;
-        #syntax asm;
-          mov eax,1{exceptioncontinuesearch}
-          ret
-          #end asm;
-
-    when exception_breakpoint do
-        #if rtl_breakpoints_without_debuger then;
-          #syntax asm;
-            mov eax,1{exceptioncontinuesearch}
-            ret
-            #end asm;
-        #else;
-          contextrecord^.reip + 1;
-          #syntax asm;
-            mov eax,0{exceptioncontinueexecution}
-            ret
-            #end asm;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
         #end if;
 
     when others do
@@ -229,7 +242,11 @@ begin
         #end if;
     end case;
 
+
   #syntax asm;
+    get_stacktop
+    alloc_estackrow
+
     -- get tib & xframe & estack top
     get_xframe_stacktop
     set_erow_data
@@ -245,12 +262,8 @@ begin
     mov    [ebx+t_winnt_context.rebp],ecx
     mov    ecx,[eax+t_rtl_except_frame.frame_esp]
     mov    [ebx+t_winnt_context.resp],ecx
-    mov eax,0{exceptioncontinueexecution}
-    ret
+    mov    result,0;{exceptioncontinueexecution}
 @6:
-    -- do not handle unhandled
-    mov eax,1{exceptioncontinuesearch}
-    ret
     #end asm;
   end winnt_except_handler;
 

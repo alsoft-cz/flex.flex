@@ -1,450 +1,13 @@
 ----------------------------------------------------------------------------------------------------
-procedure rtl_sstack_try_pop_cr (
-    sstack         : in out ref t_rtl_sstack_cr;
-    btrynext       : in t_rtl_logical;
-    data           : out t_rtl_pointer;
-    milisec        : in t_rtl_timeout;
-    filter         : in p_rtl_expression)
-    return         t_rtl_logical =
-----------------------------------------------------------------------------------------------------
-var
-    datanode       : p_rtl_singly_p_item;
-    start          : t_system_ticks;
-    elapsed        : t_system_ticks;
-    timeout        : t_rtl_timeout;
-
-begin
-  timeout:=milisec;
-  if milisec>0 then 
-    start:=GetTickCount();
-    end if;
-
-  loop
-    --zkusim si jeden vzit
-    result:=rtl_critisem_try_lock(sstack.counter,milisec);
-    if not result then
-      return;
-      end if;
-
-    -- zamknu
-    rtl_critical_lock(sstack.lock);
-      rtl_singly_list_first(p_rtl_singly_item(datanode:unchecked),sstack);
-      -- otestuju filter
-      if filter<>nil then
-        result:=rtl_expr_evaluate(filter,datanode^.data);
-        end if;
-
-      if result then
-        rtl_singly_list_remove_next(nil,sstack);
-
-        data:=datanode^.data;
-        discard datanode;
-
-        -- zmensim pocet prvku ve stacku
-        pred sstack.lcounter;
-        end if;
-
-      if sstack.lcounter>0 then
-        -- povolim dalsimu tasku cteni
-        if btrynext then
-          rtl_critisem_unlock_all(sstack.trynext);
-          end if;
-        rtl_critisem_unlock(sstack.counter);
-        end if;
-
-    -- odemknu
-    rtl_critical_unlock(sstack.lock);
-
-    -- pokud cekam na dalsi
-    if not result then
-      -- vypocitam zbytek casu
-      if milisec>0 then 
-        elapsed:=GetTickCount()-start;
-        timeout - t_rtl_timeout(elapsed);
-        if timeout<1 then timeout:=0; end if;
-        end if;
-
-      -- cekam na dalsi prvek
-      if not rtl_critisem_try_lock(sstack.trynext,timeout) then
-        return;
-        end if;
-    
-      -- vypocitam zbytek casu rpo dalsi kolo
-      if milisec>0 then 
-        elapsed:=GetTickCount()-start;
-        timeout - t_rtl_timeout(elapsed);
-        if timeout<1 then timeout:=0; end if;
-        end if;
-      end if;
-    until (result);
-  end rtl_sstack_try_pop_cr;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_sstack_push_cr(
-    sstack         : in out ref t_rtl_sstack_cr;
-    btrynext       : in t_rtl_logical;
-    data           : in t_rtl_pointer) =
--- vlozi prvek na stack
-----------------------------------------------------------------------------------------------------
-var
-    newnode        : p_rtl_singly_p_item;
-
-begin
-  -- vytvorim prvek
-  new newnode;
-  newnode^.data:=data;
-  
-  -- zamknu
-  rtl_critical_lock(sstack.lock);
-
-    -- vlozim prvek
-    rtl_singly_list_insert(p_rtl_singly_item(newnode:unchecked),sstack);
-
-    -- zvednu pocet prvku ve stacku a povolim dalsimu tasku cteni
-    succ sstack.lcounter;
-
-    -- pustim cekatele na dalsi prvek
-    if btrynext then
-      rtl_critisem_unlock_all(sstack.trynext);
-      end if;
-    if sstack.lcounter=1 then
-      -- povolim dalsimu tasku cteni
-      rtl_critisem_unlock(sstack.counter);
-      end if;
-
-  -- odemknu
-  rtl_critical_unlock(sstack.lock);
-  end rtl_sstack_push_cr;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_sstack_push_nb(
-    sstack         : in out ref t_rtl_sstack_nb;
-    btrynext       : in t_rtl_logical;
-    data           : in t_rtl_pointer) =
--- vlozi prvek na stack
-----------------------------------------------------------------------------------------------------
-var
-  newnode          : t_rtl_ref_local;
-  temp             : t_rtl_ref_snapshot;
-
-label
-  restart;
-
-begin 
-  -- vytvorim novy nod
-  rtl_ref_create_local(newnode,data,sstack.freedata,t_rtl_ref_ns_singly);
-
-restart:
-  rtl_ref_shared_to_snapshot(sstack.first,temp);
-
-  -- cosi
-  if not rtl_ref_shared_to_local_shared(sstack.first,newnode.node^.next,temp) then
-    pause_nop;
-    goto restart; 
-    end if;
-
-  -- zkusim nahradit sstack.first svym novym nodem
-  if not rtl_ref_local_to_shared(newnode,sstack.first,temp) then
-    pause_nop;
-    goto restart; 
-    end if;
-
-  -- podarilo se uvolnim novy nod
-  rtl_ref_discard_local(newnode);
-
-  if btrynext then
-    -- probudim cekatele na dalsi prvek
-    rtl_critisem_unlock_all(sstack.trynext);
-
-    -- zvednu pocet prvku ve stacku a nebo povolim dalsimu tasku cteni
-    rtl_critisem_unlock(sstack.counter);
-    end if;
-  end rtl_sstack_push_nb;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_sstack_pop_now_nb (
-    sstack         : in out ref t_rtl_sstack_nb;
-    data           : out t_rtl_pointer;
-    trynext        : out t_rtl_logical;
-    filter         : in p_rtl_expression)
-    return t_rtl_logical =
-----------------------------------------------------------------------------------------------------
-var
-  mynode           : t_rtl_ref_local;
-  temp             : t_rtl_ref_snapshot;
-  nexttemp         : t_rtl_ref_snapshot;
-
-label
-  restart;
-
-begin
-restart:
-  rtl_ref_shared_to_snapshot(sstack.first,temp);
-
-  -- zkusim jestli neni stack prazdny
-  if temp.node=nil then
-    data:=nil;
-
-    --uvolnim posledni zkopirovany pointer
-    rtl_ref_discard_local(mynode);
-    result:=false;
-    return;
-    end if;
-
-  -- zkopiruju si pointer na prvni prvek
-  if not rtl_ref_shared_to_local(sstack.first,mynode,temp) then
-    pause_nop;
-    goto restart; 
-    end if;
-
-  -- otestuju filter
-  if filter<>nil then
-    result:=not rtl_expr_evaluate(filter,mynode.node^.data);
-    -- neproslo filtrem, cekej na dalsi
-    if not result then
-      trynext:=true;
-      data:=nil;
-      rtl_ref_discard_local(mynode);
-      return;
-      end if;
-    end if;
-
-  -- zkusim jestli se mi podari prehodit sstack.first na dalsi prvek
-  rtl_ref_shared_to_snapshot(mynode.node^.next,nexttemp);
-  if not rtl_ref_shared_to_shared(mynode.node^.next,sstack.first,nexttemp,temp) then
-    pause_nop;
-    goto restart; 
-    end if;
-
-  -- podarilo se mi to, vezmu si data
-  data:=mynode.node^.data;
-  mynode.node^.data:=nil;
-
-  -- uvolnim pointer na dalsi prvek
-  if not rtl_ref_discard_shared(mynode.node^.next,nexttemp) then
-    raise synchronization_error;
-    end if;
-
-  -- uvolnim tento prvek
-  --rtl_ref_discard_local_shared(mynode);
-  rtl_ref_discard_local(mynode);
-  result:=true;
-  end rtl_sstack_pop_now_nb;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_sstack_try_pop_nb (
-    sstack         : in out ref t_rtl_sstack_nb;
-    btrynext       : in t_rtl_logical;
-    data           : out t_rtl_pointer;
-    milisec        : in t_rtl_timeout;
-    filter         : in p_rtl_expression)
-    return         t_rtl_logical =
-----------------------------------------------------------------------------------------------------
-var
-    start          : t_system_ticks;
-    elapsed        : t_system_ticks;
-    timeout        : t_rtl_timeout;
-    trynext        : t_rtl_logical;
-
-begin
-  -- reknu ze si beru jeden prvek
-  if btrynext then
-    rtl_critisem_force_lock(sstack.counter);
-    end if;
-
-  -- zkusim si ho opravdu vzit
-  result:=rtl_sstack_pop_now_nb(sstack,data,trynext,filter);
-
-  -- pokud neumi cekani tak uz na nic necekam
-  if milisec=t_rtl_wait_immediate or result then
-    if btrynext then
-      if result then
-        -- vpustim cekatele na dalsi
-        rtl_critisem_unlock_all(sstack.trynext);
-      else
-        --uklidit po neuspesnem pokusu
-        rtl_critisem_force_unlock(sstack.counter);
-        end if;
-      end if;
-    return;
-    end if;
-
-  -- pokud je potreba pocitat cas tak zjistim start
-  timeout:=milisec;
-  if milisec>0 then
-    start:=GetTickCount();
-    end if;
-
-  -- cekat na dalsi prvek ?
-  if trynext then
-    -- cekam na dalsi prvek
-    if not rtl_critisem_try_lock(sstack.trynext,timeout) then
-      result:=false;
-      return;
-      end if;
-  
-    -- vypocitam zbytek casu pro dalsi cekani
-    if milisec>0 then 
-      elapsed:=GetTickCount()-start;
-      timeout - t_rtl_timeout(elapsed);
-      if timeout<1 then timeout:=0; end if;
-      end if;
-    end if;
-
-  -- nepodarilo se mi vzit si prvek na prvni pokus bez blokovani a zarovem mam cekat
-  rtl_critisem_force_unlock(sstack.counter);
-  loop
-    -- pockam az nekdo signalizuje ze je tam alespon jeden prvek
-    if not rtl_critisem_try_lock(sstack.counter,timeout) then
-      -- timeout
-      result:=false;
-      return;
-      end if;
-
-    -- zkusim jestli mne nekdo nepredbehne
-    result:=rtl_sstack_pop_now_nb(sstack,data,trynext,filter);
-
-    -- podarilo se sebrat prvek, koncim
-    if result then 
-      -- vpustim cekatele na dalsi
-      if trynext then
-        rtl_critisem_unlock_all(sstack.trynext);
-        end if;
-      return; 
-      end if;
-
-    -- pokus se nezdaril vratim pocitadlo itemu
-    rtl_critisem_force_unlock(sstack.counter);
-
-    -- pokud je potreba pocitat cas tak zjistim kolik ubehlo
-    if milisec>0 then
-      elapsed:=GetTickCount()-start;
-      timeout - t_rtl_timeout(elapsed);
-      if timeout<1 then
-        -- timeout
-        result:=false;
-        return;
-        end if;
-      end if;
-
-    -- mam cekat na dalsi ?
-    if trynext then
-      -- cekam na dalsi prvek
-      if not rtl_critisem_try_lock(sstack.trynext,timeout) then
-        result:=false;
-        return;
-        end if;
-    
-      -- vypocitam zbytek casu pro dalsi cekani
-      if milisec>0 then 
-        elapsed:=GetTickCount()-start;
-        timeout - t_rtl_timeout(elapsed);
-        if timeout<1 then timeout:=0; end if;
-        end if;
-      end if;
-    end loop;
-  end rtl_sstack_try_pop_nb;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_sstack_push =
-----------------------------------------------------------------------------------------------------
-begin
-  if sstack.style in t_rtl_concurency_style_set:[rtl_cst_nonkernel,rtl_cst_nonblocking] then
-    rtl_sstack_push_nb(sstack.nonblocking,sstack.style=rtl_cst_nonblocking,data);
-  else
-    rtl_sstack_push_cr(sstack.critical,sstack.style=rtl_cst_waitable,data);
-    end if;
-  end rtl_sstack_push;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_sstack_pop =
-----------------------------------------------------------------------------------------------------
-var
-  trynext          : t_rtl_logical;
-
-begin
-  case sstack.style
-    when rtl_cst_nonkernel do
-      if not rtl_sstack_pop_now_nb(sstack.nonblocking,data,trynext,nil) then
-        raise synchronization_error;
-        end if;
-    when rtl_cst_nonblocking do
-      if not rtl_sstack_try_pop_nb(sstack.nonblocking,true,data,t_rtl_wait_infinite,filter) then
-        raise synchronization_error;
-        end if;
-    when rtl_cst_critical do
-      if not rtl_sstack_try_pop_cr(sstack.critical,false,data,t_rtl_wait_infinite,nil) then
-        raise synchronization_error;
-        end if;
-    when rtl_cst_waitable do
-      if not rtl_sstack_try_pop_cr(sstack.critical,true,data,t_rtl_wait_infinite,filter) then
-        raise synchronization_error;
-        end if;
-    end case;
-  end rtl_sstack_pop;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_sstack_try_pop =
-----------------------------------------------------------------------------------------------------
-var
-  trynext          : t_rtl_logical;
-
-begin
-  case sstack.style
-    when rtl_cst_nonkernel do
-      result:=rtl_sstack_pop_now_nb(sstack.nonblocking,data,trynext,nil);
-    when rtl_cst_nonblocking do
-      result:=rtl_sstack_try_pop_nb(sstack.nonblocking,true,data,milisec,filter);
-    when rtl_cst_critical do
-      result:=rtl_sstack_try_pop_cr(sstack.critical,false,data,milisec,nil);
-    when rtl_cst_waitable do
-      result:=rtl_sstack_try_pop_cr(sstack.critical,true,data,milisec,filter);
-    end case;
-  end rtl_sstack_try_pop;
-
-
-
----------------------------------------------------------------------------------------------------
 procedure rtl_sstack_new =
 ----------------------------------------------------------------------------------------------------
-begin 
-  sstack.style:=style;
-  case sstack.style
-    when rtl_cst_nonkernel do
-      sstack.nonblocking.freedata:=freedata;
-      sstack.nonblocking.first:=nil;
-    when rtl_cst_nonblocking do
-      sstack.nonblocking.freedata:=freedata;
-      rtl_critisem_new_owned(sstack.nonblocking.counter,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
-      rtl_critisem_new_owned(sstack.nonblocking.trynext,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
-    when rtl_cst_critical do
-      sstack.critical.freedata:=freedata;
-      rtl_singly_list_create(sstack.critical);
-      rtl_critisem_new_owned(sstack.critical.counter,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
-      rtl_critical_new(sstack.critical.lock);
-      sstack.critical.lcounter:=0;
-    when rtl_cst_waitable do
-      sstack.critical.freedata:=freedata;
-      rtl_singly_list_create(sstack.critical);
-      rtl_critisem_new_owned(sstack.critical.counter,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
-      rtl_critical_new(sstack.critical.lock);
-      rtl_critisem_new_owned(sstack.critical.trynext,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
-      sstack.critical.lcounter:=0;
-    end case;
+begin
+  sstack.freedata:=freedata;
+  rtl_doubly_list_create(sstack.list);
+  rtl_critical_new(sstack.lock);
+  rtl_critisem_new(sstack.first,rtl_max_semaphore,rtl_max_semaphore);
+  rtl_critisem_new(sstack.next,rtl_max_semaphore,rtl_max_semaphore);
+  rtl_critievt_new(sstack.empty,true);
   end rtl_sstack_new;
 
 
@@ -452,23 +15,13 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_sstack_discard =
 ----------------------------------------------------------------------------------------------------
-begin 
+begin
   rtl_sstack_reset(sstack);
-  case sstack.style
-    --when rtl_cst_nonkernel do
-    when rtl_cst_nonblocking do
-      rtl_critisem_discard(sstack.nonblocking.counter);
-      rtl_critisem_discard(sstack.nonblocking.trynext);
-    when rtl_cst_critical do
-      rtl_critisem_discard(sstack.critical.counter);
-      rtl_critical_discard(sstack.critical.lock);
-      rtl_singly_list_discard(sstack.critical);
-    when rtl_cst_waitable do
-      rtl_critisem_discard(sstack.critical.counter);
-      rtl_critical_discard(sstack.critical.lock);
-      rtl_critisem_discard(sstack.critical.trynext);
-      rtl_singly_list_discard(sstack.critical);
-    end case;
+  rtl_doubly_list_discard(sstack.list);
+  rtl_critical_discard(sstack.lock);
+  rtl_critisem_discard(sstack.first);
+  rtl_critisem_discard(sstack.next);
+  rtl_critievt_discard(sstack.empty);
   end rtl_sstack_discard;
 
 
@@ -480,18 +33,135 @@ var
   data             :  t_rtl_pointer;
 
 begin
-  case sstack.style
-    when rtl_cst_nonkernel,rtl_cst_nonblocking do
-      while rtl_sstack_try_pop_nb(sstack.nonblocking,false,data,t_rtl_wait_immediate,nil) loop
-        if sstack.nonblocking.freedata<>nil then
-          sstack.nonblocking.freedata^(data);
-          end if;
-        end loop;
-    when rtl_cst_critical,rtl_cst_waitable do
-      while rtl_sstack_try_pop_cr(sstack.critical,false,data,t_rtl_wait_immediate,nil) loop
-        if sstack.critical.freedata<>nil then
-          sstack.critical.freedata^(data);
-          end if;
-        end loop;
-    end case;
+ while rtl_sstack_try_pop(sstack,data,t_rtl_wait_immediate) loop
+    if sstack.freedata<>nil then
+      sstack.freedata^(data);
+      end if;
+    end loop;
   end rtl_sstack_reset;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_sstack_pop =
+----------------------------------------------------------------------------------------------------
+begin
+  if not rtl_sstack_try_pop(sstack,data,t_rtl_wait_infinite,filter) then
+    raise tasking_error;
+    end if;
+  end rtl_sstack_pop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_sstack_wait_empty =
+----------------------------------------------------------------------------------------------------
+begin
+  result:=rtl_critievt_try_wait(sstack.empty,milisec);
+  end rtl_sstack_wait_empty;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_sstack_try_pop =
+----------------------------------------------------------------------------------------------------
+var
+    listitem       : p_rtl_doubly_p_item;
+    start          : t_system_ticks;
+    elapsed        : t_system_ticks;
+    timeout        : t_rtl_timeout;
+
+begin
+  rtl_init_timeout;
+  loop
+    result:=rtl_critisem_try_lock(sstack.first,timeout);
+    if not result then
+      return;
+      end if;
+
+    -- zkusim zamknout
+    rtl_adjust_timeout;
+    result:=rtl_critical_try_lock(sstack.lock,timeout);
+    if result then
+      rtl_doubly_list_first(p_rtl_doubly_item(listitem:unchecked),sstack.list);
+
+      if filter<>nil then
+        result:=rtl_expr_evaluate(filter,listitem^.data);
+      --else
+        --result:=true;
+        end if;
+      
+      -- vyhovuje filtru, vyndam ven
+      if result then
+        rtl_doubly_list_remove(p_rtl_doubly_item(listitem:unchecked),sstack.list);
+        data:=listitem^.data;
+        discard listitem;
+
+        -- zmensim pocet prvku ve fronte
+        pred sstack.count;
+        if sstack.count=0 then
+          rtl_critievt_set(sstack.empty);
+        else
+          rtl_critisem_unlock_all_waiting(sstack.next);
+          end if;
+        end if;
+
+      --odemknu
+      rtl_critical_unlock(sstack.lock);
+
+      -- pokud cekam na dalsi
+      if not result then
+        -- vratim firsta ktereho jsem vybral
+        rtl_critisem_unlock(sstack.first);
+
+        -- cekam na next
+        rtl_adjust_timeout;
+        result:=rtl_critisem_try_lock(sstack.next,timeout);
+        if not result or timeout=0 then
+          return;
+          end if;
+      else
+        -- nalezeno koncim
+        return;
+        end if;
+    else
+      if timeout=0 then
+        return;
+        end if;
+      end if;
+    end loop;
+  end rtl_sstack_try_pop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_sstack_push =
+----------------------------------------------------------------------------------------------------
+var
+    listitem       : p_rtl_doubly_p_item;
+
+begin
+  -- vytvorim prvek
+  new listitem;
+  listitem^.data:=data;
+
+  -- zamknu
+  rtl_critical_lock(sstack.lock);
+
+    -- vlozim prvek
+    rtl_doubly_list_append(p_rtl_doubly_item(listitem:unchecked),sstack.list);
+
+    -- zvednu pocet prvku ve fronte
+    succ sstack.count;
+    if sstack.count=1 then
+      rtl_critievt_reset(sstack.empty);
+      end if;
+    rtl_critisem_unlock(sstack.first);
+    rtl_critisem_unlock_all_waiting(sstack.next);
+
+  -- odemknu
+  rtl_critical_unlock(sstack.lock);
+  end rtl_sstack_push;
+
+
+

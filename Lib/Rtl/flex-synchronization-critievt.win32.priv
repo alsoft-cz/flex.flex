@@ -1,0 +1,196 @@
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_get_event(
+    critievt_object: in out ref t_rtl_critievt;
+    event      : out ref t_rtl_event) =
+-- Create event for critievt section
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_event;
+
+begin
+  event:=critievt_object.lock_event;
+  if event=rtl_nil_event then
+    rtl_event_new(event,false);
+    rtl_interlocked_compare_exchange(    ^t_rtl_native_signed(critievt_object.lock_event),
+                                          t_rtl_native_signed(event),
+                                          t_rtl_native_signed(rtl_nil_event),
+                                          t_rtl_native_signed(old_value));
+    if old_value<>rtl_nil_event then
+      --nekdo mne predbehnul
+      rtl_event_discard(event);
+      event:=critievt_object.lock_event;
+      end if;
+    end if;
+  end rtl_critievt_get_event;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_unwait_critievt(
+    critievt_object: in out ref t_rtl_critievt) =
+----------------------------------------------------------------------------------------------------
+var
+  event        : t_rtl_event;
+
+begin
+  rtl_critievt_get_event(critievt_object,event);
+  rtl_event_set(event);
+  end rtl_critievt_unwait_critievt;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_wait_critievt(
+    critievt_object: in out ref t_rtl_critievt) =
+----------------------------------------------------------------------------------------------------
+var
+  event        : t_rtl_event;
+
+begin
+  if event<>rtl_nil_event then
+    rtl_critievt_get_event(critievt_object,event);
+    rtl_event_reset(event);
+    end if;
+  end rtl_critievt_wait_critievt;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_new =
+-- Create and initialize critievt object.
+----------------------------------------------------------------------------------------------------
+begin
+  if signaled then
+    critievt_object.lock_count      := -1;
+  else
+    critievt_object.lock_count      := 0;
+    end if;
+  critievt_object.lock_event      :=  rtl_nil_event;
+  -- zadne spinovani na jednoprocesorovem stroji
+  if target_machine_processor_count=1 then
+    critievt_object.spin_count    :=  0;
+  else
+    critievt_object.spin_count    :=  4000;
+    end if;
+  end rtl_critievt_new;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_discard =
+-- Discard critievt object.
+----------------------------------------------------------------------------------------------------
+begin
+  if critievt_object.lock_event<>rtl_nil_event then
+    rtl_event_discard(t_rtl_event(critievt_object.lock_event));
+    end if;
+  critievt_object:=nil;
+  end rtl_critievt_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_set_spin =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zadne spinovani na jednoprocesorovem stroji
+  if target_machine_processor_count>1 then
+    critievt_object.spin_count      :=  spin_count;
+    end if;
+  end rtl_critievt_set_spin;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_set =
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_native_signed;
+
+begin
+  rtl_interlocked_exchange(^critievt_object.lock_count,-1,old_value);
+  if old_value>0 then
+    rtl_critievt_unwait_critievt(critievt_object);
+    end if;
+  end rtl_critievt_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_reset =
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_native_signed;
+
+begin
+  rtl_critievt_wait_critievt(critievt_object);
+  rtl_intelocked_increment_if_less_than(^critievt_object.lock_count,1,0,old_value);
+  end rtl_critievt_reset;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_try_wait_now (
+    critievt_object: in out ref t_rtl_critievt)
+    return         t_rtl_logical =
+----------------------------------------------------------------------------------------------------
+var
+  spin             : t_rtl_native_unsigned;
+
+begin
+  spin:=0;
+  loop
+    if critievt_object.lock_count<0 then
+      result:=true;
+      return;
+      end if;
+    if spin>=critievt_object.spin_count then
+      result:=false;
+      return;
+      end if;
+    spin + 1;
+    --spin waste time
+    pause_nop;
+    end loop;
+  end rtl_critievt_try_wait_now;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_try_wait =
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_native_signed;
+  event            : t_rtl_event;
+
+begin
+  -- try pass now
+  result:=rtl_critievt_try_wait_now(critievt_object);
+  if result or milisec=t_rtl_wait_immediate then
+    return;
+    end if;
+
+
+  -- add as waiting
+  rtl_interlocked_dec_if_greater_than(^critievt_object.lock_count,-1,-1,old_value);
+  if old_value<0 then
+    result:=true;
+  else
+    -- cekam na eventu
+    rtl_critievt_get_event(critievt_object,event);
+    result:=rtl_event_try_wait(event,milisec);
+    end if;
+  end rtl_critievt_try_wait;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critievt_wait =
+-- Lock critievt.
+----------------------------------------------------------------------------------------------------
+begin
+  if not rtl_critievt_try_wait(critievt_object,t_rtl_wait_infinite) then
+    raise synchronization_error;
+    end if;
+  end rtl_critievt_wait;
