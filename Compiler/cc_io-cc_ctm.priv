@@ -9,9 +9,12 @@ with
   standard.classes.hash_tables,
   standard.classes.lists,
   cc_def,
+  cc_def.cc_codes,
+  cc_def.cc_var,
   cc_def.cc_unitype,
   cc_def.cc_lexsym,
-  cp_cpu.cp_ia32.ci_abi;
+  cp_cpu.cp_ia32.ci_abi,
+  cd_decl.cd_create;
 
 type
   -- identifikátor položky v metadatech
@@ -36,16 +39,28 @@ const
   -- tag s kontrolním součtem metadat
   cr_sha1          = t_ctm_record_tag(2);
 
+  -- tag regionu
+  cr_region        = t_ctm_record_tag(4);
+{
+  -- tag tabulky RTL procedur
+  cr_rtl           = t_ctm_record_tag(5);
+
+  -- tag položky tabulky RTL procedur
+  cr_rtl_entry     = t_ctm_record_tag(6);
+}
   -- tag importní tabulky
   cr_import        = t_ctm_record_tag(3);
 
-  -- tag regionu
-  cr_region        = t_ctm_record_tag(4);
+  -- tag importní tabulky pro jednu partition
+  cr_import_partition = t_ctm_record_tag(7);
+
+  -- tag položky importní tabulky pro jednu partition
+  cr_import_entry  = t_ctm_record_tag(8);
 
 var
   -- tagy recordů pro jednotlivé druhy entit s výjimkou typu a třídy
   -- !!! musi byt synchronizovano s etype_by_cr
-  cr_by_etype      : const array tentitytype of t_ctm_record_tag := [
+  cr_by_etype      : const array succ et_undef..tentitytype:last of t_ctm_record_tag := [
       for et_compile    use t_ctm_record_tag(10),
       for et_program    use t_ctm_record_tag(11),
       for et_module     use t_ctm_record_tag(12),
@@ -59,6 +74,8 @@ var
       for et_overload   use t_ctm_record_tag(20),
       for et_operator   use t_ctm_record_tag(21),
       for et_var        use t_ctm_record_tag(22),
+      for et_type       use t_ctm_record_tag( 0), -- pouze pro úplnost agregátu, používá se kód odvozený z [tdatatype]
+      for et_class      use t_ctm_record_tag( 0), -- pouze pro úplnost agregátu, používá se kód odvozený z [tdatatype]
       for et_const      use t_ctm_record_tag(23),
       for et_enum       use t_ctm_record_tag(24),
       for et_param      use t_ctm_record_tag(25),
@@ -68,9 +85,9 @@ var
       for et_tparam     use t_ctm_record_tag(29),
       for et_attribute  use t_ctm_record_tag(30)];
 
-var
   -- jednotlivé druhy entit s výjimkou typu a třídy pro typy recordů
   -- !!! musi byt synchronizovano s cr_by_etype
+  -- %%TODO(MACRO) předělat na automatické vygenerování inverzní transformace makrem
   etype_by_cr      : const array {t_ctm_record_tag}10..{t_ctm_record_tag}30 of tentitytype := [
       for t_ctm_record_tag(10) use et_compile   ,
       for t_ctm_record_tag(11) use et_program   ,
@@ -99,7 +116,7 @@ var
 
   -- tagy recordů pro jednotlivé druhy typů
   -- !!! musi byt synchronizovano s dtype_by_cr
-  cr_by_dtype      : const array tdatatype of t_ctm_record_tag := [
+  cr_by_dtype      : const array succ dt_ordinal..tdatatype:last of t_ctm_record_tag := [
       -- univerzální typy
       for dt_uniint     use t_ctm_record_tag(50),
       for dt_unireal    use t_ctm_record_tag(51),
@@ -132,6 +149,7 @@ var
 
   -- jednotlivé druhy typů pro tagy recordů
   -- !!! musi byt synchronizovano s cr_by_dtype
+  -- %%TODO(MACRO) předělat na automatické vygenerování inverzní transformace makrem
   dtype_by_cr      : const array {t_ctm_record_tag}50..{t_ctm_record_tag}74 of tdatatype := [
       -- univerzální typy
       for t_ctm_record_tag(50) use dt_uniint    ,
@@ -162,8 +180,6 @@ var
       for t_ctm_record_tag(73) use dt_procedure ,
       for t_ctm_record_tag(74) use dt_task      ];
 
-
-
 const
   -- prázdné CTM ID
   ci_none          = t_ctm_entity_id(0);
@@ -187,1005 +203,93 @@ const
 
 
 ----------------------------------------------------------------------------------------------------
-procedure get_etype_by_cr (
-      cr           : in t_ctm_record_tag) 
-      return tentitytype =
--- Vrati typ entity prislusne ctm record tag.
--- Zpusobi interni chybu pokud [cr] mimo rozsah.
+procedure check_error (
+    num            : in t_unsigned;
+    cond           : in t_logical := true) =
+-- Je-li splněna podmínka [cond], tak způsobí chybu [ce_ctm_corrupt].
 ----------------------------------------------------------------------------------------------------
 begin
-  -- cr mimo rozsah?
-  verify({VERIFY=}001149,cr>etype_by_cr:last or cr<etype_by_cr:first);
-  result:=etype_by_cr[cr];
-  end get_etype_by_cr;
+  if cond then
+    ce^.seterror(num,ce_ctm_corrupt);
+    ce^.raiseerror;
+    end if;
+  end check_error;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure get_dtype_by_cr (
-      cr           : in t_ctm_record_tag) 
-      return tdatatype =
--- Vrati typ entity prislusne ctm record tag.
--- Zpusobi interni chybu pokud [cr] mimo rozsah.
+#separate public cc_registry;
+#separate private cc_registry;
+-- CTM ID registry pro export a import compile-time metadat.
 ----------------------------------------------------------------------------------------------------
-begin
-  -- cr mimo rozsah?
-  verify({VERIFY=}001150,cr>dtype_by_cr:last or cr<dtype_by_cr:first);
-  result:=dtype_by_cr[cr];
-  end get_dtype_by_cr;
-
-
-
-----------------------------------------------------------------------------------------------------
-class public c_ctm_binay_writer = extend c_stream_generic_writer;
--- Binární writer compile-time metadat.
+#separate public cc_formatters;
+#separate private cc_formatters;
+-- Formátovače pro zápis a čtení compile-time metadat.
 ----------------------------------------------------------------------------------------------------
 
-    ------------------------------------------------------------------------------------------------
-    #template def_write (method,param_type);
-    ------------------------------------------------------------------------------------------------
-
-      ----------------------------------------------------------------------------------------------
-      static method (
-          data     : in param_type) 
-      -- Zapíše do výstupu hodnotu typu [param_type].
-      ----------------------------------------------------------------------------------------------
-
-      #end def_write;
-
-    ------------------------------------------------------------------------------------------------
-    def_write(write_cr               ,t_ctm_record_tag);
-    def_write(write_ci               ,t_ctm_id);
-    def_write(write_uniint           ,tuniint);
-    def_write(write_unichar          ,tunichar);
-    def_write(write_unireal          ,tunireal);
-    def_write(write_unilogical       ,tunilogical);
-    def_write(write_unidata_addr     ,tunidata_addr);
-    def_write(write_unidata_size     ,tunidata_size);
-    def_write(write_unidata_bitsize  ,tunidata_bitsize);
-    def_write(write_unicode_addr     ,tunicode_addr);
-    def_write(write_unicode_size     ,tunicode_size);
-    def_write(write_visible          ,tentityvisible);
-    def_write(write_logical          ,t_logical);
-    
-    def_write(write_unsigned8        ,t_unsigned8);
-    def_write(write_unsigned32       ,t_unsigned32);
-    def_write(write_unsigned         ,t_unsigned);
-    def_write(write_char32           ,t_char32);
-    def_write(write_partition_type   ,t_partition_type);
-    def_write(write_partition_result ,t_partition_result);
-    def_write(write_immclass         ,timmclass);
-    def_write(write_rtattribset      ,rtattribset);
-    def_write(write_parammode        ,parammode);
-    def_write(write_parampass        ,parampass);
-    def_write(write_memclass         ,memclass);
-    def_write(write_varflagset       ,varflagset);
-    def_write(write_varmode          ,varmode);
-    def_write(write_varaccess        ,varaccess);
-    def_write(write_mem_aliased      ,t_mem_aliased);
-    def_write(write_varimplements    ,varimplements);
-    def_write(write_constflagset     ,constflagset);
-    def_write(write_instancepass     ,tinstancepass);
-    def_write(write_vcalltype        ,tvcalltype);
-    def_write(write_virtualindex     ,tvirtualindex);
-    def_write(write_spectype         ,tspectype);
-    def_write(write_specobject       ,tspecobject);
-    def_write(write_ooperarity       ,tooperarity);
-    def_write(write_ooperator        ,tooperator);
-    def_write(write_lexsym           ,lexsym);
-    def_write(write_datatype         ,tdatatype);
-    def_write(write_typederive       ,typederive);
-
-    def_write(write_typeflagsset     ,typeflagsset);
-    def_write(write_typecompat       ,typecompat);
-    def_write(write_typeinit         ,typeinit);
-    def_write(write_tintaritm        ,tintaritm);
-    def_write(write_ptrflagsset      ,ptrflagsset);
-    def_write(write_ptrclass         ,ptrclass);
-    def_write(write_ptrbase          ,ptrbase);
-    def_write(write_procflagset      ,procflagset);
-    def_write(write_icallconvention  ,icallconvention);
-    def_write(write_regiontype       ,tregiontype);
-    def_write(write_with_mode        ,t_with_mode);
-    def_write(write_with_level       ,t_with_level);
-    def_write(write_entityvisible    ,tentityvisible);
 
 
-{
-rtattrib
-rtattribset
-t_rtattrib_mode
-t_rtattrib_modes
-
-parammode
-parammodeset
-parampass
-parampassset
-
-varflags
-varflagset
-varmode
-varmodeset
-varacccess
-varaccesssset
-varimplements
-varimplementsset
-
-constflags
-constflagsset
-
-tinstancepass
-
-tvcalltype
-
-tspectype           
-tspecobject}
-    -- Metody pro zápis základních datových typů.
-
-    ------------------------------------------------------------------------------------------------
-    #template def_write_char32str (method,param_type);
-    ------------------------------------------------------------------------------------------------
-
-      ----------------------------------------------------------------------------------------------
-      static method (
-          str      : in param_type)
-      -- Zapíše do výstupu string typu [param_type]. Je-li [param_type]=nil, zapíše prázdný řetězec.
-      ----------------------------------------------------------------------------------------------
-
-      #end def_write_char32str;
-    
-
-
-    ------------------------------------------------------------------------------------------------
-    def_write_char32str(write_entityident        ,pentityident);
-    def_write_char32str(write_lexcharustr        ,plexcharustr);
-    ------------------------------------------------------------------------------------------------
-
-    end c_ctm_binay_writer;
+var
+  -- viditelnostní filtry v závislosti na úrovni detailu
+  processing_visibility : const array t_ctm_detail_level of tentityvisibleset := [
+      for ctdl_public      use [etv_public,etv_protected,etv_supervised],
+      for ctdl_precompiled use [{%%TODO(CTM)}],
+      for ctdl_full        use [{%%TODO(CTM)}]];
+  traversal_visibility  : const array t_ctm_detail_level of tentityvisibleset := [
+      for ctdl_public      use [etv_public,etv_protected,etv_supervised],
+      for ctdl_precompiled use [{%%TODO(CTM)}],
+      for ctdl_full        use [{%%TODO(CTM)}]];
 
 
 
 ----------------------------------------------------------------------------------------------------
-class private c_ctm_binay_writer = 
--- Binární writer compile-time metadat.
+class private c_ctm_marker = 
+-- Označovač entit, které se dostanou do compile-time metadat.
 ----------------------------------------------------------------------------------------------------
-
-    ------------------------------------------------------------------------------------------------
-    #template imp_write (method);
-    ------------------------------------------------------------------------------------------------
-
-      ----------------------------------------------------------------------------------------------
-      static method =
-      -- Zapíše do výstupu hodnotu typu [param_type].
-      ----------------------------------------------------------------------------------------------
-      begin
-        write_unchecked(data,data:size);
-        end method 
-
-      #end imp_write;
-
-    ------------------------------------------------------------------------------------------------
-    imp_write(write_cr               );
-    imp_write(write_ci               );
-    imp_write(write_uniint           );
-    imp_write(write_unichar          );
-    imp_write(write_unireal          );
-    imp_write(write_unilogical       );
-    imp_write(write_unidata_addr     );
-    imp_write(write_unidata_size     );
-    imp_write(write_unidata_bitsize  );
-    imp_write(write_unicode_addr     );
-    imp_write(write_unicode_size     );
-    imp_write(write_visible          );
-    imp_write(write_logical          );
-
-    imp_write(write_unsigned8        );
-    imp_write(write_unsigned32       );
-    imp_write(write_unsigned         );
-    imp_write(write_char32           );
-    imp_write(write_partition_type   );
-    imp_write(write_partition_result );
-    imp_write(write_immclass         );
-    imp_write(write_rtattribset      );
-    imp_write(write_parammode        );
-    imp_write(write_parampass        );
-    imp_write(write_memclass         );
-    imp_write(write_varflagset       );
-    imp_write(write_varmode          );
-    imp_write(write_varaccess        );
-    imp_write(write_mem_aliased      );
-    imp_write(write_varimplements    );
-    imp_write(write_constflagset     );
-    imp_write(write_instancepass     );
-    imp_write(write_vcalltype        );
-    imp_write(write_virtualindex     );
-    imp_write(write_spectype         );
-    imp_write(write_specobject       );
-    imp_write(write_ooperarity       );
-    imp_write(write_ooperator        );
-    imp_write(write_lexsym           );
-    imp_write(write_datatype         );
-    imp_write(write_typederive       );
-    imp_write(write_typeflagsset     );
-    imp_write(write_typecompat       );
-    imp_write(write_typeinit         );
-    imp_write(write_tintaritm        );
-    imp_write(write_ptrflagsset      );
-    imp_write(write_ptrclass         );
-    imp_write(write_ptrbase          );
-    imp_write(write_procflagset      );
-    imp_write(write_icallconvention  );
-    imp_write(write_regiontype       );
-    imp_write(write_with_mode        );
-    imp_write(write_with_level       );
-    imp_write(write_entityvisible    );
-
-
-    -- Metody pro zápis základních datových typů.
-    ------------------------------------------------------------------------------------------------
-
-
-    ------------------------------------------------------------------------------------------------
-    #template imp_write_char32str (method);
-    ------------------------------------------------------------------------------------------------
-
-      ----------------------------------------------------------------------------------------------
-      static method = 
-      -- Zapíše do výstupu string typu [param_type]. Je-li [param_type]=nil, zapíše prázdný řetězec.
-      ----------------------------------------------------------------------------------------------
-      with
-        standard,
-        standard.characters;
-
-      var
-        encoder      : static c_character_encoder_utf8;
-        b            : t_unsigned8;
-        all_out      : t_logical;
-
-      begin
-        if str=nil
-
-          -- prázdný identifikátor je triviální
-          then write_unsigned32(0);
-
-          -- neprázdný identifikátor
-          else 
-            -- velikost
-            write_unsigned32(str^:length);
-
-            -- zakódovaný identifikátor
-            for i in str^:range loop
-              -- nacpat do enkodéru znak
-              encoder.put_character(str^[i]);
-
-              -- vyčíst po bytech
-              loop
-                encoder.get_output(b,all_out);
-                write_byte(t_data_byte(b));
-                until all_out;
-              end loop;
-
-            --write_unchecked(id^,id^:length*id^:base:size+id^:length:size);
-          end if;
-        end method
-
-      #end imp_write_char32str;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    imp_write_char32str(write_entityident        );
-    imp_write_char32str(write_lexcharustr        );
-    ------------------------------------------------------------------------------------------------
-
-    end c_ctm_binay_writer;
-
-
-
-----------------------------------------------------------------------------------------------------
-class public c_ctm_binay_reader = extend c_stream_generic_reader;
--- Binární reader compile-time metadat.
-----------------------------------------------------------------------------------------------------
-
-    ------------------------------------------------------------------------------------------------
-    #template def_reader (method,param_type);
-    ------------------------------------------------------------------------------------------------
-
-      ----------------------------------------------------------------------------------------------
-      static method (
-          data     : out param_type) 
-      -- Precte ze vstupu hodnotu typu [param_type].
-      ----------------------------------------------------------------------------------------------
-
-      #end def_reader;
-
-    ------------------------------------------------------------------------------------------------
-    def_reader(read_cr               ,t_ctm_record_tag);
-    def_reader(read_ci               ,t_ctm_id);
-    def_reader(read_uniint           ,tuniint);
-    def_reader(read_unichar          ,tunichar);
-    def_reader(read_unireal          ,tunireal);
-    def_reader(read_unilogical       ,tunilogical);
-    def_reader(read_unidata_addr     ,tunidata_addr);
-    def_reader(read_unidata_size     ,tunidata_size);
-    def_reader(read_unidata_bitsize  ,tunidata_bitsize);
-    def_reader(read_unicode_addr     ,tunicode_addr);
-    def_reader(read_unicode_size     ,tunicode_size);
-    def_reader(read_visible          ,tentityvisible);
-    def_reader(read_logical          ,t_logical);
-    
-    def_reader(read_unsigned8        ,t_unsigned8);
-    def_reader(read_unsigned32       ,t_unsigned32);
-    def_reader(read_unsigned         ,t_unsigned);
-    def_reader(read_char32           ,t_char32);
-    def_reader(read_partition_type   ,t_partition_type);
-    def_reader(read_partition_result ,t_partition_result);
-    def_reader(read_immclass         ,timmclass);
-    def_reader(read_rtattribset      ,rtattribset);
-    def_reader(read_parammode        ,parammode);
-    def_reader(read_parampass        ,parampass);
-    def_reader(read_memclass         ,memclass);
-    def_reader(read_varflagset       ,varflagset);
-    def_reader(read_varmode          ,varmode);
-    def_reader(read_varaccess        ,varaccess);
-    def_reader(read_mem_aliased      ,t_mem_aliased);
-    def_reader(read_varimplements    ,varimplements);
-    def_reader(read_constflagset     ,constflagset);
-    def_reader(read_instancepass     ,tinstancepass);
-    def_reader(read_vcalltype        ,tvcalltype);
-    def_reader(read_virtualindex     ,tvirtualindex);
-    def_reader(read_spectype         ,tspectype);
-    def_reader(read_specobject       ,tspecobject);
-    def_reader(read_ooperarity       ,tooperarity);
-    def_reader(read_ooperator        ,tooperator);
-    def_reader(read_lexsym           ,lexsym);
-    def_reader(read_datatype         ,tdatatype);
-    def_reader(read_typederive       ,typederive);
-
-    def_reader(read_typeflagsset     ,typeflagsset);
-    def_reader(read_typecompat       ,typecompat);
-    def_reader(read_typeinit         ,typeinit);
-    def_reader(read_tintaritm        ,tintaritm);
-    def_reader(read_ptrflagsset      ,ptrflagsset);
-    def_reader(read_ptrclass         ,ptrclass);
-    def_reader(read_ptrbase          ,ptrbase);
-    def_reader(read_procflagset      ,procflagset);
-    def_reader(read_icallconvention  ,icallconvention);
-    def_reader(read_regiontype       ,tregiontype);
-    def_reader(read_with_mode        ,t_with_mode);
-    def_reader(read_with_level       ,t_with_level);
-    def_reader(read_entityvisible    ,tentityvisible);
-
-
-    -- Metody pro cteni základních datových typů.
-
-    ------------------------------------------------------------------------------------------------
-    #template def_read_char32str (method,param_type);
-    ------------------------------------------------------------------------------------------------
-
-      ----------------------------------------------------------------------------------------------
-      static method (
-          str      : out param_type)
-      -- Precte ze vstupu string typu [param_type]. Je-li ve streamu prazdny retezec (velikosti 0), 
-      -- vrati prázdný řetězec.
-      ----------------------------------------------------------------------------------------------
-
-      #end def_read_char32str;
-    
-
-
-    ------------------------------------------------------------------------------------------------
-    def_read_char32str(read_entityident        ,pentityident);
-    def_read_char32str(read_lexcharustr        ,plexcharustr);
-    ------------------------------------------------------------------------------------------------
-
-    end c_ctm_binay_reader;
-
-
-
-----------------------------------------------------------------------------------------------------
-class private c_ctm_binay_reader = 
--- Binární reader compile-time metadat.
-----------------------------------------------------------------------------------------------------
-
-    ------------------------------------------------------------------------------------------------
-    #template imp_reader (method);
-    ------------------------------------------------------------------------------------------------
-
-      ----------------------------------------------------------------------------------------------
-      static method =
-      -- Precte ze vstupu hodnotu typu [param_type].
-      ----------------------------------------------------------------------------------------------
-      var
-        size       : t_offset;
-      
-      begin
-        size:=data:size;
-        
-        -- precetlo se nedobre?
-        verify({VERIFY=}001144,read_unchecked_out(data,size));
-        verify({VERIFY=}001148,size<>data:size);
-        end method 
-
-      #end imp_reader;
-
-    ------------------------------------------------------------------------------------------------
-    imp_reader(read_cr               );
-    imp_reader(read_ci               );
-    imp_reader(read_uniint           );
-    imp_reader(read_unichar          );
-    imp_reader(read_unireal          );
-    imp_reader(read_unilogical       );
-    imp_reader(read_unidata_addr     );
-    imp_reader(read_unidata_size     );
-    imp_reader(read_unidata_bitsize  );
-    imp_reader(read_unicode_addr     );
-    imp_reader(read_unicode_size     );
-    imp_reader(read_visible          );
-    imp_reader(read_logical          );
-
-    imp_reader(read_unsigned8        );
-    imp_reader(read_unsigned32       );
-    imp_reader(read_unsigned         );
-    imp_reader(read_char32           );
-    imp_reader(read_partition_type   );
-    imp_reader(read_partition_result );
-    imp_reader(read_immclass         );
-    imp_reader(read_rtattribset      );
-    imp_reader(read_parammode        );
-    imp_reader(read_parampass        );
-    imp_reader(read_memclass         );
-    imp_reader(read_varflagset       );
-    imp_reader(read_varmode          );
-    imp_reader(read_varaccess        );
-    imp_reader(read_mem_aliased      );
-    imp_reader(read_varimplements    );
-    imp_reader(read_constflagset     );
-    imp_reader(read_instancepass     );
-    imp_reader(read_vcalltype        );
-    imp_reader(read_virtualindex     );
-    imp_reader(read_spectype         );
-    imp_reader(read_specobject       );
-    imp_reader(read_ooperarity       );
-    imp_reader(read_ooperator        );
-    imp_reader(read_lexsym           );
-    imp_reader(read_datatype         );
-    imp_reader(read_typederive       );
-    imp_reader(read_typeflagsset     );
-    imp_reader(read_typecompat       );
-    imp_reader(read_typeinit         );
-    imp_reader(read_tintaritm        );
-    imp_reader(read_ptrflagsset      );
-    imp_reader(read_ptrclass         );
-    imp_reader(read_ptrbase          );
-    imp_reader(read_procflagset      );
-    imp_reader(read_icallconvention  );
-    imp_reader(read_regiontype       );
-    imp_reader(read_with_mode        );
-    imp_reader(read_with_level       );
-    imp_reader(read_entityvisible    );
-
-
-    -- Metody pro cteni základních datových typů.
-    ------------------------------------------------------------------------------------------------
-
-
-    ------------------------------------------------------------------------------------------------
-    #template imp_read_char32str (method);
-    ------------------------------------------------------------------------------------------------
-
-      ----------------------------------------------------------------------------------------------
-      static method = 
-      -- Precte ze vstupu string typu [param_type]. Je-li ve streamu prazdny retezec (velikosti 0), 
-      -- vrati prázdný řetězec.
-      ----------------------------------------------------------------------------------------------
-      with
-        standard,
-        standard.characters;
-
-      var
-        decoder    : static c_character_decoder_utf8;
-        b          : t_unsigned8;
-        char_out   : t_logical;
-        velikost   : t_unsigned32;
-        temp       : t_logical;  
-
-      begin
-        -- velikost
-        read_unsigned32(velikost);
-
-        -- alokuj retezec o velikosti [velikost]
-        new str range velikost;
-        verify({VERIFY=}001146,str=nil);
-
-        for i in 1..velikost loop
-          -- dekoduj znak po bytech
-          loop 
-            verify({VERIFY=}001147,read_byte(t_data_byte(b)));
-            decoder.put_byte(b,char_out);
-            until char_out;
-          
-          -- vycti znak
-          succ str^:length;
-          str^[i]:=decoder.get_character;
-          end loop;
-
-        -- ujistime se, ze nam nic nezbylo
-        decoder.finalize_input;
-        end method
-
-      #end imp_read_char32str;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    imp_read_char32str(read_entityident        );
-    imp_read_char32str(read_lexcharustr        );
-    ------------------------------------------------------------------------------------------------
-
-    end c_ctm_binay_reader;
-
-
-
-----------------------------------------------------------------------------------------------------
-class public c_ctm_id_items_registry =
--- 
-----------------------------------------------------------------------------------------------------
-    ------------------------------------------------------------------------------------------------
-    static get_ctm_entity_id (
-        entity     : in pentity)                 -- zkoumaná entita
-        return t_ctm_entity_id;                  -- CTM ID dodané entity
-    -- Zjistí CTM ID zadané entity.
-    -- Pokud entita ještě nemá přiděleno CTM ID, zapamatuje si jej.
-    ------------------------------------------------------------------------------------------------
-    static get_ctm_region_id (
-        region     : in pregion)                 -- zkoumaný region
-        return t_ctm_region_id;                  -- CTM ID dodaného regionu
-    -- Zjistí CTM ID zadaného regionu.
-    -- Pokud region ještě nemá přiděleno CTM ID, zapamatuje si jej.
-    ------------------------------------------------------------------------------------------------
-    static has_ctm_entity_id (
-        entity     : in pentity)                 -- zkoumaná entita
-        return t_logical;                  
-    -- Zjistí zda ma [entity] pridelen CTM ID
-    ------------------------------------------------------------------------------------------------
-    static has_ctm_region_id (
-        region     : in pregion)                 -- zkoumaný region
-        return t_logical;                        
-    -- Zjistí zda ma [region] pridelen CTM ID
-    ------------------------------------------------------------------------------------------------
-    static get_entity (
-        ctmid      : in t_ctm_entity_id)          -- CTM ID zkoumaného regionu
-        return pentity;                          -- region doaného CTM ID
-    -- Zjistí entitu zadané CTM ID.
-    -- Pokud CTM ID nemá přidělenou entitu, vrati [nil].
-    ------------------------------------------------------------------------------------------------
-    static get_region (
-        ctmid      : in t_ctm_region_id)         -- CTM ID zkoumaného regionu
-        return pregion;                          -- region doaného CTM ID
-    -- Zjistí region zadané CTM ID.
-    -- Pokud CTM ID ještě nemá přidělen region, vrati [nil].
-    ------------------------------------------------------------------------------------------------
-    static create_entity (
-        ctmid        : in t_ctm_entity_id;       -- CTM ID
-        context      : in tcontext;              -- kontext
-        etype        : in tentitytype;           -- typ
-        --id           : in pentityident;          -- idenifikátor
-        ent_context  : out tcontext)             -- kontext vytvorene entity
-        return pentity;
-    -- Vytvori novou entitu a zapamatuje si jeji CTM ID.
-    ------------------------------------------------------------------------------------------------
-    static create_entity_type (
-        ctmid        : in t_ctm_entity_id;       -- CTM ID
-        context      : in tcontext;              -- kontext
-        stype        : in tdatatype;             -- datovy typ
-        --id           : in pentityident;          -- idenifikátor
-        ent_context  : out tcontext)             -- kontext vytvorene entity
-        return pentity_type;
-    -- Vytvori novou entitu a zapamatuje si jeji CTM ID.
-    ------------------------------------------------------------------------------------------------
-    static create_region (
-        ctmid          : in t_ctm_region_id;     -- CTM ID
-        context        : in tcontext;            -- kontext
-        region_context : out tcontext)           -- kontext vytvořeného regionu
-        return pregion;
-    -- Vytvori novy region a zapamatuje si jeho CTM ID.
-    ------------------------------------------------------------------------------------------------
-    end c_ctm_id_items_registry;
-
-
-
-----------------------------------------------------------------------------------------------------
-class private c_ctm_id_items_registry =
--- 
-----------------------------------------------------------------------------------------------------
-
-  with
-    cd_decl.cd_create;
-    
-    ------------------------------------------------------------------------------------------------
-    class c_ctm_id_hash_item = extend c_hash_table_item;
-    -- Položka hash tabulky.
-    ------------------------------------------------------------------------------------------------
-
-        var
-          ctm_id   : t_ctm_id;            -- CTM ID souvisejícího prvku
-
-        end c_ctm_id_hash_item;
-
-    type
-      p_ctm_id_hash_item = ^class c_ctm_id_hash_item;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    class c_entity_hash_item = extend c_hash_table_item;
-    -- Položka hash tabulky.
-    ------------------------------------------------------------------------------------------------
-
-        var
-          entity   : pentity;            -- entita
-
-        end c_entity_hash_item;
-
-    type
-      p_entity_hash_item = ^class c_entity_hash_item;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    class c_region_hash_item = extend c_hash_table_item;
-    -- Položka hash tabulky.
-    ------------------------------------------------------------------------------------------------
-
-        var
-          region   : pregion;            -- region
-
-        end c_region_hash_item;
-
-    type
-      p_region_hash_item = ^class c_region_hash_item;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    class c_uplnezbytecnypotomek_hash_table = extend c_hash_table; 
-    -- Z nepochopitelnych duvodu je [c_hash_table] abstract
-    ------------------------------------------------------------------------------------------------
-        --------------------------------------------------------------------------------------------
-        override assign_hash_id =
-        -- prazdny override
-        --------------------------------------------------------------------------------------------
-        begin
-          end assign_hash_id;
-    
-        end c_uplnezbytecnypotomek_hash_table;
-
-
 
     var
-      next_ctm_id  : t_ctm_id;                          -- příští CTM ID
-      ctmids       : c_uplnezbytecnypotomek_hash_table; -- mapa ctmid-polozek
-      entities     : c_uplnezbytecnypotomek_hash_table; -- mapa entit
-      regions      : c_uplnezbytecnypotomek_hash_table; -- mapa regionu
+      -- požadovaná úroveň detailu metadat
+      detail_level : t_ctm_detail_level;
 
-
-    ------------------------------------------------------------------------------------------------
-    static pentity_to_hash_item_id (
-        entity     : in pentity)                 -- pointer na entitu
-        return t_hash_item_id =                  -- odpovídající hash item ID
-    -- Zkonvertuje pointer na entitu na ID v hashovací tabulce.
-    ------------------------------------------------------------------------------------------------
-    with
-      advanced.low_level.unchecked_memory_access;
-
-    begin
-      result:=t_hash_item_id(machine_pointer_to_memory_address(t_machine_pointer(entity)));
-      end pentity_to_hash_item_id;
-
-
+      -- seznam entit, které se dostanou do metadat
+      list         : ^tentitystring;
 
     ------------------------------------------------------------------------------------------------
-    static pregion_to_hash_item_id (
-        region     : in pregion)                 -- pointer na region
-        return t_hash_item_id =                  -- odpovídající hash item ID
-    -- Zkonvertuje pointer na entitu na ID v hashovací tabulce.
-    ------------------------------------------------------------------------------------------------
-    with
-      advanced.low_level.unchecked_memory_access;
-
-    begin
-      result:=t_hash_item_id(machine_pointer_to_memory_address(t_machine_pointer(region)));
-      end pregion_to_hash_item_id;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static ctm_id_to_hash_item_id (
-        ctmid      : t_ctm_id)
-        return t_hash_item_id =
-    -- Zkonvertuje CTM ID na hash item id
+    override process_entity_base =
+    -- Zápis entity: společný základ.
     ------------------------------------------------------------------------------------------------
     begin
-      result:=t_hash_item_id(ctmid);
-      end ctm_id_to_hash_item_id;
-    
+      list^.add(node);
+      end process_entity_base;
+
 
 
     ------------------------------------------------------------------------------------------------
-    static do_get_ctmid_from_hashitem (
-        item       : in out p_ctm_id_hash_item;
-        itemid     : in t_hash_item_id)
-        return t_ctm_region_id =
-    -- Zjisti CTM ID dane polozky [item] hash tabulky
-    -- Zalozi novy zaznam v hashtabulce pokud [item]=nil
-    -- [itemid] musi odpovidat polozce [item]
+    static ctm_mark =
+    -- Sestaví seznam entit, které se dostanou do compile-time metadat při uvedené konfiguraci
+    -- kořenové entity a úrovně metadat.
     ------------------------------------------------------------------------------------------------
     begin
-      -- nenašel-li, tak založit a přidělit CTM ID
-      if item=nil then
-        -- alokovat paměť
-        new item;
-  
-        -- přidělit hash ID
-        item^.item_id:=itemid;
+      -- poznamenat si požadovanou úroveň metada
+      detail_level:=level;
+      if level>ctdl_public then unimplemented({UNIMP=}000275) end if;
 
-        -- přidělit CTM ID
-        item^.ctm_id:=next_ctm_id;
-        succ next_ctm_id;
+      -- poznamenat si seznam, do kterého doplňujeme entity
+      this.list:=^list;
 
-        -- zařadit do hash tabulky
-        ctmids.store(item);
-        end if;
+      -- nastavit filtr itertátoru
+      set_processing_filter(etypes             ,processing_visibility[detail_level]);
+      set_traversal_filter (tentitytypeset:full,traversal_visibility[detail_level]);
 
-      -- vrátit ven
-      result:=item^.ctm_id;
-      end do_get_ctmid_from_hashitem;
+      -- %%TODO(CTM) Nějaký advanced filtr na příznak slinkování entity - nelze přeci exportovat 
+      -- neslinkované entity (pro [ctdl_precompiled] samozřejmě vynechat)
 
+      -- zpracovat strom entit a sestavit seznam
+      traverse_entity(root_entity);
+      end ctm_mark;
 
+    end c_ctm_marker;
 
-    ------------------------------------------------------------------------------------------------
-    static get_ctm_entity_id =
-    -- Zjistí CTM ID zadané entity.
-    -- Pokud entita ještě nemá přiděleno CTM ID, zapamatuje si jej.
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_ctm_id_hash_item;         -- prvek hash tabulky mapující pointer na CTM ID
-
-    begin
-      -- zkusit nalézt záznam pro dodanou entitu
-      ctmids.find(pentity_to_hash_item_id(entity),item);
-
-      -- vratit CTM ID z nalezene/nenalezene polozky hash tabulky
-      result:=do_get_ctmid_from_hashitem(item,pentity_to_hash_item_id(entity));
-      end get_ctm_entity_id;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static get_ctm_region_id =
-    -- Zjistí CTM ID zadaného regionu.
-    -- Pokud region ještě nemá přiděleno CTM ID, zapamatuje si jej.
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_ctm_id_hash_item;         -- prvek hash tabulky mapující pointer na CTM ID
-
-    begin
-      -- zkusit nalézt záznam pro dodany region
-      ctmids.find(pregion_to_hash_item_id(region),item);
-
-      -- vratit CTM ID z nalezene/nenalezene polozky hash tabulky
-      result:=do_get_ctmid_from_hashitem(item,pregion_to_hash_item_id(region));
-      end get_ctm_region_id;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static has_ctm_entity_id =              
-    -- Zjistí zda ma [entity] pridelen CTM ID
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_ctm_id_hash_item;         -- prvek hash tabulky mapující pointer na CTM ID
-
-    begin
-      -- zkusit nalézt záznam pro dodanou entitu
-      ctmids.find(pentity_to_hash_item_id(entity),item);
-      
-      result:=item<>nil;
-      end has_ctm_entity_id;
-
-    
-    
-    ------------------------------------------------------------------------------------------------
-    static has_ctm_region_id =                    
-    -- Zjistí zda ma [region] pridelen CTM ID
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_ctm_id_hash_item;         -- prvek hash tabulky mapující pointer na CTM ID
-
-    begin
-      -- zkusit nalézt záznam pro dodany region
-      ctmids.find(pregion_to_hash_item_id(region),item);
-      result:=item<>nil;
-      end has_ctm_region_id;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static get_entity =
-    -- Zjistí entitu zadané CTM ID.
-    -- Pokud CTM ID nemá přidělenou entitu, vrati [nil].
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_entity_hash_item;         -- prvek hash tabulky
-
-    begin
-      -- najdi polozku
-      entities.find(ctm_id_to_hash_item_id(ctmid), item);
-
-      -- nalezena?
-      if item=nil 
-        -- ne - nil
-        then result:=nil;
-        
-        -- ano - podle polozky
-        else result:=item^.entity;
-        end if;
-
-      end get_entity;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static get_region =
-    -- Zjistí region zadané CTM ID.
-    -- Pokud CTM ID ještě nemá přidělen region, vrati [nil].
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_region_hash_item;         -- prvek hash tabulky
-
-    begin
-      -- najdi polozku
-      regions.find(ctm_id_to_hash_item_id(ctmid), item);
-
-      -- nalezena?
-      if item=nil 
-        -- ne - nil
-        then result:=nil;
-        
-        -- ano - podle polozky
-        else result:=item^.region;
-        end if;
-      end get_region;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static create_entity =
-    -- Vytvori novou entitu a zapamatuje si jeji CTM ID.
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_entity_hash_item;         -- prvek hash tabulky
-      ent          : pentity;                    -- nova entita
-      pos          : lexposblock;                -- prazdna pozice
-
-    begin
-      -- najdi polozku
-      entities.find(ctm_id_to_hash_item_id(ctmid),item);
-
-      -- nemelo by se volat dvakrat pro jednu polozku
-      verify({VERIFY=}001139, item<>nil);
-
-      -- musi byt platny kontext
-      verify({VERIFY=}001180,context.entity=nil);
-      verify({VERIFY=}001181,context.region=nil);
-
-      -- vytvor
-      d_create_without_name(context,ent,ent_context,etype,nil,pos);
-      d_end(ent^,pos);
-
-      --zarad
-      new item;
-      item^.item_id:=ctm_id_to_hash_item_id(ctmid);
-      item^.entity:=ent;
-      entities.store(item);
-
-      --vrat
-      result:=ent;
-      end create_entity;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static create_entity_type =
-    -- Vytvori novou entitu a zapamatuje si jeji CTM ID.
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_entity_hash_item;         -- prvek hash tabulky
-      ent          : pentity_type;               -- nova entita
-      pos          : lexposblock;                -- prazdna pozice
-
-    begin
-      -- najdi polozku
-      entities.find(ctm_id_to_hash_item_id(ctmid),item);
-
-      -- nemelo by se volat dvakrat pro jednu polozku
-      verify({VERIFY=}001141, item<>nil);
-
-      -- musi byt platny kontext
-      verify({VERIFY=}001182,context.entity=nil);
-      verify({VERIFY=}001183,context.region=nil);
-
-      -- vytvor
-      d_create_implicit_type(context,ent,ent_context,stype,pos);
-      d_end_implicit_type(ent^,pos,true);
-
-      --zarad
-      new item;
-      item^.item_id:=ctm_id_to_hash_item_id(ctmid);
-      item^.entity:=ent;
-      entities.store(item);
-
-      --vrat
-      result:=ent;
-      end create_entity_type;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    static create_region =
-    -- Vytvori novy region a zapamatuje si jeho CTM ID.
-    ------------------------------------------------------------------------------------------------
-    var
-      item         : p_region_hash_item;         -- prvek hash tabulky
-      reg          : pregion;                    -- novy region
-      pos          : lexposblock;                -- prazdna pozice
-
-    begin
-      -- najdi polozku
-      regions.find(ctm_id_to_hash_item_id(ctmid),item);
-
-      -- nemelo by se volat dvakrat pro jednu polozku
-      verify({VERIFY=}001140, item<>nil);
-
-      -- vytvor
-      d_create_region(context,reg,region_context);
-
-      --zarad
-      new item;
-      item^.item_id:=ctm_id_to_hash_item_id(ctmid);
-      item^.region:=reg;
-      entities.store(item);
-
-      --vrat
-      result:=reg;
-      end create_region;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    entry =
-    -- Inicializace
-    ------------------------------------------------------------------------------------------------
-    begin
-      ctmids.init(3755,c_ctm_id_hash_item:tag,true);
-      entities.init(3755,c_entity_hash_item:tag,true);
-      regions.init(3755,c_region_hash_item:tag,true);
-      end entry;
-
-
-
-    ------------------------------------------------------------------------------------------------
-    exit = 
-    -- Finalizace
-    ------------------------------------------------------------------------------------------------
-    begin
-      ctmids.delete_all;
-      entities.delete_all;
-      regions.delete_all;
-      end exit;
-
-    end c_ctm_id_items_registry;
 
 
 
@@ -1195,32 +299,22 @@ class private c_ctm_writer =
 ----------------------------------------------------------------------------------------------------
 
     with
-      cc_def.cc_entity.cc_ref;
-
-    var
-      -- viditelnostní filtry v závislosti na úrovni detailu
-      processing_visibility : const array t_ctm_detail_level of tentityvisibleset := [
-          for ctdl_public      use [etv_public,etv_protected,etv_supervised],
-          for ctdl_precompiled use [{%%TODO(CTM)}],
-          for ctdl_full        use [{%%TODO(CTM)}]];
-      traversal_visibility  : const array t_ctm_detail_level of tentityvisibleset := [
-          for ctdl_public      use [etv_public,etv_protected,etv_supervised],
-          for ctdl_precompiled use [{%%TODO(CTM)}],
-          for ctdl_full        use [{%%TODO(CTM)}]];
+      cc_def.cc_entity.cc_ref,
+      cc_registry,
+      cc_formatters;
 
     var
       -- požadovaná úroveň detailu metadat
       detail_level : t_ctm_detail_level;
 
       -- registr polozek s pridelenymi CTM IDs
-      ctm_id       : ^c_ctm_id_items_registry;
+      ctm_id       : ^c_ctm_id_partitioned_registry;
 
       -- výstupní formatter
-      f            : c_ctm_binay_writer;
+      f            : c_ctm_binary_writer;
 
     
-
-
+    
     ------------------------------------------------------------------------------------------------
     static get_well_known_ctm_id (
         ent        : in pentity)
@@ -1228,9 +322,6 @@ class private c_ctm_writer =
     -- vrati well known CTM ID podle [ent]
     -- aware of well-known CTM IDs
     ------------------------------------------------------------------------------------------------
-    with
-      cc_def.cc_var;
-    
     begin
       if    ent=def_uniint then result:=ci_uniint;
       elsif ent=def_unireal then result:=ci_unireal;
@@ -1243,9 +334,9 @@ class private c_ctm_writer =
       elsif ent=inttype_machine_pointer then result:=ci_inttype_machine_pointer;
       
       -- jine nezname
-      else  result:=nil; 
+      else  
+        result:=nil; 
         end if;
-
       end get_well_known_ctm_id;
 
     
@@ -1265,6 +356,7 @@ class private c_ctm_writer =
       
       -- neexportovatelna entita?
       if etc_no_cmt_export in ent^.compile 
+
         -- unitypy maji well-known CTM IDs
         then
           result:=get_well_known_ctm_id(ent);
@@ -1276,11 +368,27 @@ class private c_ctm_writer =
         else  
           result:=ctm_id^.get_ctm_entity_id(ent);
           end if;  
-
       end get_ctm_id;
 
+
     
-    
+    ------------------------------------------------------------------------------------------------
+    static write_entity_cr (
+        ent        : in pentity) =               -- entita
+    -- Zapíše kód typu entity.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if ent^.etype in ets_type
+        -- typy se oštřují zvlášť
+        then f.write_cr(cr_by_dtype[pentity_type(ent)^.stype]);
+
+        -- ostatní entity standardním způsobem
+        else f.write_cr(cr_by_etype[ent^.etype]);
+        end if;
+      end write_entity_cr;
+      
+      
+      
     ------------------------------------------------------------------------------------------------
     static write_entity_ref (
         ent        : in pentity) =               -- entita
@@ -1292,17 +400,10 @@ class private c_ctm_writer =
 
       -- CTM ID
       f.write_ci(get_ctm_id(ent));
-
       if ent=nil then return; end if;
       
       -- CTM record tag
-      if ent^.etype in ets_type
-        -- typy se oštřují zvlášť
-        then f.write_cr(cr_by_dtype[pentity_type(ent)^.stype]);
-
-        -- ostatní entity standardním způsobem
-        else f.write_cr(cr_by_etype[ent^.etype]);
-        end if;
+      write_entity_cr(ent);
       end write_entity_ref;
 
     
@@ -1319,18 +420,22 @@ class private c_ctm_writer =
 
 
     ------------------------------------------------------------------------------------------------
-    static write_interface_ref (
+    static write_interface (
         iface      : in p_class_interface) =
-    -- Zapis reference na interface
+    -- Zapíše definici interfacu.
     ------------------------------------------------------------------------------------------------
     begin
-      verify({VERIFY=}001123,iface=nil);
+      verify({VERIFY=}001123,iface=nil or else not iface^.is_exposed);
       
-      -- odkaz na tridu
+      -- odkaz na třídu
       write_refentity(iface^.refclass);
 
-      -- virtualni tabulka
+      -- odkaz na instanci interfacu
+      write_refentity(iface^.instance);
+
+      -- virtuální tabulka
       if iface^.vtable<>nil 
+      
         then
           -- pocet
           f.write_unsigned32(iface^.vtable^:length);
@@ -1339,22 +444,32 @@ class private c_ctm_writer =
           for i in iface^.vtable^:range loop
             write_entity_ref(iface^.vtable^[i]);
             end loop;
+            
         else
           f.write_unsigned32(0);
           end if;
 
-      -- souvisejici instance
-      write_refentity(iface^.instance);
-
-      -- is exposed
-      f.write_logical(iface^.is_exposed);
+      -- původní interface
 
       -- interface index
       f.write_unsigned(iface^.interface_index);
+      end write_interface;
 
-      -- puvodni interface
-      end write_interface_ref;
 
+
+    ------------------------------------------------------------------------------------------------
+    static write_refinterface (
+        iface      : in p_class_interface) =
+    -- Zapíše referenci na interface.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- odkaz na třídu
+      write_refentity(iface^.refclass);
+
+      -- interface index
+      f.write_unsigned(iface^.interface_index);
+      end write_refinterface;
+      
 
 
     ------------------------------------------------------------------------------------------------
@@ -1374,16 +489,15 @@ class private c_ctm_writer =
     -- zapis okamzite hodnoty
     ------------------------------------------------------------------------------------------------
     begin
-      -- verify({VERIFY=}001106,val=nil);
-      
       -- typ prime hodnoty
       if val=nil 
         then 
           f.write_immclass(ic_undef);
           return;
 
-        else f.write_immclass(val^.ic);
-        end if;
+        else 
+          f.write_immclass(val^.ic);
+          end if;
 
       -- typ?
       case val^.ic
@@ -1417,10 +531,9 @@ class private c_ctm_writer =
         -- pole
         when ic_array do
             verify({VERIFY=}001108,val^.aitems=nil);
-            --verify({VERIFY=}001112,val^.aitems^.list=nil);
             
             -- pocet slozek
-            if  val^.aitems^.list<>nil 
+            if val^.aitems^.list<>nil 
               then f.write_unsigned32(val^.aitems^.list^:length);
               else f.write_unsigned32(0);
               end if;
@@ -1445,7 +558,6 @@ class private c_ctm_writer =
         -- record
         when ic_record do
             verify({VERIFY=}001109,val^.ritems=nil);
-            -- verify({VERIFY=}001111,val^.ritems^.list=nil);
 
             -- pocet slozek
             if val^.ritems^.list<>nil 
@@ -1470,7 +582,6 @@ class private c_ctm_writer =
         -- agr. mnoziny
         when ic_set do
             verify({VERIFY=}001113, val^.sitems=nil);
-            -- verify({VERIFY=}001114, val^.sitems^.list=nil);
 
             -- pocet slozek
             if val^.sitems^.list<>nil 
@@ -1495,9 +606,7 @@ class private c_ctm_writer =
         when others do
             -- doplnit prepinac
             verify({VERIFY=}001107,true);
-        
         end case;
-      
       end write_imm_value;
 
 
@@ -1508,7 +617,6 @@ class private c_ctm_writer =
     -- Zápis reference na okamžitou hodnotu
     ------------------------------------------------------------------------------------------------
     begin
-      -- verify({VERIFY=}001115, not r.isset);
       write_imm_value(r.getuimm);
       end write_refimm;
 
@@ -1521,7 +629,7 @@ class private c_ctm_writer =
     ------------------------------------------------------------------------------------------------
     begin
       -- nil?
-      if str = nil
+      if str=nil
         
         -- jo - prazdny retezec
         then f.write_unsigned32(0);
@@ -1536,7 +644,6 @@ class private c_ctm_writer =
             f.write_unichar(str^[i]);
             end loop;
           end if;
-
       end write_lexaggregate;
     
     
@@ -1569,7 +676,6 @@ class private c_ctm_writer =
       f.write_unsigned(node^.xval.code);         -- rezervováno inline assembler
       f.write_logical(node^.xval.id_used);       -- identifikátor byl použit
       f.write_logical(node^.xval.txt_used);      -- textový tvar byl použit                                
-                                                      
       end write_lexnode_lex;                          
 
 
@@ -1580,7 +686,7 @@ class private c_ctm_writer =
     ------------------------------------------------------------------------------------------------
     begin
       -- vynechani neexportovatelnych entit, napr. unitypu
-      result:=not (etc_no_cmt_export in node^.compile);
+      result:=etc_no_cmt_export not in node^.compile;
       end filter_process_entity;
     
 
@@ -1601,6 +707,7 @@ class private c_ctm_writer =
     -- Zápis entity: společný základ.
     ------------------------------------------------------------------------------------------------
     begin
+      verify({VERIFY=}001215,detail_level=ctdl_public and etc_globaly_visible not in node^.compile);
       write_refentity(node^.ancestor);
       f.write_visible(node^.visible);
       f.write_visible(node^.full);
@@ -1640,10 +747,9 @@ class private c_ctm_writer =
     ------------------------------------------------------------------------------------------------
     begin
       process_entity_code(node);
-      
       f.write_partition_type(node^.part_type);     -- typ partition
       f.write_partition_result(node^.part_result); -- výsledný tvar přeložené partition
-
+      f.write_external_entity_ident(node^.part_extid); -- externí identifikátor partition
       end process_entity_compile;
 
 
@@ -1699,7 +805,6 @@ class private c_ctm_writer =
       write_reftype(node^.typ);              -- typ promenne
       f.write_rtattribset(node^.rta_avail);        -- teoreticky poskytované dynamické atributy
       f.write_rtattribset(node^.rta_used);         -- fakticky použité dynamické atributy
-
       end process_entity_value;
 
 
@@ -1793,8 +898,6 @@ class private c_ctm_writer =
     ------------------------------------------------------------------------------------------------
     begin
       process_entity_static_subprogram(node);
-    {
-    }
       end process_entity_procedure;
 
 
@@ -1805,8 +908,6 @@ class private c_ctm_writer =
     ------------------------------------------------------------------------------------------------
     begin
       process_entity_static_subprogram(node);
-    {
-    }
       end process_entity_static;
 
 
@@ -1815,20 +916,10 @@ class private c_ctm_writer =
     override process_entity_virtual =
     -- Zápis entity: Virtuální metoda
     ------------------------------------------------------------------------------------------------
-{
-  -- virtuální tabulka
-  tvirtualtable    = string of pentity_code;
-  pvirtualtable    = ^tvirtualtable;
-
-  -- index virtuální metoda
-  tvirtualindex    = tvirtualtable:range;
-}
     begin
       process_entity_subprogram(node);
-      
       f.write_vcalltype(node^.vcall);            -- typ virtuálního volání
       f.write_virtualindex(node^.vindex);        -- index virtuální metody
-      
       end process_entity_virtual;
 
 
@@ -1840,7 +931,7 @@ class private c_ctm_writer =
     begin
       process_entity_code(node);
       write_refentity(node^.virt);               -- související virtuální metoda
-      write_interface_ref(node^.interface);      -- související interface
+      write_refinterface(node^.interface);       -- související interface
       end process_entity_override;
 
 
@@ -1849,14 +940,8 @@ class private c_ctm_writer =
     override process_entity_special =
     -- Zápis entity: Speciální metoda
     ------------------------------------------------------------------------------------------------
-{
-type
-  -- tabulka speciálních metod
-  tspectable       = array tspectype of cc_ref.refentity;
-}
     begin
       process_entity_subprogram(node);
-      
       f.write_spectype(node^.spectype);          -- typ speciální metody                       
       f.write_specobject(node^.specobj);         -- objekt, ke kterému se spec. metoda vztahuje
       end process_entity_special;
@@ -1869,8 +954,6 @@ type
     ------------------------------------------------------------------------------------------------
     begin
       process_entity_subprogram(node);
-    {
-    }
       end process_entity_task;
 
 
@@ -1881,8 +964,6 @@ type
     ------------------------------------------------------------------------------------------------
     begin
       process_entity_subprogram(node);
-    {
-    }
       end process_entity_macro;
 
 
@@ -1891,20 +972,6 @@ type
     override process_entity_overload0 =
     -- Zápis entity: Společný základ přetížení a operátoru
     ------------------------------------------------------------------------------------------------
-{  
-  -- popis jednoho přetížení
-  toverloaddesc    = record
-  +   psym         : cc_ref.refentity;           -- symbol
-  +   arity        : tooperarity;                -- arita operátoru
-  ?   assign       : t_logical;                  -- T-operátor pro zkrácené přiřazení
-      end record;               
-  poverloaddesc    = ^toverloaddesc;
-
-  -- tabulka přetížení
-  toverloadtable   = string of aliased toverloaddesc;
-  poverloadtable   = ^toverloadtable;
-}
-
     begin
       process_entity_base(node);
 
@@ -1918,7 +985,6 @@ type
         write_refentity(node^.table^[i].psym);
         f.write_ooperarity(node^.table^[i].arity);
         end loop;
-     
       end process_entity_overload0;
 
 
@@ -1962,7 +1028,6 @@ type
       
       write_entity_ref(node^.typ);               -- související výčtový typ
       f.write_uniint(node^.ordinal);             -- ordinální hodnota
-      
       end process_entity_enum;
 
 
@@ -1971,170 +1036,6 @@ type
     override process_entity_type =
     -- Zápis entity: Typ
     ------------------------------------------------------------------------------------------------
-{
-type
-  -- druh typu
-  typekind         = enum
-      tk_unknown;                                -- dosud neznámý
-      tk_regular;                                -- regulární
-      tk_singular;                               -- singulární
-      end enum;
-
-type
-  -- pohledy na typ
-  ttypeview        = enum
-      tview_null;                                -- prázdný pohled, typ není k dispozici
-      tview_aggregate;                           -- libovolný agregátní typ
-      tview_incomplete;                          -- Incomplete view
-      tview_partial;                             -- Partial view
-      tview_full;                                -- Full view
-      tview_unchecked;                           -- Unchecked view
-      end enum;
-  ttypeviewset     = set of ttypeview;
-
-type
-  -- determinace kompatibility
-  typecompat       = enum
-      tc_norm;                                   -- bez omezení
-      tc_protected;                              -- protected
-      tc_private;                                -- private
-      end enum;
-
-type
-  -- typ derivace
-  typederive       = enum
-      td_root;                                   -- root typ
-      td_unconstrained;                          -- triviální derivace
-      td_constrained;                            -- type constraint
-      td_extension;                              -- type extension
-      td_private_extension;                      -- private extension
-      end enum;
-
-type
-  -- příznaky typu
-  typeflags        = enum
-      ----- %%TECH Používání příznaků [tf_tagged] a [tg_temp] --------------------------------------
-      -- Přestože v níže deklarované množině se zdají být příznaky [tf_tagged] a [tf_temp] 
-      -- nezávislé, zpravidla tomu tak není. U každého typu je nastaven nejvýše (možná právě) jeden 
-      -- z nich. Původně byly implicitně deklarované typy untagged, takže neměly příznak 
-      -- [tf_tagged]. Nově (viz [cd_decl.cd_eval.e_type] text Ondra 12.11.2003) jsou tagged 
-      -- i implicitně deklarované typy. Je samozřejmě stále možné zkonstruovat typ, který nebude mít 
-      -- ani jeden z těchto příznaků, opačný extrém je však zakázaný.
-      ----------------------------------------------------------------------------------------------
-      tf_tagged;                                 -- typ je tagged
-      tf_temp;                                   -- typ je dočasný
-      end enum;
-  typeflagsset     = set of typeflags;
-
-type
-  -- způsob inicializace instance typu
-  typeinit         = enum
-      ti_normal;                                 -- standardní inicializace
-      ti_complex;                                -- kompexní inicializace voláním metody INIT
-      end enum;
-
-type
-  -- typ celočíselné aritmetiky
-  tintaritm        = enum
-      tia_overflow;                              -- overflow aritmetika
-      tia_modular;                               -- modulární aritmetika
-      end enum;
-
-type
-  -- statické parametry reálného čísla (nezměnitelné uživatelem)
-  tfloatsparams    = record
-      low          : tunireal;                   -- nejmenší číslo
-      high         : tunireal;                   -- největší číslo
-      small        : tunireal;                   -- nejmenší číslo větší než 0
-  --   Totéž co DELTA:
-  --    epsilon      : tunireal;                   -- nejmenší kladné číslo takové, že 1+eps>1
-  --  
-   -- radix        : tuniint;                    -- základ exponentu
-   -- mantissa     : tuniint;                    -- počet míst mantisy (?)
-      emin         : tuniint;                    -- nejmenší exponent
-      emax         : tuniint;                    -- největší exponent
-      signed_zeros : tunilogical;                -- T-rozlišuje se +/- 0
-      positive_inf : tunireal;                   -- Positive Infinity
-      negative_inf : tunireal;                   -- Negative Infinity
-      positiove_zero : tunireal;                 -- Positive Zero
-      negative_zero: tunireal;                   -- Negative Zero
-      not_a_number : tunireal;                   -- Not a Number
-      end record;
-  pfloatsparams    = ^tfloatsparams;
-
-  -- parametry reálného čísla (definované nebo změnitelné uživatelem)
-  tfloatparams     = record
-      fdelta       : tunireal;                   -- přesnost
-      fdigits      : tuniint;                    -- počet míst
-      rounding     : tunilogical;                -- T-zaokrouhlování
-      -- %%X Zaokrouhlení mohou být čtyři:
-      --  - k nejbližšímu číslu (normální)
-      --  - k nule (oříznutí)
-      --  - k +inf (nahoru)
-      --  - k -inf (dolů)
-      oflw         : tunilogical;                -- T-přetečení způsobí CONSTRAINT_ERROR
-      sparams      : pfloatsparams;              -- statické parametry
-      end record;
-
-  -- třída pointeru
-  ptrclass         = enum
-      pc_data;                                   -- přístup k datům
-      pc_subprogram;                             -- přístup k podprogramu
-      pc_task;                                   -- přístup k tasku
-      pc_message;                                -- přístup ke zprávě
-      end enum;
-  ptrclassset      = set of ptrclass;
-
-type
-  -- kompatibilita báze
-  ptrbase          = enum
-      pb_strict;                                 -- pouze identické báze
-      pb_class;                                  -- pouze odvozené báze
-      pb_unchecked;                              -- libovolné báze
-      end enum;
-  ptrbaseset       = set of ptrbase;
-
-type
-  -- nepovinné atributy pointeru
-  ptrattrib        = enum
-      pa_tag;                                    -- :tag
-      pa_size;                                   -- :size
-      pa_instance;                               -- ^instance
-      end enum;
-  ptrattribset     = set of ptrattrib;
-
-  -- modifikátory pointeru
-  ptrflags         = enum
-    --pf_type;                                   -- pointer obsahuje typovou identifikaci
-    --pf_unchecked;                              -- pointer je univerzálně kompatibilní
-    --pf_const;                                  -- pointer odkazuje na konstantní objekt
-      pf_machine;                                -- machine pointer
-      end enum;
-  ptrflagsset      = set of ptrflags;
-
-type
-  -- parametry typu procedura
-  procflags        = enum
-      rf_virtual;                                -- obsahuje řídící parametry virtuálního volání
-      end enum;
-  procflagset      = set of procflags;
-
-type
-  -- příznak, zda typ obsahuje instanci třídy
-  tcontainsclass = enum
-      tcc_unknown;                               -- dosud nezjištěno
-      tcc_yes;                                   -- ano
-      tcc_no;                                    -- ne
-      end enum;
-
-type
-  -- pole @STATUS dekomponované na množinu příznaků (POZOR: neměnit pořadí!)
-  t_class_status_flags = enum
-     csf_initialized for ord use 0;              -- instance byla inicializována
-     csf_interface   for ord use 1;              -- instance reprezentuje interface
-     end enum;
-  t_class_status_field = set of t_class_status_flags for size use 4;
-}
     begin
       process_entity_init(node);
     {
@@ -2209,7 +1110,7 @@ type
       
       -- tabulka speciálních metod
       -- pocet elementu
-      f.write_unsigned32(node^.stable:length);
+      --f.write_unsigned32(node^.stable:length);
       
       -- jednotlive elementy
       for i in node^.stable:range loop
@@ -2262,8 +1163,6 @@ type
             else
               f.write_unsigned8(0);
               end if;
-
-
           end declare;
         end if;
 
@@ -2299,7 +1198,6 @@ type
           callconv:=i_get_convention_proctype^(node^);
           f.write_icallconvention(callconv);     -- volaci konvence
           end declare;
-        
         end if;
 
       -- zprava
@@ -2312,42 +1210,25 @@ type
         declare var
           it        : c_list_iterator;
           interface : p_class_interface;
-          icount    : t_unsigned32;
         
         begin
           verify({VERIFY=}001124,node^.interfaces=nil);
 
           -- HYNEK - konflikt jmen s [c_class_interface.is_exposed], [get_exposed_interfaces] by mela vratit i interfejci z bazovych trid
           -- iterator na exposovane interfejci krome nativniho
+
+          -- zapsat počet exposeovaných interfaců
+          f.write_unsigned32(node^.interfaces^.exposed_interfaces);
           
-          -- pocet interfejcu
-          icount:=0;
+          -- zapsat všechny exposeované interfacy
           node^.interfaces^.get_exposed_interfaces(it);
-
           while it.get(interface) loop
-            succ icount;
+            write_interface(interface);            
             end loop;
-
-          f.write_unsigned32(icount);
-          
-          -- interfejci
-          node^.interfaces^.get_exposed_interfaces(it);
-          
-          -- pro vsechny interfejci
-          while it.get(interface) loop
-            -- pokud je tridou exposovany (tedy ne z bazove tridy) 
-           if interface^.is_exposed then
-              -- zapis
-              write_interface_ref(interface);            
-              end if;
-            end loop;
-
           end declare;
-
         end if;
 
-      -- HYNEK - nevynechalo se neco???
-
+       -- HYNEK - nevynechalo se neco???
        end process_entity_type;
 
 
@@ -2358,8 +1239,6 @@ type
     ------------------------------------------------------------------------------------------------
     begin
       process_entity_value(node);
-    {
-    }
       end process_entity_attribute;
 
 
@@ -2371,7 +1250,6 @@ type
     ------------------------------------------------------------------------------------------------
     begin
       process_entity_base(node);
-      
       write_reftype(node^.typ);                  -- typ zprávy
       end process_entity_message;
 
@@ -2401,8 +1279,6 @@ type
     ------------------------------------------------------------------------------------------------
     begin
       process_entity_base(node);
-    {
-    }
       end process_entity_tparam;
 
 
@@ -2411,30 +1287,6 @@ type
     override process_entity_template =
     -- Zápis entity: Šablona
     ------------------------------------------------------------------------------------------------
-{
-  -- reprezentace lexikálního elementu přečteného ze vstupu
-  tlexnode;
-  plexnode         = ^class tlexnode;
-  tlexnode         = record
-      prev         : plexnode;                   -- předchozí lexikální symbol
-      next         : plexnode;                   -- následující lexikální symbol
-    + _tag         : enum _tag_param; _tag_lex; end enum; -- %%TODO(TAG)
-      end record;
-
-  -- lexikální element určující formální parametr
-  tlexnode_param   = tlexnode with record
-    + pparam       : pentity_tparam;             -- související parametr
-      end record;
-  plexnode_param   = ^class tlexnode_param;
-
-  -- lexikální element sám o sobě
-  tlexnode_lex     = tlexnode with record
-    + xlex         : cc_lexsym.lexsym;           -- lexikální element
-    + xval         : cc_lexsym.lexval;           -- hodnota elementu
-    ? xpos         : cc_lexsym.lexpos;           -- pozice elementu
-      end record;
-  plexnode_lex     = ^class tlexnode_lex;
-}
     var
       plex         : plexnode;
       pocet_uzlu   : t_unsigned32;
@@ -2445,28 +1297,23 @@ type
     + plex         : plexnode;                   -- obsah metasymbolu
     }
 
-      -- prvni uzel
+      -- spočítat uzly
       plex:=node^.plex;
-
-      -- spocitej uzly
       while plex<>nil loop
-        succ(pocet_uzlu);
+        succ pocet_uzlu;
         plex:=plex^.next;
         end loop;
 
-      -- zapis pocet uzlu
+      -- zapsat počet uzlů
       f.write_unsigned32(pocet_uzlu);
 
-      -- zase prvni uzel
+      -- zapsat postupně všechny uzly
       plex:=node^.plex;
-
-      -- pro vsechny uzly
       while plex<>nil loop
-        
-        -- zapis typ uzlu
+        -- zapsat typ uzlu
         f.write_unsigned8(plex^._tag:ord);
         
-        -- typ?
+        -- podle typu uzlu zapsat doplňující informaci
         case plex^._tag
           -- parametr
           when _tag_param do 
@@ -2480,9 +1327,9 @@ type
           when others do verify({VERIFY=}001116,true);
           end case;
 
-          plex:=plex^.next;
+        -- další uzel
+        plex:=plex^.next;
         end loop;
-
       end process_entity_template;
 
 
@@ -2543,7 +1390,6 @@ type
 
       -- 3. implicitni viditelnost vnorenych prvku
       f.write_entityvisible(region^.vsect);
-
       end process_region;
 
     
@@ -2553,6 +1399,9 @@ type
     -- Vstup do entity: generovat start tag, CTM ID a popřípadě identifikátor entity.
     ------------------------------------------------------------------------------------------------
     begin
+      -- je co zapisovat?
+      if not process then return; end if;
+
       -- CTM record tag
       if node^.etype in ets_type
         -- typy se oštřují zvlášť
@@ -2561,12 +1410,6 @@ type
         -- ostatní entity standardním způsobem
         else f.write_cr(cr_by_etype[node^.etype]);
         end if;
-
-      -- zapis process flag
-      f.write_logical(process);
-
-      -- je co zapisovat?
-      if not process then return; end if;
 
       -- CTM identitifikátor entity
       f.write_ci(ctm_id^.get_ctm_entity_id(node));
@@ -2582,24 +1425,167 @@ type
     -- Vstup do entity: generovat end tag.
     ------------------------------------------------------------------------------------------------
     begin
+      -- je co zapisovat?
+      if not process then return; end if;
+
+      -- koncový tag
       f.write_cr(cr_end);
       end leave_node;
 
 
 
     ------------------------------------------------------------------------------------------------
-    procedure ctm_save =
+    static save_ctm_header =
+    -- Uloží záhlaví CTM souboru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- uložit image-base této partition
+      end save_ctm_header;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static save_import (
+        curr_root  : in pentity_compile) =       -- kořenová entita
+    -- Uloží tabulky pro import z jiných partition.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_sym;
+      
+    var 
+      it           : c_ctm_id_partitioned_registry.c_ctm_id_partitioned_registry_iterator;
+      partition    : t_partition_id;             -- ID právě zpracovávané partition
+      root         : pentity_compile;            -- root entita právě zpracovávané partition
+
+    begin
+      -- tag začátku tabulky
+      f.write_cr(cr_import);
+      
+      -- zpracovat všechny partition
+      it.init(ctm_id);
+      while it.get_partition(partition,root) loop
+        -- importují se jen entity z non-current partition
+        if partition<>curr_root^.partition_id then
+          -- tag začátku tabulky
+          f.write_cr(cr_import_partition);
+
+          -- uložit externí jméno partition
+          f.write_external_entity_ident(root^.part_extid);
+{
+          -- uložit image-base cizí partition
+          f.write_unicode_addr(os^.getimagebase(root^));
+}
+          -- uložit importy jednotlivých entit
+          declare var
+            entity : pentity;                    -- entita z externí partition
+            ctm_id : t_ctm_entity_id;            -- odpovídající CTM ID
+
+          begin
+            -- zpracovat všechny entity
+            while it.get_entity(entity,ctm_id) loop
+              declare var
+                qid : p_qualified_entity_ident;  -- kvalifikovaný identifikátor entity
+                s   : t_char32str;
+                
+              begin
+                -- tag začátku položky tabulky
+                f.write_cr(cr_import_entry);
+
+                -- CTM ID
+                f.write_ci(ctm_id);
+                
+                -- co je entita zač
+                write_entity_cr(entity);
+
+                -- kvalifikovaný identifikátor entity
+                s:=sym_get_qid(entity);
+                new qid range s:length;
+                for i in s:range loop qid^ & tidentchar(s[i]) end loop;
+                f.write_qualified_entity_ident(qid);
+
+                -- tag konce tabulky
+                f.write_cr(cr_end);
+                
+              leave  
+                -- uvolnit paměť
+                discard qid;
+                end declare;
+              end loop;
+            end declare;
+          
+          -- tag konce tabulky
+          f.write_cr(cr_end);
+          end if;
+        end loop;
+
+      -- tag konce tabulky
+      f.write_cr(cr_end);
+      end save_import;
+
+
+{
+    ------------------------------------------------------------------------------------------------
+    static save_rtl_table =
+    -- Uloží konfiguraci RTL procedur.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_rtl;
+
+    var
+      entity       : pentity;                    -- entita přiřazená dané interní entitě
+
+    begin
+      -- tag začátku tabulky
+      f.write_cr(cr_rtl);
+
+      -- postupně zpracovat všechny RTL entity
+      for rtl in t_rtl_entity loop
+        -- zjistit přiřazenou entitu
+        rtl_get_entity_internal(rtl,entity);
+
+        -- je-li přiřazena, exportovat
+        if entity<>nil then
+          -- tag začátku položky tabulky
+          f.write_cr(cr_rtl_entry);
+
+          -- identifikátor
+          declare var
+            id     : pentityident;               -- identifikátor interní entity
+          begin
+            rtl_get_entity_id(rtl,id);
+            f.write_entityident(id);
+            end declare;
+
+          -- CTM identitifikátor přiřazené entity
+          write_entity_ref(entity);
+
+          -- tag konce položky tabulky
+          f.write_cr(cr_end);
+          end if;
+        end loop;
+      
+      -- tag konce tabulky
+      f.write_cr(cr_end);
+      end save_rtl_table;
+}
+
+
+    ------------------------------------------------------------------------------------------------
+    static ctm_save =
     -- Uloží proud compile-time metadat do zadaného výstupního streamu.
     ------------------------------------------------------------------------------------------------
+    var
+      memory_buffer : c_passive_buffered_stream_connector; -- buffer na předzpracovaný strom entit
+
     begin
       new ctm_id;
 
       -- poznamenat si požadovanou úroveň metada
       detail_level:=level;
-      verify({VERIFY=}001105,level>ctdl_public);
+      if level>ctdl_public then unimplemented({UNIMP=}000274) end if;
 
-      -- incializovat výstupní formatter
-      f.init_writer(output);
+      -- inicializovat výstupní formatter, jako výstupní stream přiřadit buffer
+      f.init_writer(^c_output_stream:(memory_buffer));
       f.set_lazy_buffer(true);
 
       -- nastavit filtr itertátoru
@@ -2607,14 +1593,38 @@ type
       set_traversal_filter (tentitytypeset:full,traversal_visibility[detail_level]);
 
       -- %%TODO(CTM) Nějaký advanced filtr na příznak slinkování entity - nelze přeci exportovat 
-      -- neslinkované entity (pro [ctdl_precompiled] samozřejmě vynechat
+      -- neslinkované entity (pro [ctdl_precompiled] samozřejmě vynechat)
 
-      -- vše zpracovat
+      -- zpracovat strom entit a výsledek nabufferovat
       traverse_entity(root_entity);
+{
+      -- zpracovat tabulku RTL procedur
+      save_rtl_table;
+}
+      -- změnit výstupní stream výstupního formatteru na skutečný soubor
+      -- POZOR: toto je trik, čistší by bylo použít dva formattery (jeden nad memory bufferem a
+      -- jeden nad souborem), jenže formatter bych si musel předávat do asi 50 procedur a na to
+      -- teď (18.2.2004 15:55, dva dny před termínem JIT překladače) opravdu nemám čas. Ondra.
+      f.set_lazy_buffer(false);  -- takový Half-Flush (něco jako Half-Life)
+      f.init_writer(output);
+      f.set_lazy_buffer(true);
+
+      -- uložit záhlaví souboru
+      save_ctm_header;
+
+      -- uložit tabulky pro import z jiných partition
+      save_import(root_entity);
+      
+      -- případně nacachovaná data uložit, ať je možné uložit nabufferovaný strom entit
+      f.flush;
+
+      -- uložit nabufferovaný strom entit a tabulku RTL procedur
+      --c_output_stream:(memory_buffer).close;
+      c_output_stream:(memory_buffer).write_eod;
+      c_input_stream:(memory_buffer).transfer_all_packets(output);
 
     leave
       discard ctm_id;
-
       end ctm_save;
 
     end c_ctm_writer;
@@ -2622,18 +1632,21 @@ type
 
 
 ----------------------------------------------------------------------------------------------------
-class private c_ctm_reader =
+class private {abstract} c_ctm_reader =
 -- Compile-time matadata reader.
 ----------------------------------------------------------------------------------------------------
+
     with
-      cc_def.cc_entity.cc_ref;
+      cc_def.cc_entity.cc_ref,
+      cc_registry,
+      cc_formatters;
 
     var
       -- registr polozek s pridelenymi CTM IDs
-      ctm_id       : ^c_ctm_id_items_registry;
+      ctm_id       : ^c_ctm_id_import_registry;
 
       -- vstupní formatter
-      f            : c_ctm_binay_reader;
+      f            : c_ctm_binary_reader;
 
 
 
@@ -2644,41 +1657,40 @@ class private c_ctm_reader =
     -- well-known entitu podle CTM ID
     -- v pripade ze [id] neznaci well-known entitu, vrai [nil]
     ------------------------------------------------------------------------------------------------
-    with
-      cc_def.cc_var;
-    
     begin
       -- podle identifikatoru vrat prislusnou znamou entitu
       case id
-        when ci_uniint do result:=def_uniint;
-        when ci_unireal do result:=def_unireal;
+        when ci_uniint     do result:=def_uniint;
+        when ci_unireal    do result:=def_unireal;
         when ci_unilogical do result:=def_unilogical;
-        when ci_unichar do result:=def_unichar;
-        when ci_uninil do result:=def_uninil;
-        when ci_unistr do result:=def_unistr;
-        when ci_inttype_tag do result:=inttype_tag;
+        when ci_unichar    do result:=def_unichar;
+        when ci_uninil     do result:=def_uninil;
+        when ci_unistr     do result:=def_unistr;
+        when ci_inttype_tag    do result:=inttype_tag;
         when ci_inttype_status do result:=inttype_status;
         when ci_inttype_machine_pointer do result:=inttype_machine_pointer;
         when others do result:=nil;
         end case;
-
       end get_known_entity;
 
     
     
     ------------------------------------------------------------------------------------------------
-    static read_entity_ref (
-        context    : in tcontext)                -- kontext
-        return pentity =
-    -- Zjisti reference na entitu. 
-    -- Pokud se nepodari najit zpusobi, interni chybu.
+    static read_entity_ref_internal (
+        id         : out t_ctm_entity_id;       -- CTM ID odkazované entity
+        entity     : out pentity;                -- nalezená entita
+        etype      : out tentitytype;            -- typ entity (i v případě, že nebyla nalezena)
+        dtype      : out tdatatype) =
+    -- Načte referenci na entitu a pokusí se ji vyhledat v tabulce již zpracovaných entit.
+    -- Pokud se entitu nepodaří najít, vrátí v [entity] NIL. V obou případech vrátí [etype] podle
+    -- údaje uloženého v referenci. Jestliže je entita typ, vrátí i konkrétní datový typ [dtype],
+    -- v ostatních případech je hodnota neurčena.
+    --   Pokud je reference prázdná (neukazuje na žádnou entitu), vrátí [id] rovno [ci_none].
+    --   Pokud se neshoduje [etype] uložené v referenci s [etype] v nalezené entitě, způsobí interní
+    -- chybu.
     ------------------------------------------------------------------------------------------------
     var
-      id           : t_ctm_entity_id;
-      etype        : tentitytype;
-      outcontext   : tcontext;
       cr           : t_ctm_record_tag;
-      dtype        : tdatatype;
   
     begin
       -- precti identifikaotr
@@ -2699,123 +1711,177 @@ class private c_ctm_reader =
       -- entity_type
       elsif cr>=dtype_by_cr:first and cr<=dtype_by_cr:last then 
         dtype:=dtype_by_cr[cr];
-        -- pomocny flag
-        etype:=et_type; 
+      
+        -- odvodit typ entity podle datového typu
+        if dtype=dt_class
+          then etype:=et_class
+          else etype:=et_type
+          end if;
 
       -- ostatni tu nema co delat
       else 
-        verify({VERIFY=}001198);
+        check_error({CCERR=}000622);
         end if;
     
-      -- zjisti jestli se nejedna o znamou entitu
-      result:=get_known_entity(id);
-      
-      -- znama entita?
-      if result<>nil
-        -- ano
-        then 
-          -- kontrola
-          verify({VERIFY=}001199,result^.etype<>etype);
-       
-        -- ne
-        else
-          -- ne - v registrech
-          result:=ctm_id^.get_entity(id);
-          
-          -- v registrech?
-          if result<>nil 
-            -- ano
-            then
-              -- kontrola
-              verify({VERIFY=}001200,result^.etype<>etype);
-              
-            -- ne
-            else
-              -- neni - vytvor prazdnou a zaregistruj
-              if etype in ets_type 
-                then result:=ctm_id^.create_entity(id,context,etype,outcontext);
-                else result:=ctm_id^.create_entity_type(id,context,dtype,outcontext);
-                end if;
-              
-              end if;
+      -- zjistit jestli se nejedna o well-known entitu
+      entity:=get_known_entity(id);
 
+      -- pokud ne, tak se podívat do tabulky již zpracovaných entit
+      if entity=nil then
+        entity:=ctm_id^.get_entity(id);
+        end if;
+
+      -- pokud se entita našla, tak zkontrolovat její konfiguraci
+      if entity<>nil then
+        if entity^.etype<>etype or else (etype in ets_type and pentity_type(entity)^.stype<>dtype) then
+          check_error({CCERR=}000623);
           end if;
+        end if;
+      end read_entity_ref_internal;
 
+    
+    
+    ------------------------------------------------------------------------------------------------
+    static read_entity_ref (
+        entity     : out pentity) =              -- nalezená entita
+    -- Načte referenci na entitu a zkontroluje korektnost metadat (podrobněji viz popis procedury
+    -- [read_entity_ref_internal]). Pokud se nejedná o prázdnou referenci a entita nebyla nalezena,
+    -- založí ji.
+    ------------------------------------------------------------------------------------------------
+    var
+      id           : t_ctm_entity_id;            -- CTM ID odkazované entity
+      etype        : tentitytype;                -- typ entity uložený v referenci
+      dtype        : tdatatype;                  -- datový typ entity, je-li to typ
+
+    begin
+      -- zpracovat referenci
+      read_entity_ref_internal(id,entity,etype,dtype);
+
+      -- pokud se nejedná o prázdnou referenci a entita nebyla nalezena, tak ji vytvořit
+      if entity=nil and id<>ci_none then
+        -- neni - vytvor prazdnou a zaregistruj
+        if etype in ets_type 
+          then ctm_id^.create_entity_type(id,dtype,entity);
+          else ctm_id^.create_entity(id,etype,entity);
+          end if;
+        end if;
       end read_entity_ref;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static read_entity_ref_existing (
+        entity     : out pentity) =              -- nalezená entita
+    -- Načte referenci na entitu. 
+    -- Entita již musí existovat. Pokud se entita nenalezne, způsobí chybu.
+    ------------------------------------------------------------------------------------------------
+    var
+      id           : t_ctm_entity_id;            -- CTM ID odkazované entity
+      etype        : tentitytype;                -- typ entity uložený v referenci
+      dtype        : tdatatype;                  -- datový typ entity, je-li to typ
+
+    begin
+      -- zpracovat referenci
+      read_entity_ref_internal(id,entity,etype,dtype);
+
+      -- pokud se nejedná o prázdnou referenci a entita nebyla nalezena, je to chyba
+      check_error({CCERR=}000636,entity=nil and id<>ci_none);
+      end read_entity_ref_existing;
 
     
     
     ------------------------------------------------------------------------------------------------
     static read_refentity (
-        context    : in tcontext)                -- kontext    
-    return refentity =
-    -- Zapis reference na entitu.
+        rentity    : out refentity) =            -- reference na entitu
+    -- Přečte referenci na entitu.
     ------------------------------------------------------------------------------------------------
     var
       ent          : pentity;
 
     begin
-      ent:=read_entity_ref(context);
-      result.setentity(ent);
+      read_entity_ref(ent);
+      rentity.setentity(ent);
       end read_refentity;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static read_interface_ref (
+    static read_interface (
         context    : in tcontext)                -- kontext        
-    return p_class_interface =
-    -- Zapis reference na interface
+        return p_class_interface =
+    -- Přečte definici interfacu.
     ------------------------------------------------------------------------------------------------
     var
       count : t_unsigned32;
-      temp  : t_logical;
 
     begin
       new result;
 
-      result^.refclass:=read_refentity(context);
-      verify({VERIFY=}001152,not result^.refclass.isset);
+      -- související třída
+      read_refentity(result^.refclass);
+      check_error({CCERR=}000624,not result^.refclass.isset);
 
-      -- pocet polozek virt. tabulky
+      -- instance interfacu
+      read_refentity(result^.instance);
+      check_error({CCERR=}000625,not result^.instance.isset);
+
+      -- počet položek virtuální tabulky
       f.read_unsigned32(count);
       
       if count>0 then
-        -- instance
+        -- založit virtuální tabulku
         new result^.vtable range count;
         
-        -- polozky virt. tabulky
+        -- přečíst položky virtuální tabulky
         for i in 1..count loop
           succ result^.vtable^:length;
-          result^.vtable^[result^.vtable^:length]:=read_entity_ref(context);
+          read_entity_ref(result^.vtable^[result^.vtable^:length]);
           end loop;
         end if;
         
-      result^.instance:=read_refentity(context);
-      verify({VERIFY=}001168,not result^.instance.isset);
-
-      -- is exposed
-      f.read_logical(temp);
-      result^.is_exposed:=temp;
+      -- původní interface
 
       -- interface index
       f.read_unsigned(result^.interface_index);
+      end read_interface;
 
-      end read_interface_ref;
 
+
+    ------------------------------------------------------------------------------------------------
+    static read_refinterface (
+        context    : in tcontext)                -- kontext        
+        return p_class_interface =
+    -- Přečte odkaz na interface.
+    ------------------------------------------------------------------------------------------------
+    var
+      refclass     : pentity_type;               -- odkazovaná třída
+      iface_index  : t_unsigned;                 -- index interfacu v rámci třídy
+      
+    begin
+      -- odkaz na třídu s daným interfacem
+      read_entity_ref_existing(refclass);
+      
+      -- index interfacu
+      f.read_unsigned(iface_index);
+      
+      -- dohledat interface podle indexu
+      result:=refclass^.interfaces^.get_interface_by_index(iface_index);
+      check_error({CCERR=}000637,result=nil);
+      end read_refinterface;
+      
 
 
     ------------------------------------------------------------------------------------------------
     static read_reftype (
         context    : in tcontext)                -- kontext        
-    return reftype =
-    -- Zapis reference na entitu.
+        return reftype =
+    -- Přečte referenci na typ.
     ------------------------------------------------------------------------------------------------
     var
       ent          : pentity;
 
     begin
-      ent:=read_entity_ref(context);
+      read_entity_ref(ent);
       
       -- prazdna reference?
       if ent=nil then
@@ -2823,7 +1889,7 @@ class private c_ctm_reader =
         end if;
 
       -- ent musi byt [tentity_type]
-      verify({VERIFY=}001167,ent^.etype<>et_type);
+      check_error({CCERR=}000626,ent^.etype not in ets_type);
 
       -- nastav navratovou hodnotu
       result.settype(pentity_type(ent));
@@ -2833,20 +1899,19 @@ class private c_ctm_reader =
     
     ------------------------------------------------------------------------------------------------  
     static read_imm_value (
-        context    : in tcontext)                -- kontext            
-    return timm_value =
-    -- zapis okamzite hodnoty
+        context    : in tcontext;                -- kontext            
+        result     : out timm_value) =           -- přečtená přímá hodnota
+    -- Přečte přímou hodnotu.
     ------------------------------------------------------------------------------------------------
     var
-      immclass     : timmclass;
       count        : t_unsigned32;
 
     begin
       -- typ hodnoty
-      f.read_immclass(immclass);
+      f.read_immclass(result.ic);
 
       -- typ?
-      case immclass
+      case result.ic
         -- nedefinovana hodnota
         when ic_undef do ;
         
@@ -2861,8 +1926,6 @@ class private c_ctm_reader =
         
         -- string
         when ic_condensed do 
-            -- verify({VERIFY=}001154,val^.citems.len<>val^.citems.items^:length);
-
             -- pocet prvku [citems.items^]
             f.read_unsigned32(count);
             new result.citems.items range count;
@@ -2880,18 +1943,19 @@ class private c_ctm_reader =
             
         -- pole
         when ic_array do
-            declare var
-              array_item : timm_array_item;
+            -- pocet slozek
+            f.read_unsigned32(count);
+            
+            -- instance
+            new result.aitems;
+            new result.aitems^.list range count;
 
-            begin
-              -- pocet slozek
-              f.read_unsigned32(count);
-              
-              -- instance
-              new result.aitems^.list range count;
+            -- slozky
+            for i in 1..count loop
+              declare var
+                array_item : timm_array_item;
 
-              -- slozky
-              for i in 1..count loop
+              begin
                 -- spodek
                 f.read_uniint(array_item.lval);
                   
@@ -2899,45 +1963,44 @@ class private c_ctm_reader =
                 f.read_uniint(array_item.hval);
                   
                 -- hodnota
-                array_item.val:=read_imm_value(context);
+                read_imm_value(context,array_item.val);
 
-                -- pridej
+                -- pridat
                 result.aitems^.list^ & array_item;
-                end loop;
-              
-              -- hodnota "others"
-              result.aitems^.othersval:=read_imm_value(context);
-              end declare;
+                end declare;
+              end loop;
+            
+            -- hodnota "others"
+            read_imm_value(context,result.aitems^.othersval);
         
         -- record
         when ic_record do
-            declare var
-              record_item : timm_record_item;
+            -- pocet slozek
+            f.read_unsigned32(count);
 
-            begin
-              verify({VERIFY=}001157,result.ritems=nil);
-              -- verify({VERIFY=}001158,result.ritems^.list=nil);
+            -- instance
+            new result.ritems;
+            new result.ritems^.list range count;
+            
+            -- slozky
+            for i in 1..count loop
+              declare var
+                record_item : timm_record_item;
 
-              -- pocet slozek
-              f.read_unsigned32(count);
-
-              -- instance
-              new result.ritems^.list range count;
-              
-              -- slozky
-              for i in 1..count loop
+              begin
                 -- souvisejici entita
-                record_item.item:=read_entity_ref(context);
+                read_entity_ref(record_item.item);
                   
                 -- hodnota
-                record_item.val:=read_imm_value(context);
+                read_imm_value(context,record_item.val);
 
+                -- pridat
                 result.ritems^.list^ & record_item;
-                end loop;
+                end declare;
+              end loop;
 
-              -- hodnota "others"
-              result.ritems^.othersval:=read_imm_value(context);
-              end declare;
+            -- hodnota "others"
+            read_imm_value(context,result.ritems^.othersval);
 
         -- agr. mnoziny
         when ic_set do
@@ -2945,14 +2008,15 @@ class private c_ctm_reader =
             f.read_unsigned32(count);
             
             -- instance
+            new result.sitems;
             new result.sitems^.list range count; 
             
-            declare var
-              set_item : timm_set_item;
-            
-            begin
-              -- slozky
-              for i in 1..count loop
+            -- slozky
+            for i in 1..count loop
+              declare var
+                set_item : timm_set_item;
+              
+              begin
                 -- spodek
                 f.read_uniint(set_item.lval);
                 
@@ -2961,15 +2025,9 @@ class private c_ctm_reader =
 
                 -- pridat
                 result.sitems^.list^ & set_item;
-                end loop;
-              end declare;
-        
-        when others do
-            -- doplnit prepinac
-            verify({VERIFY=}001161,true);
-        
+                end declare;
+              end loop;
         end case;
-      
       end read_imm_value;
 
 
@@ -2978,20 +2036,17 @@ class private c_ctm_reader =
     static read_refimm (
         context    : in tcontext)                -- kontext        
         return refimm =
-    -- Zápis reference na okamžitou hodnotu
+    -- Přečte referenci na přímou hodnotu.
     ------------------------------------------------------------------------------------------------
-    var
-      val : timm_value;
-
     begin
-      -- verify({VERIFY=}001162, not r.isset);
-      result.getuimm^:=read_imm_value(context);
+      read_imm_value(context,result.getundefimm^);
       end read_refimm;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static read_lexaggregate return plexaggregate = 
+    static read_lexaggregate (
+        paggregate : out plexaggregate) = 
     -- Zapis lexaggregate. pokud [str] nil, zapise prazdny retezec
     ------------------------------------------------------------------------------------------------
     var
@@ -3003,413 +2058,376 @@ class private c_ctm_reader =
       f.read_unsigned32(count);
       
       -- instance
-      new result range count;
+      new paggregate range count;
       
       -- polozky
       for i in 1..count loop
         f.read_unichar(char);
-        
-        --%%TODO(COMPATIBILITY) result^ & char;
-        succ result^:length;
-        result^[result^:length]:=char;
+        -- %%TODO(STRING) nějak nefunguje zřetězení
+        succ paggregate^:length;
+        paggregate^[paggregate^:length]:=char;
         end loop;
-
       end read_lexaggregate;
     
     
 
     ------------------------------------------------------------------------------------------------
-    static read_lexnode_lex return plexnode_lex =
-    -- Zápis lexikálního elementu
+    static read_lexnode_param (
+        plex       : out plexnode_param) =
+    -- Čtení lexikálního uzlu šablony reprezentujícího parametr.
     ------------------------------------------------------------------------------------------------
-{
-  -- lexikální element sám o sobě
-  tlexnode_lex     = tlexnode with record
-    + xlex         : cc_lexsym.lexsym;           -- lexikální element
-    + xval         : cc_lexsym.lexval;           -- hodnota elementu
-    ? xpos         : cc_lexsym.lexpos;           -- pozice elementu
-      end record;
-  plexnode_lex     = ^class tlexnode_lex;
-}
     begin
-      -- verify({VERIFY=}001163,node=nil);
+      -- alokovat paměť
+      new plex;
+      plex^._tag:=_tag_param;
       
-      
-      -- instance
-      new result;
+      -- přečíst odkaz na parametr
+      read_entity_ref(plex^.pparam);
+      end read_lexnode_param;
 
-      f.read_lexsym(result^.xlex);
+
+
+    ------------------------------------------------------------------------------------------------
+    static read_lexnode_lex (
+        plex       : out plexnode_lex) =
+    -- Čtení lexikálního uzlu šablony reprezentujícího lexikální element.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- instance
+      new plex;
+      plex^._tag:=_tag_lex;
 
       -- HYNEK - neudelat case node^.xlex? kdyz tech elementu je moc a ostatnich polozek jen par
-      f.read_uniint(result^.xval.ui);
-      f.read_unireal(result^.xval.ur);
-      f.read_entityident(result^.xval.id);
-      f.read_logical(result^.xval.can_be_kw);
-      f.read_lexcharustr(result^.xval.txt);      -- textová reprezentace elementu
-      result^.xval.str:=read_lexaggregate;       -- znakový agregát 
-      f.read_unsigned(result^.xval.code);        -- rezervováno inline assembler
-      f.read_logical(result^.xval.id_used);      -- identifikátor byl použit
-      f.read_logical(result^.xval.txt_used);     -- textový tvar byl použit                                
-                                                      
+      f.read_lexsym(plex^.xlex);
+      f.read_uniint(plex^.xval.ui);
+      f.read_unireal(plex^.xval.ur);
+      f.read_entityident(plex^.xval.id);
+      f.read_logical(plex^.xval.can_be_kw);
+      f.read_lexcharustr(plex^.xval.txt);        -- textová reprezentace elementu
+      read_lexaggregate(plex^.xval.str);         -- znakový agregát 
+      f.read_unsigned(plex^.xval.code);          -- rezervováno inline assembler
+      f.read_logical(plex^.xval.id_used);        -- identifikátor byl použit
+      f.read_logical(plex^.xval.txt_used);       -- textový tvar byl použit                                
       end read_lexnode_lex;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_base (
-        context    : in tcontext;                -- kontext    
-        node       : in out tentity) =
-    -- Nacte zaklad entity
+    #template process_entity_base_template;
+    -- Šablona načtení základu entity vyjma zařazení do struktury.
     ------------------------------------------------------------------------------------------------
-    begin
-      node.ancestor:=read_refentity(context);
+      -- načíst základní údaje
+      read_refentity(node.ancestor);
       f.read_visible(node.visible);
       f.read_visible(node.full);
       f.read_logical(node.is_abstract);
-    {
-      ---- příznaky entity a stavové proměnné ----
- -- ? compile      : tentitycompileset;          -- režim překladu
- -- ? pos          : tentitypositions;           -- pozice symbolu
- -- ? compv        : tcompvar;                   -- parametry překladu
-      ---- informace přidané globální analýzou ----
- -- ? loc_var_cache: t_var_cache;                -- lokální příznak volání spec. metod pro proměnné
- -- ? tra_var_cache: t_var_cache;                -- tranzitivní příznak volání spec. metod pro prom.
-      ---- generování kódu ----
- -- ? codegen      : p_flex_record;              -- přídavné informace pro generátor kódu
-    }
-      end load_entity_base;
+      
+      -- vyplnit další služební údaje
+      node.linked:=ls_linked;
+      node.analyzed:=as_analyzed;
+      #end process_entity_base_template;
+    
+
+
+    ------------------------------------------------------------------------------------------------
+    static process_entity_base (
+        context    : in tcontext;                -- kontext    
+        node       : in out class tentity) =
+    -- Nacte zaklad entity
+    ------------------------------------------------------------------------------------------------
+    var
+      outcontext   : tcontext;
+
+    begin
+      sym_add_entity(^node,context,node.id,outcontext);
+      process_entity_base_template;
+      end process_entity_base;
 
 
                      
     ------------------------------------------------------------------------------------------------
-    static load_entity_code (
+    static process_entity_code (
         context    : in tcontext;                -- kontext    
-        node       : in out tentity_code) =
+        node       : in out class tentity_code) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_base(context,pentity(^node)^);
-    {
-    - bl           : cc_ref.refblock;            -- blok příkazů
-    - nesting      : t_unsigned;                 -- úroveň vnoření podprogramu
-    }
-      end load_entity_code;
+      process_entity_base(context,node);
+      end process_entity_code;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_compile (
-        context    : in tcontext;                -- kontext    
+    static process_entity_compile (
+        context    : in out tcontext;            -- kontext    
         node       : in out tentity_compile) =
-    -- Nacte [tentity_code]
+    -- Nacte [tentity_compile]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_code(context,pentity_code(^node)^);
-      
+      -- zařadit do hierarchie - kompilační jednotka je vždy vrchol hierarchie
+      context.entity:=^node;
+
+      -- načíst entitu
+    --process_entity_code(context,node);
+      process_entity_base_template;
       f.read_partition_type(node.part_type);     -- typ partition
       f.read_partition_result(node.part_result); -- výsledný tvar přeložené partition
-
-      end load_entity_compile;
+      f.read_external_entity_ident(node.part_extid); -- externí identifikátor partition
+      
+      -- kompilační jednotka je vždy globálně viditelná
+      node.compile+tentitycompileset:[etc_globaly_visible];
+      end process_entity_compile;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_program (
+    static leave_entity_compile (
+        node       : in out tentity_compile) =
+    -- Trigger při opouštění načtení [tentity_compile].
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_sym.cc_partition;
+
+    begin
+    {
+      -- WITHnout existující globální partition
+      part_with_partitions(sym_primary_context(node));
+    }
+      -- kompilační jednotku zaregistrovat
+      part_register_partition(^node);
+      end leave_entity_compile;
+      
+      
+
+    ------------------------------------------------------------------------------------------------
+    static process_entity_program (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_program) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_code(context,pentity_code(^node)^);
-    {
-    ? export_info  : p_flex_record;              -- informace pro export
-    }
-      end load_entity_program;
+      process_entity_code(context,node);
+      end process_entity_program;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_module (
+    static process_entity_module (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_module) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_base(context,pentity(^node)^);
-    {
-    ? lib_info     : p_flex_record;              -- informace knihovnika
-    }
-      end load_entity_module;
+      process_entity_base(context,node);
+      end process_entity_module;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_init (
+    static process_entity_init (
         context    : in tcontext;                -- kontext    
-        node       : in out tentity_init) =
+        node       : in out class tentity_init) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_base(context,pentity(^node)^);
-
+      process_entity_base(context,node);
       node.init:=read_refimm(context);           -- inicializační výraz
-      end load_entity_init;
+      end process_entity_init;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_value (
+    static process_entity_value (
         context    : in tcontext;                -- kontext    
-        node       : in out tentity_value) =
+        node       : in out class tentity_value) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_init(context,pentity_init(^node)^);
-    {
-    - rta_fixed    : t_logical;                  -- T-množina použitých dynamických atributů je
-                                                 -- fixovaná a nelze ji již měnit
-    }
+      process_entity_init(context,node);
       node.typ:=read_reftype(context);           -- typ promenne
       f.read_rtattribset(node.rta_avail);        -- teoreticky poskytované dynamické atributy
       f.read_rtattribset(node.rta_used);         -- fakticky použité dynamické atributy
-
-      end load_entity_value;
+      end process_entity_value;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_param (
+    static process_entity_param (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_param) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_value(context,pentity_value(^node)^);
-    {
-    ? size         : tunidata_size;              -- velikost (s přihlédnutím k způsobu předání)
-    }
-      
+      process_entity_value(context,node);
       f.read_parammode(node.mode);               -- mód parametru
       f.read_parampass(node.pass);               -- způsob předání parametru
       f.read_mem_aliased(node.paliased);         -- povolení aliased přístupu
-      end load_entity_param;
+      end process_entity_param;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_var (
+    static process_entity_var (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_var) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_value(context,pentity_value(^node)^);
-    {
-      -- programátorem předefinovatelné atributy
-    - attr_position: cc_ref.refexpr;             -- pozice složky recordu
-
-      -- exportni informace
-    ? export_info  : p_flex_record;              -- informace pro export
-    }
+      process_entity_value(context,node);
       f.read_memclass(node.mclass);              -- třída proměnné                                        
       f.read_varflagset(node.vflags);            -- další příznaky                                        
       f.read_varmode(node.vmode);                -- mód přístupu k proměnné                               
       f.read_varaccess(node.vaccess);            -- determinace přístupu                                  
       f.read_mem_aliased(node.valiased);         -- příznak, zda je možné získat adresu proměnné (ALIASED)
       f.read_varimplements(node.vimplements);    -- jakou "higher-order" konstrukci proměnná implementuje 
-      node.imp_param:=read_entity_ref(context);  -- související parametr                                  
+      read_entity_ref(node.imp_param);           -- související parametr                                  
       f.read_unidata_addr(node.addr);            -- adresa promenne                                       
-      end load_entity_var;
+      end process_entity_var;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_const (
+    static process_entity_const (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_const) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_value(context,pentity_value(^node)^);
-
+      process_entity_value(context,node);
       f.read_constflagset(node.cflags);          -- modifikátory
-      end load_entity_const;
+      end process_entity_const;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_subprogram (
+    static process_entity_subprogram (
         context    : in tcontext;                -- kontext    
-        node       : in out tentity_subprogram) =
+        node       : in out class tentity_subprogram) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_code(context,pentity_code(^node)^);
-
+      process_entity_code(context,node);
       f.read_instancepass(node.instance);        -- předávání instance
       node.typ:=read_reftype(context);           -- typ podprogramu
-      end load_entity_subprogram;
+      end process_entity_subprogram;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_static_subprogram (
+    static process_entity_static_subprogram (
         context    : in tcontext;                -- kontext    
-        node       : in out tentity_static_subprogram) =
+        node       : in out class tentity_static_subprogram) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_subprogram(context,pentity_subprogram(^node)^);
-    {
-    ? import_info  : p_flex_record;              -- informace pro import
-    ? export_info  : p_flex_record;              -- informace pro export
-    }
-      
+      process_entity_subprogram(context,node);
       f.read_logical(node.no_return);            -- T-z tohoto podprogramu se to již nevrátí
-      end load_entity_static_subprogram;
+      end process_entity_static_subprogram;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_procedure (
+    static process_entity_procedure (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_procedure) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_static_subprogram(context,pentity_static_subprogram(^node)^);
-    {
-    }
-      end load_entity_procedure;
+      process_entity_static_subprogram(context,node);
+      end process_entity_procedure;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_static (
+    static process_entity_static (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_static) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_static_subprogram(context,pentity_static_subprogram(^node)^);
-    {
-    }
-      end load_entity_static;
+      process_entity_static_subprogram(context,node);
+      end process_entity_static;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_virtual (
+    static process_entity_virtual (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_virtual) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
-{
-  -- virtuální tabulka
-  tvirtualtable    = string of pentity_code;
-  pvirtualtable    = ^tvirtualtable;
-
-  -- index virtuální metoda
-  tvirtualindex    = tvirtualtable:range;
-}
     begin
-      load_entity_subprogram(context,pentity_subprogram(^node)^);
-      
+      process_entity_subprogram(context,node);
       f.read_vcalltype(node.vcall);              -- typ virtuálního volání
       f.read_virtualindex(node.vindex);          -- index virtuální metody
-      
-      end load_entity_virtual;
+      end process_entity_virtual;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_override (
+    static process_entity_override (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_override) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_code(context,pentity_code(^node)^);
-      node.virt:=read_refentity(context);          -- související virtuální metoda
-      node.interface:=read_interface_ref(context); -- související interface
-      end load_entity_override;
+      process_entity_code(context,node);
+      read_refentity(node.virt);                 -- související virtuální metoda
+      node.interface:=read_refinterface(context); -- související interface
+      end process_entity_override;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_special (
+    static process_entity_special (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_special) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
-{
-type
-  -- tabulka speciálních metod
-  tspectable       = array tspectype of cc_ref.refentity;
-}
     begin
-      load_entity_subprogram(context,pentity_subprogram(^node)^);
-      
+      process_entity_subprogram(context,node);
       f.read_spectype(node.spectype);            -- typ speciální metody                       
       f.read_specobject(node.specobj);           -- objekt, ke kterému se spec. metoda vztahuje
-      end load_entity_special;
+      end process_entity_special;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_task (
+    static process_entity_task (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_task) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_subprogram(context,pentity_subprogram(^node)^);
-    {
-    }
-      end load_entity_task;
+      process_entity_subprogram(context,node);
+      end process_entity_task;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_macro (
+    static process_entity_macro (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_macro) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_subprogram(context,pentity_subprogram(^node)^);
-    {
-    }
-      end load_entity_macro;
+      process_entity_subprogram(context,node);
+      end process_entity_macro;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_overload0 (
+    static process_entity_overload0 (
         context    : in tcontext;                -- kontext    
-        node       : in out tentity_overload0) =
+        node       : in out class tentity_overload0) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
-{  
-  -- popis jednoho přetížení
-  toverloaddesc    = record
-  +   psym         : cc_ref.refentity;           -- symbol
-  +   arity        : tooperarity;                -- arita operátoru
-  ?   assign       : t_logical;                  -- T-operátor pro zkrácené přiřazení
-      end record;               
-  poverloaddesc    = ^toverloaddesc;
-
-  -- tabulka přetížení
-  toverloadtable   = string of aliased toverloaddesc;
-  poverloadtable   = ^toverloadtable;
-}
-
     var
       count : t_unsigned32;
       desc  : toverloaddesc;
     
     begin
-      load_entity_base(context,pentity(^node)^);
+      process_entity_base(context,node);
 
       -- pocet
       f.read_unsigned32(count);
@@ -3420,7 +2438,7 @@ type
       -- tabulka přetížených procedur
       for i in 1..count loop
         -- entita
-        desc.psym:=read_refentity(context);
+        read_refentity(desc.psym);
         
         -- arita
         f.read_ooperarity(desc.arity);
@@ -3429,297 +2447,77 @@ type
         succ node.table^:length;
         node.table^[node.table^:length]:=desc;
         end loop;
-     
-      end load_entity_overload0;
+      end process_entity_overload0;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_overload (
+    static process_entity_overload (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_overload) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_overload0(context,pentity_overload0(^node)^);
-    {
-      složka [arity] v [table] z předka nemá význam
-    }
-      end load_entity_overload;
+      process_entity_overload0(context,node);
+      end process_entity_overload;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_operator (
+    static process_entity_operator (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_operator) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_overload0(context,pentity_overload0(^node)^);
-
+      process_entity_overload0(context,node);
       f.read_ooperator(node.oop);              -- přetížitelný operátor 
-      end load_entity_operator;
+      end process_entity_operator;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_enum (
+    static process_entity_enum (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_enum) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_sym;
+      
     begin
-      load_entity_base(context,pentity(^node)^);
-    {
-    ? order        : t_unsigned;                 -- pořadí deklarace
-      -- programátorem předefinovatelné atributy
-    - attr_ord     : cc_ref.refexpr;             -- :ord
-    }
-      
-      node.typ:=read_entity_ref(context);        -- související výčtový typ
+      process_entity_base(context,node);
+      read_entity_ref(node.typ);                 -- související výčtový typ
       f.read_uniint(node.ordinal);               -- ordinální hodnota
-      
-      end load_entity_enum;
+
+      -- identifikátor výčtového typu zaregistrovat v nadřazeném kontextu
+      sym_add_ident(sym_get_enclosing_context_restricted(^node,ets_no_enum_id2),node.id,^node);
+      end process_entity_enum;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_type (
+    static process_entity_type (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_type) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
-{
-type
-  -- druh typu
-  typekind         = enum
-      tk_unknown;                                -- dosud neznámý
-      tk_regular;                                -- regulární
-      tk_singular;                               -- singulární
-      end enum;
-
-type
-  -- pohledy na typ
-  ttypeview        = enum
-      tview_null;                                -- prázdný pohled, typ není k dispozici
-      tview_aggregate;                           -- libovolný agregátní typ
-      tview_incomplete;                          -- Incomplete view
-      tview_partial;                             -- Partial view
-      tview_full;                                -- Full view
-      tview_unchecked;                           -- Unchecked view
-      end enum;
-  ttypeviewset     = set of ttypeview;
-
-type
-  -- determinace kompatibility
-  typecompat       = enum
-      tc_norm;                                   -- bez omezení
-      tc_protected;                              -- protected
-      tc_private;                                -- private
-      end enum;
-
-type
-  -- typ derivace
-  typederive       = enum
-      td_root;                                   -- root typ
-      td_unconstrained;                          -- triviální derivace
-      td_constrained;                            -- type constraint
-      td_extension;                              -- type extension
-      td_private_extension;                      -- private extension
-      end enum;
-
-type
-  -- příznaky typu
-  typeflags        = enum
-      ----- %%TECH Používání příznaků [tf_tagged] a [tg_temp] --------------------------------------
-      -- Přestože v níže deklarované množině se zdají být příznaky [tf_tagged] a [tf_temp] 
-      -- nezávislé, zpravidla tomu tak není. U každého typu je nastaven nejvýše (možná právě) jeden 
-      -- z nich. Původně byly implicitně deklarované typy untagged, takže neměly příznak 
-      -- [tf_tagged]. Nově (viz [cd_decl.cd_eval.e_type] text Ondra 12.11.2003) jsou tagged 
-      -- i implicitně deklarované typy. Je samozřejmě stále možné zkonstruovat typ, který nebude mít 
-      -- ani jeden z těchto příznaků, opačný extrém je však zakázaný.
-      ----------------------------------------------------------------------------------------------
-      tf_tagged;                                 -- typ je tagged
-      tf_temp;                                   -- typ je dočasný
-      end enum;
-  typeflagsset     = set of typeflags;
-
-type
-  -- způsob inicializace instance typu
-  typeinit         = enum
-      ti_normal;                                 -- standardní inicializace
-      ti_complex;                                -- kompexní inicializace voláním metody INIT
-      end enum;
-
-type
-  -- typ celočíselné aritmetiky
-  tintaritm        = enum
-      tia_overflow;                              -- overflow aritmetika
-      tia_modular;                               -- modulární aritmetika
-      end enum;
-
-type
-  -- statické parametry reálného čísla (nezměnitelné uživatelem)
-  tfloatsparams    = record
-      low          : tunireal;                   -- nejmenší číslo
-      high         : tunireal;                   -- největší číslo
-      small        : tunireal;                   -- nejmenší číslo větší než 0
-  --   Totéž co DELTA:
-  --    epsilon      : tunireal;                   -- nejmenší kladné číslo takové, že 1+eps>1
-  --  
-   -- radix        : tuniint;                    -- základ exponentu
-   -- mantissa     : tuniint;                    -- počet míst mantisy (?)
-      emin         : tuniint;                    -- nejmenší exponent
-      emax         : tuniint;                    -- největší exponent
-      signed_zeros : tunilogical;                -- T-rozlišuje se +/- 0
-      positive_inf : tunireal;                   -- Positive Infinity
-      negative_inf : tunireal;                   -- Negative Infinity
-      positiove_zero : tunireal;                 -- Positive Zero
-      negative_zero: tunireal;                   -- Negative Zero
-      not_a_number : tunireal;                   -- Not a Number
-      end record;
-  pfloatsparams    = ^tfloatsparams;
-
-  -- parametry reálného čísla (definované nebo změnitelné uživatelem)
-  tfloatparams     = record
-      fdelta       : tunireal;                   -- přesnost
-      fdigits      : tuniint;                    -- počet míst
-      rounding     : tunilogical;                -- T-zaokrouhlování
-      -- %%X Zaokrouhlení mohou být čtyři:
-      --  - k nejbližšímu číslu (normální)
-      --  - k nule (oříznutí)
-      --  - k +inf (nahoru)
-      --  - k -inf (dolů)
-      oflw         : tunilogical;                -- T-přetečení způsobí CONSTRAINT_ERROR
-      sparams      : pfloatsparams;              -- statické parametry
-      end record;
-
-  -- třída pointeru
-  ptrclass         = enum
-      pc_data;                                   -- přístup k datům
-      pc_subprogram;                             -- přístup k podprogramu
-      pc_task;                                   -- přístup k tasku
-      pc_message;                                -- přístup ke zprávě
-      end enum;
-  ptrclassset      = set of ptrclass;
-
-type
-  -- kompatibilita báze
-  ptrbase          = enum
-      pb_strict;                                 -- pouze identické báze
-      pb_class;                                  -- pouze odvozené báze
-      pb_unchecked;                              -- libovolné báze
-      end enum;
-  ptrbaseset       = set of ptrbase;
-
-type
-  -- nepovinné atributy pointeru
-  ptrattrib        = enum
-      pa_tag;                                    -- :tag
-      pa_size;                                   -- :size
-      pa_instance;                               -- ^instance
-      end enum;
-  ptrattribset     = set of ptrattrib;
-
-  -- modifikátory pointeru
-  ptrflags         = enum
-    --pf_type;                                   -- pointer obsahuje typovou identifikaci
-    --pf_unchecked;                              -- pointer je univerzálně kompatibilní
-    --pf_const;                                  -- pointer odkazuje na konstantní objekt
-      pf_machine;                                -- machine pointer
-      end enum;
-  ptrflagsset      = set of ptrflags;
-
-type
-  -- parametry typu procedura
-  procflags        = enum
-      rf_virtual;                                -- obsahuje řídící parametry virtuálního volání
-      end enum;
-  procflagset      = set of procflags;
-
-type
-  -- příznak, zda typ obsahuje instanci třídy
-  tcontainsclass = enum
-      tcc_unknown;                               -- dosud nezjištěno
-      tcc_yes;                                   -- ano
-      tcc_no;                                    -- ne
-      end enum;
-
-type
-  -- pole @STATUS dekomponované na množinu příznaků (POZOR: neměnit pořadí!)
-  t_class_status_flags = enum
-     csf_initialized for ord use 0;              -- instance byla inicializována
-     csf_interface   for ord use 1;              -- instance reprezentuje interface
-     end enum;
-  t_class_status_field = set of t_class_status_flags for size use 4;
-}
-    var
-      count : t_unsigned32;
-    
     begin
-      load_entity_init(context,pentity_init(^node)^);
-    {
-      ----- %%TECH Upozornění ----------------------------------------------------------------------
-      -- Při přidávání nové složky nezapomeň doplnit její kopírování nebo
-      -- jinou příslušnou akci do CD_EVAL.E_TYPE_DERIVED.
-      ----------------------------------------------------------------------------------------------
-      -- specifikace obecného typu
-    - tkind        : typekind;                   -- druh typu
-    + stype        : tdatatype;                  -- o jaký typ se jedná
-    => konvertuje se na record tag
-      -- %%X má smysl udržovat oddělené EVAL a SEVAL ?
-    - seval        : tentityeval;                -- vyhodnocení specifikace
-    + size         : tunidata_size;              -- velikost typu
-    + derive       : typederive;                 -- typ derivace
-    - extofs       : tunidata_addr;              -- posunutí extension
-    + tflags       : typeflagsset;               -- flagy typu
-    + compat       : typecompat;                 -- determinace kompatibility
-    - expr         : cc_ref.refexpr;             -- související výraz
-    + align        : tunidata_size;              -- zarovnání složek typu
-    + native_align : t_logical;                  -- nativní zarovnání složek menších než [align]
-    + tinit        : typeinit;                   -- způsob inicializace typu
-    + stable       : tspectable;                 -- tabulka speciálních metoda
-      -- %%TECH CCLASS slouží jako cache na výsledek výpočtu procedury         
-      -- CC_TYPE.T_CONTAINS_CLASS
-    - cclass       : tcontainsclass;-- příznak, zda typ obsahuje instanci třídy
-      -- specifikace typu s bázovým typem
-    + base         : cc_ref.reftype;             -- bázový typ
-      -- specifikace ordinálního typu
-    + lval         : tuniint;                    -- ordinalni hodnota dolni meze
-    + hval         : tuniint;                    -- ordinalni hodnota horni meze
-    + bits         : tunidata_bitsize;           -- velikost v bitech
-      -- specifikace celočíselného typu
-    + intaritm     : tintaritm;                  -- typ celočíselné aritmetiky
-      -- specifikace typu reálné číslo
-    + fp           : tfloatparams;               -- parametry reálného čísla
-      -- specifikace typu s rozsahem
-    + srange       : cc_ref.reftype;             -- rozsah
-    + saliased     : t_mem_aliased;              -- příznak, zda je možné získat adresu složky (ALIASED)
-      -- specifikace typu string
-    --lsize        : tunidata_size;              -- velikost délky řetězce
-      -- specifikace typu pointer
-    + pflags       : ptrflagsset;                -- modifikátory
-    + pclass       : ptrclass;                   -- cílový objekt
-    + pbase        : ptrbase;                    -- kompatibilita báze
-    + pattrib      : rtattribset;                -- atributy pointeru
-    + paccess      : varaccess;                  -- přístup k objektu
-      -- specifikace typu procedura nebo zprava
-    + rflags       : procflagset;                -- další parametry
-    + result       : pentity_param;              -- návratová hodnota funkce
-    - parcount     : t_unsigned;                 -- počet parametrů
-    + call_conv    : p_flex_record;              -- volaci konvence
-      -- specifikace třídy
-    + interfaces   : p_interface_list;           -- seznam všech interfaců třídy
-      -- programátorem předefinovatelné atributy
-    - attr_align   : cc_ref.refexpr;             -- :alignment
-    - attr_native_align : cc_ref.refexpr;        -- :native_alignment
-    - attr_size    : cc_ref.refexpr;             -- :size
-    - attr_mptr    : cc_ref.refexpr;             -- :machine_pointer
-    }
-      -- typ typ
-      f.read_datatype(node.stype);
+      process_entity_init(context,node);
 
+      -- datový typ
+      f.read_datatype(node.stype);
+      
+      -- odvodit druh typu (v některých případech - univerzální typy - zůstane nevyplněn)
+      if node.stype in dts_regular then node.tkind:=tk_regular;
+      elsif node.stype in dts_singular then node.tkind:=tk_singular;
+      end if;
+    {
+    - extofs       : tunidata_addr;              -- posunutí extension
+    - cclass       : tcontainsclass;-- příznak, zda typ obsahuje instanci třídy
+    - parcount     : t_unsigned;                 -- počet parametrů
+    }
+   
       -- spolecne vlastnosti vsech typu
       f.read_unidata_size(node.size);            -- velikost typu
       f.read_typederive(node.derive);            -- typ derivace
@@ -3729,13 +2527,9 @@ type
       f.read_logical(node.native_align);         -- nativní zarovnání složek menších než [align]
       f.read_typeinit(node.tinit);               -- způsob inicializace typu
       
-      -- tabulka speciálních metod
-      -- pocet elementu
-      f.read_unsigned32(count);
-
       -- jednotlive elementy
-      for i in 1..count loop
-        node.stable[tspectype(i)]:=read_refentity(context);
+      for i in node.stable:range loop
+        read_refentity(node.stable[i]);
         end loop;
 
       -- typ s bazi
@@ -3764,7 +2558,6 @@ type
         
         begin
           -- verify({VERIFY=}001172,node^.fp.sparams=nil);
-
           f.read_unireal(node.fp.fdelta);       -- přesnost   
           f.read_uniint(node.fp.fdigits);       -- počet míst
           f.read_unilogical(node.fp.rounding);  -- T-zaokrouhlování
@@ -3773,22 +2566,22 @@ type
           -- je sparams ulozeno?
           f.read_unsigned8(parflag);
           if parflag=1 then
-              -- ano - instance
-              new node.fp.sparams;
+            -- ano - instance
+            new node.fp.sparams;
 
-              -- nacti
-              f.read_unireal(node.fp.sparams^.low);             -- nejmenší číslo
-              f.read_unireal(node.fp.sparams^.high);            -- největší číslo
-              f.read_unireal(node.fp.sparams^.small);           -- nejmenší číslo větší než 0
-              f.read_uniint(node.fp.sparams^.emin);             -- nejmenší exponent
-              f.read_uniint(node.fp.sparams^.emax);             -- největší exponent
-              f.read_unilogical(node.fp.sparams^.signed_zeros); -- T-rozlišuje se +/- 0
-              f.read_unireal(node.fp.sparams^.positive_inf);    -- Positive Infinity
-              f.read_unireal(node.fp.sparams^.negative_inf);    -- Negative Infinity
-              f.read_unireal(node.fp.sparams^.positiove_zero);  -- Positive Zero
-              f.read_unireal(node.fp.sparams^.negative_zero);   -- Negative Zero
-              f.read_unireal(node.fp.sparams^.not_a_number);    -- Not a Number
-              end if;
+            -- nacti
+            f.read_unireal(node.fp.sparams^.low);             -- nejmenší číslo
+            f.read_unireal(node.fp.sparams^.high);            -- největší číslo
+            f.read_unireal(node.fp.sparams^.small);           -- nejmenší číslo větší než 0
+            f.read_uniint(node.fp.sparams^.emin);             -- nejmenší exponent
+            f.read_uniint(node.fp.sparams^.emax);             -- největší exponent
+            f.read_unilogical(node.fp.sparams^.signed_zeros); -- T-rozlišuje se +/- 0
+            f.read_unireal(node.fp.sparams^.positive_inf);    -- Positive Infinity
+            f.read_unireal(node.fp.sparams^.negative_inf);    -- Negative Infinity
+            f.read_unireal(node.fp.sparams^.positiove_zero);  -- Positive Zero
+            f.read_unireal(node.fp.sparams^.negative_zero);   -- Negative Zero
+            f.read_unireal(node.fp.sparams^.not_a_number);    -- Not a Number
+            end if;
           end declare;
         end if;
 
@@ -3815,7 +2608,7 @@ type
       -- procedura
       if node.stype=dt_procedure then
         f.read_procflagset(node.rflags);         -- další parametry
-        node.result:=read_entity_ref(context);   -- návratová hodnota funkce
+        read_entity_ref(node.result);            -- návratová hodnota funkce
         
         declare var
           callconv : icallconvention;
@@ -3824,444 +2617,731 @@ type
           f.read_icallconvention(callconv);      -- volaci konvence
           i_set_convention_proctype^(node,callconv);
           end declare;
-        
         end if;
 
       -- zprava
       if node.stype in dts_message then
         -- HYNEK - nejake atributy pro zpravu??
         end if;
-       
+
       -- trida
       if node.stype in dts_class then
         declare var
           it        : c_list_iterator;
           interface : p_class_interface;
           icount    : t_unsigned32;
-        
+
         begin
-          -- verify({VERIFY=}001173,node.interfaces=nil);
-
-          -- pocet interfejcu
-          f.read_unsigned32(icount);
-
+          -- založit tabulku interfaců
           new node.interfaces;
 
-          for i in 1..icount loop
-            interface:=read_interface_ref(context);
-            node.interfaces^.add_raw_interface(interface);
-            end loop;
+          -- třída je sama sobě nativním interfacem
+          node.interfaces^.add_interface(nil,^node);
           
-          end declare;
+          -- přečíst počet interfaců
+          f.read_unsigned32(icount);
 
+          -- načíst reference na jednotlivé interfacy
+          for i in 1..icount loop
+            node.interfaces^.add_raw_interface(read_interface(context));
+            end loop;
+          end declare;
         end if;
 
       -- HYNEK - nevynechalo se neco???
+      end process_entity_type;
 
-       end load_entity_type;
 
 
+    ------------------------------------------------------------------------------------------------
+    static leave_entity_type (
+        node       : in out tentity_type) =
+    -- Trigger při opouštění načtení [tentity_type].
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_sym;
+      
+    begin
+      -- pro typ s parametry (podprogram, task, zpráva) spočítat parametry
+      if node.stype in dts_parameterized then
+        declare var
+          srch     : tentitysearch;
+          
+        begin
+          srch.find_et_first(^node,rc_primary,et_param,[]);
+          while srch.psym<>nil and srch.psym<>node.result loop
+            succ node.parcount;
+            srch.find_et_next;
+            end loop;
+          end declare;
+        end if;
+      end leave_entity_type;
+      
+      
     
     ------------------------------------------------------------------------------------------------
-    static load_entity_attribute (
+    static process_entity_attribute (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_attribute) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_value(context,pentity_value(^node)^);
-    {
-    }
-      end load_entity_attribute;
-
+      process_entity_value(context,node);
+      end process_entity_attribute;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_message (
+    static process_entity_message (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_message) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_base(context,pentity(^node)^);
-      
+      process_entity_base(context,node);
       node.typ:=read_reftype(context);           -- typ zprávy
-      end load_entity_message;
+      end process_entity_message;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_label (
+    static process_entity_label (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_label) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_base(context,pentity(^node)^);
+      process_entity_base(context,node);
       -- tato entitita se sem při ctdl_public nesmí dostat!
-    {
-  ?   num          : t_unsigned;                 -- cislo navesti
-  ? --addr         : tuniprg;                    -- adresa navesti
-  ?   reachable    : t_logical;                  -- přístupné jako cíl skoku
-  ?   placed       : t_logical;                  -- návěští bylo umístěno
-  ?   level        : t_unsigned;                 -- úroveň umístění návěští
-    }
-      end load_entity_label;
+      end process_entity_label;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_tparam (
+    static process_entity_tparam (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_tparam) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
     begin
-      load_entity_base(context,pentity(^node)^);
-    {
-    }
-      end load_entity_tparam;
+      process_entity_base(context,node);
+      end process_entity_tparam;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static load_entity_template (
+    static process_entity_template (
         context    : in tcontext;                -- kontext    
         node       : in out tentity_template) =
     -- Nacte [tentity_code]
     ------------------------------------------------------------------------------------------------
-{
-  -- reprezentace lexikálního elementu přečteného ze vstupu
-  tlexnode;
-  plexnode         = ^class tlexnode;
-  tlexnode         = record
-      prev         : plexnode;                   -- předchozí lexikální symbol
-      next         : plexnode;                   -- následující lexikální symbol
-    + _tag         : enum _tag_param; _tag_lex; end enum; -- %%TODO(TAG)
-      end record;
-
-  -- lexikální element určující formální parametr
-  tlexnode_param   = tlexnode with record
-    + pparam       : pentity_tparam;             -- související parametr
-      end record;
-  plexnode_param   = ^class tlexnode_param;
-
-  -- lexikální element sám o sobě
-  tlexnode_lex     = tlexnode with record
-    + xlex         : cc_lexsym.lexsym;           -- lexikální element
-    + xval         : cc_lexsym.lexval;           -- hodnota elementu
-    ? xpos         : cc_lexsym.lexpos;           -- pozice elementu
-      end record;
-  plexnode_lex     = ^class tlexnode_lex;
-}
     var
-      pocet_uzlu   : t_unsigned32;
+      pocet_uzlu   : t_unsigned32;               -- počet lexikálních uzlů
       typ_uzlu     : t_unsigned8;
+      last_node    : plexnode;                   -- poslední zpracovaný lexikální uzel
 
     begin
-      load_entity_base(context,pentity(^node)^);
-    {
-    + plex         : plexnode;                   -- obsah metasymbolu
-    }
+      process_entity_base(context,node);
 
-      -- pocet uzlu
+      -- přečíst počet lexikální uzlů
       f.read_unsigned32(pocet_uzlu);
 
       for i in 1..pocet_uzlu loop
-        -- typ uzlu
+        -- přečíst typ uzlu
         f.read_unsigned8(typ_uzlu);
 
-        case typ_uzlu
-          -- parametr
-          when t_unsigned8(_tag_param) do
-              -- instance
-              new plexnode_param(node.plex);
-              
-              -- typ uzlu
-              node.plex^._tag:ord:=typ_uzlu;
-              
-              -- refentita
-              plexnode_param(node.plex)^.pparam:=read_entity_ref(context);
-              
-          -- lex
-          when t_unsigned8(_tag_lex) do
-              -- lex
-              node.plex:=read_lexnode_lex;
-          
-          -- jine nezname
-          when others do verify({VERIFY=}001174,true);
-            end case;
-        end loop;
-      
-      end load_entity_template;
+        declare var
+          lex_node : plexnode;                   -- aktuální lexikální element
+        begin
+          -- založit lexikální uzel
+          case typ_uzlu
+            -- parametr
+            when t_unsigned8(_tag_param) do read_lexnode_param(lex_node);
 
-    
-    
+            -- lexikální element
+            when t_unsigned8(_tag_lex) do read_lexnode_lex(lex_node);
+            
+            -- jine nezname
+            when others do verify({VERIFY=}001174,true);
+            end case;
+
+          -- zařadit do seznamu lexikálních uzlů šablony
+          lex_node^.prev:=last_node;
+          if node.plex=nil
+            then node.plex:=lex_node;
+            else last_node^.next:=lex_node;
+            end if;
+          last_node:=lex_node;
+          end declare;
+        end loop;
+      end process_entity_template;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static load_entity_type (
+        context    : in out tcontext;            -- nadřazený kontext
+        dtype      : in tdatatype);              -- datový typ načítaného typu
+    -- Načte entitu/typ uvedeného datového typu. Entitu zařadí do uvedeného kontextu.
+    -- Není-li v kontextu definována entita ([context.entity] je NIL), nastaví ji na tuto načítanou.
+    ------------------------------------------------------------------------------------------------
+    static load_entity (
+        context    : in out tcontext;            -- nadřazený kontext
+        etype      : in tentitytype);            -- typ načítané entity
+    -- Načte entitu uvedeného typu. Entitu zařadí do uvedeného kontextu.
+    -- Není-li v kontextu definována entita ([context.entity] je NIL), nastaví ji na tuto načítanou.
+    ------------------------------------------------------------------------------------------------
+
+
+
+    ------------------------------------------------------------------------------------------------
+    #template load_region_body_template (
+        after_create_region);                    -- trigger po vytvoření regionu
+    -- Šablona těla metody [load_region_*].
+    ------------------------------------------------------------------------------------------------
+      var
+        region       : pregion;                    -- načtený region
+        region_context : tcontext;                 -- kontext načteného regionu
+        ctmid        : t_ctm_entity_id;
+        rtype        : tregiontype;
+        count        : t_unsigned32;
+
+      begin
+        -- CTM ID
+        f.read_ci(t_ctm_id(ctmid));
+
+        -- typ regionu
+        f.read_regiontype(rtype);
+
+        -- vytvor a zaregistruj
+        ctm_id^.create_region(ctmid,context,rtype,region,region_context);
+
+        -- počet položek WITH tabulky
+        f.read_unsigned32(count);
+
+        -- jednotlivé položky
+        if count>0 then
+          -- instance
+          new region^.withtable range count;
+
+          -- nacist
+          for i in 1..count loop
+            succ region^.withtable^:length;
+            f.read_with_mode(region^.withtable^[i].mode);    -- režim vazby
+            read_refentity(region^.withtable^[i].entity);    -- entita
+            f.read_with_level(region^.withtable^[i].level);  -- úroveň vazby
+            f.read_logical(region^.withtable^[i].automatic); -- automaticky WITH/USE?
+            end loop;
+          end if;
+
+        -- implicitni viditelnost vnorenych prvku
+        f.read_entityvisible(region^.vsect);
+   
+        -- trigger po vytvoření regionu
+        after_create_region;
+        
+        -- zpracovat vnitřní deklarace
+        declare var
+          cr         : t_ctm_record_tag;          
+
+        begin
+          loop
+            -- tag záznamu
+            f.read_cr(cr);
+
+            -- zpracovat
+            case cr
+              -- entita 
+              when etype_by_cr:range do
+                  -- načíst entitu
+                  load_entity(region_context,etype_by_cr[cr]);
+
+              -- entita (typ)
+              when dtype_by_cr:range do
+                  -- načíst entitu (typ)
+                  load_entity_type(region_context,dtype_by_cr[cr]);
+
+              -- vnořený region
+              when cr_region do
+                  -- načíst region
+                  load_region(region_context);
+
+              -- konec záznamu
+              when cr_end do break;
+
+              -- nic jiného tu nemá co dělat
+              when others do check_error({CCERR=}000593);
+              end case;
+            end loop;
+          end declare;
+      #end load_region_body_template;
+
+                             
+
     ------------------------------------------------------------------------------------------------
     static load_region (
-        context    : in tcontext;                -- kontext        
-        region     : in out tregion) =
-    -- load regionu - zapis atributu regionu
+        context    : in out tcontext) =          -- nadřazený kontext
+    -- Načte region.
     ------------------------------------------------------------------------------------------------
-    var
-      temp_region  : pregion;
-      temp_entity  : pentity;
-      count        : t_unsigned32;
-
-    begin
-      -- 1. typ regionu
-      f.read_regiontype(region.rtype);
-
-      -- 2. withtable - tabulka pouzitych modulu
-      -- 2.a pocet polozek
-      f.read_unsigned32(count);
-
-      -- 2.b jednotlive polozky
-      if count>0 then
-        -- instance
-        new region.withtable range count;
-
-        -- nacist
-        for i in 1..count loop
-          succ region.withtable^:length;
-          f.read_with_mode(region.withtable^[i].mode);    -- režim vazby
-          region.withtable^[i].entity:=read_refentity(context);    -- symbol
-          f.read_with_level(region.withtable^[i].level);  -- úroveň vazby
-          f.read_logical(region.withtable^[i].automatic); -- automaticky WITH/USE?
-          end loop;
-        end if;
-
-      -- 3. implicitni viditelnost vnorenych prvku
-      f.read_entityvisible(region.vsect);
-
+    #expand load_region_body_template;
+      -- žádné parametry nejsou potřeba
+      #end load_region_body_template;
       end load_region;
-
-    
-    
-    ------------------------------------------------------------------------------------------------
-    static deserialize_entity (
-        etype      : in tentitytype;             -- typ entity
-        parent_ctx : in tcontext;                -- parent kontext
-        context    : out tcontext)               -- kontext vracene entity
-        return pentity =
-    -- nacte entitu podle etype
-    -- pokud [etype] et_class nebo et_type, zpusobi interni chybu
-    ------------------------------------------------------------------------------------------------
-    var
-      ctmid        : t_ctm_entity_id;
-      process      : t_logical;
- 
-    begin
-      -- typy se zpracovavaji extra        
-      verify({VERIFY=}001175,etype in ets_type);
-
-      -- process flag
-      f.read_logical(process);
-
-      -- je co loadovat?
-      if not process then return; end if;
-
-      -- ctm entity id
-      f.read_ci(t_ctm_id(ctmid));
       
-      -- najdi
-      result:=ctm_id^.get_entity(ctmid);
       
-      -- nalezeno?
-      if result=nil then
-        -- ne - vytvor a zaregistruj
-        result:=ctm_id^.create_entity(ctmid,parent_ctx,etype,context);
-        end if;
 
-      -- textový identifikátor entity
-      f.read_entityident(result^.id);
-
-      -- vytvor a zaregistruj entitu
-      verify({VERIFY=}001176,result=nil);
-
-      -- a deserializuj
-      case etype
-        when et_compile   do load_entity_compile(parent_ctx,pentity_compile(result)^);
-        when et_program   do load_entity_program(parent_ctx,pentity_program(result)^);
-        when et_module    do load_entity_module(parent_ctx,pentity_module(result)^);
-        when et_special   do load_entity_special(parent_ctx,pentity_special(result)^);
-        when et_procedure do load_entity_procedure(parent_ctx,pentity_procedure(result)^);
-        when et_static    do load_entity_static(parent_ctx,pentity_static(result)^);
-        when et_virtual   do load_entity_virtual(parent_ctx,pentity_virtual(result)^);
-        when et_task      do load_entity_task(parent_ctx,pentity_task(result)^);
-        when et_override  do load_entity_override(parent_ctx,pentity_override(result)^);
-        when et_macro     do load_entity_macro(parent_ctx,pentity_macro(result)^);
-        when et_overload  do load_entity_overload(parent_ctx,pentity_overload(result)^);
-        when et_operator  do load_entity_operator(parent_ctx,pentity_operator(result)^);
-        when et_var       do load_entity_var(parent_ctx,pentity_var(result)^);
-        when et_const     do load_entity_const(parent_ctx,pentity_const(result)^);
-        when et_enum      do load_entity_enum(parent_ctx,pentity_enum(result)^);
-        when et_param     do load_entity_param(parent_ctx,pentity_param(result)^);
-        when et_message   do load_entity_message(parent_ctx,pentity_message(result)^);
-        when et_label     do load_entity_label(parent_ctx,pentity_label(result)^);
-        when et_template  do load_entity_template(parent_ctx,pentity_template(result)^);
-        when et_tparam    do load_entity_tparam(parent_ctx,pentity_tparam(result)^);
-        when et_attribute do load_entity_attribute(parent_ctx,pentity_attribute(result)^);
-        when others do verify({VERIFY=}001178,true);
-        end case;
-
-      end deserialize_entity;
-    
-
-    
     ------------------------------------------------------------------------------------------------
-    static deserialize_entity_type (
-        dtype      : in tdatatype;               -- typ entity
-        parent_ctx : in tcontext;                -- parent kontext
-        context    : out tcontext)               -- kontext vracene entity
-        return pentity_type =
-    -- nacte type entitu podle dtype
+    static load_region_compile (
+        context    : in out tcontext) =          -- nadřazený kontext
+    -- Načte primární region kompilační jednotky.
     ------------------------------------------------------------------------------------------------
-    var
-      ctmid        : t_ctm_entity_id;
-      process      : t_logical;
-
-    begin
-      -- process flag
-      f.read_logical(process);
-
-      -- je co loadovat?
-      if not process then return; end if;
-
-      -- ctm entity id
-      f.read_ci(t_ctm_id(ctmid));
-
-      -- najdi
-      result:=pentity_type(ctm_id^.get_entity(ctmid));
+    with
+      cd_decl.cd_unit;
       
-      -- nalezeno?
-      if result=nil then
-        -- ne - vytvor a zaregistruj
-        result:=ctm_id^.create_entity_type(ctmid,parent_ctx,dtype,context);
-        end if;
+    #expand load_region_body_template;
+      -- trigger po vytvoření regionu
+      #for after_create_region use;
+        -- připravit prostředí pro kompilaci
+        p_setup_compilation_environment(region_context.entity);
+      #end load_region_body_template;
+      end load_region_compile;
+      
+      
 
-      -- musi to byt entita typu type
-      verify({VERIFY=}001195,result^.etype not in ets_type);
+    ------------------------------------------------------------------------------------------------
+    #template load_entity_body_template (
+        pentity,                                 -- typ pointeru na entitu
+        etype,                                   -- rozlišovací prvek druhu entity
+        create_entity,                           -- metoda pro vytvoření nové entity 
+        load_entity,                             -- kód pro načtení těla entity
+        leave_entity,                            -- trigger při opouštění zpracování entity
+        load_region,                             -- metoda pro načtení regionu
+        d_end_at_position                        -- dokončovací procedura
+        );
+    -- Šablona těla metody [load_entity_*].
+    ------------------------------------------------------------------------------------------------
+      var
+        entity       : pentity;                    -- načtená entita
+        entity_context : tcontext;                 -- kontext načtené entity
+        ctmid        : t_ctm_entity_id;
+   
+      begin
+        -- ctm entity id
+        f.read_ci(t_ctm_id(ctmid));
 
-      -- textový identifikátor entity
-      f.read_entityident(result^.id);
+        -- nebyla již entita spekulativně založena ?
+        entity:=ctm_id^.get_entity(ctmid);
 
-      verify({VERIFY=}001177,result=nil);
+        -- ne => založit nyní
+        if entity=nil then 
+          ctm_id^.create_entity(ctmid,etype,entity);
+          end if;
+
+        -- sestavit prototyp primárního kontextu
+        entity_context.entity:=entity;
+
+        -- textový identifikátor entity
+        f.read_entityident(entity^.id);
+
+        -- načíst vnitřek entity
+        load_entity;
+
+        -- dokončit deklaraci
+        d_end_at_position(entity^,nil,false);
         
-      -- a deserializuj
-      load_entity_type(parent_ctx,result^);
+        -- zpracovat vnitřní deklarace
+        declare var
+          cr         : t_ctm_record_tag;          
 
-      end deserialize_entity_type;
+        begin
+          -- tag záznamu
+          f.read_cr(cr);
+
+          -- zpracovat
+          case cr
+            -- region
+            when cr_region do
+                -- načíst region
+                load_region(entity_context);
+
+                -- konec záznamu
+                f.read_cr(cr);
+                check_error({CCERR=}000594,cr<>cr_end);
+
+            -- konec záznamu
+            when cr_end do -- nic nedělat
+
+            -- nic jiného tu nemá co dělat
+            when others do check_error({CCERR=}000595);
+            end case;
+          end declare;
+
+        -- signalizovat opuštění zpracování entity
+        leave_entity;
+      #end load_entity_body_template;
 
 
 
     ------------------------------------------------------------------------------------------------
-    static deserialize_region (
-        parent_ctx : in tcontext;                -- parent kontext
-        context    : out tcontext)               -- kontext vraceneho regionu
-        return pregion =
-    -- nacte region
+    static load_entity_type =
+    -- Načte entitu/typ uvedeného datového typu. Entitu zařadí do uvedeného kontextu.
+    -- Není-li v kontextu definována entita ([context.entity] je NIL), nastaví ji na tuto načítanou.
+    ------------------------------------------------------------------------------------------------
+      #expand load_entity_body_template;
+        -- typ pointeru na entitu
+        #for pentity       use; pentity_type
+
+        -- rozlišovací prvek druhu entity
+        #for etype         use; dtype
+
+        -- metoda pro vytvoření nové entity 
+        #for create_entity use; create_entity_type
+
+        -- kód pro načtení těla entity
+        #for load_entity   use; process_entity_type(context,pentity_type(entity)^);
+
+        -- trigger při opouštění zpracování entity
+        #for leave_entity  use; leave_entity_type(pentity_type(entity)^);
+         
+        -- metoda pro načtení regionu 
+        #for load_region   use; load_region
+        
+        -- dokončovací procedura
+        #for d_end_at_position use; d_end_implicit_type
+        #end load_entity_body_template;
+      end load_entity_type;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static load_entity =
+    -- Načte entitu uvedeného typu. Entitu zařadí do uvedeného kontextu.
+    -- Není-li v kontextu definována entita ([context.entity] je NIL), nastaví ji na tuto načítanou.
+    ------------------------------------------------------------------------------------------------
+      #expand load_entity_body_template;
+        -- typ pointeru na entitu
+        #for pentity       use; pentity
+
+        -- rozlišovací prvek druhu entity
+        #for etype         use; etype
+
+        -- metoda pro vytvoření nové entity 
+        #for create_entity use; create_entity
+
+        -- kód pro načtení těla entity
+        #for load_entity   use;
+          case etype
+          --when et_compile   do process_entity_compile(context,pentity_compile(entity)^);
+            when et_program   do process_entity_program(context,pentity_program(entity)^);
+            when et_module    do process_entity_module(context,pentity_module(entity)^);
+            when et_special   do process_entity_special(context,pentity_special(entity)^);
+            when et_procedure do process_entity_procedure(context,pentity_procedure(entity)^);
+            when et_static    do process_entity_static(context,pentity_static(entity)^);
+            when et_virtual   do process_entity_virtual(context,pentity_virtual(entity)^);
+            when et_task      do process_entity_task(context,pentity_task(entity)^);
+            when et_override  do process_entity_override(context,pentity_override(entity)^);
+            when et_macro     do process_entity_macro(context,pentity_macro(entity)^);
+            when et_overload  do process_entity_overload(context,pentity_overload(entity)^);
+            when et_operator  do process_entity_operator(context,pentity_operator(entity)^);
+            when et_var       do process_entity_var(context,pentity_var(entity)^);
+            when et_const     do process_entity_const(context,pentity_const(entity)^);
+            when et_enum      do process_entity_enum(context,pentity_enum(entity)^);
+            when et_param     do process_entity_param(context,pentity_param(entity)^);
+            when et_message   do process_entity_message(context,pentity_message(entity)^);
+            when et_label     do process_entity_label(context,pentity_label(entity)^);
+            when et_template  do process_entity_template(context,pentity_template(entity)^);
+            when et_tparam    do process_entity_tparam(context,pentity_tparam(entity)^);
+            when et_attribute do process_entity_attribute(context,pentity_attribute(entity)^);
+            when others       do check_error({CCERR=}000627);
+            end case;
+
+        -- metoda pro načtení regionu 
+        #for load_region   use; load_region
+        
+        -- dokončovací procedura
+        #for d_end_at_position use; d_end_at_position
+        #end load_entity_body_template;
+      end load_entity;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static load_entity_compile (
+        context    : in out tcontext) =          -- nadřazený kontext
+    -- Načte entitu typu kompilační jednotka. Entitu zařadí do uvedeného kontextu.
+    -- Není-li v kontextu definována entita ([context.entity] je NIL), nastaví ji na tuto načítanou.
+    ------------------------------------------------------------------------------------------------
+      #expand load_entity_body_template;
+        -- typ pointeru na entitu
+        #for pentity       use; pentity
+
+        -- rozlišovací prvek druhu entity
+        #for etype         use; et_compile
+
+        -- metoda pro vytvoření nové entity 
+        #for create_entity use; create_entity
+
+        -- kód pro načtení těla entity
+        #for load_entity   use; process_entity_compile(context,pentity_compile(entity)^);
+
+        -- trigger při opouštění zpracování entity
+        #for leave_entity  use; leave_entity_compile(pentity_compile(entity)^);
+         
+        -- metoda pro načtení regionu 
+        #for load_region   use; load_region_compile
+        
+        -- dokončovací procedura
+        #for d_end_at_position use; d_end_at_position
+        #end load_entity_body_template;
+      end load_entity_compile;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static load_tree (
+        root_entity : out pentity_compile) =     -- kořenová kompilační jednotka
+    -- Načte strom entit.
     ------------------------------------------------------------------------------------------------
     var
-      ctmid        : t_ctm_entity_id;
+      context      : tcontext;                   -- kontext načtené kořenové entity
+      cr           : t_ctm_record_tag;
 
     begin
-      -- CTM ID
-      f.read_ci(t_ctm_id(ctmid));
+      -- tag začátku kompilační jednotky
+      f.read_cr(cr);
+      check_error({CCERR=}000589,cr_by_etype[et_compile]<>cr);
 
-      -- vytvor a zaregistruj
-      result:=ctm_id^.create_region(ctmid,parent_ctx,context);
+      -- načíst kompilační jednotku (zpracuje i závěrečný tag)
+      load_entity_compile(context);
 
-      verify({VERIFY=}001179,result=nil);
-
-      -- nacti      
-      load_region(parent_ctx,result^);
-      end deserialize_region;
+      -- načtenou kořenovou entitu předat ven
+      root_entity:=context.entity;
+      end load_tree;
 
 
-    
+
     ------------------------------------------------------------------------------------------------
-    static deserialize (
-        parent_ctx : in tcontext;                -- parent kontext
-        context    : out tcontext)               -- kontext vracene entity
-        return pentity =
-    -- deserializuje strom entit
-    -- vrati korenovou entitu
+    static load_header =
+    -- Načte hlavičku CTM souboru.
     ------------------------------------------------------------------------------------------------
+    begin
+      end load_header;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static load_import =
+    -- Načte importní tabulky
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_sym;
+      
     var
       cr         : t_ctm_record_tag;
-      region     : pregion;
-      outcontext : tcontext;
-      ent        : pentity;
 
     begin
+      -- tag začátku tabulky
+      f.read_cr(cr);
+      check_error({CCERR=}000596,cr<>cr_import);
+      
       loop
-        -- record
+        -- přečíst a zpracovat další tag
         f.read_cr(cr);
-        
-        -- entita krome entity_type
-        if cr>=etype_by_cr:first and cr<=etype_by_cr:last then 
-          -- rodicovsky kontext by mel byt
-          verify({VERIFY=}001192,parent_ctx.region=nil or parent_ctx.entity=nil);
+        case cr
+          -- import partition
+          when cr_import_partition do
+              declare var
+                extid : p_external_entity_ident;
+                root  : pentity_compile;
+{
+                image_base : tunicode_addr;
+}                
+              begin  
+                -- externí jméno partition
+                f.read_external_entity_ident(extid);
+                
+                -- zkusit najít kompilační jednotku podle externího identifikátoru
+                if global_partitions.list<>nil then
+                  for i in global_partitions.list^:range loop
+                    if pentity_compile(global_partitions.list^[i])^.part_extid<>nil 
+                    and then pentity_compile(global_partitions.list^[i])^.part_extid^=extid^ then
+                      root:=global_partitions.list^[i];
+                      break;
+                      end if;
+                    end loop;
+                  end if;
+                
+                -- nenašla-li se, tak ji musíme dočíst/dokompilovat
+                if root=nil then
+                  unimplemented({UNIMP=}000281);
+                  end if;
+               
+{                
+                -- image-base importované partition
+                f.read_unicode_addr(image_base);
+}                
+                -- importy jednotlivých entit
+                loop
+                  -- přečíst a zpracovat další tag
+                  f.read_cr(cr);
+                  case cr
+                    -- položka importní tabulky
+                    when cr_import_entry do
+                        declare var
+                          ctmid : t_ctm_entity_id;
+                          qid   : p_qualified_entity_ident;
+                          srch  : tentitysearch;
+                          
+                        begin
+                          -- CTM ID
+                          f.read_ci(t_ctm_id(ctmid));
+                          
+                          -- tag typu entity
+                          f.read_cr(cr);
+                          
+                          -- kvalifikovaný identifikátor
+                          f.read_qualified_entity_ident(qid);
+                          
+                          -- najít entitu podle jejího kvalifikovaného identifikátoru
+                          srch.find_global_by_qid(root^,qid^);
+                          check_error({CCERR=}000632,srch.psym=nil);
+                          
+                          -- zařadit do tabulky známých CTM ID
+                          ctm_id^.register_entity(ctmid,srch.psym);
+                          
+                          -- tag konce položky
+                          f.read_cr(cr);
+                          check_error({CCERR=}000631,cr<>cr_end);
+                          
+                        leave
+                          -- uvolnit paměť
+                          discard qid;
+                          end declare;
+                    
+                    -- konec importní tabulky
+                    when cr_end do break;
+                    
+                    -- nic jiného tu nemá co dělat
+                    when others do check_error({CCERR=}000630);
+                    end case;
+                  end loop;
+                  
+                -- [extid] neuvolňovat, [ctm_load_import] ho přiřadil k načtené partition  
+                end declare;
+                
+          -- konec importní tabulky
+          when cr_end do break;
           
-          result:=deserialize_entity(etype_by_cr[cr],parent_ctx,context);
-          ent:=deserialize(context,outcontext);
-        
-        -- entity_type
-        elsif cr>=dtype_by_cr:first and cr<=dtype_by_cr:last then 
-          -- rodicovsky kontext by mel byt
-          verify({VERIFY=}001193,parent_ctx.region=nil or parent_ctx.entity=nil);
-
-          result:=deserialize_entity_type(dtype_by_cr[cr],parent_ctx,context);
-          ent:=deserialize(context,outcontext);
-        
-        -- region
-        elsif cr=cr_region then 
-          -- rodicovsky kontext by mel byt
-          verify({VERIFY=}001194,parent_ctx.region=nil or parent_ctx.entity=nil);
-
-          region:=deserialize_region(parent_ctx,context);
-          ent:=deserialize(context,outcontext);
-        
-        -- konec rekordu
-        elsif cr=cr_end then 
-          break;
-        
-        -- jine neumime
-        else verify({VERIFY=}001174,true);
-          end if;
-        
-        -- konec?
-        if f.is_eod then break; end if;
-
+          -- nic jiného tu nemá co dělat
+          when others do check_error({CCERR=}000629);
+          end case;
         end loop;
+      end load_import;
 
-      end deserialize;
-    
+
+{
+    ------------------------------------------------------------------------------------------------
+    static load_rtl_table =
+    -- Načte konfiguraci RTL procedur.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_rtl;
+
+    var
+      cr           : t_ctm_record_tag;           -- nalezený tag
+
+    begin
+      -- tag začátku tabulky
+      f.read_cr(cr);
+      check_error({CCERR=}000598,cr<>cr_rtl);
+
+      loop
+        -- přečíst následující tag
+        f.read_cr(cr);
+
+        case cr
+          -- položka tabulky RTL procedur
+          when cr_rtl_entry do
+              declare var
+                rtl    : t_rtl_entity;           -- interní entita překladače
+                etype  : tentitytype;            -- požadovaný typ interní entity
+                entity : pentity;                -- entita přiřazená dané interní entitě
+                id     : pentityident;           -- identifikátor interní entity
+
+              begin
+                -- identifikátor interní entity
+                f.read_entityident(id);
+
+                -- reference na přiřazenou entitu
+                declare var
+                  ref_id    : t_ctm_entity_id;   -- CTM ID entity uložené v referenci
+                  ref_etype : tentitytype;       -- typ entity uložený v referenci
+                  ref_dtype : tdatatype;         -- datový typ entity, je-li to typ
+
+                begin
+                  read_entity_ref_internal(ref_id,entity,ref_etype,ref_dtype);
+                  check_error({CCERR=}000599,entity=nil);
+                  end declare;
+
+                -- převést identifikátor na interní entitu překladače
+                rtl_id_to_entity_internal(id^,rtl,etype);
+                check_error({CCERR=}000600,etype<>entity^.etype);
+
+                -- přiřadit interní entitu
+                rtl_set_entity(rtl,entity);
+
+                -- tag konce položky tabulky
+                f.read_cr(cr);
+                check_error({CCERR=}000601,cr<>cr_end);
+
+              leave
+                -- uvolnit paměť
+                discard id;
+                end declare;
+
+          -- konec tabulky RTL procedur
+          when cr_end do return;
+
+          -- nic jiného tu nemá co dělat
+          when others do check_error({CCERR=}000602);
+          end case;
+        end loop;
+      end load_rtl_table;
+}
 
 
     ------------------------------------------------------------------------------------------------
-    procedure ctm_load =
+    static ctm_load =
     -- Načte proud compile-time metadat ze zadaného vstupního streamu.
     ------------------------------------------------------------------------------------------------
-    var
-      context : tcontext;
-
     begin
       new ctm_id;
 
       -- incializovat vstupní formatter
       f.init_reader(input);
- 
-      -- vše zpracovat
-      root_entity:=deserialize(parent_context,context);
 
+      -- načíst záhlaví souboru
+      load_header;
+
+      -- načíst importní tabulku
+      load_import;
+
+      -- načíst strom entit
+      load_tree(root_entity);
+{
+      -- načíst tabulku RTL procedur
+      load_rtl_table;
+}
+    catch
+      when stream_read_error do
+          ce^.seterror({CCERR=}000603,ce_ctm_corrupt);
+          ce^.raiseerror;
     leave
       discard ctm_id;
-
       end ctm_load;
 
     end c_ctm_reader;
+
+
 
 end cc_ctm;

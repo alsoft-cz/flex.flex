@@ -7,7 +7,10 @@ module private cx_opt =
 ----------------------------------------------------------------------------------------------------
 
 with
-  cx_util,cx_imm;
+  cx_util,
+  cx_imm,
+  cx_imm.cx_array,
+  cb_block.cb_def;
 
 type
   -- optimalizační metoda
@@ -626,10 +629,24 @@ label
                   end if;
               -- X - const
               else
-                -- X mod 1, X mod (-1) --> 0
+                -- X mod 1, X mod (-1)
                 if a=ui_1 or a=ui_minus_1 then
-                  x_addui(pexpimm(newexpr),expr,ui_0,info);
+                  -- není to zkrácené přiřazení ?
+                  if expr^.assign
+                    -- X := 0
+                    then
+                      x_addop(curr,pexpoper(newexpr),expr,el,op_assign,first,ui_0,info);
+                      a_opt_reoptimize(curr,newexpr,info);
+
+                    -- 0
+                    else
+                      -- výsledek je konst. v důsledku optimalizace
+                      x_addui(pexpimm(newexpr),expr,ui_0,info,false);
+                      end if;
+
+                  -- nahradit celý výraz
                   all:=true;
+
                 -- X mod 2^n -- > X and (2^n - 1)
                 elsif uniint_is_power2(a){uicmp2n(a,i)} then
                   ui:=a-ui_1; {uiloadp2(ui,i); uisub(ui,ui_1);}
@@ -1812,7 +1829,7 @@ begin
               when op_diff  do imm_diff(pexpimm(node)^.imm,pexpimm(er)^.imm);
 
               -- průnik množin
-              when op_isect do unimplemented({UNIMP=}000146);
+              when op_isect do imm_isect(curr,pexpimm(node)^.imm,pexpimm(er)^.imm);
 
               when others   do verify({VERIFY=}000452,true);
               end case;
@@ -2685,6 +2702,9 @@ begin
       when erk_null     do
           ce^.setwarning(curr,{CCERR=}000482,cw_null_slice);
           er^.errpos;
+
+      -- %%X
+      when others do
       end case;
 
   -- typ
@@ -2881,7 +2901,7 @@ begin
           when ata_set_full do
               x_add_imm(pexpimm(newexpr),expr,info);
               store_set(pexpimm(newexpr)^.imm);
-              store_set_items_range(pexpimm(newexpr)^.imm,expr^.t.getbase(curr).getlval,expr^.t.getbase(curr).gethval);
+              store_set_items_range(curr,pexpimm(newexpr)^.imm,expr^.t.getbase(curr).getlval,expr^.t.getbase(curr).gethval,true,expr);
 
           -- :unchecked
        -- when ata_var_unchecked do { ponechat beze změny };
@@ -3061,7 +3081,9 @@ procedure a_opt_aggregate (
 -- Optimalizace agregátu.
 ----------------------------------------------------------------------------------------------------
 with
-  cx_phase;
+  cx_phase,
+  cc_base.cc_sym,
+  standard.conversions;
 
 label k1;
 
@@ -3112,6 +3134,26 @@ var
         end loop;
       end finalize_items;
 
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure emit_aggregate_incomplete (
+        id         : in tentityident) =          -- Identifikátor chybějící složky
+    -- Pomocná funkce -- vydá chybu o neúplném agregátu (chybějící složka v RECORD).
+    ------------------------------------------------------------------------------------------------
+    var
+      buf : t_char32str;
+
+    begin
+      ce^.seterror({CCERR=}000619,ce_aggregate_incomplete);
+      --%%TODO Nejaky lepsi zpusob vyrabeni tehle informace
+      buf:='Item "';
+      buf & entityident_to_string(id);
+      buf & '" not defined';
+      ce^.setinfo(buf);
+      expr^.errpos;
+      end emit_aggregate_incomplete;
+
 var
   el               : pexpnode;                   -- prefix
   xel              : pexpnode;                   -- podvýrazy složky
@@ -3126,6 +3168,9 @@ var
   immcount         : t_unsigned;                 -- počet konstantních složek agregátu
   all_const        : t_logical := true;          -- T-žádná z konstantních složek není konstantní
                                                  -- z důvodu optimalizace
+  has_others       : t_logical := false;         -- obsahuje agregát část OTHERS?
+  srch             : tentitysearch;              -- složka recordu
+  i                : t_unsigned;
 
 begin
   -- rozdělit podvýrazy
@@ -3207,6 +3252,7 @@ begin
 
                   -- zahrnout do agregátu
                   store_record_others(expr^.imm,pexpimm(xel)^.imm);
+                  has_others:=true;
 
                   -- složku vyhodit z agregátu
                   cexp:=nil;
@@ -3234,6 +3280,50 @@ begin
           -- další složka
           cexp:=nexp;
           end loop;
+
+        -- zkontrolovat, že byly definovány všechny složky
+        if not has_others then
+          -- nalézt první složku recordu
+          srch.find_et_first(expr^.t.getctype,rc_primary,et_var,[esf_ancestor]);
+          -- byly definovány alespoň nějaké složky?
+          if expr^.imm.ritems^.list=nil
+            then
+              -- ne=>pokud record obsahuje nějaké bez implicitní hodnoty, je to chyba
+              -- nějaké složky byly definovány=>zjistíme, jestli jsou všechny
+              while srch.psym<>nil loop
+                -- má tato složka implicitní hodnotu?
+                if not pentity_init(srch.psym)^.init.isset then
+                  -- nemá => chyba
+                  emit_aggregate_incomplete(srch.psym^.id^);
+                  break;
+                  end if;
+
+                -- vyhledat další složku
+                srch.find_et_next;
+                end loop;
+
+            else
+              -- nějaké složky byly definovány=>zjistíme, jestli jsou všechny
+              while srch.psym<>nil loop
+                -- má tato složka implicitní hodnotu?
+                if not pentity_init(srch.psym)^.init.isset then
+                  -- nemá => zkontrolovat, jestli je tato složka definována
+                  i:=1;
+                  while i<=expr^.imm.ritems^.list^:length and then expr^.imm.ritems^.list^[i].item<>srch.psym loop
+                    succ i;
+                    end loop;
+                  if i>expr^.imm.ritems^.list^:length then
+                    -- nedefinovaná složka=>chyba
+                    emit_aggregate_incomplete(srch.psym^.id^);
+                    break;
+                    end if;
+                  end if;
+
+                -- vyhledat další složku
+                srch.find_et_next;
+                end loop;
+              end if;
+          end if;
 
     -- pole, řetězec
     when dt_array,dt_uarray,dt_string,dt_ustring do
@@ -3273,7 +3363,7 @@ begin
                   all_const and nf_const in xel^.nflags;
 
                   -- zahrnout do agregátu
-                  store_array_item(curr,expr^.imm,index,pexpimm(xel)^.imm);
+                  store_array_item(curr,expr^.imm,index,pexpimm(xel)^.imm,xer);
 
                   -- složku vyhodit z agregátu
                   cexp:=nil;
@@ -3296,7 +3386,7 @@ begin
 
                     -- zahrnout do agregátu
                     load_uniint(pexpimm(xer)^.imm,ui1);
-                    store_array_item(curr,expr^.imm,ui1,pexpimm(xel)^.imm);
+                    store_array_item(curr,expr^.imm,ui1,pexpimm(xel)^.imm,xer);
 
                     -- složku vyhodit z agregátu
                     cexp:=nil;
@@ -3309,7 +3399,7 @@ begin
 
                       -- zahrnout do agregátu
                       load_uniint(pexpimm(xer^.sub)^.imm,ui1);
-                      store_array_item(curr,expr^.imm,ui1,pexpimm(xel)^.imm);
+                      store_array_item(curr,expr^.imm,ui1,pexpimm(xel)^.imm,xer);
 
                       -- složku vyhodit z agregátu
                       cexp:=nil;
@@ -3321,7 +3411,7 @@ begin
                       -- zahrnout do agregátu
                       load_uniint(pexpimm(xer^.sub)^.imm,ui1);
                       load_uniint(pexpimm(xer^.sub^.next)^.imm,ui2);
-                      store_array_items_range(expr^.imm,ui1,ui2,pexpimm(xel)^.imm);
+                      store_array_items_range(curr,expr^.imm,ui1,ui2,pexpimm(xel)^.imm,xer);
 
                       -- složku vyhodit z agregátu
                       cexp:=nil;
@@ -3347,6 +3437,7 @@ begin
 
                   -- zahrnout do agregátu
                   store_array_others(expr^.imm,pexpimm(xel)^.imm);
+                  has_others:=true;
 
                   -- složku vyhodit z agregátu
                   cexp:=nil;
@@ -3407,7 +3498,7 @@ begin
 
             -- uložit hodnotu
             load_uniint(pexpimm(xel)^.imm,ui1);
-            store_set_item(curr,expr^.imm,ui1);
+            store_set_item(curr,expr^.imm,ui1,true,xer);
 
             -- složku vynechat z agregátu
             cexp:=nil;
@@ -3422,7 +3513,7 @@ begin
             -- uložit hodnotu
             load_uniint(pexpimm(xel^.sub)^.imm,ui1);
             load_uniint(pexpimm(xel^.sub^.next)^.imm,ui2);
-            store_set_items_range(expr^.imm,ui1,ui2);
+            store_set_items_range(curr,expr^.imm,ui1,ui2,true,xer);
 
             -- složku vynechat z agregátu
             cexp:=nil;
@@ -3438,7 +3529,7 @@ begin
           -- typ
           elsif xel^.nclass=nc_type then
             -- uložit hodnotu
-            store_set_items_range(expr^.imm,xel^.t.getlval,xel^.t.gethval);
+            store_set_items_range(curr,expr^.imm,xel^.t.getlval,xel^.t.gethval,true,xer);
 
             -- složku vynechat z agregátu
             cexp:=nil;
@@ -3479,6 +3570,42 @@ begin
 
     -- hodnota
     pexpimm(newexpr)^.imm:=expr^.imm;
+
+    -- v případě agregátu pole zkontrolovat, že neobsahuje díry
+    if not has_others and expr^.t.stype in tdatatypeset:[dt_array,dt_uarray,dt_string,dt_ustring] then
+      -- určit rozmezí indexů, které musí být pokryto
+      ui1:=ctyp.getlval;
+      ui2:=ctyp.gethval;
+
+      -- pro unconstrained pole a řetězce se nevyžaduje úplně maximální index, jen ten nejvyšší použitý
+      if expr^.t.stype in tdatatypeset:[dt_uarray,dt_string,dt_ustring] then
+        if expr^.imm.aitems^.list=nil or else expr^.imm.aitems^.list^:length=0
+          then
+            -- prázdný řetězec=>vždy OK
+            ui1:=ui_1;
+            ui2:=ui_0;
+
+          else
+            -- neprázdný řetězec=>vyžadujeme spojitost až do posledního použitého indexu
+            ui2:=expr^.imm.aitems^.list^[expr^.imm.aitems^.list^:last].hval;
+            end if;
+        end if;
+
+      -- zjistit, jestli daný agregát má pokrytý celý požadovaný rozsah
+      if not choice_range_is_in(ui1,ui2,expr^.imm.aitems^) then
+        ce^.seterror({CCERR=}000611,ce_aggregate_incomplete);
+        declare var
+          tmp      : t_char32str;
+        begin
+          tmp:=unsigned_to_string(uniint_to_unsigned(ui2-ui1+ui_1));
+          tmp & ' item(s) expected, ';
+          tmp & unsigned_to_string(uniint_to_unsigned(choice_cardinality(expr^.imm.aitems^)));
+          tmp & ' found';
+          ce^.setinfo(tmp);
+          end declare;
+        expr^.errpos;
+        end if;
+      end if;
     end if;
 
   -- optimalizace úspěšně dokončena

@@ -8,6 +8,88 @@
 ----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
+procedure issue_duplicates_warning (
+    context        : in tcontext;                -- aktuální kontext
+    choice         : in pexpnode) =              -- souvisejicí výběr (nil pro neznámý)
+-- Pomocná procedura; vyvolá varování "Duplicate choice".
+----------------------------------------------------------------------------------------------------
+begin
+  ce^.setwarning(context,{CCERR=}000001,cw_duplicate_choice);
+  -- %%TODO Zobrazovat, který výběr je duplicitní; ce^.setparam(...);
+  if choice<>nil then
+    choice^.errpos;
+    end if;
+  end issue_duplicates_warning;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure choice_cardinality =
+-- Spočítá počet prvků v daném seznamu intervalů.
+-- Např. {<3;5>,<10;15>} má kardinalitu 9
+----------------------------------------------------------------------------------------------------
+begin
+  -- speciální případ: prázdný seznam
+  if clist.list=nil then
+    return;
+    end if;
+
+  -- sčítej postupně velikosti jednotlivých intervalů
+  for i in clist.list^:range loop
+    result + (clist.list^[i].hval-clist.list^[i].lval+ui_1);
+    end loop;
+  end choice_cardinality;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure choice_range_is_in =
+-- Zjistí, jestli interval <lval;hval> je obsažen v zadaném seznamu.
+-- Pokud je interval prázdný (<7;3>), vrací true.
+----------------------------------------------------------------------------------------------------
+var
+    i              : t_unsigned;
+    l              : tuniint;
+
+begin
+  -- speciální případ: prázdný interval typu <7;3> je obsažen v každé množině
+  if lval>hval then
+    result:=true;
+    return;
+    end if;
+
+  -- speciální případ: prázdný seznam výběrů: žádný neprázdný interval uvnitř není
+  if clist.list=nil then 
+    return;
+    end if;
+
+  -- najít první interval
+  i:=clist.list^:first;
+  while i<=clist.list^:last and then clist.list^[i].hval<lval loop
+    succ i;
+    end loop;
+
+  -- odteď musí být navazující intervaly až do [rval]
+  l:=lval;
+  while l<=hval and i<=clist.list^:last loop
+    if clist.list^[i].lval>l then
+      -- díra mezi aktuálním [l] a [clist.list^[i].lval] => neobsahuje
+      result:=false;
+      return;
+      end if;
+
+    -- posuň se až za konec tohoto intervalu
+    l:=clist.list^[i].hval+ui_1;
+    succ i;
+    end loop;
+
+  -- nalezli jsme celý požadovaný interval?
+  result:=l>hval;
+  end choice_range_is_in;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure choice_extend =
 -- Rozšíří CLIST o COUNT položek (pokud je to potřeba).                       
 ----------------------------------------------------------------------------------------------------
@@ -134,12 +216,8 @@ begin
       -- spadá do tohoto intervalu ?
       if ui>=clist.list^[i].lval and ui<=clist.list^[i].hval then
         -- ohlásit varování
-        if cw_duplicate_choice in context.entity^.compv.warns then
-          ce^.setwarning(context,{CCERR=}000001,cw_duplicate_choice);
-          -- %%TODO Zobrazovat, který výběr je duplicitní; ce^.setparam(...);
-        #if cc_choice=cc_choice_case then;
-          choice^.errpos;
-        #end if;
+        if warn_duplicate then
+          issue_duplicates_warning(context,choice);
           end if;
 
         -- a konec
@@ -356,7 +434,7 @@ begin
 
     -- zjistit, kde leží horní mez přidávaného intervalu
     j:=clist.list^:length;
-    ui1:=hval-ui_1;
+    ui1:=hval+ui_1;
     loop
       -- leží za tímto intervalem
       if hval>clist.list^[j].hval then
@@ -369,7 +447,7 @@ begin
         break;
 
       -- leží těsně před tímto intervalem
-      elsif ui1=clist.list^[i].lval then
+      elsif ui1=clist.list^[j].lval then
         hval_pos:=tbp_attached;
         break;
         end if;
@@ -403,6 +481,11 @@ begin
       -- zrušit (I+1)-ní až J-tý interval
       delint(i+1,j);
 
+      -- varovat, že máme duplicity
+      if warn_duplicate then
+        issue_duplicates_warning(context, choice);
+        end if;
+
     -- celý interval spadá mezi dva intervaly
     elsif (lval_pos=tbp_between) and (hval_pos=tbp_between) and (i=j+1) then
       -- realokovat paměť
@@ -427,6 +510,11 @@ begin
         delint(i+1,j);
         end if;
 
+      -- varovat, že máme duplicity
+      if warn_duplicate then
+        issue_duplicates_warning(context, choice);
+        end if;
+
     -- levá mez leží těsně za či uvnitř intervalu, pravá mezi
     elsif (lval_pos in tboundaryposset:[tbp_inside,tbp_attached]) and (hval_pos=tbp_between) then
       -- prodloužit I-tý interval
@@ -435,6 +523,13 @@ begin
       -- zrušit (I+1)-ní až J-tý interval
       if j>i then
         delint(i+1,j);
+        end if;
+
+      -- varovat o případných duplicitách
+      if lval_pos=tbp_inside or j>i then
+        if warn_duplicate then
+          issue_duplicates_warning(context, choice);
+          end if;
         end if;
 
     -- pravá mez leží těsně před či uvnitř intervalu, levá mezi
@@ -447,6 +542,13 @@ begin
         delint(i,j-1);
         end if;
 
+      -- varovat o případných duplicitách
+      if hval_pos=tbp_inside or j>i then
+        if warn_duplicate then
+          issue_duplicates_warning(context, choice);
+          end if;
+        end if;
+
     -- jiné případy nemohou nastat
     else 
       verify({VERIFY=}000459,true);
@@ -454,3 +556,293 @@ begin
   #end if;
     end if;
   end choice_add_range;
+
+
+
+#if cc_choice<>cc_choice_array then;
+----------------------------------------------------------------------------------------------------
+procedure choice_remove_single =
+-- Odebere ze seznamu optimalizovaných výběrů jednu hodnotu.
+----------------------------------------------------------------------------------------------------
+use
+  advanced,
+  advanced.low_level,
+  advanced.low_level.unchecked_memory_access;
+
+var
+  i                : t_unsigned;
+  is_modified      : t_logical;
+
+begin
+  -- seznam je prázdný => není co odstraňovat
+  if clist.list=nil or else clist.list^:length=0 then 
+    return; 
+    end if;
+
+  -- zatím nebyl seznam upraven
+  is_modified:=false;
+
+  -- zkusit najít správný interval
+  i:=1;
+  while i<=clist.list^:length loop
+    -- jednobodový interval ? 
+    if clist.list^[i].lval=ui and clist.list^[i].hval=ui then
+      -- interval odstranit %%TODO(SLICE)
+      advanced.low_level.unchecked_memory_access.memory_copy(clist.list^[i+1],clist.list^[i],(clist.list^:length-i)*clist.list^[1]:size);
+      pred clist.list^:length;
+
+      -- změněno
+      is_modified:=true;
+
+      -- a konec 
+      break;
+
+    -- neshoduje se levá mez ? 
+    elsif clist.list^[i].lval=ui then
+      -- posunout levou mez intervalu
+      clist.list^[i].lval:=clist.list^[i].lval+ui_1;
+
+      -- změněno
+      is_modified:=true;
+
+      -- a konec 
+      break;
+
+    -- neshoduje se pravá mez ? 
+    elsif clist.list^[i].hval=ui then
+      -- posunout pravou mez intervalu 
+      clist.list^[i].hval:=clist.list^[i].hval-ui_1;
+
+      -- změněno
+      is_modified:=true;
+
+      -- a konec 
+      break;
+
+    -- neleží uvnitř ? 
+    elsif ui>clist.list^[i].lval and ui<clist.list^[i].hval then
+      -- prodloužit %%TODO(SLICE)
+      choice_extend(clist,1);
+      advanced.low_level.unchecked_memory_access.memory_copy(clist.list^[i],clist.list^[i+1],(clist.list^:length-(i-1))*clist.list^[1]:size);
+      succ clist.list^:length;
+
+      -- vypočítat horní mez intervalu vlevo od UI 
+      clist.list^[i].hval:=ui-ui_1;
+
+      -- vypočítat dolní mez intervalu vpravo od UI
+      clist.list^[i+1].lval:=ui+ui_1;
+
+      -- změněno
+      is_modified:=true;
+
+      -- a konec 
+      break;
+      end if;
+
+    -- další interval 
+    succ i;
+    end loop;
+
+  #if cc_choice=cc_choice_case then;
+  -- pokud jsme změnili seznam, poznačit do [modified]
+  if is_modified then
+    modified:=true;
+    end if;
+  #end if;
+  end choice_remove_single;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure choice_remove_range =
+-- Odebere ze seznamu optimalizovaných výběrů rozsah hodnot.
+----------------------------------------------------------------------------------------------------
+use
+  advanced,
+  advanced.low_level,
+  advanced.low_level.unchecked_memory_access;
+
+var
+  i                : t_unsigned;
+  is_modified      : t_logical;
+
+begin
+  -- seznam je prázdný => není co odstraňovat 
+  if clist.list=nil or else clist.list^:length=0 then 
+    return; 
+    end if;
+
+  -- zatím nebyl seznam upraven
+  is_modified:=false;
+
+  -- zkusit najít správný interval 
+  i:=1;
+  while i<=clist.list^:length loop
+    -- pokrývá celý interval 
+    if lval<=clist.list^[i].lval and hval>=clist.list^[i].hval then
+      -- interval odstranit
+      advanced.low_level.unchecked_memory_access.memory_copy(clist.list^[i+1],clist.list^[i],(clist.list^:length-i)*clist.list^[1]:size);
+      pred clist.list^:length;
+
+      -- změněno
+      is_modified:=true;
+
+      -- ještě nemůžeme končit 
+
+    -- pokrývá levou polovinu intervalu 
+    elsif lval<=clist.list^[i].lval and hval>=clist.list^[i].lval then
+      -- posunout levou mez intervalu 
+      clist.list^[i].lval:=hval+ui_1;
+
+      -- změněno
+      is_modified:=true;
+
+      -- a konec, další intervaly jsou již jistě větší
+      break;
+
+    -- pokrývá pravou polovinu intervalu
+    elsif lval<=clist.list^[i].hval and hval>=clist.list^[i].hval then
+      -- posunout pravou mez intervalu
+      clist.list^[i].hval:=lval-ui_1;
+
+      -- změněno
+      is_modified:=true;
+
+      -- ještě nemůžeme končit
+
+    -- pokrývá vnitřek intervalu
+    elsif lval>clist.list^[i].lval and hval<clist.list^[i].hval then
+      -- prodloužit %%TODO(SLICE)
+      choice_extend(clist,1);
+      advanced.low_level.unchecked_memory_access.memory_copy(clist.list^[i],clist.list^[i+1],(clist.list^:length-(i-1))*clist.list^[1]:size);
+      succ clist.list^:length;
+
+      -- změněno
+      is_modified:=true;
+
+      -- vypočítat horní mez intervalu vlevo od LVAL
+      clist.list^[i].hval:=lval-ui_1;
+
+      -- vypočítat dolní mez intervalu vpravo od HVAL
+      clist.list^[i+1].lval:=hval+ui_1;
+
+      -- a konec, další intervaly jsou již jistě disjunktní
+      break;
+
+    -- leží celý pod tímto intervalem
+    elsif hval<clist.list^[i].lval then
+      -- konec, další intervaly jsou ještě větší
+      break;
+      end if;
+
+    -- další interval 
+    succ i;
+    end loop;
+
+  #if cc_choice=cc_choice_case then;
+  -- pokud jsme změnili seznam, poznačit do [modified]
+  if is_modified then
+    modified:=true;
+    end if;
+  #end if;
+  end choice_remove_range;
+#end if;
+
+
+
+#if cc_choice=cc_choice_case then;
+
+----------------------------------------------------------------------------------------------------
+procedure choice_merge =
+-- Provede sjednocení dvou seznamů optimalizovaných výběrů do jednoho.
+----------------------------------------------------------------------------------------------------
+var
+  empty_ctx        : tcontext;                   -- docasny kontext
+
+begin
+  -- pokud je [clist2] dosud nenaplněn, není co dělat
+  if clist2.list=nil then
+    return;
+    end if;
+
+  -- sjednocení funguje prostým přidáním všech intervalů z [clist2] do [clist1]
+  -- ale musí být zakázané generování varování
+  for i in clist2.list^:range loop
+    if clist2.list^[i].lval=clist2.list^[i].hval
+      then choice_add_single(empty_ctx,clist1,clist2.list^[i].lval,nil,false);
+      else choice_add_range(empty_ctx,clist1,clist2.list^[i].lval,clist2.list^[i].hval,nil,false);
+      end if;
+    end loop;
+  end choice_merge;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure choice_subtract =
+-- Odečte obsah [clist_right] od [clist_left], výsledek uloží zpět do [clist_left].
+----------------------------------------------------------------------------------------------------
+var
+  modified         : t_logical;                  -- byl seznam změněn?
+
+begin
+  -- pokud je [clist_right] dosud nenaplněn, není co dělat
+  if clist_right.list=nil then
+    return;
+    end if;
+
+  -- seznam zatím nebyl změněn
+  modified:=false;
+
+  -- odečtení funguje prostým odebráním všech intervalů z [clist_right] od [clist_left]
+  for i in clist_right.list^:range loop
+    if clist_right.list^[i].lval=clist_right.list^[i].hval
+      then choice_remove_single(clist_left,clist_right.list^[i].lval,modified);
+      else choice_remove_range(clist_left,clist_right.list^[i].lval,clist_right.list^[i].hval,modified);
+      end if;
+    end loop;
+
+  -- pokud bylo něco odečteno, vyhodit případné varování
+  if warn_subtract and modified then
+    issue_duplicates_warning(context, choice);
+    end if;
+  end choice_subtract;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure choice_reduce =
+-- Zredukuje počet potřebných intervalů v [requested] tak, že případně rozšíří tyto intervaly
+-- o části intervalů, které jsou k dispozici v [covered].
+----------------------------------------------------------------------------------------------------
+var
+    i              : t_unsigned;
+    empty_context  : tcontext;                   -- dočasný kontext
+
+begin
+  -- pokud je [requested] dosud nenaplněn, není co redukovat
+  if requested.list=nil then
+    return;
+    end if;
+  
+  -- projdeme všechny mezery mezi intervaly v [requested] a slučujeme intervaly, mezi kterými je
+  -- mezera pokryta v [covered]
+  i:=1;
+  while i<requested.list^:length loop
+    -- je mezera pokryta?
+    if choice_range_is_in(requested.list^[i].hval+ui_1,requested.list^[i+1].lval-ui_1,covered)
+      then
+        --sloučit oba intervaly přidáním mezery a zkusit znovu
+        if requested.list^[i].hval+ui_1=requested.list^[i+1].lval-ui_1
+          then choice_add_single(empty_context,requested,requested.list^[i].hval+ui_1,nil,false);
+          else choice_add_range(empty_context,requested,requested.list^[i].hval+ui_1,requested.list^[i+1].lval-ui_1, nil,false);
+        end if;
+
+      else
+        -- jinak pokročit k další mezeře
+        succ i;
+        end if;
+    end loop;
+
+  end choice_reduce;
+
+#end if;

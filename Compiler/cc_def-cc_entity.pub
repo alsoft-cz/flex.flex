@@ -345,7 +345,11 @@ var
 
   -- interní identifikátory 
   id_int_tag       : const aliased tshortident := '@TAG';        -- identifikátor interní složky třídy @TAG     
-  id_int_status    : const aliased tshortident := '@STATUS';     -- identifikátor interní složky třídy @STATUS  
+  id_int_t_tag     : const aliased tshortident := '@T_TAG';      -- identifikátor typu interní složky třídy @TAG
+  id_int_status    : const aliased tshortident := '@STATUS';     -- identifikátor interní složky třídy @STATUS    
+  id_int_t_status  : const aliased tshortident := '@T_STATUS';   -- identifikátor typu interní složky třídy @STATUS    
+  id_int_t_size    : const aliased tshortident := '@T_SIZE';     -- identifikátor interního typu atributů :size a :last
+  id_int_t_mptr    : const aliased tshortident := '@T_MPTR';     -- identifikátor interního typu strojového pointeru
   id_compilation   : const aliased tshortident := '@COMPILATION';-- identifikátor kompilační jednotky       
   id_init          : const aliased tshortident := '@INIT';
   id_entry         : const aliased tshortident := '@ENTRY';
@@ -353,11 +357,20 @@ var
   id_adjust        : const aliased tshortident := '@ADJUST';
   id_rollback      : const aliased tshortident := '@ROLLBACK';
   id_commit        : const aliased tshortident := '@COMMIT';
-  id_int_temp      : const aliased tshortident := '^TEMP_';      -- prefix identifikátoru kompilátrem gen. sym.
+  id_int_temp      : const aliased tshortident := '@TEMP_';      -- prefix identifikátoru kompilátorem generované entity
+  id_int_override  : const aliased tshortident := '@OVERRIDE_';  -- prefix identifikátoru kompilátorem pojmenovaného overridu
+  id_int_interface : const aliased tshortident := '@INTERFACE_'; -- prefix identifikátoru kompilátorem pojmenované instance interfacu
+  id_int_label     : const aliased tshortident := '@LABEL_';     -- prefix identifikátoru kompilátorem pojmenovaného návěští
   id_int_param     : const aliased tshortident := '@PARAM';      -- parametr interní metody typu (viz CA_TYPE)
   id_int_low       : const aliased tshortident := '@LOW';        -- dolní mez
   id_int_high      : const aliased tshortident := '@HIGH';       -- horní mez
   id_int_forvar    : const aliased tshortident := '@I';          -- řídící proměnná cyklu
+  id_int_uniarray  : const aliased tshortident := '@UNIARRAY_';  -- prefix identifikátoru kompilátorem pojmenovaného univerzálního pole
+  id_int_uniint    : const aliased tshortident := '@UNIINT';     -- identifikátor univerzálního integeru
+  id_int_unichar   : const aliased tshortident := '@UNICHAR';    -- identifikátor univerzálního znaku
+  id_int_unireal   : const aliased tshortident := '@UNIREAL';    -- identifikátor univerzálního realu
+  id_int_unilogical: const aliased tshortident := '@UNILOGICAL'; -- identifikátor univerzálního logicalu
+  id_int_uninil    : const aliased tshortident := '@UNINIL';     -- identifikátor univerzálního nilu
 
 const
   id_init_lex      = '@INIT';                    -- identifikátor metody init
@@ -395,6 +408,8 @@ var
 const
   -- všechny úrovně
   etvs_all         = tentityvisibleset:full;
+  -- nelokálně viditelné entity
+  etvs_non_local   = etvs_all-tentityvisibleset:[etv_private];
 
 type
   -- průběh překladu deklarace
@@ -447,6 +462,8 @@ type
    -- etc_generic;                               -- generická deklarace (tato nebo nadřazená)
       etc_macro;                                 -- makro deklarace (tato nebo nadřazená)
       etc_no_cmt_export;                         -- kompilatorem definovany symbol ktery se neexportuje do metadat
+      etc_globaly_visible;                       -- globálně viditelná entita (=je public/protected/supervised
+                                                 -- v celém řezu stromem)
       end enum;
   tentitycompileset= set of tentitycompile;
 
@@ -454,10 +471,12 @@ var
   -- režim překladu symbolu
 {%OFF}
   tentitycompile_export_id : const array tentitycompile of t_char32str := [
-      for etc_generated  use 'generated',
-      for etc_compiling  use 'compiling',
-      for etc_evaluating use 'evaluating',
-      for etc_macro      use 'macro'];
+      for etc_generated        use 'generated',
+      for etc_compiling        use 'compiling',
+      for etc_evaluating       use 'evaluating',
+      for etc_macro            use 'macro',
+      for etc_no_cmt_export    use 'no_ctm_export',
+      for etc_globaly_visible  use 'globaly_visible'];
 {%ON}
 
 
@@ -604,7 +623,11 @@ type
 
 const
   -- typy partition, které obsahují run-time podporu
-  parts_runtime    = t_partition_type_set:[part_standalone,part_runtime];
+  parts_contains_runtime = t_partition_type_set:[part_standalone,part_runtime];
+  -- typy partition, které vyžadují automatický překlad run-time podpory
+  parts_compile_runtime  = t_partition_type_set:[part_standalone];
+  -- typy partition, které obsahují program
+  parts_contains_program = t_partition_type_set:[part_standalone,part_temporary];
 
 var
   -- typ partition
@@ -671,8 +694,8 @@ type
   -- kategorie regionu
   tregioncategory  = enum
       rc_primary;
-      rc_attribute;
-      rc_meta;
+   -- rc_attribute;
+   -- rc_meta;
       end enum;
 
   -- primární regiony
@@ -735,8 +758,8 @@ type
 var
   -- úroveň vazby
   t_with_level_export_id : const array t_with_level of t_char32str := [
-      for twl_none use 'none',
-      for twl_normal use 'normal',
+      for twl_none       use 'none',
+      for twl_normal     use 'normal',
       for twl_supervised use 'supervised'];
 
 type
@@ -753,6 +776,7 @@ type
 var
   -- tabulka pro konverzi úrovně vazby na viditelnost
   with_level_to_visibility : const array t_with_level of tentityvisibleset := [
+      for twl_none       use [],
       for twl_normal     use [etv_public],
       for twl_supervised use [etv_public,etv_protected,etv_supervised]];
 
@@ -766,6 +790,7 @@ type
       withtable    : twithtable;                 -- tabulka použitých modulů                    
       vsect        : tentityvisible;             -- implicitní viditelnost vnořených prvků
       context      : tcontext;                   -- kontext: entita a region, do kterých patří tento region
+      partition_id : t_partition_id;             -- partition, do které region patří
       prev         : pregion;                    -- předchozí region
       next         : pregion;                    -- následující region
       end record;
@@ -851,6 +876,8 @@ const
   ets_callable     = tentitytypeset:[et_special,et_procedure,et_static,et_virtual];
   -- typy
   ets_type         = tentitytypeset:[et_type,et_class];
+  -- entity, do kterých se neprovádí druhá registrace identifikátoru enumu
+  ets_no_enum_id2  = tentitytypeset:[et_type,et_var,et_const];
   -- prvky obsahující příkazovou část
   ets_body         = ets_subprogram + tentitytypeset:[et_program];
   -- prvky obsahující kod
@@ -863,10 +890,13 @@ const
   ets_enclosing    = ets_container + ets_subprogram;
   -- prvky s run-time atributy (jen odvozené od TENTITY_VALUE)
   ets_rtattrib     = tentitytypeset:[et_var];
-  -- exportovatelné entity
+  -- exportovatelné entity 
   ets_exportable   = tentitytypeset:[et_var,et_procedure,et_static,et_program,et_type,et_class];
   -- entity trasovatelné na vnořené exportovatelné entity
   ets_export_traceable = tentitytypeset:[et_module,et_class,et_compile];
+  -- entity, které je při exportu metodou Flex potřeba zpracovat v resolveru
+  -- Poznámka: Jsou to 
+  ets_export_flex  = ets_code+ets_type+tentitytypeset:[et_var,et_message];
 
 type
   -- popis typu entity
@@ -914,6 +944,7 @@ type
   tdatatype        = enum
       -- pseudotypy
       dt_undef;        -- neznámý typ
+      dt_ordinal;      -- generický ordinální typ
       -- univerzální typy
       dt_uniint;       -- univerzální celé číslo
       dt_unireal;      -- univerzální reálné číslo
@@ -922,7 +953,6 @@ type
       dt_uniarray;     -- univerzální pole
       dt_uninil;       -- univerzální NIL
       -- regulární typy
-      dt_ordinal;      -- generický ordinální typ
       dt_signed;       -- typ celé číslo se znaménkem
       dt_unsigned;     -- typ celé číslo bez znaménka
       dt_float;        -- typ floating-point číslo
@@ -985,8 +1015,8 @@ const
   dts_fixed          = tdatatypeset:[dt_fixed];
   dts_u_fixed        = dts_fixed + tdatatypeset:[dt_unireal];
   -- číselné typy
-  dts_numeric        = dts_integer + dts_float;
-  dts_u_numeric      = dts_u_integer + dts_u_float;
+  dts_numeric        = dts_integer + dts_float + dts_fixed;
+  dts_u_numeric      = dts_u_integer + dts_u_float + dts_fixed;
   -- typy s bázovým typem
   dts_base           = tdatatypeset:[dt_string,dt_ustring,dt_array,dt_uarray,dt_pointer,dt_set];
   dts_u_base         = dts_base + tdatatypeset:[dt_uniarray];
@@ -1005,6 +1035,9 @@ const
   -- neindexované regulární typy
   dts_unindexed      = dts_regular-dts_index;
   dts_u_unindexed    = dts_unindexed + dts_unitype - tdatatypeset:[dt_uniarray];
+  -- typy s parametry
+  dts_parameterized  = tdatatypeset:[dt_procedure,dt_message,dt_task];
+  dts_u_parameterized= dts_parameterized;
   -- agregátní
   dts_aggregate      = dts_array + dts_string + tdatatypeset:[dt_record,dt_set];
   -- třídy
@@ -1171,6 +1204,7 @@ type
   tentity_compile  = tentity_code with record
       part_type    : t_partition_type;           -- typ partition
       part_result  : t_partition_result;         -- výsledný tvar přeložené partition
+      part_extid   : p_external_entity_ident;    -- externí identifikátor kompilační partition
       end record;
 
 
@@ -1829,13 +1863,6 @@ var
 {%ON}
 
 type
-{
-  -- typová informace
-  typetaginfo      = enum
-      tag_static;                                -- statická
-      tag_dynamic;                               -- dynamická
-      end enum;
-}
   -- příznaky typu
   typeflags        = enum
       ----- %%TECH Používání příznaků [tf_tagged] a [tg_temp] --------------------------------------
@@ -1890,13 +1917,6 @@ var
 {%ON}
 
 type
-{ Ondra 3.4.2003 : Zrušeno, float se nově definuje počtem bitů.
-  -- typ definice reálného čísla
-  tfloatdeftype    = enum
-      fdt_delta;
-      fdt_digits;
-      end enum;
-}
   -- statické parametry reálného čísla (nezměnitelné uživatelem)
   tfloatsparams    = record
       low          : tunireal;                   -- nejmenší číslo
@@ -1989,15 +2009,6 @@ var
 {%ON}
 
 type
-{
-  -- nepovinné atributy pointeru
-  ptrattrib        = enum
-      pa_tag;                                    -- :tag
-      pa_size;                                   -- :size
-      pa_instance;                               -- ^instance
-      end enum;
-  ptrattribset     = set of ptrattrib;
-}
   -- modifikátory pointeru
   ptrflags         = enum
     --pf_type;                                   -- pointer obsahuje typovou identifikaci
@@ -2075,9 +2086,6 @@ type
       seval        : tentityeval{set};           -- vyhodnocení specifikace
       size         : tunidata_size;              -- velikost typu
       derive       : typederive;                 -- typ derivace
-    { Ondra 21.1.2004 : Zrušeno, nikdo to nepoužíval.
-      defview      : ttypeview;                  -- default view typu
-    }
       extofs       : tunidata_addr{%%X(OFS)};    -- posunutí extension
       tflags       : typeflagsset;               -- flagy typu
       compat       : typecompat;                 -- determinace kompatibility
@@ -2098,35 +2106,24 @@ type
       -- specifikace celočíselného typu
       intaritm     : tintaritm;                  -- typ celočíselné aritmetiky
       -- specifikace typu reálné číslo
-    { Ondra 3.4.2003 : Zrušeno, float se nově definuje počtem bitů.
-      dtype        : tfloatdeftype;              -- typ definice reálného čísla
-    }
       fp           : tfloatparams;               -- parametry reálného čísla
       -- specifikace typu s rozsahem
       srange       : cc_ref.reftype;             -- rozsah
       saliased     : t_mem_aliased;              -- příznak, zda je možné získat adresu složky (ALIASED)
-      -- specifikace typu string
-    --lsize        : tunidata_size;              -- velikost délky řetězce
       -- specifikace typu pointer
       pflags       : ptrflagsset;                -- modifikátory
       pclass       : ptrclass;                   -- cílový objekt
       pbase        : ptrbase;                    -- kompatibilita báze
-      pattrib      : rtattribset{ptrattribset};  -- atributy pointeru
+      pattrib      : rtattribset;                -- atributy pointeru
       paccess      : varaccess;                  -- přístup k objektu
-      -- specifikace typu procedura nebo zprava
+      -- specifikace typu procedura, task nebo zprava
+      parcount     : t_unsigned;                 -- počet parametrů
+      -- specifikace typu procedura
       rflags       : procflagset;                -- další parametry
       result       : pentity_param;              -- návratová hodnota funkce
-    { Ondra 21.1.2004 : Zrušeno, nikdo to nepoužíval.
-      insize       : tunidata_size;              -- celkova velikost vstupnich parametru
-    }
-      parcount     : t_unsigned;                 -- počet parametrů
       call_conv    : p_flex_record;              -- volaci konvence
       -- specifikace třídy
       interfaces   : p_interface_list;           -- seznam všech interfaců třídy
-    { Ondra 28.8.2003 : Zobecněno na jeden seznam interfaců. Třída je sama sobě interfacem.
-      vtable       : pvirtualtable;              -- virtuální tabulka
-      exposed      : cc_list.trefentitystring;   -- exposeované interfacy
-    }
       -- programátorem předefinovatelné atributy
       attr_align   : cc_ref.refexpr;             -- :alignment
       attr_native_align : cc_ref.refexpr;        -- :native_alignment

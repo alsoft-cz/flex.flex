@@ -245,19 +245,8 @@ begin
 
     verify({VERIFY=}000714,unsigned_to_unidata_size(val_size)<>expr.t.getsize);
     
-    begin
-      -- docasne uprav velikost 
-      if range_type_size>unsigned_to_unidata_size(val_size) then
-        --val.adjust_size(unidata_size_to_unsigned(range_type_size));
-        end if;
-
-      i_gen_ordinal_range_check(inst,info,context,range_typ,expr.t,val);
+    i_gen_ordinal_range_check(inst,info,context,range_typ,expr.t,val);
     
-    leave
-      -- vrat velikost z5
-      --val.adjust_size(val_size);
-      end;
-
     end if;
   end i_gen_runtime_checks;
 
@@ -270,20 +259,50 @@ procedure i_gen_index_string_check =
 var
   el               : pexpnode;                   -- podvýrazy
   er               : pexpnode;                   -- podvýrazy
+  postexcept       : itarget;                    -- po vyjimce
+  preexcept        : itarget;
 
 begin
   -- oddělit podvýrazy
   expr.get(el,er);
+
+  -- jen pro indexovani
+  verify({VERIFY=}001202,expr.ntype<>nt_index);
 
   -- jen pro indexovani retezce
   verify({VERIFY=}000990,el^.t.stype not in dts_string);
   
   -- je treba generovat runtime kontrolu?
   if rch_index_string in expr.get_run_checks(rchcl_gen) then
-    -- %%TODO(rch_index_string) - implementovat az bude pridana podpora pro nacteni runtime atributu length
-    unimplemented({UNIMP=}000265);
+    -- alokuj navesti
+    newtarget(info,postexcept);
+    newtarget(info,preexcept);
+    
+    -- zkontroluj dolni mez na nulu
+    addii(inst,info,ii_sub,index,op_0,op0);
+
+    -- pokud nula, skoc na vyjimku
+    addjump(inst,info,context,ic_z,preexcept);
+
+    -- zkontroluj horni mez
+    addii(inst,info,ii_cmp,length,index,op0);
+
+    -- pokud length rovno nebo vetsi nez index preskoc generovani vyjimky
+    addjump(inst,info,context,ic_ae,postexcept);
+
+    -- nastav adresu odskoku [preexcept] pred generovani vyjimky
+    settarget(info,preexcept,getaddr(inst));
+    
+    -- vygeneruj vyjimku
+    if not cfg_no_runtime then
+      addcallrtl(inst,info,context,rtl_handle_constraint_error);
+      end if;
+
+    -- nastav adresu odskoku [postexcept] za generovani vyjimky
+    settarget(info,postexcept,getaddr(inst));
+
     end if;
-  end i_gen_index_string_check;
+ end i_gen_index_string_check;
 
 
 ----------------------------------------------------------------------------------------------------

@@ -14,22 +14,22 @@ class private abstract linkresolver =
     with
       standard.classes,
       standard.classes.lists,
+      standard.classes.hash_tables,
       cx_expr,
       cx_expr.cx_imm,
       cc_def,
       cc_def.cc_var;
 
     ------------------------------------------------------------------------------------------------
-    static domark (
-        curr       : in pentity) =               -- symbol
-    -- Vlastni marknuti
+    static mark_single =
+    -- Fáze 1: Označení jedné entity pro linkování.
     ------------------------------------------------------------------------------------------------
     with
       cc_base,
       cc_base.cc_sym;
 
         --------------------------------------------------------------------------------------------
-        procedure marktype =
+        procedure mark_type =
         -- Označení typu/třídy na vyhodnocení.
         --------------------------------------------------------------------------------------------
         begin
@@ -42,18 +42,19 @@ class private abstract linkresolver =
               ancestor : pentity_type;           -- předek vyhodnocovaného typu
             begin
               pentity(ancestor):=curr^.ancestor.getcentity;
-              if tf_tagged in ancestor^.tflags then mark(ancestor); end if;
+              if tf_tagged in ancestor^.tflags then mark_single(ancestor); end if;
               end declare;
             end if;
 
           -- zařadit na vyhodnocení bázový typ
-          if pentity_type(curr)^.stype in dts_base then
-            mark(pentity_type(curr)^.base.getctype);
+          -- Pozor, takový "^unchecked" žádnou bázi nemá.
+          if pentity_type(curr)^.stype in dts_base and then pentity_type(curr)^.base.isset then
+            mark_single(pentity_type(curr)^.base.getctype);
             end if;
           
           -- zařadit na vyhodnocení typ rozsahu
           if pentity_type(curr)^.stype in dts_index then
-            mark(pentity_type(curr)^.srange.getctype);
+            mark_single(pentity_type(curr)^.srange.getctype);
             end if;
           
           -- zařadit na vyhodnocení interfacy
@@ -65,21 +66,21 @@ class private abstract linkresolver =
             begin
               pentity_type(curr)^.interfaces^.get_exposed_interfaces(it);
               while it.get(exposed_iface) loop
-                mark(exposed_iface^.refclass.getcentity);
+                mark_single(exposed_iface^.refclass.getcentity);
                 end loop;
               end declare;
             end if;
 
+          -- zařadit na seznam entit, pro které se generují metadata
+          this.metadata.add(curr);
+
           -- zařadit na vyhodnocení všechny speciální metody
           for tst in pentity_type(curr)^.stable:range loop
             if pentity_type(curr)^.stable[tst].isset then
-              mark(pentity_type(curr)^.stable[tst].getcentity);
+              mark_single(pentity_type(curr)^.stable[tst].getcentity);
               end if;
             end loop;  
-
-          -- zařadit na seznam entit, pro které se generují metadata
-          this.metadata.add(curr);
-          end marktype;
+          end mark_type;
 
     begin
       -- zajímají nás pouze entity z aktuální parition
@@ -136,12 +137,12 @@ class private abstract linkresolver =
       -- typ
       elsif curr^.etype=et_type then
         -- zařadit na vyhodnocení
-        marktype;
+        mark_type;
 
       -- třída
       elsif curr^.etype=et_class then     
         -- zařadit na vyhodnocení
-        marktype;
+        mark_type;
 
         -- zařadit na vyhodnocení všechny metody z tabulky virtuálních metod
         declare var
@@ -157,7 +158,7 @@ class private abstract linkresolver =
             if interface^.vtable<>nil then
               for i in interface^.vtable^:range loop
                 if interface^.vtable^[i]<>nil then
-                  mark(interface^.vtable^[i]);
+                  mark_single(interface^.vtable^[i]);
                   end if;
                 end loop;
               end if;  
@@ -168,11 +169,11 @@ class private abstract linkresolver =
       elsif curr^.etype=et_message then
         -- zařadit předka na vyhodnocení (pokud je též tagged)
         if curr^.ancestor.isset then
-          mark(curr^.ancestor.getcentity);
+          mark_single(curr^.ancestor.getcentity);
           end if;
 
         -- zařadit typ zprávy na vyhodnocení
-        mark(pentity_message(curr)^.typ.getctype);
+        mark_single(pentity_message(curr)^.typ.getctype);
 
         -- zařadit na seznam entit, pro které se generují metadata
         this.metadata.add(curr);
@@ -193,110 +194,310 @@ class private abstract linkresolver =
         p:=p^.next;
         end loop;
     }
-      end domark;
+      end mark_single;
 
 
     
     ------------------------------------------------------------------------------------------------
-    static mark_exports =
+    static mark_exports (
+        export     : in tentitystring) =         -- seznam exportovaných entit
     -- Označí pro linkování všechny exportované entity.
     ------------------------------------------------------------------------------------------------
     begin
       -- je co exportovat?
-      if export_list.list=nil then return; end if;
+      if export.list=nil then return; end if;
 
       -- označit všechny exporované entity
-      for i in export_list.list^:range loop
-        domark(export_list.list^[i]);
+      for i in export.list^:range loop
+        mark_single(export.list^[i]);
         end loop;
       end mark_exports;
 
  
     
     ------------------------------------------------------------------------------------------------
-    static mark =
-    -- Fáze 1: Označení symbolů pro linkování.
+    static mark_all =
+    -- Fáze 1: Označení všech entit pro linkování.
     ------------------------------------------------------------------------------------------------
+    with
+      standard.console;
+
     begin
-      mark_exports;
-      domark(curr);
-      end mark;
+      if flex_export_list.list<>nil and then flex_export_list.list^:length>0 then
+        write_line('! flex export list not empty');
+        end if;
+
+      if sys_export_list.list<>nil and then sys_export_list.list^:length>0 then
+        write_line('! sys export list not empty');
+        end if;
+
+      -- označit entity podle seznamu entit exportovaných metodou Flex
+      mark_exports(flex_export_list);
+
+      -- označit entity podle seznamu entit exportovaných metodou System
+      mark_exports(sys_export_list);
+
+      -- označit entity podle přirozené hierarchie volání
+      mark_single(curr);
+      end mark_all;
+
+    
+
+    ------------------------------------------------------------------------------------------------
+    class c_partition_relocation_list = extend c_hash_table_item;
+    -- Seznam relokačních informací pro jednu partition.
+    ------------------------------------------------------------------------------------------------
+
+        var
+          -- vlastní seznam relokací
+          relocations : p_relocations;
+
+        --------------------------------------------------------------------------------------------
+        static add_relocation (
+            address     : in t_unsigned;         -- absolutní adresa relokabilního pole
+            disposition : in t_relo_disposition) = -- dispozice relokace (relativní, absolutní,...)
+        -- Doplní relokaci do seznamu.
+        --------------------------------------------------------------------------------------------
+        begin
+          -- realokovat paměť
+          if relocations=nil then
+            new relocations range 255;
+          elsif relocations^:length=relocations^:last then
+            -- %%TODO(ADJUST)
+            declare var
+              _ : relocations:type;
+            begin
+              new _ range relocations^:last*2;
+              _^:=relocations^;
+              discard relocations;
+              relocations:=_;
+              end declare;
+            end if;
+
+          -- přidat na konec seznamu %%TODO(AGGREGATE)
+          declare var
+            _new_relo : t_relocations:base;
+          begin
+            _new_relo.disposition:=disposition;
+            _new_relo.address    :=address;
+            relocations^ & _new_relo;
+            end declare;
+
+        {
+          if relocaddrs=nil then
+            -- alokuj novy seznam relokaci
+            new relocaddrs range 255;
+            end if;
+          
+          -- pokud prazdny
+          if relocaddrs^:length=0 then
+            --rovnou napln
+            relocaddrs^ & relocaddr;
+            return;
+            end if;
+
+          -- pokud jiz v seznamu
+          if relocaddrs^[relocaddrs^:length]=relocaddr then
+            -- nezarazuj
+            return;
+            end if;
+
+          -- realokuj pokud treba
+          if relocaddrs^:length=relocaddrs^:last then
+            -- naalokuj 2x vic pameti nez ma puvodni seznam
+            new ptempaddrlist range relocaddrs^:last*2;
+            
+            -- a prekopiruj puvodni seznam do nove alokovaneho seznamu
+            ptempaddrlist^:=relocaddrs^;
+
+            -- stary seznam uz nebudeme potrebovat
+            discard relocaddrs;
+            relocaddrs:=ptempaddrlist;
+            end if;
+
+          -- pridej adresu na konec uz sortnuteho seznamu
+          relocaddrs^ & relocaddr;
+
+          -- posledni prvek sortni tam kam patri - od nejmensiho k nejvetsimu
+          for i in reverse relocaddrs^:range loop
+            -- neni prvni prvek a mensi nez predchozi?
+            if i>1 and relocaddrs^[i]<relocaddrs^[i-1] 
+            
+              -- ano - swapni
+              then
+                tempaddr:=relocaddrs^[i-1];
+                relocaddrs^[i-1]:=relocaddrs^[i];
+                relocaddrs^[i]:=tempaddr;
+              
+              -- ne - vse setrideno, muzeme ukoncit loop
+              else
+                break;
+                end if;
+            end loop;
+        } 
+          end add_relocation;
+
+
+
+        --------------------------------------------------------------------------------------------
+        static get_sorted_relocations (
+            relocations : out p_relocations) =   -- setříděný seznam relokací
+        -- Setřídí seznam relokací a předá ho ven.
+        --------------------------------------------------------------------------------------------
+        with
+          standard.console,
+          standard.conversions;
+
+        var
+          zmena    : t_logical;                  -- příznak změny při třídění
+          i        : t_unsigned;                 
+
+        begin
+          -- připravit si návratovou hodnotu
+          relocations:=this.relocations;
+
+          -- jestliže je prázdný, není co řešit
+          if relocations=nil then return end if;
+
+          -- setřídit
+          i:=relocations^:length;
+          loop
+            zmena:=false;
+            for j in relocations^:first..i-1 loop
+              if relocations^[j].address>relocations^[j+1].address then
+                declare var
+                  item : relocations^:base;
+                begin
+                  item:=relocations^[j];
+                  relocations^[j]:=relocations^[j+1];
+                  relocations^[j+1]:=item;
+                  end declare;
+                zmena:=true;
+                end if;
+              end loop;
+            pred i;
+            until not zmena or i=relocations^:first;
+{
+          for j in relocations^:range loop
+            write_line(unsigned_to_string(relocations^[j].address));
+            end loop;
+}
+          end get_sorted_relocations;
+
+        end c_partition_relocation_list;
+
+    type
+      p_partition_relocation_list = ^class c_partition_relocation_list;
 
 
 
     ------------------------------------------------------------------------------------------------
-    procedure add_relocation = 
-    -- Zatridi relocaddr do seznamu relocaddrs
+    class c_partitioned_relocations_list = extend c_hash_table;
+    -- Seznam relokačních informací rozdělený podle kompilačních partition.
+    ------------------------------------------------------------------------------------------------
+
+        --------------------------------------------------------------------------------------------
+        static get_reloc_list_by_partition_id (
+            partition  : in t_partition_id;      -- ID cílové partition
+            reloc_list : out p_partition_relocation_list; -- odpovídající seznam relokací
+            create     : in t_logical := true) = -- T-neexistuje-li seznam, tak ho založit
+        -- Podle identifikátoru partition dohledá odpovídající seznam relokací.
+        --------------------------------------------------------------------------------------------
+        begin
+          -- zkusit nalézt existující senzam
+          find(t_hash_item_id(partition),reloc_list);
+
+          -- nenašel-li se, tak založit nový
+          if reloc_list=nil and then create then
+            begin
+              -- alokovat paměť
+              new reloc_list;
+
+              -- přidělit hash ID
+              reloc_list^.item_id:=t_hash_item_id(partition);
+
+              -- zařadit do hash tabulky
+              store(reloc_list);
+
+            rollback
+              discard reloc_list;
+              end;
+            end if;
+          end get_reloc_list_by_partition_id;
+
+
+
+        --------------------------------------------------------------------------------------------
+        override assign_hash_id =
+        --------------------------------------------------------------------------------------------
+        begin
+          -- v této hash tabulce se identifikátory přidělují zásadně ručně
+          verify({VERIFY=}001233);
+          end assign_hash_id;
+
+
+
+        --------------------------------------------------------------------------------------------
+        entry =
+        --------------------------------------------------------------------------------------------
+        begin
+          init(37,c_partition_relocation_list:tag,true);
+          end entry;
+
+        end c_partitioned_relocations_list;
+
+
+
+    var
+      -- seznam relokačních informací rozdělený podle kompilačních partition
+      part_reloc   : c_partitioned_relocations_list;
+
+    ------------------------------------------------------------------------------------------------
+    static add_relocation = 
+    -- Zařadí adresu a dispozici relokabilního pole do seznamu relokací do cílové parition.
     ------------------------------------------------------------------------------------------------
     var
-      ptempaddrlist     : relocaddrs:type;       -- docasny seznam
-      tempaddr          : t_unsigned;            -- pomocna promenna
+      reloc_list   : p_partition_relocation_list;
       
     begin
-      verify({VERIFY=}000725,relocaddr<unicode_addr_to_unsigned(getaddrbase));
+      verify({VERIFY=}000725,address<unicode_addr_to_unsigned(getaddrbase));
+      verify({VERIFY=}001234,disposition=trd_relative and then partition=curr_partition);
 
-      if relocaddrs=nil then
-        -- alokuj novy seznam relokaci
-        new relocaddrs range 255;
-        end if;
-      
-      -- pokud prazdny
-      if relocaddrs^:length=0 then
-        --rovnou napln
-        relocaddrs^ & relocaddr;
-        return;
-        end if;
+      -- zvolit vhodnou tabulku
+      part_reloc.get_reloc_list_by_partition_id(partition,reloc_list);
 
-      -- pokud jiz v seznamu
-      if relocaddrs^[relocaddrs^:length]=relocaddr then
-        -- nezarazuj
-        return;
-        end if;
-
-      -- realokuj pokud treba
-      if relocaddrs^:length=relocaddrs^:last then
-        -- naalokuj 2x vic pameti nez ma puvodni seznam
-        new ptempaddrlist range relocaddrs^:last*2;
-        
-        -- a prekopiruj puvodni seznam do nove alokovaneho seznamu
-        ptempaddrlist^:=relocaddrs^;
-
-        -- stary seznam uz nebudeme potrebovat
-        discard relocaddrs;
-        relocaddrs:=ptempaddrlist;
-        end if;
-
-      -- pridej adresu na konec uz sortnuteho seznamu
-      relocaddrs^ & relocaddr;
-
-      -- posledni prvek sortni tam kam patri - od nejmensiho k nejvetsimu
-      for i in reverse relocaddrs^:range loop
-        -- neni prvni prvek a mensi nez predchozi?
-        if i>1 and relocaddrs^[i]<relocaddrs^[i-1] 
-        
-          -- ano - swapni
-          then
-            tempaddr:=relocaddrs^[i-1];
-            relocaddrs^[i-1]:=relocaddrs^[i];
-            relocaddrs^[i]:=tempaddr;
-          
-          -- ne - vse setrideno, muzeme ukoncit loop
-          else
-            break;
-            end if;
-        end loop;
+      -- přidat do ní relokaci
+      reloc_list^.add_relocation(address,disposition);
       end add_relocation;
-    
 
     
+
     ------------------------------------------------------------------------------------------------
-    procedure getrelocaddrs =
+    static get_sorted_relocations_by_partition_id =
+    -- Vrátí seznam relokabilních adres, které směřují do uvedené cílové partition
+    ------------------------------------------------------------------------------------------------
+    var
+      reloc_list   : p_partition_relocation_list;
+
+    begin
+      -- zvolit vhodnou tabulku
+      part_reloc.get_reloc_list_by_partition_id(partition,reloc_list,for create use false);
+      
+      -- nenašel-li se, tak se nedá nic dělat a končíme
+      if reloc_list=nil then return end if;
+
+      -- seznam setřídit a předat ven
+      reloc_list^.get_sorted_relocations(relocations);
+      end get_sorted_relocations_by_partition_id;
+{    
+    ------------------------------------------------------------------------------------------------
+    static getrelocaddrs =
     -- vrati seznam adres na kterych je treba provest relokaci
     ------------------------------------------------------------------------------------------------
     begin
       result:=relocaddrs;
       end getrelocaddrs;
-    
+}    
     end linkresolver;
 
 

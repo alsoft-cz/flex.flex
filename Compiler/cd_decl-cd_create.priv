@@ -45,8 +45,8 @@ type
       start        : tdeclstart;                 -- lexikální element začínající deklaraci
       parts        : tdeclparts;                 -- maximální počet částí deklarace
       iparts       : tdeclparts;                 -- maximální počet částí interní deklarace
-      can_abstract : tabstractdecl;              -- T-entita smí být abstraktní
-      context_abstract : t_logical;              -- T-abstraktní entita musí být v abstraktním kontextu
+      can_abstract : tabstractdecl := tad_no;    -- T-entita smí být abstraktní
+      context_abstract : t_logical := false;     -- T-abstraktní entita musí být v abstraktním kontextu
       end record;
 
 var
@@ -347,6 +347,8 @@ procedure d_create_internal =
 -- Začátek deklarace a vytvoření interního symbolu.
 ----------------------------------------------------------------------------------------------------
 begin
+  --verify({VERIFY=}001300,id=nil);
+  
   -- vytvořit a zařadit symbol
   sym_add_new_entity(context,etype,id,curr,curr_context);
 
@@ -369,9 +371,16 @@ begin
 procedure d_create_temporary_type =
 -- Vytvoří nový dočasný typ a dosadí implicitní hodnoty specifikace.
 ----------------------------------------------------------------------------------------------------
+var
+  id               : pentityident;               -- identifikátor dočasného typu
+  
 begin
   -- vytvořit
-  d_create_at_position(context,pentity(ptyp),ptyp_context,et_type,nil,nil);
+  if stype=dt_uniarray
+    then id:=sym_get_temp_id;
+    else id:=sym_get_uniarray_id;
+    end if;
+  d_create_at_position(context,pentity(ptyp),ptyp_context,et_type,id,nil);
 
   -- počáteční naplnění entity
   ptyp^.tflags+typeflagsset:[tf_temp];
@@ -380,6 +389,7 @@ begin
   ptyp^.stype:=stype;
   ptyp^.size:=dsize;
   case stype
+  { Základní univerzální typy se mají reusovat, ne nově vytvářet. Výjimkou je pouze univerzální pole
     when dt_uniint do
         -- nic nedělat
 
@@ -391,7 +401,7 @@ begin
 
     when dt_unichar do
         -- nic nedělat
-
+}
     when dt_uniarray do
         -- nic nedělat
 
@@ -410,53 +420,7 @@ begin
 
     when dt_string do
         -- nic nedělat
-{
-    when dt_signed do
-        pspecsigned(ptyp^.s)^.bits:=dsize*8;
-        with pspecsigned(ptyp^.s)^ do case dsize
-          1 : begin iiloadl(lval,-128);       iiloadl(hval,127);        end;
-          2 : begin iiloadl(lval,-32768);     iiloadl(hval,32767);      end;
-          4 : begin iiloadl(lval,minlongint); iiloadl(hval,2147483647); end;
-          end case;
-        pspecbase(ptyp^.s)^.base:=ptyp;
-        end when;
-    when dt_unsigned do
-        pspecunsigned(ptyp^.s)^.bits:=dsize*8;
-        with pspecunsigned(ptyp^.s)^ do case dsize
-          1 : begin iloadl(lval,$00);         iloadl(hval,$FF);         end;
-          2 : begin iloadl(lval,$0000);       iloadl(hval,$FFFF);       end;
-          4 : begin iloadl(lval,$00000000);   iloadl(hval,$FFFFFFFF);   end;
-          end case;
-        pspecbase(ptyp^.s)^.base:=ptyp;
-        end when;
-    when dt_enum do
-        pspecenum(ptyp^.s)^.bits:=dsize*8;
-        end when;
-    when dt_char do
-        pspecchar(ptyp^.s)^.bits:=dsize*8;
-        with pspecchar(ptyp^.s)^ do case dsize
-          1 : begin iloadl(lval,$00);         iloadl(hval,$FF);         end;
-          2 : begin iloadl(lval,$0000);       iloadl(hval,$FFFF);       end;
-          4 : begin iloadl(lval,$00000000);   iloadl(hval,$FFFFFFFF);   end;
-          end case;
-        pspecbase(ptyp^.s)^.base:=ptyp;
-        end when;
-    when dt_boolean     do
-        pspecboolean(ptyp^.s)^.bits:=dsize*8;
-        iloadl(pspecboolean(ptyp^.s)^.lval,$0);
-        iloadl(pspecboolean(ptyp^.s)^.hval,$1);
-        pspecbase(ptyp^.s)^.base:=ptyp;
-        end when;
-    when dt_string, dt_ustring do
-        pspecstring(ptyp^.s)^.lsize:=lstrindex;
-        end when;
-    when dt_pointer     do
-        pspecpointer(ptyp^.s)^.acc:=acc_data;
-        end when;
-    when dt_set do
-        -- nic nedělat
-        end when;
-}
+        
     when others do verify({VERIFY=}000001,true);
     end case;
   end d_create_temporary_type;
@@ -500,7 +464,7 @@ begin
   end d_create_region;
 
 
-
+{
 ----------------------------------------------------------------------------------------------------
 procedure d_get_attribute_context =
 -- Získá atributový kontext entity. Pokud ještě neexistuje, tak ho vytvoří.
@@ -514,7 +478,7 @@ begin
   -- sestavit kontext
   attr_context:=sym_build_context(^curr,curr.regions[rc_attribute]);
   end d_get_attribute_context;
-
+}
 
 
 ----------------------------------------------------------------------------------------------------
@@ -552,7 +516,7 @@ begin
     container:=sym_get_container(^curr);
 
     -- úplná deklarace v public části je považována za neobvyklou konstrukci
-    if (not curr.is_abstract) and (container<>nil and then container^.compiling=etd_public) then
+    if not curr.is_abstract and (container<>nil and then container^.compiling=etd_public) then
       ce^.setwarning(curr.context,{CCERR=}000571,cw_strange_design);
       ce^.loadpos;
       end if;

@@ -140,28 +140,6 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure do_stack_reserve (
-    context        : in out iexprcontext;        -- kontext výrazu
-    compi          : in tentity_compile;
-    inst           : in out icodeinst;
-    info           : in out igeninfo;
-    opaddr         : out c_operand) =            -- adresa rezervy na stacku
--- Rezervuje místo na stacku požadované run-time knihovnou pro její interní struktury.
-----------------------------------------------------------------------------------------------------
-var
-  size             : t_unsigned;                 -- velikost rezervovaného místa
-
-begin
-  -- zjisti velikost rezervovaneho mista
-  size:=os^.getstackreserve(compi);
-  if size<>0 then
-    opaddr.create_temporary(inst,info,edt_unsigned,size);  
-    end if;
-  end do_stack_reserve;
-
-
-
-----------------------------------------------------------------------------------------------------
 procedure i_gen_runtime_initialization (
     curr           : in out tentity_compile;     -- kompilační jednotka
     inst           : in out icodeinst;
@@ -175,28 +153,51 @@ with
   ci_fragment;
 
 var
-  stack_reserve_addr : c_operand;                -- adresa rezervy na stacku
+  size             : t_unsigned;                 -- velikost rezervovaného místa
 
 begin
-  -- reservovat misto na stacku
-  do_stack_reserve(context,curr,inst,info,stack_reserve_addr);
-  
   -- inicializovat runtime knihovnu
   if do_initialize then
     addcallrtl(inst,info,rtl_early_runtime_initialize); 
     end if;
 
-  -- načíst adresu rezervy
-  i_gen_load_address_to_register(inst,info,context,stack_reserve_addr);
+  -- zjisti velikost rezervovaneho mista
+  size:=os^.getstackreserve(curr);
 
-  -- uložit na stack
-  addii(inst,info,ii_push,stack_reserve_addr,op0,op0);
+  -- je vůbec potřeba nějakou paměť rezervovat?
+  if size<>0
+
+    -- ano => na stack uložit adresu pracovní proměnné, která ji bude reprezentovat
+    then
+      declare var
+        stack_reserve_addr : c_operand;          -- adresa rezervy na stacku
+
+      begin
+        -- sestavit pracovní proměnnou, která bude zabírat požadované místo
+        stack_reserve_addr.create_temporary(inst,info,edt_binary,size);  
+        -- %%TODO(TEMPORARY) Pozor, zde by se místo temporary proměnné měla alokovat spíše 
+        -- anonymní trvalá lokální proměnné, aby ji [free] tohoto operandu nemohlo dealokovat.
+  
+        -- načíst adresu rezervy
+        i_gen_load_address_to_register(inst,info,context,stack_reserve_addr);
+
+        -- uložit na stack
+        addii(inst,info,ii_push,stack_reserve_addr,op0,op0);
+
+      leave
+        -- uvolnit operand
+        -- %%TODO(TEMPORARY) POZOR !!! Zde nesmí dojít k fyzické dealokaci temporary proměnné,
+        -- jinak by se to celé mohlo rozbít.
+        stack_reserve_addr.free(info,context);
+        end declare;
+
+    -- ne => na stack uložit NIL
+    else 
+      addii(inst,info,ii_push,op_0_32bit,op0,op0);
+      end if;
 
   -- inicializovat task control block pro hlavní task
   addcallrtl(inst,info,register_task);
-
-leave
-  stack_reserve_addr.free(info,context);
   end i_gen_runtime_initialization;
 
 

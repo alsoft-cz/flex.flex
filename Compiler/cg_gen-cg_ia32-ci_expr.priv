@@ -375,6 +375,7 @@ begin
     when rtm_stored_in_tag      do result:=i_get_load_mode_by_requested_rta(expr,rta_tag);
     when rtm_computed_from_size do result:=i_get_load_mode_by_requested_rta(expr,rta_size);
     when rtm_computed_from_last do result:=i_get_load_mode_by_requested_rta(expr,rta_last);
+    when rtm_invalid            do verify({VERIFY=}001258);
     end case;
   end i_get_load_mode_by_requested_rta;
 
@@ -400,12 +401,13 @@ begin
   -- nastavit preferenci registrů
   case subcontext.mode
     -- do ECX/CX/CL
-    when lm_imm8_cl     do i_setrpref(subcontext,in_ecx,irm_int);
+    when lm_imm8_cl do i_setrpref(subcontext,in_ecx,irm_int);
 
     -- do EAX/AX/AL
-    when lm_reg_eax     do i_setrpref(subcontext,in_eax,irm_int);
+    when lm_reg_eax do i_setrpref(subcontext,in_eax,irm_int);
 
     -- v ostatních případech preference není (resp. podle původního kontextu)
+    when others     do -- nic nedělat
     end case;
 
   -- nastavit původní typ výrazu
@@ -2630,10 +2632,25 @@ begin
   op1.refresh(inst,info,context);
   op2.refresh(inst,info,context);
 
-  -- %%TODO(rch_index_string) - az bude doimplementovana i_gen_stringindex_range_check
-  --i_gen_index_string_check(inst,info,context,expr^,op2);
+  -- string?
+  if el^.t.stype in dts_string then
+    declare var
+      length_op    : c_operand;
+    
+    begin
+      -- nacist :length
+      i_rta_load(inst,info,context,op1,rta_length,length_op);
+      
+      -- behova kontrola mezi indexu retezce
+      i_gen_index_string_check(inst,info,context,expr^,length_op,op2);
+    
+    leave
+      -- zrusit
+      length_op.free(info,context);
+      end declare;
+    end if;
 
-  -- dolní mez pole
+  -- dolní mez pole nebo řetězce
   lval:=uniint_to_imm32(el^.t.getctype^.srange.getctype^.lval);
 
   -- velikost prvku

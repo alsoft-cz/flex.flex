@@ -24,6 +24,62 @@ procedure i_gen_op_set =
 with
   ci_integer;
 
+    ------------------------------------------------------------------------------------------------
+    procedure genfunc_or : t_genopfunc =
+    -- Generování operace sjednocení.
+    ------------------------------------------------------------------------------------------------
+    begin
+      addii(inst,info,ii_or,op1,op2,op0);
+      end genfunc_or;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure genfunc_andnot : t_genopfunc =
+    -- Generování operace rozdílu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      i_gen_simple_op_with_unary(inst,info,context,ii_not,ii_and,op1,op2);
+      end genfunc_andnot;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure genfunc_and : t_genopfunc =
+    -- Generování operace průniku.
+    ------------------------------------------------------------------------------------------------
+    begin
+      addii(inst,info,ii_and,op1,op2,op0);
+      end genfunc_and;
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    procedure genop (
+        op1        : c_operand;
+        op2        : c_operand) =
+    -- Generování vlastní operace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- instrukce
+      case expr^.oper
+        -- množinové + --> OR
+        when op_union do
+            i_gen_simple_op(inst,info,context,ii_or,op1,op2);
+
+        -- množinové - --> AND NOT
+        when op_diff  do
+            i_gen_simple_op_with_unary(inst,info,context,ii_not,ii_and,op1,op2);
+
+        -- množinové * --> AND
+        when op_isect do
+            i_gen_simple_op(inst,info,context,ii_and,op1,op2);
+
+        when others do
+            verify({VERIFY=}001302,true);
+        end case;
+      end genop;
+
 var
   size             : t_unsigned32;               -- velikost operandů
 
@@ -51,8 +107,177 @@ begin
 
     -- nepříznivá velikost => složitě
     else
-      unimplementedx({UNIMP=}000132,expr^.pos);
-      end if;
+      declare var
+        el         : pexpnode;                   -- levý podvýraz
+        er         : pexpnode;                   -- pravý podvýraz
+        op1        : c_operand;                  -- levý operand
+        newcontext : iexprcontext;               -- kontext podvýrazů
+
+      begin
+        -- rozdělit na podvýrazy
+        expr^.get(el,er);
+
+        -- speciální případ: 3-bajtová množina
+        if size=3 then
+          -- levý operand
+          i_newcontext(context,newcontext,lm_gen,expr^.t.getctype);
+          i_load(inst,info,newcontext,context,el,op1);
+
+          -- obnovit registry
+          op1.refresh(inst,info,context);
+
+          -- operandy mají sice 3B, ale to nám CPU nesežere, takže budeme počítat ve 4B a ignorovat ten 1B navíc
+          -- %%X Tohle teoreticky muze selhat (AV) v pripade, ze ta 3-bajtova mnozina bude ulozena na
+          -- poslednich 3 platnych bajtech oblasti pameti (napr. na konci segmentu). Ale kdo by takovou silenost delal??
+          -- %%TODO Dodelat i_gen_load_value_to_register (a kvuli tomu i dalsi funkce) tak, aby
+          -- umoznoval "korektne" nacist i 3-bajtovou promennou (nejlepe volitelne) pomoci MOV+SHL+MOV.
+          -- Tohle je ponekud zaplata.
+          op1.adjust_size(4);
+
+          -- načíst první operand do registru
+          i_gen_load_value_to_register(inst,info,context,nil,op1,for force_reg use true);
+
+          -- zpracovat pravé podvýrazy
+          loop
+            declare var
+              op2 : c_operand;                 -- pravý operand
+
+            begin
+              -- vygenerovat, načíst pravý podvýraz a předstírat, že je 4-bajtový
+              i_newcontext(context,newcontext,lm_gen,expr^.t.getctype);
+              i_load(inst,info,newcontext,context,er,op2);
+
+              -- obnovit registry
+              op1.refresh(inst,info,context);
+              op2.refresh(inst,info,context);
+              op2.adjust_size(4);
+
+              -- vygenerovat operaci
+              genop(op1,op2);
+
+            leave
+              -- uvolnit pravý operand
+              op2.free(info,context);
+              end declare;
+
+            -- další operand
+            er:=er^.next;
+            until er=nil;
+
+          -- uložíme výsledek do dočasné proměnné
+          vysl.create_temporary(inst,info,edt_binary,4);
+          addii(inst,info,ii_mov,vysl,op1,op0);
+
+          -- pokud je to s přiřazením, nakonec zkopírovat
+          if expr^.assign then
+            -- vygenerovat kód pro zkopírování množiny do prvního operandu
+            op1.adjust_size(4);
+            i_gen_simple_assign(inst,info,context,op1,vysl);
+            op1.adjust_size(3);
+            end if;
+
+          -- zahodíme přebytečný bajt
+          vysl.adjust_size(3);
+
+        -- ostatní -- obecná bloková operace
+        else 
+          declare var
+            optemp     : c_operand;              -- dočasný výsledek operace
+            first_op   : t_logical;              -- zpracováváme první dvojici operandů?
+            genopfunc  : p_genopfunc;            -- funkce pro vygenerování příslušné operace
+
+          begin
+            -- operace
+            case expr^.oper
+              -- množinové + --> OR
+              when op_union do
+                  genopfunc:=^genfunc_or;
+
+              -- množinové - --> AND NOT
+              when op_diff  do
+                  genopfunc:=^genfunc_andnot;
+
+              -- množinové * --> AND
+              when op_isect do
+                  genopfunc:=^genfunc_and;
+
+              when others do
+                  verify({VERIFY=}001313,true);
+              end case;
+
+            -- levý operand
+            i_newcontext(context,newcontext,lm_addr,expr^.t.getctype);
+            i_load(inst,info,newcontext,context,el,op1);
+
+            -- obnovit registry
+            op1.refresh(inst,info,context);
+
+            -- pracujeme s operandem v paměti
+            op1.transform_imm_or_reg_to_mem(edt_binary,size);
+            first_op:=true;
+            i_gen_reduceop(inst,info,context,op1);
+
+            -- připravit místo pro výsledek
+            optemp.create_temporary(inst,info,edt_binary,size);
+
+            loop
+              declare var
+                op_left    : c_operand;          -- aktuální levý operand (op1 nebo mezivýsledek)
+                op2        : c_operand;          -- operand 2
+
+              begin
+                -- levý operand -- buď první operand, nebo mezivýsledek
+                if first_op
+                  then 
+                    op_left.clone(inst,info,context,op1);
+                    first_op:=false;
+
+                  else
+                    op_left.clone(inst,info,context,optemp);
+                    end if;
+
+                -- pravý operand
+                i_newcontext(context,newcontext,lm_addr,expr^.t.getctype);
+                i_load(inst,info,newcontext,context,er,op2);
+
+                -- obnovit registry
+                op_left.refresh(inst,info,context);
+                op2.refresh(inst,info,context);
+
+                -- i s operandem 2 pracujeme v paměti
+                op2.transform_imm_or_reg_to_mem(edt_binary,4);
+                i_gen_reduceop(inst,info,context,op1);
+
+                -- vlastní operace nad celým blokem
+                i_gen_block_op(inst,info,context,op_left,op2,optemp,size,genopfunc);
+
+              leave
+                -- uvolnit operandy
+                op_left.free(info,context);
+                op2.free(info,context);
+                end declare;
+
+              -- další pravý operand
+              er:=er^.next;
+              until er=nil;
+
+          leave
+            -- předat výsledek
+            vysl.transfer(optemp);
+            end declare;
+
+          -- pokud je to s přiřazením, nakonec zkopírovat
+          if expr^.assign then
+            -- vygenerovat kód pro zkopírování množiny do prvního operandu
+            i_gen_move_static(inst,info,context,vysl,op1,size);
+            end if;
+          end if;
+
+      leave
+        -- uvolnit levý operand
+        op1.free(info,context);
+        end declare;
+    end if;
   end i_gen_op_set;
 
 

@@ -49,16 +49,198 @@ var
 
 
 ----------------------------------------------------------------------------------------------------
-procedure arraysize (
-    item           : tunidata_size;              -- velikost prvku pole
-    lval           : tuniint;                    -- dolní mez
-    hval           : tuniint)                    -- horní mez
+#template derive_copy_base_all (descendant,ancestor,compat_cond);
+-- Zkopíruje základní vlastnosti z předka do potomka.
+----------------------------------------------------------------------------------------------------
+    -- zkopírovat determinaci kompatibility, jestli se nezměnila
+    if descendant.compat=tc_norm compat_cond then descendant.compat:=ancestor.compat; end if;
+
+    -- zkopírovat základní údaje, které se nemohly určitě změnit
+    descendant.size    :=ancestor.size;
+    descendant.extofs  :=ancestor.extofs{size}; -- EXTOFS se změní jen pro TD_EXTENSION
+    descendant.tflags  :=ancestor.tflags;
+    descendant.align   :=ancestor.align;
+    #end derive_copy_base_all;
+    
+    
+    
+----------------------------------------------------------------------------------------------------
+#template derive_copy_base_td_constrained (descendant,ancestor);
+-- Zkopíruje další vlastnosti z předka do potomka při derivaci typu [td_constrained]
+----------------------------------------------------------------------------------------------------
+    descendant.seval   :=ancestor.seval;
+    descendant.tkind   :=ancestor.tkind;
+    descendant.stype   :=ancestor.stype;
+    #end derive_copy_base_td_constrained;
+    
+    
+    
+----------------------------------------------------------------------------------------------------
+#template derive_copy_ordinal (descendant,ancestor);
+-- Zkopíruje další vlastnosti z předka do potomka při odvozování ordinálního typu.
+----------------------------------------------------------------------------------------------------
+    descendant.bits    :=ancestor.bits;
+    descendant.intaritm:=ancestor.intaritm;
+    #end derive_copy_ordinal;
+    
+    
+
+----------------------------------------------------------------------------------------------------
+procedure type_derive_array_range (
+    typ            : in out tentity_type;        -- typ pole
+    ancestor       : in pentity_type;            -- předek rozsahu
+    lval           : in tuniint;                 -- dolní mez pole
+    hval           : in tuniint) =               -- horní mez pole
+-- Vytvoří typ rozsahu pole jako potomka zadaného předka [ancestor].
+----------------------------------------------------------------------------------------------------
+var
+  rtype            : pentity_type;               -- typ rozsahu řetězce
+  rtype_context    : tcontext;                   -- kontext typu rozsahu řetězce
+
+begin
+  verify({VERIFY=}001297,ancestor=nil);
+
+  -- vytvořit typ rozsahu
+  d_create_implicit_type(sym_primary_context(typ),rtype,rtype_context,ancestor^.stype,nil);
+  
+  -- nastavit předka a typ derivace
+  rtype^.ancestor.setentity(ancestor);
+  rtype^.derive:=td_constrained;
+  
+  -- zkopírovat údaje z předka
+  derive_copy_base_all(rtype^,ancestor^);
+  derive_copy_base_td_constrained(rtype^,ancestor^);
+  derive_copy_ordinal(rtype^,ancestor^);
+  
+  -- nastavit rozsah
+  rtype^.lval:=lval;
+  rtype^.hval:=hval;
+  
+  -- konec deklarace
+  d_end_implicit_type(rtype^,nil,false);
+  
+  -- dosadit nově vytvořený typ jako rozsah dodaného pole
+  typ.srange.settype(rtype,for clear_expr use false);
+  end type_derive_array_range;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure type_create_array_range (
+    typ            : in out tentity_type;        -- typ pole
+    expr           : in pexpnode) =              -- rozsah podle kterého se vytvoří typ
+-- Vytvoří typ rozsahu pole podle zadaného rozsahu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- konstruktor rozsahu univerzálního typ => odvodit neuniverzální typ nativní velikosti
+  if expr^.ntype=nt_range and then expr^.t.stype in dts_unitype then
+    declare var
+      rtype        : pentity_type;               -- vytvořený typ rozsahu řetězce
+
+    begin
+      -- vytvořit neuniverzální typ podle rozsahu
+      x_get_type(sym_primary_context(typ),expr,rtype,true);
+      
+      -- dosadit nově vytvořený typ jako rozsah dodaného pole
+      typ.srange.settype(rtype,for clear_expr use false);
+      end declare;
+
+  -- konstruktor rozsahu neuniverzálního typu => odvodit potomka
+  elsif expr^.ntype=nt_range and then expr^.t.stype not in dts_unitype then
+    declare var
+      rtype        : pentity_type;               -- vytvořený typ rozsahu řetězce
+      lval         : tuniint;                    -- dolní mez pole
+      hval         : tuniint;                    -- horní mez pole
+
+    begin
+      -- z rozsahu zjistit meze
+      x_const_range(expr,lval,hval);
+      
+      -- odvodit potomka neuniverzálního typu
+      type_derive_array_range(typ,expr^.t.getctype,lval,hval);
+      end declare;
+      
+  -- přímo zadaný typ => použít beze změn
+  elsif expr^.nclass=nc_type then
+    -- nic nedělat, typ je již nastaven v důsledku vyhodnocení rozsahu
+   
+  -- nic jiného neumíme obsloužit
+  else
+    verify({VERIFY=}001299);
+    end if;
+  end type_create_array_range;
+
+
+    
+----------------------------------------------------------------------------------------------------
+procedure type_derive_string_range (
+    typ            : in out tentity_type;        -- typ pole
+    ancestor       : in pentity_type;            -- předek rozsahu
+    hval           : in tuniint) =               -- horní mez řetězce
+-- Vytvoří typ rozsahu řetězce jako potomka zadaného předka [ancestor].
+----------------------------------------------------------------------------------------------------
+begin
+  -- postup je stejný jako pro rozsah pole až na dolní mez fixně nastavenou na 1
+  type_derive_array_range(typ,ancestor,ui_1,hval);
+  end type_derive_string_range;
+  
+    
+
+----------------------------------------------------------------------------------------------------
+procedure type_create_string_range (
+    typ            : in out tentity_type;        -- typ pole
+    hval           : in tuniint) =               -- horní mez řetězce
+-- Vytvoří typ rozsahu řetězce podle zadané délky.
+----------------------------------------------------------------------------------------------------
+var
+  rtype            : pentity_type;               -- typ rozsahu řetězce
+  rtype_context    : tcontext;                   -- kontext typu rozsahu řetězce
+
+begin
+  -- vytvořit typ rozsahu
+  d_create_implicit_type(sym_primary_context(typ),rtype,rtype_context,dt_unsigned,nil);
+  
+  -- doplnit základní údaje
+  rtype^.size:=cpu^.string_isize;
+  rtype^.lval:=ui_1;
+  rtype^.hval:=hval;
+  cpu^.bytestobits(rtype^.size,rtype^.bits);
+  
+  -- konec deklarace
+  d_end_implicit_type(rtype^,nil,false);
+  
+  -- dosadit nově vytvořený typ jako rozsah dodaného řetězce
+  typ.srange.settype(rtype,for clear_expr use false);
+  end type_create_string_range;
+  
+  
+    
+----------------------------------------------------------------------------------------------------
+procedure type_compute_array_size (
+    item           : in tunidata_size;           -- velikost prvku pole
+    lval           : in tuniint;                 -- dolní mez
+    hval           : in tuniint)                 -- horní mez
                    return tunidata_size =        -- velikost pole
 -- Vypočítá velikost pole. Nebere v úvahu zarovnání prvků pole.
 ----------------------------------------------------------------------------------------------------
 begin
+  -- vypočítat velikost
   result:=uniint_to_unidata_size(unidata_size_to_uniint(item)*(hval-lval+ui_1));
-  end arraysize;
+  end type_compute_array_size;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure type_compute_string_size (
+    item           : in tunidata_size;           -- velikost prvku řetězce
+    hval           : in tuniint)                 -- horní mez
+                   return tunidata_size =        -- velikost řetězce
+-- Vypočítá velikost řetězce. Nebere v úvahu zarovnání prvků řetězce.
+----------------------------------------------------------------------------------------------------
+begin
+  -- vypočítat velikost
+  result:=uniint_to_unidata_size(unidata_size_to_uniint(item)*hval)+cpu^.string_isize;
+  end type_compute_string_size;
 
 
 
@@ -81,7 +263,7 @@ begin
 
       -- musí být nezáporná
       if ui<ui_0 then
-        ce^.seterror({ERRNUM=}000000,ce_i_attr_size);
+        ce^.seterror({CCERR=}000606,ce_i_attr_size);
         curr.attr_size.errpos;
         {%%RESUME ce^.raiseerror;}
         curr.size:=size;
@@ -93,7 +275,7 @@ begin
 
       -- není to méně, než implicitní velikost ?
       if curr.size<size then
-        ce^.seterror({ERRNUM=}000000,ce_i_attr_size);
+        ce^.seterror({CCERR=}000607,ce_i_attr_size);
         curr.attr_size.errpos;
         {%%RESUME ce^.raiseerror;}
         curr.size:=size;
@@ -104,6 +286,12 @@ begin
     else
       curr.size:=size;
       end if;
+      
+  -- velikost typu nesmí být větší než maximální velikost typu podporovaná daným procesorem
+  if curr.size>cpu^.type_max_size then
+    ce^.seterror({CCERR=}000621,ce_im_typesize);
+    ce^.setinfo({%%TODO(LIB) formats(}hint_im_typesize{%%TODO(LIB) ,linttostr(cpu32_max_type_size,tunidata:size))});
+    end if;
   end type_setsize;
 
 
@@ -129,7 +317,7 @@ begin
 
       -- musí být >=1
       if ui<ui_1 then
-        ce^.seterror({ERRNUM=}000000,ce_i_attr_align);
+        ce^.seterror({CCERR=}000608,ce_i_attr_align);
         curr.attr_align.errpos;
         {%%RESUME ce^.raiseerror;}
         curr.align:=align;
@@ -168,7 +356,7 @@ procedure e_part =
 -- Započítá vyhodnocení části do celku a vrátí True, není-li celek vyhodnocen.
 ----------------------------------------------------------------------------------------------------
 begin
-  if (celek=ete_none)or (celek>cast) then celek:=cast; end if;
+  if celek=ete_none or celek>cast then celek:=cast; end if;
   result:=celek<ete_evaluated;
   end e_part;
 
@@ -326,7 +514,7 @@ begin
     if e_part(typ.e,typ.getrefexpr^.geteval) then return; end if;
 
     -- převzít typ
-    x_get_type(curr,pexpnode(typ.getcexpr),ptyp,ekind=ek_rangetype);
+    x_get_type(curr,pexpnode(typ.getcexpr),ptyp{,for native use ekind=ek_rangetype});
     typ.settype(ptyp,for clear_expr use false);
     end if;
 
@@ -451,7 +639,7 @@ begin
   if e_part(sym.e,sym.getrefexpr^.geteval) then return end if;
 
   -- převzít symbol
-  x_get_type(curr,pexpnode(sym.getcexpr),ptyp,false);
+  x_get_type(curr,pexpnode(sym.getcexpr),ptyp{,false});
   sym.setentity(ptyp);
   if e_part(sym.e,ptyp^.eval) then return end if;
 
@@ -631,6 +819,35 @@ begin
 procedure e_spec_procedure : tevalspecproc =
 -- Vyhodnotí definici typu procedura/task/zpráva.
 ----------------------------------------------------------------------------------------------------
+
+  --------------------------------------------------------------------------------------------------
+  procedure has_param_of_modes (
+      param_modes  : in parammodeset)
+      return t_logical =    
+  -- Zjisti jestli ma proceduralni typ alespon jeden out parametr.
+  --------------------------------------------------------------------------------------------------
+  var
+    srch             : tentitysearch;              -- hledátko
+    
+  begin
+    -- predpokladej ne
+    result:=false;
+
+    -- projet všechny parametry
+    srch.find_et_first(^curr,rc_primary,et_param,tesearchflagset:[]);
+    while srch.psym<>nil and srch.psym<>curr.result loop
+      -- stejny mode?
+      if pentity_param(srch.psym)^.mode in param_modes then 
+        -- ma ho tam!
+        result:=true;
+        break;
+        end if;
+
+      -- další parametr
+      srch.find_et_next;
+      end loop;
+    end has_param_of_modes;
+
 var
   e                : tentityeval;
 
@@ -641,11 +858,13 @@ begin
   -- parametry
   e_all(curr,etd_full,final,e);
   if e_part(curr.seval,e) then return; end if;
-{
-  -- vyhodnotit typ návratové hodnoty
-  e_reftype(curr,curr.rtype,ek_typename,ttypeviewset:[tview_partial,tview_full],dts_regular,{etd_full,}final);
-  if e_part(curr.seval,curr.rtype.geteval) then return; end if;
-}
+
+  -- pokud ma alespon jeden out parametr a navratovou hodnotu
+  if curr.result<>nil and then has_param_of_modes([pm_out,pm_inout]) then
+    -- varovani strange design
+    ce^.setwarning(curr_context,{CCERR=}000588,cw_strange_design);
+    ce^.loadpos;
+    end if;
   end e_spec_procedure;
 
 
@@ -655,8 +874,6 @@ procedure e_spec_array : tevalspecproc =
 -- Vyhodnotí definici typu (neomezené) pole.
 ----------------------------------------------------------------------------------------------------
 var
-  rtype            : pentity_type;               -- typ rozsahu
-  rtype_context    : tcontext;                   -- kontext typu rozsahu
   size             : tunidata_size;              -- vypočtená velikost
   e                : tentityeval;
 
@@ -667,41 +884,42 @@ begin
   -- bázový typ
   e_reftype(curr_context,curr.base,ek_typename,ttypeviewset:[tview_partial,tview_full],dts_constrained,false,false,{etd_full,}final);
   if e_part(curr.seval,curr.base.geteval) then return; end if;
-{
-  -- bázový typ nesmí být neomezený
-  if curr.base.getctype^.stype in dts_unconstrained then
-    ce^.seterror({CCERR=}000209,ce_i_basetype);
-    ce^.setinfo(hint_array_base);
-    curr.base.errpos;
-    ce^.resumeerror;
-    end if;
-}
+
   if curr.stype=dt_array
 
     -- normální pole
     then
-      -- rozsah
-      e_reftype(curr_context,curr.srange,ek_rangetype,ttypeviewset:[tview_full],dts_ordinal,false,false,{etd_full,}final);
+      -- vyhodnotit rozsah
+      -- touto operací se dočasně dosadí typ rozsahu pole, následující operace však vybere (=odvodí)
+      -- ten správný typ, který odpovídá skutečným mezím uvedeného rozsahu
+      e_reftype(curr_context,curr.srange,ek_rangetype,ttypeviewset:[tview_full],dts_u_ordinal,false,false,{etd_full,}final);
       if e_part(curr.seval,curr.srange.geteval) then return; end if;
 
-      -- %%X A co zarovnání prvku pole ?!
+      -- sestavit typ rozsahu
+      type_create_array_range(curr,curr.srange.getcexpr);
 
       -- vypočítat délku pole
-      size{curr.size}:=arraysize(curr.base.getctype^.size,curr.srange.getctype^.lval,curr.srange.getctype^.hval);
+      size:=type_compute_array_size(curr.base.getctype^.size,curr.srange.getctype^.lval,curr.srange.getctype^.hval);
 
     -- neomezené pole
     else
-      -- odvodit typ rozsahu
-      d_create_implicit_type(curr_context,rtype,rtype_context,dt_unsigned,nil);
+      declare var
+        rtype         : pentity_type;            -- typ rozsahu
+        rtype_context : tcontext;                -- kontext typu rozsahu
 
-      -- doplnit údaje
-      cpu^.getdefaultord(dt_unsigned,rtype^.bits,rtype^.size,rtype^.lval,rtype^.hval);
+      begin
+        -- odvodit typ rozsahu
+        d_create_implicit_type(curr_context,rtype,rtype_context,dt_unsigned,nil);
 
-      -- konec deklarace
-      d_end_implicit_type(rtype^,nil,false);
+        -- doplnit údaje
+        cpu^.getdefaultord(dt_unsigned,rtype^.bits,rtype^.size,rtype^.lval,rtype^.hval);
 
-      -- dosadit jako typ rozsahu neomezeného pole
-      curr.srange.settype(rtype);
+        -- konec deklarace
+        d_end_implicit_type(rtype^,nil,false);
+
+        -- dosadit jako typ rozsahu neomezeného pole
+        curr.srange.settype(rtype);
+        end declare;
 
       -- velikost
       size:=uds_0;
@@ -709,7 +927,6 @@ begin
       -- vyhodnoceno
       curr.seval:=ete_evaluated;
       end if;
-  -- %%X doplnit další kontroly !!
 
   -- doplnit velikost
   type_setsize(curr,size);
@@ -723,10 +940,6 @@ procedure e_spec_string : tevalspecproc =
 ----------------------------------------------------------------------------------------------------
 var
   delka            : tuniint;                    -- počet prvků řetězce
-  isize            : tunidata_size;              -- délka interní části řetězce
-  base             : pentity_type;               -- báze řetězce
-  rtype            : pentity_type;               -- typ rozsahu
-  size             : tunidata_size;              -- vypočtená velikost
   e                : tentityeval;
 
 begin
@@ -736,16 +949,7 @@ begin
   -- bázový typ
   e_reftype(curr_context,curr.base,ek_typename,ttypeviewset:[tview_partial,tview_full],dts_constrained,false,false,{etd_full,}final);
   if e_part(curr.seval,curr.base.geteval) then return; end if;
-  base:=curr.base.getctype;
-{
-  -- bázový typ nesmí být neomezený
-  if base^.stype in dts_unconstrained then
-    ce^.seterror({CCERR=}000210,ce_i_basetype);
-    ce^.setinfo(hint_string_base);
-    curr.base.errpos;
-    ce^.resumeerror;
-    end if;
-}
+
   if curr.stype=dt_string
 
     -- normální řetězec
@@ -758,7 +962,7 @@ begin
       x_const_int(pexpnode(curr.expr.getcexpr),delka);
 
       -- délka musí být <= CPU^.MAXSTRHVAL a >= 1
-      if delka<ui_1 or delka>cpu^.maxstrhval then
+      if delka<ui_1 or delka>cpu^.string_max_hval then
         ce^.seterror({CCERR=}000211,ce_numrange);
         --%%TODO(LIB) ce^.setinfo(formats(hint_string_range,linttostr(cpu^.maxstrhval,tuniint:size)));
         curr.expr.errpos;
@@ -770,22 +974,17 @@ begin
       delka:=ui_0;
       end if;
 
-  -- parametry řetězce
-  cpu^.getstrparams(curr.stype,size{curr.size},isize,base^.size,delka);
-
-  -- doplnit velikost
-  type_setsize(curr,size);
-
   -- odvodit typ rozsahu
   if curr.stype=dt_string
-    then t_derive_string_range(curr,isize,delka);
-    else t_derive_string_range(curr,isize,cpu^.maxstrhval);
+    then type_create_string_range(curr,delka);
+    else type_create_string_range(curr,cpu^.string_max_hval);
     end if;
+
+  -- doplnit velikost
+  type_setsize(curr,type_compute_string_size(curr.base.getctype^.size,delka));
 
   -- vyhodnoceno
   curr.seval:=ete_evaluated;
-
-  {%%X doplnit další kontroly !! a jaký ?? }
   end e_spec_string;
 
 
@@ -1069,7 +1268,6 @@ begin
           when vm_direct do sts:=dts_constrained{+dts_class};
           when vm_ref    do sts:=dts_regular{+dts_class};
           when vm_index  do sts:=dts_constrained;
-          when others    do verify({VERIFY=}000319,true);
           end case;
 
       {
@@ -1102,7 +1300,7 @@ begin
 
           -- musí být nezáporná
           if uniint_sign(ui) then
-            ce^.seterror({ERRNUM=}000000,ce_i_attr_position);
+            ce^.seterror({CCERR=}000609,ce_i_attr_position);
             curr.attr_position.errpos;
             {%%RESUME ce^.raiseerror;}
             end if;
@@ -1233,15 +1431,12 @@ procedure e_type_derived (
 var
   ancestor         : pentity_type;               -- předek
   t                : typeview;                   -- pohled na předka
-  lval             : tuniint;                    -- nové meze pole
-  hval             : tuniint;                    -- nové meze pole
-  oldrange         : pentity_type;               -- původní typ rozsahu
-  newrange         : pentity_type;               -- nový typ rozsahu
-  newrange_context : tcontext;                   -- primární kontext nového rozsahu
-  pos              : lexposblock;                -- pozice rozsahu
-  size             : tunidata_size;              -- nová velikost typu
-  isize            : tunidata_size;              -- velikost interní části řetězce
-  delka            : tuniint;                    -- délka řetězce
+--newrange         : pentity_type;               -- nový typ rozsahu
+--newrange_context : tcontext;                   -- primární kontext nového rozsahu
+--pos              : lexposblock;                -- pozice rozsahu
+--size             : tunidata_size;              -- nová velikost typu
+--isize            : tunidata_size;              -- velikost interní části řetězce
+--delka            : tuniint;                    -- délka řetězce
   e                : tentityeval;
 
 begin
@@ -1265,7 +1460,7 @@ begin
     end if;
 
   -- zkontrolovat druh typu, pokud je pro odvozovaný typ předvybrán
-  if (curr.tkind<>tk_unknown) and (curr.tkind<>ancestor^.tkind) then
+  if curr.tkind<>tk_unknown and curr.tkind<>ancestor^.tkind then
     ce^.seterror({CCERR=}000221,ce_i_derive);
     if ancestor^.tkind=tk_regular
       then ce^.setinfo(hint_derive_regular);
@@ -1274,15 +1469,9 @@ begin
     curr.ancestor.errpos;
     ce^.resumeerror;
     end if;
-
-  -- zkopírovat determinaci kompatibility, jestli se nezměnila
-  if (curr.compat=tc_norm) and (t.tview=tview_full) then curr.compat:=t.compat; end if;
-
-  -- zkopírovat základní údaje, které se nemohly určitě změnit
-  curr.size    :=ancestor^.size;
-  curr.extofs  :=ancestor^.extofs{size}; -- EXTOFS se změní jen pro TD_EXTENSION
-  curr.tflags  :=ancestor^.tflags;
-  curr.align   :=ancestor^.align;
+  
+  -- zkopírovat základní údaje
+  derive_copy_base_all(curr,ancestor^,and t.tview=tview_full);
 
   case curr.derive
     -- triviální derivace
@@ -1300,21 +1489,16 @@ begin
       }
         curr.fp      :=ancestor^.fp;
         curr.srange  :=ancestor^.srange;
-      --curr.lsize   :=ancestor^.lsize;
         curr.pflags  :=ancestor^.pflags;
         curr.pclass  :=ancestor^.pclass;
         curr.pbase   :=ancestor^.pbase;
         curr.pattrib :=ancestor^.pattrib;
         curr.rflags  :=ancestor^.rflags;
         curr.result  :=ancestor^.result;
-      --curr.insize  :=ancestor^.insize;
         curr.parcount:=ancestor^.parcount;
         curr.base    :=ancestor^.base;
         curr.srange  :=ancestor^.srange;
         curr.saliased:=ancestor^.saliased;
-
-        -- default view
-      --curr.defview :=t.tview;
 
     -- type constraint
     when td_constrained       do
@@ -1328,16 +1512,13 @@ begin
           end if;
 
         -- zkopírovat některé údaje
-        curr.seval   :=ancestor^.seval;
-        curr.tkind   :=ancestor^.tkind;
-        curr.stype   :=ancestor^.stype;
+        derive_copy_base_td_constrained(curr,ancestor^);
 
         case t.stype
           -- ordinální typy
           when dt_signed, dt_unsigned, dt_char, dt_enum, dt_logical do
               -- převzít základní údaje
-              curr.bits    :=ancestor^.bits;
-              curr.intaritm:=ancestor^.intaritm;
+              derive_copy_ordinal(curr,ancestor^);
 
               -- vyhodnotit rozsah
               e_refexpr(curr_context,curr.expr,ek_rangetype,ancestor,eu_read,final);
@@ -1355,36 +1536,28 @@ begin
               -- převzít základní údaje
               curr.base    :=ancestor^.base;
 
-              -- %%TECH Těžká finta: pro odvození nového typu rozsahu se
-              -- použije mechanismus pro překlad deklarací. Ale myslím, že je
-              -- to naprosto v souladu s koncepcí Flexu - omezení rozsahu
-              -- pole je vlastně implicitní deklarace typu rozsahu (stejně
-              -- jako v normální deklaraci pole) s implicitním předkem.
-
-              -- pozice výrazu
-              pexpnode(curr.expr.getcexpr)^.getpos(pos);
-
-              -- odvodit nový typ rozsahu
-              d_create_implicit_type(curr_context,newrange,newrange_context,dt_undef,pos);
-
-              -- označit typ za odvozený
-              newrange^.derive:=td_constrained;
-
-              -- přiřadit předka a nový rozsah
-              newrange^.ancestor.setentity(t.getrange(curr_context).getctype);
-              newrange^.expr.setexpr(curr.expr.getcexpr);
-
-              -- konec deklarace (a zde se rekurzivně zavolá E_TYPE_DERIVED)
-              d_end_implicit_type(newrange^,pos,true);
-
-              -- dosadit nový rozsah do pole
-              curr.srange.settype(newrange);{%%TODO(DECLPOS) Nastavit související výraz nebo aspoň pozici, ne ? }
-
-              -- vypočítat délku pole
-              size:=arraysize(curr.base.getctype^.size,curr.srange.getctype^.lval,curr.srange.getctype^.hval);
-
-              -- dosadit velikost typu
-              type_setsize(curr,size);
+              declare var
+                oldrange : pentity_type;         -- původní typ rozsahu
+                lval     : tuniint;              -- nové meze pole
+                hval     : tuniint;              -- nové meze pole
+                
+              begin  
+                -- pro zjednodušení rozsah předka
+                oldrange:=ancestor^.srange.getctype;
+              
+                -- vyhodnotit rozsah
+                e_refexpr(curr_context,curr.expr,ek_rangetype,oldrange,eu_read,final);
+                if e_part(curr.eval,curr.expr.geteval) then return; end if;
+              
+                -- připravit meze
+                x_const_range(curr.expr.getcexpr,lval,hval);
+                
+                -- odvodit rozsah jako potomka rozsahu předka s upravenými mezemi
+                type_derive_array_range(curr,oldrange,lval,hval);
+                
+                -- vypočítat a dosadit délku pole
+                type_setsize(curr,type_compute_array_size(curr.base.getctype^.size,lval,hval));
+                end declare;
 
           -- řetězec/neomezený řetězec
           -- Ondra 25.2.2002 : Zakázáno odvozování od constrained stringů
@@ -1395,34 +1568,34 @@ begin
               -- převzít základní údaje
               curr.base    :=ancestor^.base;
 
-              -- délka
-              e_refexpr(curr_context,curr.expr,ek_const_int,nil,eu_read,final);
-              if e_part(curr.seval,curr.expr.geteval) then return; end if;
+              declare var
+                oldrange : pentity_type;         -- původní typ rozsahu
+                hval     : tuniint;              -- nové meze pole
+                
+              begin  
+                -- pro zjednodušení rozsah předka
+                oldrange:=ancestor^.srange.getctype;
 
-              -- délka řetězce ve znacích
-              x_const_int(pexpnode(curr.expr.getcexpr),delka);
+                -- délka
+                e_refexpr(curr_context,curr.expr,ek_const_int,nil,eu_read,final);
+                if e_part(curr.seval,curr.expr.geteval) then return; end if;
 
-              -- délka musí spadat do mezí původního řetězce
-              if delka<ancestor^.srange.getctype^.lval or delka>ancestor^.srange.getctype^.hval then
-                ce^.seterror({CCERR=}000223,ce_numrange);
-                curr.expr.errpos;
-                ce^.resumeerror;
-                end if;
+                -- délka řetězce ve znacích
+                x_const_int(pexpnode(curr.expr.getcexpr),hval);
 
-              -- parametry řetězce
-              cpu^.getstrparams(curr.stype,size,isize,curr.base.getctype^.size,delka);
+                -- délka musí spadat do mezí původního řetězce
+                if hval<oldrange^.lval or hval>oldrange^.hval then
+                  ce^.seterror({CCERR=}000223,ce_numrange);
+                  curr.expr.errpos;
+                  ce^.resumeerror;
+                  end if;
 
-              -- odvodit typ rozsahu
-              -- %%X Zde se pro odvození typu rozsahu řetězce používá jiný mechanismus,
-              -- než pro odvození rozsahu pole. To je minimálně divné.
-              t_derive_string_range(curr,isize,delka);
+                -- odvodit rozsah jako potomka rozsahu předka s upravenými mezemi
+                type_derive_string_range(curr,oldrange,hval);
 
-              -- přiřadit předka typu rozsahu
-              curr.srange.getctype^.ancestor.setentity(t.getrange(curr_context).getctype);
-
-              -- dosadit velikost typu
-              type_setsize(curr,size);
-              --u_nimplemented(86);
+                -- dosadit velikost typu
+                type_setsize(curr,type_compute_string_size(curr.base.getctype^.size,hval));
+                end declare;
 
           -- pro ostatní typy nemá omezení rozsahu smysl
           when others do
@@ -1433,10 +1606,7 @@ begin
               ce^.resumeerror;
           end case;
 
-        -- default view
-      --curr.defview:=tview_full;
-
-    -- type extension/private extension,
+    -- type extension/private extension
     when td_extension, td_private_extension do
         -- výsledný typ bude jistě regulární
         curr.tkind:=tk_regular;
@@ -1454,7 +1624,7 @@ begin
 
           -- Full view => lze rozšířit jen record recordem
           when tview_full do
-              if (ancestor^.stype=dt_record) and (curr.stype=dt_record)
+              if ancestor^.stype=dt_record and curr.stype=dt_record
 
                 -- record -- record
                 then
@@ -1477,8 +1647,6 @@ begin
               {%%RESUME ce^.raiseerror;}
               ce^.resumeerror;
           end case;
-
-        --u_nimplemented(86)
 
     when others do verify({VERIFY=}000241,true);
     end case;
@@ -1520,13 +1688,7 @@ begin
     -- --> full
     when etd_full do
 --      verify({VERIFY=}000017,(curr.stype=st_undef) and final);
-{
-        -- vyhodnotit statické předky
-        for i in 1..curr.pcount loop
-          e_reftype(curr.context.entity^,curr.plist^[i],ek_typename,etd_full,final);
-          if e_part(curr.{s^.}eval,curr.plist^[i].geteval) then return; end if;
-          end loop;
-}
+
         -- určit/zkontrolovat třídu typu
         if curr.derive=td_root then
           case curr.tkind
@@ -1543,7 +1705,7 @@ begin
                 -- pokud to není private extension (ta je zatím ST_UNDEF)
                 if {(curr.derive<>td_private_extension)
                 -- musí tomu odpovídat i definice typu
-                and} not (curr.stype in dts_regular) then
+                and} curr.stype not in dts_regular then
                   ce^.seterror({CCERR=}000227,ce_i_typedef);
                   if curr.derive=td_root
                     then ce^.setinfo(hint_type_regular);
@@ -1557,7 +1719,7 @@ begin
             -- singulární
             when tk_singular do
                 -- odpovídá tomu i definice typu ?
-                if not (curr.stype in dts_singular) then
+                if curr.stype not in dts_singular then
                   ce^.seterror({CCERR=}000228,ce_i_typedef);
                   ce^.setinfo(hint_type_singular);
                   ce^.setpos(curr.pos[etp_def]);
@@ -1582,7 +1744,7 @@ begin
         if e_part(curr.eval,curr.attr_mptr.geteval) then return; end if;
 
         -- zarovnání
-        type_setalign(curr,cpu^.defaultalign);
+        type_setalign(curr,cpu^.type_default_align);
 
         -- vyhodnotit specifikaci typu
         if curr.derive=td_root
@@ -2303,7 +2465,7 @@ begin
             verify({VERIFY=}000781,curr.ancestor.isset and then pentity_type(curr.ancestor.getcentity)^.interfaces^.is_exposed_interface(interface^.refclass.getcentity));
 
             -- založit instanci interfacu
-            d_create_internal(curr_context,pentity(instance),instance_context,et_var,nil);
+            d_create_internal(curr_context,pentity(instance),instance_context,et_var,sym_get_interface_id);
             instance^.compile-tentitycompileset:[etc_generated];
             instance^.typ.settype(pentity_type(interface^.refclass.getcentity));
             instance^.mclass     :=mc_class;
@@ -2435,7 +2597,7 @@ begin
         if e_part(curr.eval,curr.attr_native_align.geteval) then return; end if;
 
         -- zarovnání
-        type_setalign(curr,cpu^.defaultalign);
+        type_setalign(curr,cpu^.type_default_align);
 
     -- --> public
     when etd_public do
@@ -2467,7 +2629,7 @@ begin
 
           -- nemá předka => rezervovat místo pro tag
           else
-            varofs:=unidata_size_to_addr(cpu^.classisize)
+            varofs:=unidata_size_to_addr(cpu^.class_isize)
             end if;
 
         -- určit zatím maximální dosažený offset

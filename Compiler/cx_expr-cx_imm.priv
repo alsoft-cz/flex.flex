@@ -7,11 +7,9 @@ module private cx_imm =
 ----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
-#separate public cx_array;
 #separate private cx_array;
 -- Práce s agregátem pole.
 ----------------------------------------------------------------------------------------------------
-#separate public cx_set;
 #separate private cx_set;
 -- Práce s agregátem množiny.        
 ----------------------------------------------------------------------------------------------------
@@ -271,7 +269,7 @@ procedure store_array_item =
 begin
   verify({VERIFY=}000438,(imm.ic<>ic_array) or (imm.aitems=nil));
 
-  cx_array.choice_add_single(context,imm.aitems^,val,item);
+  cx_array.choice_add_single(context,imm.aitems^,val,item,choice);
   end store_array_item;
 
 
@@ -283,7 +281,7 @@ procedure store_array_items_range =
 begin
   verify({VERIFY=}000251,(imm.ic<>ic_array) or (imm.aitems=nil));
 
-  cx_array.choice_add_range(imm.aitems^,lval,hval,item);
+  cx_array.choice_add_range(context,imm.aitems^,lval,hval,item,choice);
   end store_array_items_range;
 
 
@@ -406,7 +404,7 @@ procedure store_set_item =
 begin
   verify({VERIFY=}000440,(imm.ic<>ic_set) or (imm.sitems=nil));
 
-  cx_set.choice_add_single(context,imm.sitems^,val);
+  cx_set.choice_add_single(context,imm.sitems^,val,warn_duplicates,choice);
   end store_set_item;
 
 
@@ -418,7 +416,7 @@ procedure store_set_items_range =
 begin
   verify({VERIFY=}000441,(imm.ic<>ic_set) or (imm.sitems=nil));
 
-  cx_set.choice_add_range(imm.sitems^,lval,hval);
+  cx_set.choice_add_range(context,imm.sitems^,lval,hval,warn_duplicates,choice);
   end store_set_items_range;
 
 
@@ -936,8 +934,8 @@ begin
   -- prvky z B zahrnout do A
   for i in B.sitems^.list^:range loop
     if B.sitems^.list^[i].lval=B.sitems^.list^[i].hval
-      then store_set_item(context,A,B.sitems^.list^[i].lval)
-      else store_set_items_range(A,B.sitems^.list^[i].lval,B.sitems^.list^[i].hval);
+      then store_set_item(context,A,B.sitems^.list^[i].lval,false)
+      else store_set_items_range(context,A,B.sitems^.list^[i].lval,B.sitems^.list^[i].hval,false);
       end if;
     end loop;
   end imm_union;
@@ -962,6 +960,73 @@ begin
       end if;
     end loop;
   end imm_diff;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure imm_isect =
+-- Průnik dvou množin.
+----------------------------------------------------------------------------------------------------
+var
+    i              : t_unsigned;
+    j              : t_unsigned;
+    tmp            : tuniint;
+
+begin
+  verify({VERIFY=}001293,A.ic not in timmclassset:[ic_set,ic_nil] or B.ic not in timmclassset:[ic_set,ic_nil]);
+
+  -- na jedné straně je NIL => výsledek je prázdná množina
+  if imm_isnil(A) or imm_isnil(B) then
+    store_set(A);
+    return;
+    end if;
+
+  -- procházím oba seznamy intervalů a odřezávám z A ty části, které nejsou v B
+  i:=1;
+  j:=1;
+  while i<=A.sitems^.list^:length loop
+    -- najdi první podinterval z množiny B, který není před začátkem tohoto podintervalu
+    while j<=B.sitems^.list^:length and then B.sitems^.list^[j].hval<A.sitems^.list^[i].lval loop
+      succ j;
+      end loop;
+
+    -- Jaký je vzájemný vztah podintervalů?
+    if j>B.sitems^.list^:length or else B.sitems^.list^[j].lval>A.sitems^.list^[i].hval
+      then
+        -- podinterval z A vůbec v B není => z A ho musíme odstranit
+        if A.sitems^.list^[i].lval=A.sitems^.list^[i].hval
+          then cx_set.choice_remove_single(A.sitems^,A.sitems^.list^[i].lval)
+          else cx_set.choice_remove_range(A.sitems^,A.sitems^.list^[i].lval,A.sitems^.list^[i].hval);
+          end if;
+
+      else
+        -- podintervaly se alespoň částečně překrývají => upravit?
+
+        -- zkontrolovat levý okraj
+        if B.sitems^.list^[j].lval>A.sitems^.list^[i].lval then
+          -- interval v B začíná později => posunout levý okraj
+          A.sitems^.list^[i].lval:=B.sitems^.list^[j].lval;
+          end if;
+
+        -- zkontrolovat pravý okraj
+        if B.sitems^.list^[j].hval<A.sitems^.list^[i].hval then
+          -- interval v B končí dřív => upravit pravý okraj
+          -- pozor finta: abychom nemuseli řešit spoustu speciálních případů, prostě tenhle interval
+          -- rozdělíme na dva -- ten shodný s B a zbytek. Shodný s B je OK, takže normálně pokračujeme
+          -- zbytkem.
+          tmp:=A.sitems^.list^[i].hval;
+          A.sitems^.list^[i].hval:=B.sitems^.list^[j].hval;
+          if A.sitems^.list^[i].hval+ui_2=tmp
+            then store_set_item(context,A,tmp,false)
+            else store_set_items_range(context,A,A.sitems^.list^[i].hval+ui_2,tmp,false);
+            end if;
+          end if;
+
+        -- pokračovat dalším intervalem
+        succ i;
+        end if;
+    end loop;
+  end imm_isect;
 
 
 

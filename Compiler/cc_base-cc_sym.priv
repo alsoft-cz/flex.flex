@@ -189,6 +189,96 @@ class private tentitysearch =
 
     
     ------------------------------------------------------------------------------------------------
+    static find_global_by_qid =
+    -- Nalezne entitu podle kvalifikovaneho identifikátoru.
+    -- Tabulku entit prohledává podle pravidel viditelnosti.
+    ------------------------------------------------------------------------------------------------
+    with
+      standard.strings;
+
+    var
+      strstring    : p_char32str_string;
+      found_entity : pentity;
+      tecka_count  : t_unsigned;
+      srch_qid     : t_char32str;
+
+    begin
+      -- kazdopadne predem vynulovat
+      this.level:=0;
+      this.psym:=nil;
+
+      -- je co hledat?
+      if qid:length=0 then return; end if;
+
+      -- odstranit tecku na zacatku
+      srch_qid:=str_trim(qualified_entity_ident_to_string(qid),".",[se_left]);
+
+      -- nastavit počáteční kontext pro prohledávání
+      psym:=^compi;
+
+      -- pokud se po nás chce dohledat přímo kompilační jednotku, jsme hotovi
+      if srch_qid={%%TODO(QID)}entityident_to_string(id_compilation) then return end if;
+
+      -- rozloz qid
+      str_separate(srch_qid,".",strstring);
+
+      -- prohledej jednotlive sub-id dodaneho qid
+      for i in strstring^:range loop
+        declare var
+          eid      : pentityident;
+          
+        begin
+          -- najdi sub-id
+          eid:=string_to_entityident(strstring^[i]);
+         
+          -- speciální varianta: atribut :type
+          if eid^=':type' then
+            case psym^.etype
+              when et_var       do psym:=pentity_var(psym)^.typ.getutype;
+              when et_const     do psym:=pentity_const(psym)^.typ.getutype;
+              when et_procedure do psym:=pentity_procedure(psym)^.typ.getutype;
+              when et_static    do psym:=pentity_static(psym)^.typ.getutype;
+              when et_virtual   do psym:=pentity_virtual(psym)^.typ.getutype;
+              when et_task      do psym:=pentity_task(psym)^.typ.getutype;
+              when et_special   do psym:=pentity_special(psym)^.typ.getutype;
+              when et_message   do psym:=pentity_message(psym)^.typ.getutype;
+              when others       do psym:=nil;
+              end case;
+          
+          -- speciální varianta: atribut :base
+          elsif eid^=':base' then
+            if psym^.etype=et_type
+              then psym:=pentity_type(psym)^.base.getutype;
+              else psym:=nil;
+              end if;
+          
+          -- speciální varianta: atribut :range
+          elsif eid^=':range' then
+            if psym^.etype=et_type
+              then psym:=pentity_type(psym)^.srange.getutype;
+              else psym:=nil;
+              end if;
+          
+          -- obyčejný identifikátor
+          else
+            find_local_all(sym_primary_context(psym^),eid^);
+            end if;
+          
+        leave
+          discard eid;
+          end declare;
+
+        -- exituj, pokud se nenaslo
+        if psym=nil then break; end if;
+        end loop;
+
+    leave
+      discard strstring;
+      end find_global_by_qid;
+
+    
+    
+    ------------------------------------------------------------------------------------------------
     static find_local =
     -- Nalezne entitu podle idenfifikátoru.
     -- Hledá na lokální úrovni a v předkovi. Viditelnost symbolu musí být v množině požadované
@@ -652,6 +742,18 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure sym_get_enclosing_context_restricted =
+-- Nalezne nadřazený kontext, jehož entita nepatří mezi zakázané typy entit.
+----------------------------------------------------------------------------------------------------
+begin
+  result:=curr^.context;
+  while result.entity<>nil and then result.entity^.etype in ets_disabled loop
+    result:=result.entity^.context;
+    end loop;
+  end sym_get_enclosing_context_restricted;
+
+
+----------------------------------------------------------------------------------------------------
 procedure sym_get_qid =
 -- Sestaví kvalifikovaný identifikátor entity a vrátí ho jako řetězec.
 ----------------------------------------------------------------------------------------------------
@@ -670,61 +772,97 @@ begin
     -- ne => sestavit kvalifikovaný identifikátor
     else
       -- zpracovat postupně všechny entity v hierarchii
-      while psym<>nil and then psym^.etype<>et_compile 
---    #if #environment compiler_version;<>'4.0.3.14' then;
---      -- %%TODO(C_STRING) záplata !
---      and then result:length<result:last-30 
---    #end if;
-      loop
+      while psym<>nil and then psym^.etype<>et_compile loop
         --  typ bez identifikátoru => dosadit atribut
         if psym^.id=nil and then psym^.etype in tentitytypeset:[et_type,et_class] then 
-          result:='.#type' & result;
+          -- volba atributu závisí na typu nadřazené entity
+          case psym^.context.entity^.etype
+            -- proměnná, konstanta => :type
+            when et_var,et_const do 
+                result:=':type' & result;
 
+            -- jiný typ => :range nebo :base
+            when et_type do
+                -- je to typ rozsahu => :range
+                if pentity_type(psym^.context.entity)^.srange.getutype=psym then
+                  result:=':range' & result;
+
+                -- je to typ báze => :base
+                elsif pentity_type(psym^.context.entity)^.base.getutype=psym then
+                  result:=':base' & result;
+
+                -- nic jiného tu nemá co dělat
+                else
+                  verify({VERIFY=}001289);
+                  end if;
+
+            -- podprogram => :type
+            when et_procedure,et_static,et_virtual,et_task,et_special do
+                result:=':type' & result;
+
+            -- zpráva => :type
+            when et_message do
+                result:=':type' & result;
+            
+            -- nic jiného tu nemá co dělat
+            when others do verify({VERIFY=}001290);
+            end case;    
+
+          -- !!! záplata na [str_separate]
+          result:="." & result;
+          
         -- speciální metoda
         elsif psym^.etype=et_special then 
-          result:='.' & entityident_to_string(psym^.id^){%%TODO(SLICE)[2..psym^.id^:length]} & result;
-
-        -- override
-        elsif psym^.etype=et_override then
---        #if #environment compiler_version;<>'4.0.3.14' then;
---          declare var
---            x : t_char32str;
---          begin
---            x:='.#override(' & sym_get_qid(pentity_override(psym)^.virt.getcentity) & ')';
---            if x:length>result:last-result:length then
---              x:length:=result:last-result:length;
---              end if;
---            result:=x & result;
---            end declare;
---        #else;
-          result:='.#override(' & sym_get_qid(pentity_override(psym)^.virt.getcentity) & ')' & result;
---        #end if;
-
-        -- nějaká entita bez identifikátoru
-        elsif psym^.id=nil then 
-          result:='.?' & entitydesc[psym^.etype].id & '?' & result;
+          result:="." & entityident_to_string(psym^.id^) & result;
 
         -- entita s identifikátorem
-        else 
-          result:='.' & entityident_to_string(psym^.id^) & result;
+        elsif psym^.id<>nil then 
+          result:="." & entityident_to_string(psym^.id^) & result;
+
+        -- nějaká entita bez identifikátoru
+        else
+          verify({VERIFY=}001291);
           end if;
 
         -- nadřazená entita
         psym:=psym^.context.entity;
         end loop;
-
---    #if #environment compiler_version;<>'4.0.3.14' then;
---      -- %%TODO(C_STRING) záplata !
---      if result:length>result:last-30 then
---        result:length:=result:last-30;
---        end if;
---    #end if;
-
-      if result<>'' then 
-        {%%TODO(SLICE) result:=result[2..result:length];}
-        end if;
       end if; 
   end sym_get_qid;
+
+
+
+----------------------------------------------------------------------------------------------------
+#template sym_get_id_body_template (
+    counter,                                     -- čítač entit s daným prefixem
+    prefix);                                     -- prefix identifikátoru
+-- Šablona těla procedury pro sestavení interního identifikátoru entity.
+----------------------------------------------------------------------------------------------------
+  with
+    standard.conversions,
+    cc_var;
+
+  var
+    s                : t_char32str;
+
+  begin
+    -- zvýšit čítač
+    succ counter;
+
+    -- převést na řetězec
+    s:=unsigned_to_string(counter);
+
+    -- nabrat paměť
+    new result range prefix:length+s:length;
+
+    -- základ všech interních pracovních identifikátorů je stejný
+    result^:=prefix;
+
+    -- přidat čítač na konec identifikátoru
+    for i in s:range loop
+      result^ & tidentchar(s[i]);
+      end loop;
+  #end sym_get_id_body_template;
 
 
 
@@ -732,32 +870,45 @@ begin
 procedure sym_get_temp_id =
 -- Vygeneruje interní pracovní identifikátor entity.
 ----------------------------------------------------------------------------------------------------
-with
-  standard.conversions,
-  cc_var;
-
-var
-  s                : t_char32str;
-
-begin
-  -- zvýšit čítač
-  succ temp_counter;
-
-  -- převést na řetězec
-  s:=unsigned_to_string(temp_counter);
-
-  -- nabrat paměť
-  new result range id_int_temp:length+s:length;
-
-  -- základ všech interních pracovních identifikátorů je stejný
-  result^:=id_int_temp;
-
-  -- přidat čítač na konec identifikátoru
-  for i in s:range loop
-    result^ & tidentchar(s[i]);
-    end loop;
+  sym_get_id_body_template(temp_counter,id_int_temp);
   end sym_get_temp_id;
+
   
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_override_id =
+-- Vygeneruje interní identifikátor overridu pojmenovaného kompilátorem.
+----------------------------------------------------------------------------------------------------
+  sym_get_id_body_template(override_counter,id_int_override);
+  end sym_get_override_id;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_uniarray_id =
+-- Vygeneruje interní identifikátor typu univerzální pole.
+----------------------------------------------------------------------------------------------------
+  sym_get_id_body_template(uniarray_counter,id_int_uniarray);
+  end sym_get_uniarray_id;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_interface_id =
+-- Vygeneruje interní identifikátor instance interfacu.
+----------------------------------------------------------------------------------------------------
+  sym_get_id_body_template(interface_counter,id_int_interface);
+  end sym_get_interface_id;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure sym_get_label_id =
+-- Vygeneruje interní identifikátor návěští.
+----------------------------------------------------------------------------------------------------
+  sym_get_id_body_template(label_counter,id_int_label);
+  end sym_get_label_id;
+
 
 
 ----------------------------------------------------------------------------------------------------
@@ -1144,6 +1295,7 @@ begin
         ce^.setwarning(context,{CCERR=}000056,cw_unknown_option);
         ce^.setparam(entityident_to_string(id));
         ce^.loadpos;
+        return;
         end if;
 
       -- nastavit
@@ -1153,8 +1305,6 @@ begin
         end if;
       end if;
   end sym_set_warning;
-
-
 
 
 
@@ -1170,7 +1320,7 @@ with
 var
   zac              : cc_hint_desc:range;
   kon              : cc_hint_desc:range;
-  stred            : cc_warning_desc:range;
+  stred            : t_unsigned;
 
 begin
   -- není to nastavení pro všechny hinty ?
@@ -1199,6 +1349,7 @@ begin
         ce^.setwarning(context,{CCERR=}000057,cw_unknown_option);
         ce^.setparam(entityident_to_string(id));
         ce^.loadpos;
+        return;
         end if;
 
       -- nastavit
@@ -1223,7 +1374,7 @@ with
 var
   zac              : cc_diag_desc:range;
   kon              : cc_diag_desc:range;
-  stred            : cc_diag_desc:range;
+  stred            : t_unsigned;
 
 begin
   -- není to nastavení pro všechna diagnostická hlášení?
@@ -1252,6 +1403,7 @@ begin
         ce^.setwarning(context,{CCERR=}000058,cw_unknown_option);
         ce^.setparam(entityident_to_string(id));
         ce^.loadpos;
+        return;
         end if;
 
       -- nastavit
@@ -1263,9 +1415,13 @@ begin
   end sym_set_diag;
 
 
+                          
 ----------------------------------------------------------------------------------------------------
 #separate private cc_advanced;
 -- Další pokročilé funkce pro manipulaci s entitami, regiony, contexty, stromem entit a regionů.
+----------------------------------------------------------------------------------------------------
+#separate private cc_partition;
+-- Podpora pro práci s více partitionami.
 ----------------------------------------------------------------------------------------------------
 
 end cc_sym;

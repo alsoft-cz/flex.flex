@@ -34,6 +34,9 @@ class private c_flex_jit_engine =
       -- nastavit prislusne identifikatory do file_source, aby vedel jake jsou pripustne pripony souboru
       p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_default_extensions;
 
+      -- zapnout podporu pro compile-time metadata
+      cc_def.cc_var.cfg_ctm_level:=cc_def.cc_var.ctml_public;
+
       -- inicializovat kompilátor
       init(flex_version_string);
       
@@ -48,11 +51,39 @@ class private c_flex_jit_engine =
     -- Spustí zadanou kompilační jednotku. Pokud nenajde přeložený modul, JIT-zkompiluje ho.
     ------------------------------------------------------------------------------------------------
     with
+      standard.names,
+      standard.strings,
+      cc_def,
       ff_lib.ff_text_output;
 
+    var
+      part_extid   : p_external_entity_ident;    -- externí identifikátor entity
+
     begin
+      -- připravit externí identifikátor partition (je identický se základem jména DLL)
+      declare var
+        name1      : c_file_name;                -- dekomponované jméno DLL (1)
+        name2      : p_file_name;                -- dekomponované jméno DLL (2)
+        base_name  : p_text_name;                -- bázové jméno DLL
+
+      begin
+        -- z jména DLL převzít bázové jméno
+        name1.decompose_name(config.lib_name^);
+        name1.get_name_without_path(name2);
+        name2^.remove_last_extension;
+        name2^.compose_name(base_name);
+
+        -- sestavit z něj externí identifikátor
+        part_extid:=string_to_external_entity_ident(str_to_upper(base_name^));
+
+      leave
+        -- uvolnit již nepotřebnou paměť
+        discard name2;
+        discard base_name;
+        end declare;
+      
       -- přeložit
-      compile(os,config.src_name^,config.exe_name^,config.lib_name^,config.lst_name^,part_type,tpr_library);
+      compile(os,config.src_name^,config.exe_name^,config.lib_name^,config.lst_name^,config.ctm_name^,config.exe_directory^,part_type,tpr_library,part_extid);
 
       -- vypsat seznam chyb na obrazovku a do listingu
       print_errors(os);
@@ -61,6 +92,27 @@ class private c_flex_jit_engine =
       -- zavrit soubor listingu
       finalize;
       end jit_execute;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static jit_load =
+    -- Spustí zadanou kompilační jednotku. Pokud nenajde přeložený modul, JIT-zkompiluje ho.
+    ------------------------------------------------------------------------------------------------
+    with
+      ff_lib.ff_text_output;
+
+    begin
+      -- přeložit
+      load(os,config.lst_name^,config.ctm_name^,part_type);
+
+      -- vypsat seznam chyb na obrazovku a do listingu
+      print_errors(os);
+      print_errors(get_listing_writer^);
+
+      -- zavrit soubor listingu
+      finalize;
+      end jit_load;
 
 
 

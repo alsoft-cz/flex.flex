@@ -26,13 +26,11 @@ class private abstract linkresolver_ia32 =
       cp_cpu.cp_32.cp_metadata,
       cg_gen,
       cg_gen.cg_ia32,
-      cg_gen.cg_ia32.ci_struct
-    #if debug2 then;
-      ,cl_link.cl_debug
-      #if codeview then;
-      ,cl_link.cl_debug.cl_codeview
+      cg_gen.cg_ia32.ci_struct,
+      cl_link.cl_debug
+      #if codeview then;,
+      cl_link.cl_debug.cl_codeview
       #end if;
-    #end if;
       ;  -- %%TODO(WITH) Předělat na více WITH
 
     var
@@ -69,7 +67,7 @@ class private abstract linkresolver_ia32 =
         --------------------------------------------------------------------------------------------
         begin
           if entity<>curr then 
-            mark(entity); 
+            mark_single(entity); 
             end if;
           end mark_entity;
     
@@ -177,7 +175,8 @@ class private abstract linkresolver_ia32 =
     #template set_tag (
         base_addr,                               -- bázová absolutní adresa struktury, ve které je položka
         tag_field,                               -- položka, do které se ukládá tag
-        src_codegen);                            -- řídící struktura entity jejíž tag se zjišťuje
+        src_codegen,                             -- řídící struktura entity jejíž tag se zjišťuje
+        src_partition_id);                       -- ID partition, do které spadá entita jejíž tag se zjišťuje
     -- Přiřadí do položky [tag_field] hodnotu tagu entity reprezentované řídící strukturou 
     -- [src_codegen] a vygeneruje odpovídající load-time relokaci.
     ------------------------------------------------------------------------------------------------
@@ -187,7 +186,7 @@ class private abstract linkresolver_ia32 =
       tag_field:=picodegen_metadata(src_codegen)^.desc_addr;
 
       -- vygenerovat relokaci
-      add_relocation(base_addr+tag_field:position);
+      add_relocation(src_partition_id,base_addr+tag_field:position,trd_absolute);
       -- %%TOOD(RELOCATION) Hynkůůůůů
       #end set_tag;
 
@@ -289,7 +288,7 @@ class private abstract linkresolver_ia32 =
           verify({VERIFY=}000389,not fake_tag and then ancestor^.linked<>ls_linked);
           verify({VERIFY=}000968,ancestor^.codegen=nil);
           verify({VERIFY=}000969,not fake_tag and then ancestor^.codegen=entity^.codegen);
-          set_tag(codegen^.desc_addr,codegen^.desc^.ancestor_tag,ancestor^.codegen);
+          set_tag(codegen^.desc_addr,codegen^.desc^.ancestor_tag,ancestor^.codegen,ancestor^.partition_id);
           end if;
         end declare;
       end build_entity_descriptor;
@@ -318,7 +317,7 @@ class private abstract linkresolver_ia32 =
         p_desc_type(picodegen_type(ptyp^.codegen)^.desc)^.spec_ptr[pentity_special(srch.psym)^.spectype]:=picodegen_subprog(pentity_special(srch.psym)^.codegen)^.ifirst^.cstart;
 
         -- zapamatovat si relokaci pro generování EXE
-        add_relocation(codegen^.desc_addr+t_desc_type.spec_ptr:position+pentity_special(srch.psym)^.spectype:ord*t_desc_type.spec_ptr:base:size);
+        add_relocation(srch.psym^.partition_id,codegen^.desc_addr+t_desc_type.spec_ptr:position+pentity_special(srch.psym)^.spectype:ord*t_desc_type.spec_ptr:base:size,trd_absolute);
 
         -- další speciální metoda
         srch.find_et_next;
@@ -348,7 +347,7 @@ class private abstract linkresolver_ia32 =
       p_desc_class(picodegen_interface(interface^.codegen)^.desc)^.vtable:=vtable_addr;
 
       -- zapamatovat si relokaci pro generování EXE
-      add_relocation(picodegen_interface(interface^.codegen)^.desc_addr+t_desc_class.vtable:position);
+      add_relocation(curr_partition,picodegen_interface(interface^.codegen)^.desc_addr+t_desc_class.vtable:position,trd_absolute);
 
       -- zpracovat všechny virtuální metody ve virtuální tabulce
       for vindex in 1..interface^.get_vtable_size loop
@@ -366,7 +365,7 @@ class private abstract linkresolver_ia32 =
           picodegen_interface(interface^.codegen)^.vtable^[interface^.normalize_vindex(vindex)]:=picodegen_subprog(pmethod^.codegen)^.ifirst^.cstart;
 
           -- zapamatovat si relokaci pro generování EXE
-          add_relocation(vtable_addr+interface^.normalize_vindex(vindex)*t_vptr_table:base:size);
+          add_relocation(pmethod^.partition_id,vtable_addr+interface^.normalize_vindex(vindex)*t_vptr_table:base:size,trd_absolute);
           end declare;
         end loop;
       end build_class_descriptor_virtual_methods;
@@ -398,7 +397,7 @@ class private abstract linkresolver_ia32 =
       p_desc_class(picodegen_interface(interface^.codegen)^.desc)^.itable:=itable_addr;
 
       -- zapamatovat si relokaci pro generování EXE
-      add_relocation(picodegen_interface(interface^.codegen)^.desc_addr+t_desc_class.itable:position);
+      add_relocation(curr_partition,picodegen_interface(interface^.codegen)^.desc_addr+t_desc_class.itable:position,trd_absolute);
 
       -- připravit iterátor
       pentity_type(interface^.refclass.getcentity)^.interfaces^.get_exposed_interfaces(it);
@@ -455,7 +454,8 @@ class private abstract linkresolver_ia32 =
         -- doplnit tag třídy-interfacu
         set_tag(p_desc_class(picodegen_interface(interface^.codegen)^.desc)^.itable,
                 picodegen_interface(interface^.codegen)^.itable^[exposed_iface^.interface_index].class_tag,
-                picodegen_interface(exposed_iface^.codegen));
+                picodegen_interface(exposed_iface^.codegen),
+                exposed_iface^.instance.getcentity^.partition_id);
         end loop;
       end build_finalize_class_descriptor_interfaces;
 
@@ -608,15 +608,22 @@ class private abstract linkresolver_ia32 =
       build_type_descriptor_special_methods(ptyp^.codegen,ptyp);
 
       -- dosadit vlastnosti specifické pro typy s bázovým typem
-      if ptyp^.stype in dts_base then
+      -- Pozor, takový "^unchecked" žádnou bázi nemá.
+      if ptyp^.stype in dts_base and then ptyp^.base.isset then
         -- tag typu báze
-        set_tag(picodegen_type(ptyp^.codegen)^.desc_addr,p_desc_type_based(picodegen_type(ptyp^.codegen)^.desc)^.base_tag,ptyp^.base.getctype^.codegen);
+        set_tag(picodegen_type(ptyp^.codegen)^.desc_addr,
+                p_desc_type_based(picodegen_type(ptyp^.codegen)^.desc)^.base_tag,
+                ptyp^.base.getctype^.codegen,
+                ptyp^.base.getctype^.partition_id);
         end if;
 
       -- dosadit vlastnosti specifické pro typy s rozsahem
       if ptyp^.stype in dts_index then
         -- tag typu rozsahu
-        set_tag(picodegen_type(ptyp^.codegen)^.desc_addr,p_desc_type_indexed(picodegen_type(ptyp^.codegen)^.desc)^.range_tag,ptyp^.srange.getctype^.codegen);
+        set_tag(picodegen_type(ptyp^.codegen)^.desc_addr,
+                p_desc_type_indexed(picodegen_type(ptyp^.codegen)^.desc)^.range_tag,
+                ptyp^.srange.getctype^.codegen,
+                ptyp^.srange.getctype^.partition_id);
         end if;
 
       -- dosadit vlastnosti specifické pro ordinální typy
@@ -646,7 +653,10 @@ class private abstract linkresolver_ia32 =
       build_entity_descriptor(pmsg^.codegen,pmsg,addr);
 
       -- tag typu zprávy
-      set_tag(picodegen_message(pmsg^.codegen)^.desc_addr,p_desc_message(picodegen_message(pmsg^.codegen)^.desc)^.type_tag,pmsg^.typ.getctype^.codegen);
+      set_tag(picodegen_message(pmsg^.codegen)^.desc_addr,
+              p_desc_message(picodegen_message(pmsg^.codegen)^.desc)^.type_tag,
+              pmsg^.typ.getctype^.codegen,
+              pmsg^.typ.getctype^.partition_id);
 
       -- nyní je již velikost všech složek deskriptoru započítaná, můžeme posunout adresu
       addr.compute_next_address;
@@ -707,13 +717,13 @@ class private abstract linkresolver_ia32 =
 
     begin
       -- je vůbec co vyhodnocovat ?
-      if inst.r=nil then 
-        return; 
+      if inst.r=nil then
+        return;
         end if;
 
       for i in inst.r^:range loop -- with inst.r^[i] loop
-        declare 
-        
+        declare
+
           var
             r      : inst.r^:base;
 
@@ -728,7 +738,7 @@ class private abstract linkresolver_ia32 =
             setfield(inst,r.disp,value);
             
             -- zapamatovat si relokaci pro generování EXE
-            add_relocation(inst.cstart+r.disp);
+            add_relocation(r.relo_info.rpartition,inst.cstart+r.disp,trd_absolute);
             end set_absolute;
 
           ------------------------------------------------------------------------------------------
@@ -740,9 +750,15 @@ class private abstract linkresolver_ia32 =
             modtemp : t_mod_unsigned32;
 
           begin
+            -- dosadit hodnotu relativní relokace do kódu
             modtemp:=t_mod_unsigned32(value);
             modtemp-t_mod_unsigned32(r.nextip+inst.cstart);
             setfield(inst,r.disp,t_unsigned32(modtemp));
+
+            -- pokud relokace směřuje do cizí parition, pak generovat i load-time relokaci
+            if r.relo_info.rpartition<>curr_partition then
+              add_relocation(r.relo_info.rpartition,inst.cstart+r.disp,trd_relative);
+              end if;
             end set_relative;
 
         begin
@@ -766,7 +782,7 @@ class private abstract linkresolver_ia32 =
                         -- externí symbol
                         then set_absolute(getindirect(pentity_procedure(r.relo_info.rentity)));
                         
-                        -- normální symbol }{%%X A která instance to je ?
+                        -- normální symbol %%X A která instance to je ?
                         else 
                           if not r.absolute
                             then set_relative(picodegen_subprog(pentity(r.relo_info.rentity)^.codegen)^.ifirst^.cstart);
@@ -936,8 +952,10 @@ class private abstract linkresolver_ia32 =
     -- Sestavení.
     ------------------------------------------------------------------------------------------------
     with
-      standard,standard.console, standard.conversions,
-      cc_base,cc_base.cc_sym;
+      standard,
+      standard.conversions,
+      cc_base,
+      cc_base.cc_sym;
 
     var
       segment_address : c_address_aligner_32;    -- přidělovač adres segmentů
@@ -1040,7 +1058,6 @@ class private abstract linkresolver_ia32 =
         end if;
 
       ----- Fáze 4 : debug informace -----
-    #if debug2 then;
       -- jaky typ debug informaci budeme generovat
       if not cfg_no_debug_info then
       #if codeview then;
@@ -1059,7 +1076,6 @@ class private abstract linkresolver_ia32 =
         -- sestavime strom s debug informacemi
         debug_info^.linkdebuginfo(compi,^this);
         end if;
-    #end if;
       end link;
 
 
@@ -1473,22 +1489,22 @@ class private linkresolver_ia32_win32 =
 
     begin
       -- je vůbec co exportovat ?
-      if export_list.list=nil or else export_list.list^:length=0 then 
+      if sys_export_list.list=nil or else sys_export_list.list^:length=0 then 
         map_write_line('No exported entities');
         return; 
         end if;
 
       -- zjistit plne kvalifikovana jmena exportu
-      for i in export_list.list^:range loop
-        case export_list.list^[i]^.etype
+      for i in sys_export_list.list^:range loop
+        case sys_export_list.list^[i]^.etype
           when et_procedure do
-            if pexportinfo(pentity_procedure(export_list.list^[i])^.export_info)^.export_name:length=0 then
-              pexportinfo(pentity_procedure(export_list.list^[i])^.export_info)^.export_name:=sym_get_qid(export_list.list^[i]);
+            if pexportinfo(pentity_procedure(sys_export_list.list^[i])^.export_info)^.export_name:length=0 then
+              pexportinfo(pentity_procedure(sys_export_list.list^[i])^.export_info)^.export_name:=sym_get_qid(sys_export_list.list^[i]);
               end if;
           
           when et_var do
-            if pexportinfo(pentity_var(export_list.list^[i])^.export_info)^.export_name:length=0 then
-              pexportinfo(pentity_var(export_list.list^[i])^.export_info)^.export_name:=sym_get_qid(export_list.list^[i]);
+            if pexportinfo(pentity_var(sys_export_list.list^[i])^.export_info)^.export_name:length=0 then
+              pexportinfo(pentity_var(sys_export_list.list^[i])^.export_info)^.export_name:=sym_get_qid(sys_export_list.list^[i]);
               end if;
           
           when others do verify({VERIFY=}000905, true);
@@ -1503,41 +1519,41 @@ class private linkresolver_ia32_win32 =
         expname2   : t_char32str;
 
       begin
-        i_sort:=export_list.list^:length;
+        i_sort:=sys_export_list.list^:length;
         loop
           zmena:=false;
           for j in 1..i_sort-1 loop
     
             -- jmeno j-teho exportu
-            case export_list.list^[j]^.etype
+            case sys_export_list.list^[j]^.etype
               when et_procedure do
-                expname1:=pexportinfo(pentity_procedure(export_list.list^[j])^.export_info)^.export_name;
+                expname1:=pexportinfo(pentity_procedure(sys_export_list.list^[j])^.export_info)^.export_name;
               
               when et_var do
-                expname1:=pexportinfo(pentity_var(export_list.list^[j])^.export_info)^.export_name;
+                expname1:=pexportinfo(pentity_var(sys_export_list.list^[j])^.export_info)^.export_name;
               
               when others do verify({VERIFY=}000906, true);
               end case;
             
             -- jmeno j+1-teho exportu
-            case export_list.list^[j+1]^.etype
+            case sys_export_list.list^[j+1]^.etype
               when et_procedure do
-                expname2:=pexportinfo(pentity_procedure(export_list.list^[j+1])^.export_info)^.export_name;
+                expname2:=pexportinfo(pentity_procedure(sys_export_list.list^[j+1])^.export_info)^.export_name;
               
               when et_var do
-                expname2:=pexportinfo(pentity_var(export_list.list^[j+1])^.export_info)^.export_name;
+                expname2:=pexportinfo(pentity_var(sys_export_list.list^[j+1])^.export_info)^.export_name;
               
               when others do verify({VERIFY=}000907, true);
               end case;
 
             if expname1>expname2 then
-              --%%TODO(#TEMPLATE) exchange(export_list.list^[j],export_list.list^[j+1]);
+              --%%TODO(#TEMPLATE) exchange(sys_export_list.list^[j],sys_export_list.list^[j+1]);
               declare var
                 psym : pentity;
               begin
-                psym:=export_list.list^[j];
-                export_list.list^[j]:=export_list.list^[j+1];
-                export_list.list^[j+1]:=psym;
+                psym:=sys_export_list.list^[j];
+                sys_export_list.list^[j]:=sys_export_list.list^[j+1];
+                sys_export_list.list^[j+1]:=psym;
                 end declare;
               zmena:=true;
               end if;
@@ -1548,8 +1564,8 @@ class private linkresolver_ia32_win32 =
 
       -- vypsat exporty do listingu
       map_write_line('Exported symbols:');
-      for i in export_list.list^:range loop
-        map_exported_entity(sym_get_qid(export_list.list^[i]));
+      for i in sys_export_list.list^:range loop
+        map_exported_entity(sym_get_qid(sys_export_list.list^[i]));
         end loop;
       end link_segment_export;
 

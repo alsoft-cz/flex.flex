@@ -14,19 +14,18 @@ with
 type
   -- popis nastaveni
   toptiondesc      = record
-      txt              : tshortident;
-      opt              : toption;
+      txt              : tshortident;            -- identifikátor volby
       etypes           : tentitytypeset;         -- typy entit pro ktere se vztahuje dane nastaveni
       switch           : t_logical;              -- F - option se da pouze nastavit, T - da se zapnout a vypnout
-      paramtype        : tdatatype;              -- datovy typ 1. parametru
+      paramtype        : toption_param_type;     -- datovy typ 1. parametru
       propagate_on_get : t_logical;              -- T - hleda se nejblizsi nadrazene platna entita od daneho kontextu/entity behem zjistovani nastaveni
       propagate_on_set : t_logical;              -- T - hleda se nejblizsi nadrazene platna entita od daneho kontextu/entity behem nastavovani nastaveni
       inherit          : t_logical;              -- T - nastaveni se dedi do nove vytvorenych entit
       end record;
-  
+
 
   -- !!! Pokud zmenis [toptiondata] nebo [toptions], nezapomen provest prislusne upravy v [o_clone_options]
-  
+
   -- parametry jednoho nastaveni
   toptiondata;
   poptiondata      = ^toptiondata;
@@ -34,7 +33,9 @@ type
       typ          : toption;
       next         : poptiondata;
       -- pridat dalsi typy dle potreby
-      uint         : t_unsigned;                -- cele cislo bez znamenka
+      uniint       : tuniint;                    -- tuniint
+      unicode_addr : tunicode_addr;              -- tunicode_addr
+      unidata_size : tunidata_size;              -- tunidata_size
       end record;
 
   -- nastaveni s parametry nastaveni
@@ -49,16 +50,16 @@ var
 {%OFF}
   -- !!! tabulka je indexovana podle toption!
   optiontab       : const array toption of toptiondesc := [
-      [for txt use 'DUMP'                   , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate_on_get use false, for propagate_on_set use false, for inherit use true ],
-      [for txt use 'DUMP_CODE'              , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate_on_get use false, for propagate_on_set use false, for inherit use true ],
-      [for txt use 'DUMP_REGS'              , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate_on_get use false, for propagate_on_set use false, for inherit use true ],
-      [for txt use 'EXTRA_DEBUG_INFORMATION', for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate_on_get use false, for propagate_on_set use false, for inherit use true ],
-      [for txt use 'IMAGE_BASE'             , for etypes use [et_compile]       ,for switch use false,for paramtype use dt_unsigned, for propagate_on_get use true,  for propagate_on_set use true,  for inherit use false],
-      [for txt use 'OVERFLOW_CHECKING'      , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate_on_get use false, for propagate_on_set use false, for inherit use true ],
-      [for txt use 'RANGE_CHECKING'         , for etypes use tentitytypeset:full,for switch use true ,for paramtype use dt_undef   , for propagate_on_get use false, for propagate_on_set use false, for inherit use true ],
-      [for txt use 'STACK_RESERVE'          , for etypes use [et_compile]       ,for switch use false,for paramtype use dt_unsigned, for propagate_on_get use true,  for propagate_on_set use true,  for inherit use false],
-      [for txt use 'VALIDATE_HEAP'          , for etypes use ets_enclosing      ,for switch use true ,for paramtype use dt_undef   , for propagate_on_get use false, for propagate_on_set use false, for inherit use true ],
-      [for txt use 'VALIDATE_STACK'         , for etypes use ets_enclosing      ,for switch use true ,for paramtype use dt_undef   , for propagate_on_get use false, for propagate_on_set use false, for inherit use true ]]; 
+      [for txt use 'DUMP'                   , for etypes use tentitytypeset:full,for switch use true ,for paramtype use optt_undef       ,for propagate_on_get use false,for propagate_on_set use false,for inherit use true ],
+      [for txt use 'DUMP_CODE'              , for etypes use tentitytypeset:full,for switch use true ,for paramtype use optt_undef       ,for propagate_on_get use false,for propagate_on_set use false,for inherit use true ],
+      [for txt use 'DUMP_REGS'              , for etypes use tentitytypeset:full,for switch use true ,for paramtype use optt_undef       ,for propagate_on_get use false,for propagate_on_set use false,for inherit use true ],
+      [for txt use 'EXTRA_DEBUG_INFORMATION', for etypes use tentitytypeset:full,for switch use true ,for paramtype use optt_undef       ,for propagate_on_get use false,for propagate_on_set use false,for inherit use true ],
+      [for txt use 'IMAGE_BASE'             , for etypes use [et_compile]       ,for switch use false,for paramtype use optt_unicode_addr,for propagate_on_get use true ,for propagate_on_set use true ,for inherit use false],
+      [for txt use 'OVERFLOW_CHECKING'      , for etypes use tentitytypeset:full,for switch use true ,for paramtype use optt_undef       ,for propagate_on_get use false,for propagate_on_set use false,for inherit use true ],
+      [for txt use 'RANGE_CHECKING'         , for etypes use tentitytypeset:full,for switch use true ,for paramtype use optt_undef       ,for propagate_on_get use false,for propagate_on_set use false,for inherit use true ],
+      [for txt use 'STACK_RESERVE'          , for etypes use [et_compile]       ,for switch use false,for paramtype use optt_unidata_size,for propagate_on_get use true ,for propagate_on_set use true ,for inherit use false],
+      [for txt use 'VALIDATE_HEAP'          , for etypes use ets_enclosing      ,for switch use true ,for paramtype use optt_undef       ,for propagate_on_get use false,for propagate_on_set use false,for inherit use true ],
+      [for txt use 'VALIDATE_STACK'         , for etypes use ets_enclosing      ,for switch use true ,for paramtype use optt_undef       ,for propagate_on_get use false,for propagate_on_set use false,for inherit use true ]]; 
 {%ON}
 
 
@@ -66,19 +67,29 @@ var
 ----------------------------------------------------------------------------------------------------
 procedure o_get_option_by_id  =
 -- zjisti ordinalni id nastaveni podle identifikatoru
--- vrati T pokud ok, F pokud takove nastaveni nezname
+-- pokud takove nastaveni nezname vyvola vyjimku [o_operation_failed]
 ----------------------------------------------------------------------------------------------------
+var
+  res : t_logical;
+
 begin
-  result:=false;
+  res:=false;
   
   -- vyhledat
   for i in optiontab:range loop
     if optiontab[i].txt = optionid then
-      result:=true;
+      res:=true;
       option:=i;
       break;
       end if;
     end loop;
+  
+  -- nenaslo se?
+  if not res then
+    -- nenaslo
+    raise o_operation_failed;
+    end if;
+
   end o_get_option_by_id;
 
 
@@ -320,83 +331,99 @@ begin
   end alloc_option_data;
 
 
-
 ----------------------------------------------------------------------------------------------------
-procedure o_set_option_param_unsigned =
--- nastavi bezznamenkovy celociselny parametr pro nastaveni [option] v ramci kontextu [context]
--- hleda se nejblizsi platny kontext, pokud se nenajde vyvola se interni chyba
+#template o_set_option_param (fooname,param_type,optiondata_value_name);
+-- Sablona pro vygenerovani o_set_option_param*
 ----------------------------------------------------------------------------------------------------
-var
-  entity          : pentity;
-  optiondata      : poptiondata;
+  procedure fooname =
+  var
+    pent           : pentity;
+    optiondata     : poptiondata;
 
-begin
-  -- najdi entitu, na ktere se provede uprava nastaveni
-  entity:=find_entity_by_context(context,option,{setting}true);
+  begin
+    -- jen pro spravny datovy typ
+    verify({VERIFY=}001308,o_get_option_param_type(option)<>param_type);
 
-  -- entita nenalezena?
-  verify({VERIFY=}000680,entity=nil);
+    -- najdi entitu, na ktere se provede uprava nastaveni
+    pent:=find_entity_by_entity(^entity,option,{setting}true);
 
-  -- alokuj misto pro nastaveni pokud treba
-  alloc_options(entity^.compv.options);
+    -- entita nenalezena?
+    verify({VERIFY=}000680,pent=nil);
 
-  -- najdi parametr
-  optiondata:=find_option_data(option,poptions(entity^.compv.options)^.params);
+    -- alokuj misto pro nastaveni pokud treba
+    alloc_options(pent^.compv.options);
 
-  -- alokuj novou strukturu pokud treba
-  if optiondata=nil then 
-    alloc_option_data(optiondata);
-    optiondata^.typ:=option;
-    add_option_data(poptions(entity^.compv.options)^.params,optiondata);
-    end if;
+    -- najdi parametr
+    optiondata:=find_option_data(option,poptions(pent^.compv.options)^.params);
 
-  optiondata^.uint:=param;
-  end o_set_option_param_unsigned;
+    -- alokuj novou strukturu pokud treba
+    if optiondata=nil then 
+      alloc_option_data(optiondata);
+      optiondata^.typ:=option;
+      add_option_data(poptions(pent^.compv.options)^.params,optiondata);
+      end if;
 
+    optiondata^.optiondata_value_name:=param;
+    end fooname
 
-
-----------------------------------------------------------------------------------------------------
-procedure o_get_option_param_unsigned_by_entity =
--- vrati bezznamenkovy celociselny parametr pro nastaveni [option] v ramci entity [entity]
--- hleda se nejblizsi platny kontext, pokud se nenajde funkce vrati F, jinak
--- funkce vrati F pokud parametr jeste nebyl nastaveny a [param] je nedefinovany, T pri uspechu
-----------------------------------------------------------------------------------------------------
-var
-  pent       : pentity;
-  optiondata : poptiondata;
-
-begin
-  result:=false;
-
-  -- najdi entitu, na ktere se provede uprava nastaveni
-  pent:=find_entity_by_entity(^entity,option,{setting}false);
-
-  -- entita nenalezena?
-  if pent=nil or else pent^.compv.options=nil then return; end if;
-
-  -- najdi parametr
-  optiondata:=find_option_data(option,poptions(pent^.compv.options)^.params);
-
-  -- existuje parametr pro [option]?
-  if optiondata<>nil then 
-    -- existuje - precti ho
-    param:=optiondata^.uint;
-    result:=true;
-    end if;
-  end o_get_option_param_unsigned_by_entity;
+  #end o_set_option_param;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure o_get_option_param_unsigned_by_context =
--- vrati bezznamenkovy celociselny parametr pro nastaveni [option] v ramci kontextu [context]
--- hleda se nejblizsi platny kontext, pokud se nenajde funkce vrati F, jinak
--- funkce vrati F pokud parametr jeste nebyl nastaveny a [param] je nedefinovany, T pri uspechu
+#template o_get_option_param (fooname,param_type,optiondata_value_name);
+-- Sablona pro vygenerovani o_get_option_param*
 ----------------------------------------------------------------------------------------------------
-begin
-  result:=o_get_option_param_unsigned_by_entity(option,context.entity^,param);
-  end o_get_option_param_unsigned_by_context;
+  procedure fooname =
 
+  var
+    pent           : pentity;
+    optiondata     : poptiondata;
+    res            : t_logical;
+    
+  begin
+    -- jen pro spravny datovy typ
+    verify({VERIFY=}001309,o_get_option_param_type(option)<>param_type);
+
+    res:=false;
+
+    -- najdi entitu, na ktere se provede uprava nastaveni
+    pent:=find_entity_by_entity(^entity,option,{setting}false);
+
+    -- entita nenalezena?
+    if pent=nil or else pent^.compv.options=nil then
+      raise o_operation_failed;
+      end if;
+
+    -- najdi parametr
+    optiondata:=find_option_data(option,poptions(pent^.compv.options)^.params);
+
+    -- existuje parametr pro [option]?
+    if optiondata<>nil then 
+      -- existuje - precti ho
+      param:=optiondata^.optiondata_value_name;
+      res:=true;
+      end if;
+
+    -- nalezlo se?
+    if not res then
+      -- nenalezlo
+      raise o_operation_failed;
+      end if;
+
+    end fooname
+  #end o_get_option_param;
+
+
+
+----------------------------------------------------------------------------------------------------
+o_set_option_param (o_set_option_param_uniint,optt_uniint,uniint);
+o_set_option_param (o_set_option_param_unicode_addr,optt_unicode_addr,unicode_addr);
+o_set_option_param (o_set_option_param_unidata_size,optt_unidata_size,unidata_size);
+o_get_option_param (o_get_option_param_uniint,optt_uniint,uniint);
+o_get_option_param (o_get_option_param_unicode_addr,optt_unicode_addr,unicode_addr);
+o_get_option_param (o_get_option_param_unidata_size,optt_unidata_size,unidata_size);
+----------------------------------------------------------------------------------------------------
 
 
 ----------------------------------------------------------------------------------------------------
@@ -434,7 +461,9 @@ begin
     if optiontab[opt_data^.typ].inherit then
       alloc_option_data(new_opt_data);
       new_opt_data^.typ:=opt_data^.typ;
-      new_opt_data^.uint:=opt_data^.uint;
+      new_opt_data^.uniint:=opt_data^.uniint;
+      new_opt_data^.unicode_addr:=opt_data^.unicode_addr;
+      new_opt_data^.unidata_size:=opt_data^.unidata_size;
       add_option_data(poptions(dest_entity.compv.options)^.params,new_opt_data);
       end if;
     

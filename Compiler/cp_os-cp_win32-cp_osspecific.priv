@@ -131,23 +131,25 @@ begin
     end if;
 
   lib:=tlt_system;
-  res:=id_to_librarytype(id,lib);
+  
+  id_to_librarytype(id,lib);
 
-  -- je platny identifikator id?
-  if not res then
-    ce^.seterror({CCERR=}000392,ce_libtypeunknown);
-    ce^.setparam(entityident_to_string(id));
-    ce^.loadpos;
-    ce^.resumeerror;
-    return;
-    end if;
-
+  -- identifikator je platny
   new plibraryinfo(modl^.lib_info);
 
   -- vytvoren?
   verify({VERIFY=}000659,modl^.lib_info=nil);   
-
+    
   plibraryinfo(modl^.lib_info)^.lib_type:=lib;
+
+catch
+  when unknown_libtype do
+    -- identifikator je neplatny
+    ce^.seterror({CCERR=}000392,ce_libtypeunknown);
+    ce^.setparam(entityident_to_string(id));
+    ce^.loadpos;
+    ce^.resumeerror;
+
   end setlibrary;
 
 
@@ -175,7 +177,7 @@ begin
 
   -- založit informace o exportu
   new pexportinfo(entity^.export_info);
-  
+
   -- doplnit exportní jméno
   pexportinfo(entity^.export_info)^.export_name:=expname;
   #end export_scheme;
@@ -248,19 +250,24 @@ with
   cc_base,
   cc_base.cc_options;
 
-begin
-  -- %%TODO(ANCESTOR) -- ziskar imagebase z implementace predka
-  -- pokud adresa nastavena, jednoduse ji vrat...
-  if o_get_option_param_unsigned_by_entity(opt_image_base,compi,result) then
-    return;
-    end if;
+var
+  addr : tunicode_addr;
 
-  -- ... jinak vrat defaultni hodnoty
-  case compi.part_result
-    when tpr_program do result:=$400000;
-    when tpr_library do result:=$10000000;
-    when others do verify({VERIFY=}000669,true);
-    end case;
+begin
+  -- %%TODO(ANCESTOR) -- ziskat imagebase z implementace predka
+  -- pokud adresa nastavena, jednoduse ji vrat...
+  o_get_option_param_unicode_addr(opt_image_base,pentity(^compi)^,addr);
+  result:=addr;
+
+catch
+  when o_operation_failed do
+    -- ... jinak vrat defaultni hodnoty
+    case compi.part_result
+      when tpr_auto_select do verify({VERIFY=}001321,true);
+      when tpr_program     do result:=unsigned_to_unicode_addr($0040_0000);
+      when tpr_library     do result:=unsigned_to_unicode_addr($1000_0000);
+      end case;
+
   end getimagebase;
 
 
@@ -269,15 +276,18 @@ begin
 override getstackreserve =
 -- Vrati velikost alokovaneho mista na stacku kompilacni jednotky
 ----------------------------------------------------------------------------------------------------
-
 var
-  size    : t_unsigned;
+  size : tunidata_size;
 
 begin
   result:=0;
-  if o_get_option_param_unsigned_by_entity(opt_stack_reserve,compi,size) then
-    result:=size;
-    end if;
+  
+  o_get_option_param_unidata_size(opt_stack_reserve,pentity(^compi)^,size);
+  result:=unidata_size_to_unsigned(size);
+
+catch
+  when o_operation_failed do;
+
   end getstackreserve;
 
 end cp_osspecific;

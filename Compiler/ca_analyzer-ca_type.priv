@@ -19,7 +19,8 @@ with
   cb_block.cb_make,
   cx_expr,
   cx_expr,cx_expr.cx_make,
-  ca_util;
+  ca_util,
+  ca_analyze;
 
 ----------------------------------------------------------------------------------------------------
 procedure a_make_subprogram (
@@ -505,9 +506,7 @@ begin
     ptyp:=pentity_var(data.pitem)^.typ.getctype;
 
     -- analyzovat typ složky
-    if ptyp^.stype<>dt_class then
-      a_type(ptyp^);
-      end if;
+    a_entity_out_of_order(ptyp);
 
     -- přiřadit počáteční hodnotu
     if tst=tst_init and then initvars and then (data.pitem^.init.isset or ptyp^.init.isset) then
@@ -630,9 +629,7 @@ begin
     ptyp:=pitem^.typ.getctype;
 
     -- analyzovat typ složky
-    if ptyp^.stype<>dt_class then
-      a_type(ptyp^);
-      end if;
+    a_entity_out_of_order(ptyp);
 
     -- komplexní inicializace je vyžadována, jestliže alespoň jedna složka nebo její typ má 
     -- počáteční hodnotu nebo je komplexní inicializace vyžadována pro její typ
@@ -705,7 +702,7 @@ begin
 { Tohle za nás již udělalo [a_type_array_resolve_complex].
   -- analyzovat bázový typ pole
   if ptyp^.stype<>dt_class then
-    a_type(ptyp^);
+    a_type(ptyp);
     end if;
 }
   -- vznikl nový deklarativní region
@@ -759,19 +756,19 @@ procedure a_type_array_resolve_complex (
 -- Při té příležitosti současně analyzuje bázový typ pole.
 ----------------------------------------------------------------------------------------------------
 var
-  ptyp             : pentity_type;               -- typ báze pole
+  pbase             : pentity_type;               -- typ báze pole
 
 begin
   -- zjistit si bázový typ pole
-  ptyp:=typ.base.getctype;
-
+  pbase:=typ.base.getctype;
+{
   -- analyzovat bázový typ pole
-  if ptyp^.stype<>dt_class then
-    a_type(ptyp^);
-    end if;
-
+  a_entity_out_of_order(pbase);{  if pbase^.stype<>dt_class then
+    a_type(pbase);
+    end if;}
+}
   -- komplexní inicializaci se provádí v případě, že má typ pole nebo jeho báze počáteční hodnotu
-  if typ.init.isset or ptyp^.init.isset then
+  if typ.init.isset or {typ.base.getctype}pbase{}^.init.isset then
     typ.tinit:=ti_complex;
     end if;
   end a_type_array_resolve_complex;
@@ -784,127 +781,111 @@ procedure a_type =
 -- inicializaci, finalizaci a adjustment zadaného typu.
 ----------------------------------------------------------------------------------------------------
 
+with
+  standard.console,
+  cl_link;
+
     ------------------------------------------------------------------------------------------------
     #template generate_special_methods(generator);
     -- Pro aktuální typ vygeneruje potřebné speciální metody pomocí generátoru [generator].
     ------------------------------------------------------------------------------------------------
       -- INIT
-      if typ.tinit=ti_complex then
-        generator(typ,tst_init);
+      if typ^.tinit=ti_complex then
+        generator(typ^,tst_init);
         end if;
 
       -- neobsahuje typ náhodou třídu ?
-      if t_contains_class(typ) then 
+      if t_contains_class(typ^) then 
         --%%TODO(#FOR) Nahradit meta-for-cyklem nebo se spolehnout na rozvíjení cyklů.
         for spec in succ tst_init..tspectype:last loop
-          generator(typ,spec);
+          generator(typ^,spec);
           end loop;
         end if;
       #end generate_special_methods;
 
-with
-  standard,console;
-
 begin
-  verify({VERIFY=}000576,typ.etype<>et_type);
+  verify({VERIFY=}000576,typ^.etype<>et_type);
 
+  -- prolog analýzy
+  a_analyze_prolog(typ^);
+{
   -- zajímají nás pouze entity z aktuální parition
-  if typ.partition_id<>curr_partition then return end if;
+  if typ^.partition_id<>curr_partition then return end if;
 
   -- analyzovat jen dosud neanalyzované symboly
-  if typ.analyzed<>as_none then return; end if;
+  if typ^.analyzed<>as_none then return; end if;
 
   -- symbol je právě analyzován
-  typ.analyzed:=as_analyzing;
+  typ^.analyzed:=as_analyzing;
 
   -- analyzovat předka
-  if typ.ancestor.isset then
+  if typ^.ancestor.isset then
     -- analyzovat předka
-    a_type(pentity_type(typ.ancestor.getcentity)^);
+    a_type(pentity_type(typ^.ancestor.getcentity));
+    end if;
+}
 
-    -- převzít příznak komplexní inicializace (tímto způsobem se zajistí
-    -- komplexní inicializace například pro jednoduché typy odvozené jako
-    -- private extension od komplexních typů)
-    if pentity_type(typ.ancestor.getcentity)^.tinit<>ti_normal then
-      typ.tinit:=pentity_type(typ.ancestor.getcentity)^.tinit;
-      end if;
+  -- převzít příznak komplexní inicializace (tímto způsobem se zajistí
+  -- komplexní inicializace například pro jednoduché typy odvozené jako
+  -- private extension od komplexních typů)
+  if typ^.ancestor.isset and then pentity_type(typ^.ancestor.getcentity)^.tinit<>ti_normal then
+    typ^.tinit:=pentity_type(typ^.ancestor.getcentity)^.tinit;
+    end if;
+
+  -- analyzovat bázový typ
+  -- Ondra 24.2.2004 : Po několika hodinách úmorného ladění empiricky zjištěno, že není dobrý
+  -- nápad volat analýzu bázového typu pro pointery. Nevím proč, důvod mě nenapadá, každopádně
+  -- to jinak zdechá na [memory_error] při překladu OUT.2.
+  if typ^.stype in dts_base-dts_pointer {and then typ^.base.isset} then
+    a_entity_out_of_order(typ^.base.getctype);
+    end if;
+
+  -- analyzovat typ rozsahu
+  if typ^.stype in dts_index then
+    a_entity_out_of_order(typ^.srange.getctype);
     end if;
 
   -- vygenerovat speciální metody tohoto typu
-  case typ.stype
+  case typ^.stype
     -- pole, neomezené pole
     when dt_array, dt_uarray do
         -- vyhodnotit, jestli je pro tento typ požadována komplexní inicializace
-        a_type_array_resolve_complex(typ);
+        a_type_array_resolve_complex(typ^);
 
         -- vygenerovat speciální metody
         generate_special_methods(a_type_array);
-      {
-        -- INIT
-        if typ.tinit=ti_complex then
-          a_type_array(typ,tst_init);
-          end if;
 
-        -- neobsahuje typ náhodou třídu ?
-        if t_contains_class(typ) then 
-          -- ENTRY
-          a_type_array(typ,tst_entry);
-
-          -- EXIT
-          a_type_array(typ,tst_exit);
-
-          -- ADJUST
-          a_type_array(typ,tst_adjust);
-          end if;
-      }
     -- řetězec, neomezený řetězec
     when dt_string, dt_ustring do
         -- neobsahuje typ náhodou třídu ?
-        if t_contains_class(typ) then 
-          write_line(sym_get_qid(^typ));
+        if t_contains_class(typ^) then 
+          write_line(sym_get_qid(^typ^));
 
           --unimplemented({UNIMP=}000200);
       {
           -- INIT
-          a_type_string(typ,tst_init);
+          a_type_string(typ^,tst_init);
 
           -- ENTRY se negeneruje, protože řetězec tříd vzniká vždy prázdný a jiný případ nenastane
           vážně??? a co vnořené třídy?
-          a_type_string(typ,tst_entry);
+          a_type_string(typ^,tst_entry);
 
           -- EXIT
-          a_type_string(typ,tst_exit);
+          a_type_string(typ^,tst_exit);
 
           -- ADJUST
-          a_type_string(typ,tst_adjust);
+          a_type_string(typ^,tst_adjust);
       }
           end if;
 
     -- record
     when dt_record do
         -- vyhodnotit, jestli je pro tento typ požadována komplexní inicializace
-        a_type_record_resolve_complex(typ);
+        a_type_record_resolve_complex(typ^);
 
         -- vygenerovat speciální metody
         generate_special_methods(a_type_record);
-      {
-        -- INIT
-        if typ.tinit=ti_complex then
-          a_type_record(typ,tst_init);
-          end if;
 
-        -- neobsahuje typ náhodou třídu ?
-        if t_contains_class(typ) then 
-          -- ENTRY
-          a_type_record(typ,tst_entry);
-
-          -- EXIT
-          a_type_record(typ,tst_exit);
-
-          -- ADJUST
-          a_type_record(typ,tst_adjust);
-          end if;
-      }
     -- třída
     when dt_class     do -- nic nedělat, to se řeší přímo
 
@@ -912,22 +893,26 @@ begin
     when others do
     {
         -- INIT
-        a_type_others(typ,tst_init);
+        a_type_others(typ^,tst_init);
 
         -- ENTRY
-        a_type_others(typ,tst_entry);
+        a_type_others(typ^,tst_entry);
 
         -- EXIT
-        a_type_others(typ,tst_exit);
+        a_type_others(typ^,tst_exit);
 
         -- ADJUST
-        a_type_others(typ,tst_adjust);
+        a_type_others(typ^,tst_adjust);
     }
 
     end case;
 
+  -- epilog analýzy
+  a_analyze_epilog(typ^);
+{
   -- symbol byl analyzován
-  typ.analyzed:=as_analyzed;
+  typ^.analyzed:=as_analyzed;
+}
   end a_type;
 
 

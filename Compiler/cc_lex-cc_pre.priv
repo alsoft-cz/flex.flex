@@ -113,6 +113,7 @@ begin
             end if;
 
       -- jiné metapříkazy nás nezajímají
+      when others do -- nic nedělat
       end case;
     end if;
   end lex_get_lex_element_inside_meta;
@@ -140,8 +141,9 @@ begin
   loop
     getlex(curr,lex);
     case lex
-      when lex_scol     do break;
-      when lex_eof      do lex_input^.check_meta_statements; return;
+      when lex_scol do break;
+      when lex_eof  do lex_input^.check_meta_statements; return;
+      when others   do -- nic nedělat
       end case;
     end loop;
   end p_skipunknown;
@@ -956,7 +958,7 @@ var
   eval             : tentityeval;
   option           : toption;
   switchable       : t_logical;
-  paramtype        : tdatatype;
+  paramtype        : toption_param_type;
   paramexpr        : expkind;
 
 begin
@@ -987,18 +989,25 @@ begin
     return; 
     end if;
 
-  -- neznama option?
-  if not o_get_option_by_id(idopt^,option) then
-    -- waruj
-    ce^.setwarning(curr,{CCERR=}000135,cw_unknown_option);
-    ce^.setparam(entityident_to_string(idopt^));
-    ce^.loadpos;
-    
-    -- preskoc zbytek
-    p_skipparams(curr);
-    
-    return;
-    end if;
+  -- zjisti option
+  begin
+    o_get_option_by_id(idopt^,option)
+  
+  catch    
+    -- neznama option?
+    when o_operation_failed do
+        -- neznama  
+        
+        -- waruj
+        ce^.setwarning(curr,{CCERR=}000135,cw_unknown_option);
+        ce^.setparam(entityident_to_string(idopt^));
+        ce^.loadpos;
+        
+        -- preskoc zbytek
+        p_skipparams(curr);
+        
+        return;
+    end;
 
   -- da se nastaveni pouzit v tomto contextu?
   if not o_is_option_applicable(option,curr) then
@@ -1044,7 +1053,7 @@ begin
   paramtype:=o_get_option_param_type(option);
 
   -- ocekavame parametr?
-  if paramtype<>dt_undef then
+  if paramtype<>optt_undef then
     -- ocekavame
     
     -- pokud vypinatelne
@@ -1058,8 +1067,11 @@ begin
 
     -- typ ocekavaneho vyrazu podle datoveho typu parametru nastaveni
     case paramtype
-      -- cele kladne cislo
-      when dt_unsigned do paramexpr:=ek_const_int;
+      -- konstantni cele kladne cislo
+      when optt_unicode_addr,optt_unidata_size do paramexpr:=ek_const_int;
+      
+      -- konstatntni cele cislo
+      when optt_uniint do paramexpr:=ek_const_ord;
     
       -- nic jineho nezname - podle potreby pridat dalsi typy
       when others do verify({VERIFY=}000681,true);
@@ -1071,30 +1083,33 @@ begin
 
     -- podle typu ziskej hodnotu vyrazu
     case paramexpr
-      when ek_const_int do
-        -- zjisti hodnotu univerzalniho cisla
-        x_const_int(expr,ui);
-        
-        -- z unicisla zformatuj ocekavany typ
-        case paramtype
-          when dt_unsigned do o_set_option_param_unsigned(option,curr,uniint_to_unsigned(ui));
+      when ek_const_int,ek_const_ord do
+          -- zjisti hodnotu univerzalniho cisla
+          x_const_int(expr,ui);
           
-          -- jiny datovy typ nezname - podle potreby dodelat
-          when others do verify({VERIFY=}000773,true);
-          end case;
-      
+          -- z unicisla zformatuj ocekavany typ
+          case paramtype
+            when optt_unicode_addr do o_set_option_param_unicode_addr(option,curr.entity^,uniint_to_unicode_addr(ui));
+            when optt_unidata_size do o_set_option_param_unidata_size(option,curr.entity^,uniint_to_unidata_size(ui));
+            when optt_uniint       do o_set_option_param_uniint(option,curr.entity^,ui);
+            
+            -- jiny datovy typ nezname - podle potreby dodelat
+            when others do verify({VERIFY=}000773,true);
+            end case;
+
       -- jiny vyraz zatim nezname - podle potreby dodelat
       when others do verify({VERIFY=}000774,true);
       end case;
     end if;
 
   -- nastaveni se vypina?
-  if switchable and ul=ul_false then
+  if switchable and ul=ul_false 
+
     -- ano - vypni
-    o_set_option_off(option,curr);
-  else
+    then o_set_option_off(option,curr);
+  
     -- ne - zapni
-    o_set_option_on(option,curr);
+    else o_set_option_on(option,curr);
     end if;
 
   -- pravá závorka
@@ -1283,6 +1298,7 @@ begin
       case lex
         when lex_endasm,lex_meta_end do break;
         when lex_eof do lex_input^.check_meta_statements; return;
+        when others do -- nic nedělat
         end case;
       end loop;
     end if;
@@ -1397,6 +1413,7 @@ var
       case lex
         when lex_meta_and_then do result:='#and then;';
         when lex_meta_or_else  do result:='#or else;';
+        when others            do verify({VERIFY=}001253);
         end case;
       end lextxt;
 

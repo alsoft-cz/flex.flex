@@ -5,6 +5,8 @@ module private compiler =
 -- TomasH : 10.07.2003 : Odpojil metodu [init] od [entry], ne vsechno se da udelat hned na zacatku.
 ----------------------------------------------------------------------------------------------------
 
+
+
 ----------------------------------------------------------------------------------------------------
 class private c_flex_compiler =
 -- Překladač Flexu.
@@ -14,10 +16,12 @@ class private c_flex_compiler =
       standard.conversions,
       standard.names,
       standard.files,
+      standard.strings,
       cc_def,
       cc_def.cc_entity,
       cc_def.cc_desc,
       cc_def.cc_var,
+      cc_def.cc_unitype,
       cc_base,
       cd_decl,
       ca_analyzer.ca_analyze,
@@ -27,7 +31,9 @@ class private c_flex_compiler =
       cl_link,
       cl_link.cl_resolver,
       cl_link.cl_image,
-      cc_io.cc_ctm;
+      cc_io.cc_ctm,
+      cc_base.cc_sym,
+      cc_io.cc_xml.cc_entity;
 
     use
       cc_def.cc_env,
@@ -50,6 +56,52 @@ class private c_flex_compiler =
     var
       listing      : ^cc_base.cc_listing;        -- listing
 
+
+    
+    ------------------------------------------------------------------------------------------------
+    static build_file_name (
+        directory  : in t_text_name;
+        file_name  : in t_text_name;
+        file_ext   : in t_text_name)
+        return p_text_name =
+    -- sestavi jmeno souboru
+    ------------------------------------------------------------------------------------------------
+    with
+      standard.names;
+
+    var
+      name         : c_name;                     -- dekomponované jméno
+      full_name    : c_name;                     -- jméno včetně adresáře
+      file_name_component : p_name_component_file_or_folder; -- jediná komponenta jména souboru
+
+    begin
+      -- rozložit původní jméno
+      name.decompose_name(file_name,tnt_unspecified);
+
+      -- poslední komponenta je vlastní jméno souboru
+      file_name_component:=name.components.get_last;
+
+      -- nahradit příponu
+      file_name_component^.append_extension(file_ext);
+
+      -- sestavit
+      -- adresar?
+      if directory:length>0 
+        -- sestav jmeno s adresarem
+        then
+          full_name.decompose_name(directory,tnt_unspecified);
+          full_name.components.insert(name.components.remove_last);
+          full_name.compose_name(result);
+        
+        -- jmeno bez adresare
+        else
+          name.compose_name(result);
+          end if;
+
+      end build_file_name;
+     
+    
+    
     ------------------------------------------------------------------------------------------------
     static compile =
     -- Překlad programu.
@@ -77,24 +129,24 @@ class private c_flex_compiler =
         -- poznamenat do listing^. začátek překladu
         listing^.start_section(listing^.tls_compilation);
         listing^.write_header_item('Partition type:',t_partition_type_txt[part_type]);
-        if part_type<>part_runtime then
+        --if part_type<>part_runtime then
           listing^.write_header_item('Source code:',src_name);
-          end if;
+          --end if;
         listing^.write_header_item('Listing:',lst_name);
         listing^.write_header_item('Date and time of compilation:','%%TODO');
         listing^.end_header;
 
         begin
           -- otevřít soubor
-          if part_type<>part_runtime then
+          --if part_type<>part_runtime then
             cc_text.text_open(src_name,false);
-            end if;
+            --end if;
 
           -- oznámit začátek překladu
           if cfg_verbosity=vl_low then os.write_line('Compiling...'); end if;
 
           -- přeložit partition
-          p_compile_partition(compi,part_type,part_result);
+          p_compile_partition(compi,part_type,part_result,part_extid);
         { 
           -- připravit kompilační jednotku, pokud se tak již nestalo dříve
           if compi=nil then
@@ -109,20 +161,20 @@ class private c_flex_compiler =
         }
         leave
           -- zavřít poslední soubor
-          if part_type<>part_runtime then
+          --if part_type<>part_runtime then
             cc_text.text_close;
-            end if;
+            --end if;
           end;               
 
         -- informuj o uspechu kompilace
         listing^.skip_line;
-        if part_type<>part_runtime then
+        --if part_type<>part_runtime then
           case compi^.part_result
             when tpr_library do listing^.write_header_item('Compiled library:',src_name);
             when tpr_program do listing^.write_header_item('Compiled program:',src_name);
             when others do verify({VERIFY=}000671,true);
             end case;       
-          end if;
+          --end if;
 
         -- konec, pokud je požadována pouze syntaktická kontrola nebo nastala nějaká chyba
         if ce^.testerror or cfg_syntax_check_only then
@@ -165,13 +217,13 @@ class private c_flex_compiler =
 
         ---- (4) linkování  ----
 
-        -- poznamenat na obrazovku a do listing^.
+        -- poznamenat na obrazovku a do listingu
         os.write_line('Linking...');
         listing^.start_section(listing^.tls_linking);
 
         -- linkování
         new plinkresolver_ia32_win32(resolver);
-        plinkresolver_ia32_win32(resolver)^.init(compi,cc_def.cc_var.os^.getimagebase(compi^),4096,4096,32{16},4);
+        plinkresolver_ia32_win32(resolver)^.init(compi,unicode_addr_to_unsigned(cc_def.cc_var.os^.getimagebase(compi^)),4096,4096,32{16},4);
         l_link(compi,resolver^);
 
         -- konec, pokud nastala nějaká chyba
@@ -239,16 +291,58 @@ class private c_flex_compiler =
 
             -- zavřít soubor
             output.close;
+            end if;
+          end declare;
 
-            -- poznamenat do listingu jméno souboru s metadaty
-            listing^.skip_line;
-            listing^.write_header_item('Created CTM:',ctm_name);
+        ---- (7) dump entit do xml  ----
+        declare var
+          esearch  : tentitysearch;              -- hledatko
+          file_name : t_char32str;
+
+        begin
+          if cfg_xml_dump_root_entity<>nil then
+            -- poznamenat na obrazovku a do listing^.
+            os.write('Creating XML dump...');
+
+            -- najit entitu
+            declare var
+              qid : p_qualified_entity_ident;
+            begin -- %%TODO(QID) 
+              qid:=string_to_qualified_entity_ident(str_to_upper(cfg_xml_dump_root_entity^));
+              esearch.find_global_by_qid(compi^,qid^);
+            leave
+              discard qid;
+              end declare;
+
+            -- naslo se?
+            if esearch.psym=nil
+              then
+                os.write(' failed! Entity ');
+                os.write(cfg_xml_dump_root_entity^);
+                os.write_line(' not found!');
+              else
+                declare var
+                  outfile  : p_char32ustr;
+
+                begin
+                  -- sestav jmeno souboru - <output directory>\<qid bez prvni tecky>.xml
+                  file_name:=str_trim(cfg_xml_dump_root_entity^,".",[se_left]);
+                  outfile:=build_file_name(output_dir,file_name,'xml');
+
+                  -- dump
+                  dump_entity_to_file(esearch.psym,outfile^);
+                
+                leave
+                  discard outfile;
+                  end declare;
+                end if;
+
             end if;
           end declare;
 
       catch
         -- chyby při překladu
-        when cc_codes.compiler_error, cc_codes.resume_error, cc_codes.internal_error {%%TODO(EXCEPTION) cc_codes.flex_error} do
+        when cc_codes.flex_error do
             -- v tuto chvíli již nic nedělat
 
       leave
@@ -279,6 +373,60 @@ class private c_flex_compiler =
         discard resolver;
         end;
       end compile;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static load =
+    -- Načtení compile-time metadat jedné partition.
+    ------------------------------------------------------------------------------------------------
+    var
+      compi        : pentity_compile;            -- kompilační jednotka
+
+    begin
+      -- nastavit stream pro zápis průběhu překladu
+      cc_var.output:=^os;
+      
+      -- inicializovat listing
+      new listing;
+      listing^.create(lst_name,listing^.t_listing_section_set:full);
+      cc_var.listing:=listing;
+
+
+      ---- (0) opsat do listingu konfiguraci překladu ----
+      listing^.start_section(listing^.tls_setup);
+
+      
+      ---- (6) sestavení compile-time metadat  ----
+      declare var
+        input    : aliased c_buffered_file_input_stream; -- vstupní soubor
+        reader   : c_ctm_reader;                 -- čteč metadat
+
+      begin
+        -- poznamenat na obrazovku a do listing^.
+        os.write_line('Reading compile-time metadata...');
+        listing^.start_section(listing^.tls_ctm);
+
+        -- vytvořit výstupní soubor
+        input.open(ctm_name);
+
+        -- načíst z něj metadata
+        reader.ctm_load(compi,^c_input_stream:(input));
+        
+      leave
+        -- zavřít soubor
+        input.close;
+        end declare;
+
+    catch
+      -- chyby při překladu
+      when cc_codes.flex_error do
+          -- v tuto chvíli již nic nedělat
+          
+    leave      
+      -- připravit se na další parition
+      succ curr_partition;
+      end load;
 
 
 

@@ -649,6 +649,7 @@ procedure b_opt_one_pass_loop (
 -- a přidá je na konec těla cyklu. Generuje hint.
 ----------------------------------------------------------------------------------------------------
 with
+  cc_base.cc_sym,
   cd_decl.cd_create;
 
 var
@@ -666,7 +667,7 @@ begin
     end if;
 
   -- vytvořit interní symbol návěští, nevyhodnocovat deklaraci
-  d_create_internal(curr,plabel,clabel,et_label,nil);
+  d_create_internal(curr,plabel,clabel,et_label,sym_get_label_id);
   plabel^.reachable:=true;                       -- návěští je použitelné jako cíl skoku
   plabel^.placed:=true;                          -- návěští je umístěno
   --plabel^.num:=0;                                -- číslo návěští (netřeba)
@@ -718,7 +719,7 @@ begin
         bl:=bl^.sub.first;
 
     -- nic jiného to nemohlo být
-    {when others do}
+    when others do verify({VERIFY=}001251);
     end case;
 
   -- optimalizace příkazu úspěšně dokončena
@@ -748,8 +749,8 @@ begin
 
   -- vytvořit nekonečný loop
   case bl^.btype
-      -- while
-      when bt_while do
+    -- while
+    when bt_while do
         declare var
           pil      : pblloop;                    -- nekonečný loop
         begin
@@ -758,12 +759,12 @@ begin
           bl:=pblnode(pil);
           end declare;
 
-      -- loop
-      when bt_loop do
+    -- loop
+    when bt_loop do
         pblloop(bl)^.cond:=nil;
 
-      -- nic jiného to nemohlo být
-      {when others do}
+    -- nic jiného to nemohlo být
+    when others do verify({VERIFY=}001252);
     end case;
 
   -- optimalizovat blok
@@ -982,6 +983,8 @@ var
   hasothers        : t_logical;                  -- T-je uvedena varianta OTHERS
   all              : t_logical;                  -- vyhodnocení bloku
   allx             : t_logical;                  -- vyhodnocení bloku
+  covered          : tchoicelist;                -- všechny pokryté varianty
+  uncovered        : tchoicelist;                -- nepokryté hodnoty řídícího výrazu
 
 begin
   ----- %%TECH Princip optimalizace a kontroly výběrů v CASE ---------------------------------------
@@ -1034,7 +1037,7 @@ begin
                     verify({VERIFY=}000425,(exp^.sub^.ntype<>nt_imm) or (exp^.sub^.next^.ntype<>nt_imm));
                     load_uniint(pexpimm(exp^.sub)^.imm,ui1);
                     load_uniint(pexpimm(exp^.sub^.next)^.imm,ui2);
-                    choice_add_range(blwhen^.clist,ui1,ui2,exp);
+                    choice_add_range(curr,blwhen^.clist,ui1,ui2,exp);
 
                 -- jeden bod
                 when erk_single do
@@ -1052,7 +1055,7 @@ begin
 
             -- jméno typu
             elsif exp^.nclass=nc_type then
-              choice_add_range(blwhen^.clist,exp^.t.getlval,exp^.t.gethval,exp);
+              choice_add_range(curr,blwhen^.clist,exp^.t.getlval,exp^.t.gethval,exp);
 
             else 
               verify({VERIFY=}000745,true);
@@ -1060,7 +1063,10 @@ begin
             end loop;
 
           -- vyloučit intervaly duplicitní vzhledem k předchozím variantám
-          {%%X...}
+          choice_subtract(curr,exp,blwhen^.clist,covered,true);
+
+          -- poznačit použitý interval
+          choice_merge(covered,blwhen^.clist);
 
           -- nezmizely všechny výběry ?
           if blwhen^.clist.list^:length=0
@@ -1078,7 +1084,7 @@ begin
 
             -- nezmizely => aspoň zredukovat počet intervalů
             else
-              {%%X...}
+              choice_reduce(blwhen^.clist, covered);
 
               -- nové PBLWHEN
               pblwhen:=blwhen;
@@ -1105,10 +1111,48 @@ begin
     blwhen:=pblwhen_c(blwhen^.next);
     end loop;
 
-  -- jestliže nebylo uvedeno OTHERS, musí být pokryty všechny varianty
-  if not hasothers then
-    {%%X...}
-    end if;
+  -- spočteme chybějící varianty (=všechny možnosti mínus pokryté možnosti)
+  choice_add_range(curr,uncovered,bl^.expr^.t.getlval,bl^.expr^.t.gethval,nil,false);
+  choice_subtract(curr,exp,uncovered,covered,false);
+
+  if hasothers
+
+    -- jestli bylo uvedeno OTHERS, mělo by něco zbývat, jinak vydáme hint
+    then
+      if uncovered.list^:length=0 then
+        -- je tu sice WHEN OTHERS, ale nic pro nej nezbyva => vyhodit ho a vydat hint
+
+        -- najdi OTHERS vetev s jejim predchudcem
+        blwhen:=pblwhen_c(bl^.sub.first);
+        pblwhen:=nil;
+        while blwhen^.ctype<>bct_others loop
+          pblwhen:=blwhen;
+          blwhen:=pblwhen_c(blwhen^.next);
+          verify({VERIFY=}001292,blwhen=nil);
+          end loop;
+
+        -- vydej hint
+        if ch_unreachable_code in curr.entity^.compv.hints then
+          ce^.sethint(curr,{CCERR=}000604,ch_unreachable_code);
+          node_errpos(blwhen);
+          end if;
+
+        -- vyhod OTHERS vetev
+        if pblwhen=nil
+          then bl^.sub.first:=blwhen^.next;
+          else pblwhen^.next:=blwhen^.next;
+          end if;
+        if bl^.sub.last=blwhen then bl^.sub.last:=pblwhen; end if;
+        hasothers:=false;
+        end if;
+
+    -- jestliže nebylo uvedeno OTHERS, musí být pokryty všechny varianty
+    else
+      if uncovered.list^:length<>0 then
+        ce^.seterror({CCERR=}000605,ce_case_incomplete);
+        node_errpos(bl);
+        end if;
+      end if;
 
   -- povedla se formální kontrola všech větví ?
   if not all then return end if;

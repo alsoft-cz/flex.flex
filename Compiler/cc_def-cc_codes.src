@@ -46,7 +46,7 @@ type
       ce_radix;
     --ce_nochar;
       ce_comment;
-      ce_strelem;
+    --ce_strelem;
       ce_x_quotation;
       --- chyby preprocesoru ---
       ce_meta_x_end_if;
@@ -106,7 +106,6 @@ type
       ce_x_end_exit;
       ce_x_end_protected;
       ce_x_end_sequential;
-      ce_x_end_return;
       ce_x_end_rollback;
       ce_x_end_if;
       ce_x_end_loop;
@@ -172,7 +171,6 @@ type
       ce_dupdecl;
       ce_dupentry;
       ce_dupexit;
-      ce_dupreturn;
       ce_dupadjust;
       ce_dupcommit;
       ce_duprollback;
@@ -199,6 +197,8 @@ type
       ce_param_excessive;
       ce_param_unknown;
       ce_param_no_default_value;
+      ce_case_incomplete;
+      ce_aggregate_incomplete;
       ce_x_typ;
       ce_x_name_type;
       ce_x_name_proc;
@@ -275,6 +275,8 @@ type
       ce_g_x_eoi;
       ce_g_x_operand;
       --- chyby při linkování ---
+      --- chyby při práci s compile-time metadaty ---
+      ce_ctm_corrupt;
       --- implementační omezení ---
       ce_im_numsize;
       ce_im_floatsize;
@@ -289,7 +291,8 @@ type
 
 const
   -- kódy chyb, pro které nemá význam pozice ve zdrojáku
-  ces_unpositioned = terrorcodeset:[ce_mem,ce_f_notfound,ce_f_open,ce_f_create,ce_f_read,ce_f_write,ce_break];
+  ces_unpositioned = terrorcodeset:[ce_mem,ce_f_notfound,ce_f_open,ce_f_create,ce_f_read,ce_f_write,
+                                    ce_break,ce_ctm_corrupt];
 
 var
   terrorcodetxt    : const array terrorcode of t_char32str := [
@@ -324,7 +327,6 @@ var
       for ce_meta_i_separate     use 'Improper use of "#SEPARATE"',--'Nepřípustné použití "#SEPARATE"',
       for ce_meta_error          use '%1',
       for ce_meta_no_end         use 'Metastatement not terminated',--'Metapříkaz není ukončen',
-
 
       --- chyby zjištěné při syntaktické analýze ---
       for ce_x_eof               use 'End of source code expected',--'Očekáván konec zdrojového textu',
@@ -467,6 +469,8 @@ var
       for ce_param_excessive     use 'Excesive actual parameter',
       for ce_param_unknown       use 'Unknown formal parametr "%1"',
       for ce_param_no_default_value use 'The parameter "%1" has no default value',--'Parametr "%1" nemá implicitní hodnotu',
+      for ce_case_incomplete     use 'Incomplete CASE statement',--'CASE příkaz není úplný',
+      for ce_aggregate_incomplete use 'Incomplete aggregate value',--'Agregát není definován úplně',
       for ce_x_typ               use 'Type expected',--'Očekáván typ',
       for ce_x_name_type         use 'Type name expected',--'Očekáváno jméno typu',
       for ce_x_name_proc         use 'Procedure name expected',--'Očekáváno jméno procedury',
@@ -547,6 +551,9 @@ var
 
       --- chyby při linkování ---
 
+      --- chyby při práci s compile-time metadaty ---
+      for ce_ctm_corrupt         use 'Compile-time metadata corrupt',
+
       --- implementační omezení ---
       for ce_im_numsize          use 'Implementation restriction: Unsupported ordinal type size',--'Implementační omezení: Nepodporovaná velikost diskrétního typu',
       for ce_im_floatsize        use 'Implementation restriction: Unsupported floating-point type size',
@@ -569,7 +576,7 @@ type
       cw_duplicate_choice;     -- duplicitní výběr
       cw_duplicate_association;-- duplicitní vazba položky
       cw_concat_strlength;     -- {%%TODO(HINT) ??? } příliš dlouhý řetězec po provedení &
-      cw_strange_design;       -- neobvyklá konstrukce                        
+      cw_strange_design;       -- neobvyklá konstrukce
       --- varování preprocesoru ---
       cw_unknown_meta;         -- neznámý metapříkaz
       cw_unknown_assign;       -- neznámý identifikátor interní procedury
@@ -593,6 +600,7 @@ type
 
 var
   -- tabulka popisů varování
+  -- musí být setříděná! (vyhledává se v ní binárním půlením)
   cc_warning_desc : const array 0..16 of twarningdesc := [
       [for id use 'CONCATENATION_RESULT_TOO_LARGE'  , for warn use cw_concat_strlength      ],
       [for id use 'CONDITION_REMOVED'               , for warn use cw_cond_removed          ],
@@ -674,19 +682,20 @@ type
 
 var
   -- tabulka popisů hintů
+  -- musí být setříděná! (vyhledává se v ní binárním půlením)
   cc_hint_desc    : const array 0..11 of thintdesc := [
       [for id use 'CONSTANT_CONDITION'                  , for hint use ch_constant_condition            ],
       [for id use 'DECLARATION_HIDES_ANCESTOR'          , for hint use ch_declaration_hides_ancestor    ],
+      [for id use 'IF_REDUCED'                          , for hint use ch_if_reduced                    ],
+      [for id use 'INFINITE_LOOP'                       , for hint use ch_infinite_loop                 ],
       [for id use 'MULTIPLE_USE_IN_CLAUSE'              , for hint use ch_multiple_clause_with          ],
       [for id use 'MULTIPLE_USE_IN_MODULE'              , for hint use ch_multiple_module_with          ],
+      [for id use 'ONE_PASS_LOOP'                       , for hint use ch_one_pass_loop                 ],
       [for id use 'PARAMETER_EQUALS_DEFAULT'            , for hint use ch_par_is_default                ],
+      [for id use 'UNREACHABLE_CODE'                    , for hint use ch_unreachable_code              ],
       [for id use 'UNSAFE_RANGE'                        , for hint use ch_unsafe_range                  ],
       [for id use 'UNUSED_ENTITY'                       , for hint use ch_unused_entity                 ],
-      [for id use 'UNUSED_MODULE'                       , for hint use ch_unused_module                 ],
-      [for id use 'UNREACHABLE_CODE'                    , for hint use ch_unreachable_code              ],
-      [for id use 'ONE_PASS_LOOP'                       , for hint use ch_one_pass_loop                 ],
-      [for id use 'INFINITE_LOOP'                       , for hint use ch_infinite_loop                 ],
-      [for id use 'IF_REDUCED'                          , for hint use ch_if_reduced                    ]];
+      [for id use 'UNUSED_MODULE'                       , for hint use ch_unused_module                 ]];
 
   -- kontrola vyplnění tabulky identifikátorů hintů
   #if cc_hint_desc:last<>thintcode:last:ord then;
@@ -728,6 +737,7 @@ type
 
 var
   -- tabulka popisů diagnostických hlášení
+  -- musí být setříděná! (vyhledává se v ní binárním půlením)
   cc_diag_desc    : const array 0..2 of tdiagdesc := [
       [for id use 'DYNAMIC_INTERFACE_CAST', for diag use cd_dynamic_interface_cast],
       [for id use 'DYNAMIC_TYPE_CAST'     , for diag use cd_dynamic_type_cast     ],

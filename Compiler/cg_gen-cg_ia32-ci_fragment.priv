@@ -1804,6 +1804,40 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure i_gen_simple_op_with_unary =
+-- Vygeneruje dvojici instrukcí "<iiu> <op2>", "<iib> <op1> <op2>". S [op2] se pracuje pomocí
+-- pracovního registru, ale pokud už je v registru a [reuse_reg] je true, pracuje se přímo s ním
+-- a je zničen.
+----------------------------------------------------------------------------------------------------
+var
+  optemp           : c_operand;                  -- pracovní registr
+
+begin
+  -- smíme případně zničit operand v registru?
+  if reuse_reg and op2.optype=io_reg
+    -- OK, můžeme rovnou používat [op2]
+    then
+      optemp.clone(inst,info,context,op2);
+
+    -- Ne, musíme alokovat a naplnit pracovní registr
+    else
+      optemp.create_new_register(inst,info,context,op2.edtype,op2.size);
+      addii(inst,info,ii_mov,optemp,op2,op0);
+      end if;
+
+  -- unární operace
+  addii(inst,info,iiunary,optemp,op0,op0);
+
+  -- binární operace
+  addii(inst,info,iibinary,op1,optemp,op0);
+leave
+  -- uvolnit pracovní operand
+  optemp.free(info,context);
+  end i_gen_simple_op_with_unary;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_gen_stack_top_reserve =
 -- Alokuje na vrcholu stacku prostor pro [size] bytů.
 ----------------------------------------------------------------------------------------------------
@@ -1998,6 +2032,198 @@ leave
 
 
 ----------------------------------------------------------------------------------------------------
+procedure workblock (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    opdst0         : in c_operand;               -- cílový operand
+    opsrc01        : in c_operand;               -- zdrojový operand 1
+    opsrc02        : in c_operand;               -- zdrojový operand 2
+    availregs      : in iuniregset;              -- volné registry
+    bytes          : in t_unsigned;              -- kolic bytů
+    genopfunc      : in p_genopfunc) =           -- funkce, která generuje binární operaci
+-- Provede binární operaci na dvojici bloků dat délky BYTES. Výsledky ukládá do OPDST0.
+-- Pro zpracování využívá registry z množiny AVAILREGS.
+----------------------------------------------------------------------------------------------------
+with
+  standard.console;
+
+var
+  opsrc1           : c_operand;                  -- 1. zdrojový operand
+  opsrc2           : c_operand;                  -- 2. zdrojový operand
+  opdst            : c_operand;                  -- cílový operand
+
+    ------------------------------------------------------------------------------------------------
+    procedure worksubblock (
+              count      : in t_unsigned;        -- počet kopírovaných slov
+              n          : in t_unsigned) =      -- velikost slova v bytech
+    -- Jedna část zpracování.
+    ------------------------------------------------------------------------------------------------
+    var
+      uni          : iunireg;
+      reg          : ireg;
+
+        --------------------------------------------------------------------------------------------
+        procedure firstreg =
+        -- První registr mezi AVAILREGS.
+        --------------------------------------------------------------------------------------------
+        begin
+          uni:=in_first;
+          while uni not in availregs or iunitoreg[uni,n]=ir_none loop succ uni; end loop;
+          reg:=iunitoreg[uni,n];
+          end firstreg;
+
+
+
+        --------------------------------------------------------------------------------------------
+        procedure nextreg =
+        -- Další registr v AVAILREGS.
+        --------------------------------------------------------------------------------------------
+        begin
+          loop
+            if uni=in_last
+              then uni:=in_first;
+              else succ uni;
+              end if;
+            until uni in availregs and iunitoreg[uni,n]<>ir_none;
+          reg:=iunitoreg[uni,n];
+          end nextreg;
+
+    begin
+      -- %%TECH I když se zde manipuluje s registry, nepoužívá se standardní CREATE_NEW_REGISTER, 
+      -- ale CREATE_NEW_REGISTER_LOW_LEVEL, protože se předpokládá, že pracovní registry byly již
+      -- dříve rezervovány.
+
+      -- %%FLEX Nešlo by to nějak čistěji?
+
+      -- nacpat z paměti do registrů
+      firstreg;
+      for i in 1..count loop
+        declare var
+          optemp   : c_operand;
+
+        begin
+          -- nacpat do registru
+          optemp.create_use_register_low_level(edt_unsigned,reg);
+          optemp.adjust_size(n);
+          addii(inst,info,ii_mov,optemp,opsrc1,op0);
+          end declare;
+
+        -- další slovo
+        opsrc1.shift_displacement(imm32_to_signed{%%X}(timm32(n)));
+
+        -- další registr
+        nextreg;
+        end loop;
+
+      -- vygenerovat operace
+      firstreg;
+      for i in 1..count loop
+        declare var
+          optemp   : c_operand;
+
+        begin
+          -- provést binární operaci
+          optemp.create_use_register_low_level(edt_unsigned,reg);
+          optemp.adjust_size(n);
+          genopfunc^(inst,info,context,optemp,opsrc2);
+          end declare;
+
+        -- další slovo
+        opsrc2.shift_displacement(imm32_to_signed{%%X}(timm32(n)));
+
+        -- další registr
+        nextreg;
+        end loop;
+
+      -- nacpat z registrů do paměti
+      firstreg;
+      for i in 1..count loop
+        declare var
+          optemp   : c_operand;
+
+        begin
+          -- nacpat do paměti
+          optemp.create_use_register_low_level(edt_unsigned,reg);
+          optemp.adjust_size(n);
+          addii(inst,info,ii_mov,opdst,optemp,op0);
+          end declare;
+
+        -- další slovo
+        opdst.shift_displacement(imm32_to_signed{%%X}(timm32(n)));
+
+        -- další registr
+        nextreg;
+        end loop;
+      end worksubblock;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure workwords (
+        total_words: in t_unsigned;              -- počet slov
+        n          : in t_unsigned) =            -- velikost slova v bytech
+    -- Zpracuje zadaný počet slov zadané velikosti.
+    ------------------------------------------------------------------------------------------------
+    with
+      standard.numerics;
+
+    var
+      regs         : t_unsigned;                 -- počet n-bytových registrů
+      part         : t_unsigned;                 -- velikost části ve slovech
+      work_words   : t_unsigned;                 -- počet zbývajících slov ke zkopírování
+      uni          : iunireg;
+
+    begin
+      -- velikost operandů
+      opsrc1.adjust_size(n);
+      opsrc2.adjust_size(n);
+      opdst.adjust_size(n);
+
+      -- kolik máme n-bytových registrů ?
+      regs:=i_reg_get_count(availregs,n);
+
+      -- zkopírovat
+      work_words:=total_words;
+      while work_words>0 loop
+        -- kolik slov se bude kopírovat
+        part:=min_unsigned(regs,work_words);
+
+        -- zkopírovat
+        worksubblock(part,n);
+
+        -- zase jsme se kousku zbavili
+        work_words-part;
+        end loop;
+      end workwords;
+
+begin
+  -- %%TECH Tato procedura pracuje úplně stejným stylem jako [copyblock], jenze ma dva zdrojove operandy.
+
+  -- připravit operandy
+  opsrc1.clone(inst,info,context,opsrc01);
+  opsrc2.clone(inst,info,context,opsrc02);
+  opdst.clone(inst,info,context,opdst0);
+
+  -- zpracovat čtyřbytová slova
+  workwords(bytes div 4,4);
+
+  -- zpracovat dvoubytové slovo, pokud zbývá
+  workwords((bytes mod 4) div 2,2);
+
+  -- zpracovat jednobytové slovo, pokud zbývá
+  workwords(bytes mod 2,1);
+
+leave
+  -- uvolnit pracovní operandy
+  opsrc1.free(info,context);
+  opsrc2.free(info,context);
+  opdst.free(info,context);
+  end workblock;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_gen_move_static =
 -- Přesun pole velikosti SIZE bytů z OPSRC do OPDST.
 -- Předpokládá se, že se pole nepřekrývají.
@@ -2013,7 +2239,7 @@ var
 begin
   verify({VERIFY=}000489,(opsrc.optype<>io_mem) or (opdst.optype<>io_mem));
 
-  ----- %%TECH Kopírování bloku pevné velikosti --------------------------
+  ----- %%TECH Kopírování bloku pevné velikosti ----------------------------------------------------
   -- Pokud je pole dostatečně malé, kopíruje se přímo, negeneruje se žádný
   -- cyklus. Rozhoduje se podle aktuálního množství volných registrů, nejvýše
   -- se však za malý blok považuje ISMALLOBJECT bytů.
@@ -2180,6 +2406,171 @@ begin
         end declare;
       end if;
   end i_gen_move_static;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_block_op =
+-- Provede binární operaci nad dvěma bloky (poli) velikosti SIZE bytů, výsledky ukládá do OPDST.
+-- Předpokládá se, že se pole nepřekrývají.
+-- Předpokládá se (kvůli optimalizaci), že jsou pole zarovnána na hranici 4B.
+-- OPSRC1, OPSRC2 a OPDST musí být typu IO_MEM s redukovaným počtem registrů (= <=1).
+----------------------------------------------------------------------------------------------------
+with
+  standard.numerics;
+
+var
+  availregs        : iuniregset;                 -- volné registry použitelné pro movaní
+
+begin
+  verify({VERIFY=}001311,(opsrc1.optype<>io_mem) or (opsrc2.optype<>io_mem) or (opdst.optype<>io_mem));
+
+  -- %%TECH Tato procedura pracuje úplně stejným stylem jako [i_gen_move_static].
+
+  -- kolik je asi tak volných registrů ?
+  i_reg_get_available(context,availregs);
+
+  -- algoritmus se volí podle počtu (skutečně) volných registrů
+  if size<=min_unsigned(ismallobject,max_unsigned(1,i_reg_get_count(availregs,4))*4*2-1)
+
+    -- pokud máme dost registrů, nemusíme se zatěžovat s cyklem
+    then
+      -- rezervovat volné registry (nebo aspoň jeden)
+      i_reg_reserve_available(inst,info,context,opsrc1.get_all_uni_registers+opsrc2.get_all_uni_registers+opdst.get_all_uni_registers,availregs,1,size mod 4>0);
+
+      -- zpracovat blok
+      workblock(inst,info,context,opdst,opsrc1,opsrc2,availregs,size,genopfunc);
+
+      -- uvolnit použité registry
+      i_reg_free_available(info,context,availregs);
+
+    -- jinak cyklit
+    else
+      declare var
+        opindex    : c_operand;                  -- čítač průchodů cyklem
+        incr       : t_unsigned;                 -- inkrement offsetu po jedné iteraci cyklu
+        wcount     : t_unsigned;                 -- počet slov kopírovaných během jedné iterace
+
+      begin
+        -- alokovat indexní registr
+        opindex.create_new_register(inst,info,context,edt_unsigned,4);
+
+        -- rezervovat volné registry (nebo aspoň jeden)
+        declare
+
+          ------------------------------------------------------------------------------------------
+          procedure get_set return iuniregset =
+          ------------------------------------------------------------------------------------------
+          with
+            advanced,
+            advanced.low_level,
+            advanced.low_level.bit_operations;
+
+          begin
+            for xuni in iunireg loop
+              if xuni in opsrc1.get_all_uni_registers 
+              or xuni in opsrc2.get_all_uni_registers 
+              or xuni in opdst.get_all_uni_registers 
+              or xuni=iregtouni[opindex.reg.reg] then
+                bit_set(result,t_bit_index(xuni:ord));
+                end if;
+              end loop;
+            end get_set;
+
+        begin
+          i_reg_reserve_available(inst,info,context,get_set{%%TODO(SET)getopregs(opsrc)+getopregs(opdst)+iuniregset:[iregtouni[opindex.reg.reg]]},availregs,1,size mod 4>0);
+          end declare;
+
+        -- spočítat inkrement v jednom průchodu
+        declare var
+          i        : t_unsigned;
+        begin
+          i:=i_reg_get_count(availregs,4);
+          if (i=1) or (size div {incr=}(3*4)<2)
+            -- jen jeden registr nebo malý blok => dvě slova za iteraci
+            then wcount:=2
+            -- více registrů => nejvýše 3 slova za iteraci
+            else wcount:=min_unsigned(i,3);
+            end if;
+          incr:=wcount*4;
+          end declare;
+
+        -- hodnota indexního registru
+        verify({VERIFY=}001312,size div incr<2);
+        addopimm(inst,info,context,ii_mov,opindex,incr*((size div incr)-1));
+
+        declare var
+          opsrc1l  : c_operand;                  -- operandy během iterace cyklu
+          opsrc2l  : c_operand;                  -- operandy během iterace cyklu
+          opdstl   : c_operand;                  -- operandy během iterace cyklu
+          tg_start : itarget;                    -- návěští začátku cyklu
+
+        begin
+          -- do operandů přidat indexní registr
+          opsrc1l.clone(inst,info,context,opsrc1);
+          opsrc1l.shift_by_base_or_index(inst,info,context,opindex.reg.reg);
+          opsrc2l.clone(inst,info,context,opsrc2);
+          opsrc2l.shift_by_base_or_index(inst,info,context,opindex.reg.reg);
+          opdstl.clone(inst,info,context,opdst);
+          opdstl.shift_by_base_or_index(inst,info,context,opindex.reg.reg);
+
+          -- začátek cyklu
+          newtarget(info,tg_start);
+          settarget(info,tg_start,getaddr(inst));
+
+          -- zpracovat WCOUNT slov
+          workblock(inst,info,context,opdstl,opsrc1l,opsrc2l,availregs,incr,genopfunc);
+
+          -- posunout index
+          addopimm(inst,info,context,ii_sub,opindex,incr);
+
+          -- skok na začátek
+          addjump(inst,info,context,ic_ns,tg_start);
+
+        leave
+          -- uvolnit pozměněné operandy
+          opsrc1l.free(info,context);
+          opsrc2l.free(info,context);
+          opdstl.free(info,context);
+          end declare;
+
+        declare var
+          opsrc1l  : c_operand;                  -- operandy během iterace cyklu
+          opsrc2l  : c_operand;                  -- operandy během iterace cyklu
+          opdstl   : c_operand;                  -- operandy během iterace cyklu
+
+        begin
+          -- pointer na zbytek
+          opsrc1l.clone(inst,info,context,opsrc1);
+          opsrc1l.shift_displacement(imm32_to_signed{%%X}(unsigned_to_imm32(incr*(size div incr))));
+          opsrc2l.clone(inst,info,context,opsrc2);
+          opsrc2l.shift_displacement(imm32_to_signed{%%X}(unsigned_to_imm32(incr*(size div incr))));
+          opdstl.clone(inst,info,context,opdst);
+          opdstl.shift_displacement(imm32_to_signed{%%X}(unsigned_to_imm32(incr*(size div incr))));
+
+          -- %%X Zde bych už mohl používat registr z OPINDEX - co když má
+          -- 8bitovou část a v AVAILREGS takových moc ? Musel bych ale
+          -- ručně přidat OPINDEX.REG.REG do AVAILREGS a nedělat pak FREEOP
+
+          -- dojet zbytek
+          workblock(inst,info,context,opdstl,opsrc1l,opsrc2l,availregs,size mod incr,genopfunc);
+
+        leave
+          -- uvolnit pozměněné operandy
+          opsrc1l.free(info,context);
+          opsrc2l.free(info,context);
+          opdstl.free(info,context);
+          end declare;
+
+        -- uvolnit použité registry
+        i_reg_free_available(info,context,availregs);
+
+      leave
+        -- uvolnit čítač
+        opindex.free(info,context);
+        end declare;
+      end if;
+  end i_gen_block_op;
 
 
 
@@ -2496,6 +2887,8 @@ begin
     when 3 do
         addii(inst,info,ii_movsw,op0,op0,op0);
         addii(inst,info,ii_movsb,op0,op0,op0);
+
+    when others do verify({VERIFY=}001257);
     end case;
   end i_gen_movsd_static;
 

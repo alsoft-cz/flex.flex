@@ -8,16 +8,30 @@ module private ca_analyze =
 ----------------------------------------------------------------------------------------------------
 
 with
-  cc_base,cc_base.cc_type,cc_base.cc_sym,cc_base.cc_debug,
-  cb_block,cb_block.cb_def,cb_block.cb_make,
-  cx_expr,cx_expr.cx_def,cx_expr.cx_make,
-  ca_var,ca_block,ca_util,ca_type,cc_def.cc_var,standard.console;
+  standard,
+  standard.console,
+  cc_def.cc_var,
+  cc_def.cc_unitype,
+  cc_base,
+  cc_base.cc_type,
+  cc_base.cc_sym,
+  cc_base.cc_debug,
+  cb_block,
+  cb_block.cb_def,
+  cb_block.cb_make,
+  cx_expr,
+  cx_expr.cx_def,
+  cx_expr.cx_make,
+  ca_analyzer.ca_var,
+  ca_analyzer.ca_block,
+  ca_analyzer.ca_util,
+  ca_analyzer.ca_type;
 
  
 
 -- %%X Nejdřív jsem si myslel, že inicializace proměnných se bude dělat 
 -- zvláštní procedurou v generátoru. Pak jsem ale radši začal vkládat
--- do stromu kompilátorem generované uzly. `Díky tomu se vždy nejdříve
+-- do stromu kompilátorem generované uzly. Díky tomu se vždy nejdříve
 -- volá A_SCAN_VARIABLES a pak se stejným způsobem tabulka protrasuje,
 -- aby se mohly generovat ty speciální uzly. Teď se mi nechce
 -- přemýšlet, jestli je to potřeba, nebo zda to jde v jednom průchodu.
@@ -301,9 +315,8 @@ begin
 
   -- exportovany symbol?
   if curr.export_info<>nil then
-    
     -- zarad symbol pro export
-    export_list.add(^curr);
+    sys_export_list.add(^curr);
     end if;
   end a_procedure;
  
@@ -384,6 +397,9 @@ begin
 
     -- zavolat commit globálních proměnných
     when tst_commit do a_var_commit(curr.context,pblblock(curr.bl.getcblock)^.bentry,binfo,xinfo,mc_class,true);
+    
+    -- jiné speciální metody nás v tuto chvíli nezajímají
+    when others do -- nic nedělat
     end case;
 
   -- zavolat entry automatických lokálních proměnných
@@ -403,6 +419,9 @@ begin
     
     -- zavolat rollback globálních proměnných
     when tst_rollback do a_var_exit(curr.context,pblblock(curr.bl.getcblock)^.bexit,binfo,xinfo,mc_class,true);
+    
+    -- jiné speciální metody nás v tuto chvíli nezajímají
+    when others do -- nic nedělat
     end case;
 
   -- úplně na konec zavolat EXIT/ROLLBACK předka
@@ -426,9 +445,8 @@ procedure a_var (
 begin
   -- exportovany symbol?
   if curr.export_info<>nil then
-    
     -- zarad symbol pro export
-    export_list.add(^curr);
+    sys_export_list.add(^curr);
     end if;
   end a_var;
 
@@ -531,33 +549,52 @@ var
       curr.stable[spectype].setentity(pspec);
       end make_special;
 
-var
-  pitem            : pentity_var;                -- složka třídy
-  pitem_context    : tcontext;                   -- kontext složky třídy
-                                                          
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure make_field (
+        id         : in pentityident;            -- identifikátor pole
+        typ        : in pentity_type;            -- typ pole
+        addr       : in tunidata_addr) =         -- offset pole v rámci instance
+    -- Vygeneruje služební pole v třídě.
+    ------------------------------------------------------------------------------------------------
+    var
+      pitem        : pentity_var;                -- složka třídy
+      pitem_context: tcontext;                   -- kontext složky třídy
+
+    begin
+      d_create_internal(curr_context,pentity(pitem),pitem_context,et_var,id);
+      pitem^.compile+tentitycompileset:[etc_generated];
+      pitem^.mclass:=mc_class;
+      pitem^.addr:=addr;
+      pitem^.typ.settype(typ);
+      d_end_internal(pitem^,true);
+      end make_field;
+
 begin
   -- primární kontext 
   curr_context:=sym_primary_context(curr);
 
   -- pokud třída nemá předka, tak doplnit interní složky
   if not curr.ancestor.isset then
-    -- zařadit složku @TAG
-    d_create_internal(curr_context,pentity(pitem),pitem_context,et_var,^id_int_tag);
-    pitem^.compile+tentitycompileset:[etc_generated];
-    pitem^.visible:=etv_public; -- Ondra 16.4.2002 : Musí být viditelná
-    pitem^.mclass:=mc_class;
-    pitem^.addr:=cpu^.class_tag;
-    pitem^.typ.settype(inttype_tag);
-    d_end_internal(pitem^,true);
+    declare var
+      old_vsect    : tentityvisible;             -- původní nastavení viditelnosti vnořených entit
 
-    -- zařadit složku @STATUS
-    d_create_internal(curr_context,pentity(pitem),pitem_context,et_var,^id_int_status);
-    pitem^.compile+tentitycompileset:[etc_generated];
-    pitem^.visible:=etv_public; -- Ondra 16.4.2002 : Musí být viditelná
-    pitem^.mclass:=mc_class;
-    pitem^.addr:=cpu^.class_status;
-    pitem^.typ.settype(inttype_status);
-    d_end_internal(pitem^,true);
+    begin
+      -- na chvíli změnit viditelnost nově založených vnořených entity na public
+      old_vsect:=curr_context.region^.vsect;
+      curr_context.region^.vsect:=etv_public; -- Ondra 16.4.2002 & 23.2.2004 : Interní složky musí být viditelné
+      
+      -- zařadit složku @TAG
+      make_field(^id_int_tag,inttype_tag,cpu^.class_tag);
+
+      -- zařadit složku @STATUS
+      make_field(^id_int_status,inttype_status,cpu^.class_status);
+
+    leave
+      -- opět vrátit zpět viditelnost nově založených vnořených entit na původní hodnotu
+      curr_context.region^.vsect:=old_vsect;
+      end declare;
     end if;
 
   -- pokud je to potřeba, tak vygenerovat ENTRY
@@ -665,7 +702,7 @@ begin
         -- typy se analyzují jinak (poznámka: tímto způsobem se neprovede
         -- analýza všech typů, ale to vůbec nevadí, protože zbývající se
         -- analyzují rekurzivně v analýze typu nebo v analýze proměnné)
-        then a_type(pentity_type(p)^)
+        then a_type(p)
         -- ostatní entity
         else a_entity(p);
         end if;
@@ -691,10 +728,18 @@ procedure a_entity =
 -- Analýza jedné entity.
 ----------------------------------------------------------------------------------------------------
 with
-  standard,console;
+  cl_link;
 
 begin
-  -- zajímají nás pouze entity z aktuální parition
+  -- prolog analýzy
+#if #environment compiler_version;='4.0.4.5' then;
+  #display 'Už by mělo být možné používat rozvoj šablony, opravit';
+  -- a_analyze_prolog(sym^);
+#end if;
+
+  -- .... Tady začíná kód nahraditelný šablonou [a_analyze_prolog] ....
+
+  -- zajímají nás pouze entity z aktuální partition
   if sym^.partition_id<>curr_partition then return end if;
 
   -- analyzovat jen dosud neanalyzované symboly
@@ -703,14 +748,14 @@ begin
   -- symbol je právě analyzován
   sym^.analyzed:=as_analyzing;
 
-  {if sym^.id<>nil then write_line(entityident_to_string(sym^.id^)); end if;}
-
   -- analyzovat předka
   if sym^.ancestor.isset then
     -- Poznámka: nemusíme rozlišovat, jestli je to typ nebo ne, protože do [a_entity] se stejně
     -- žádné typy nedostanou (viz též [verify] níže).
     a_entity(sym^.ancestor.getcentity);
     end if;
+
+  -- ^^^^ Tady končí kód nahraditelný šablonou [a_analyze_prolog] ^^^^ 
 
   -- některé symboly vyžadují před-analýzu
   case sym^.etype
@@ -728,6 +773,9 @@ begin
 
     -- kompilační jednotka
     when et_compile   do a_pre_compile(pentity_compile(sym)^);
+    
+    -- jiné entity nás v tuto chvíli nezajímají
+    when others do -- nic nedělat
     end case;
 
   -- analyzovat všechny kontexty
@@ -769,11 +817,25 @@ begin
     -- %%TECH Dalším kandidátem na globální analýzu jsou typy, ale ta se provádí
     -- pouze na vyžádání při generování inicializace/finalizace instance typu.
 
-    -- na ostatních symbolech není co zkoumat
+    -- na ostatních entitách není co zkoumat
+    when others       do -- nic nedělat
     end case;
+
+  -- prolog analýzy
+#if #environment compiler_version;='4.0.4.5' then;
+  #display 'Už by mělo být možné používat rozvoj šablony, opravit';
+  -- a_analyze_epilog(sym^);
+#end if;
+
+  -- .... Tady začíná kód nahraditelný šablonou [a_analyze_epilog] ....
+
+  -- pro non-standalone partition entitu zařadit na seznam exportovaných entit metodou Flex
+  l_try_add_to_flex_export_list(sym);
 
   -- symbol byl analyzován
   sym^.analyzed:=as_analyzed;
+
+  -- ^^^^ Tady končí kód nahraditelný šablonou [a_analyze_epilog] ^^^^ 
   end a_entity;
 
 
@@ -798,6 +860,22 @@ begin
   write('until: '); write_line(unsigned_to_string(bl_loop_until));
 } #end if;
   end a_analyze;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure a_entity_out_of_order =
+-- Analýza jedné entity mimo primární hierarchii analýzy.
+-- Pokud je entita typ, použije pro skutečnou analýzu [a_type], jinak [a_entity].
+----------------------------------------------------------------------------------------------------
+begin
+  if entity^.etype=et_type
+    -- typy se analyzují jinak 
+    then a_type(entity)
+    -- ostatní entity
+    else a_entity(entity);
+    end if;
+  end a_entity_out_of_order;
 
 
 

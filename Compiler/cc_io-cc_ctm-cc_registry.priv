@@ -1,0 +1,808 @@
+﻿----------------------------------------------------------------------------------------------------
+module private cc_registry =
+-- Překladač Flexu.
+-- CTM ID registry pro export a import compile-time metadat.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+class public c_ctm_id_provider =
+-- Poskytovatel (přidělovač) CTM ID.
+----------------------------------------------------------------------------------------------------
+  
+    ------------------------------------------------------------------------------------------------
+    procedure get_new_ctm_id (
+        ctm_id     : out t_ctm_id);
+    -- Přidělí nové CTM ID.
+    ------------------------------------------------------------------------------------------------
+
+    end c_ctm_id_provider;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private c_ctm_id_provider =
+-- Poskytovatel (přidělovač) CTM ID.
+----------------------------------------------------------------------------------------------------
+    
+    var
+      -- příští CTM ID
+      next_ctm_id  : t_ctm_id := ci_user;        
+
+    ------------------------------------------------------------------------------------------------
+    procedure get_new_ctm_id =
+    -- Přidělí nové CTM ID.
+    ------------------------------------------------------------------------------------------------
+    begin
+      ctm_id:=next_ctm_id;
+      succ next_ctm_id;
+      end get_new_ctm_id;
+
+    end c_ctm_id_provider;
+
+type
+  p_ctm_id_provider = ^c_ctm_id_provider;
+
+
+
+----------------------------------------------------------------------------------------------------
+class c_manual_hash_table = extend c_hash_table; 
+-- Z nepochopitelnych duvodu je [c_hash_table] abstract
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override assign_hash_id =
+    -- prazdny override                
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- automatické přidělování ID není podporováno
+      verify({VERIFY=}001212);
+      end assign_hash_id;
+
+    end c_manual_hash_table;
+
+
+
+----------------------------------------------------------------------------------------------------
+class public c_ctm_id_export_registry =
+-- Exportní CTM ID registry pro jednu partition.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure init (
+        ctm_id_provider : p_ctm_id_provider);    -- poskytovatel CTM ID
+    -- Inicializace registry - přiřadí registry poskytovatele CTM ID.
+    ------------------------------------------------------------------------------------------------
+    static get_ctm_entity_id (
+        entity     : in pentity)                 -- zkoumaná entita
+        return t_ctm_entity_id;                  -- CTM ID dodané entity
+    -- Zjistí CTM ID zadané entity.
+    -- Pokud entita ještě nemá přiděleno CTM ID, zapamatuje si jej.
+    ------------------------------------------------------------------------------------------------
+    static get_ctm_region_id (
+        region     : in pregion)                 -- zkoumaný region
+        return t_ctm_region_id;                  -- CTM ID dodaného regionu
+    -- Zjistí CTM ID zadaného regionu.
+    -- Pokud region ještě nemá přiděleno CTM ID, zapamatuje si jej.
+    ------------------------------------------------------------------------------------------------
+    static has_ctm_entity_id (
+        entity     : in pentity)                 -- zkoumaná entita
+        return t_logical;                  
+    -- Zjistí zda ma [entity] pridelen CTM ID
+    ------------------------------------------------------------------------------------------------
+    static has_ctm_region_id (
+        region     : in pregion)                 -- zkoumaný region
+        return t_logical;                        
+    -- Zjistí zda ma [region] pridelen CTM ID
+    ------------------------------------------------------------------------------------------------
+
+  supervised
+
+{
+    ------------------------------------------------------------------------------------------------
+    procedure hash_item_id_to_pentity (
+        item_id     : in t_hash_item_id)         -- konvertované hash item ID
+        return pentity;                          -- odpovídající pointer na entitu
+    -- Zkonvertuje ID v hashovací tabulce na pointer na entitu.
+    ------------------------------------------------------------------------------------------------
+}
+    ------------------------------------------------------------------------------------------------
+    class c_ctm_id_hash_item = extend c_hash_table_item;
+    -- Položka hash tabulky.
+    ------------------------------------------------------------------------------------------------
+
+        var
+          ctm_id   : t_ctm_id;                   -- CTM ID související entity
+          -- POZOR: složka [entity] platí jen tehdy, když se CTM ID vztahuje k entitě. Pokud se
+          -- vztahuje k regionu, je NIL. Čistší by bylo udělat dva potomky, jeden pro referencování
+          -- entity a druhý pro referencování regionu, ale na to teď (19.2.2004 20:32, den před 
+          -- termínem JIT překladače) opravdu nemám čas. Ondra.
+          entity   : pentity;                    -- související entita
+
+        end c_ctm_id_hash_item;
+
+    type
+      p_ctm_id_hash_item = ^class c_ctm_id_hash_item;
+
+    var
+      -- mapa ctmid-polozek
+      ctmids       : protected c_manual_hash_table;
+
+    end c_ctm_id_export_registry;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private c_ctm_id_export_registry =
+-- Exportní CTM ID registry pro jednu partition.
+----------------------------------------------------------------------------------------------------
+
+    var
+      ctm_id_provider : p_ctm_id_provider;       -- poskytovatel CTM ID
+  {
+    ------------------------------------------------------------------------------------------------
+    procedure hash_item_id_to_pentity =
+    -- Zkonvertuje ID v hashovací tabulce na pointer na entitu.
+    ------------------------------------------------------------------------------------------------
+    with
+      advanced.low_level.unchecked_memory_access;
+
+    begin
+      result:=pentity(memory_address_to_machine_pointer(t_memory_address(item_id)));
+      end hash_item_id_to_pentity;
+  }
+
+
+    ------------------------------------------------------------------------------------------------
+    static pentity_to_hash_item_id (
+        entity     : in pentity)                 -- pointer na entitu
+        return t_hash_item_id =                  -- odpovídající hash item ID
+    -- Zkonvertuje pointer na entitu na ID v hashovací tabulce.
+    ------------------------------------------------------------------------------------------------
+    with
+      advanced.low_level.unchecked_memory_access;
+
+    begin
+      result:=t_hash_item_id(machine_pointer_to_memory_address(t_machine_pointer(entity)));
+      end pentity_to_hash_item_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static pregion_to_hash_item_id (
+        region     : in pregion)                 -- pointer na region
+        return t_hash_item_id =                  -- odpovídající hash item ID
+    -- Zkonvertuje pointer na entitu na ID v hashovací tabulce.
+    ------------------------------------------------------------------------------------------------
+    with
+      advanced.low_level.unchecked_memory_access;
+
+    begin
+      result:=t_hash_item_id(machine_pointer_to_memory_address(t_machine_pointer(region)));
+      end pregion_to_hash_item_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure init =
+    -- Inicializace registry - přiřadí registry poskytovatele CTM ID.
+    ------------------------------------------------------------------------------------------------
+    begin
+      this.ctm_id_provider:=ctm_id_provider;
+      end init;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static do_get_ctmid_from_hashitem (
+        item       : in out p_ctm_id_hash_item;
+        entity     : in pentity;                 -- viz "POZOR:" v deklaraci [c_ctm_id_hash_item]
+        itemid     : in t_hash_item_id; 
+        ctm_id     : out class t_ctm_id) =
+    -- Zjisti CTM ID dane polozky [item] hash tabulky
+    -- Zalozi novy zaznam v hashtabulce pokud [item]=nil
+    -- [itemid] musi odpovidat polozce [item]
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nenašel-li, tak založit a přidělit CTM ID
+      if item=nil then
+        -- alokovat paměť
+        new item;
+  
+        -- přidělit hash ID
+        item^.item_id:=itemid;
+
+        -- zapamtovat si související entitu
+        item^.entity:=entity;
+
+        -- přidělit CTM ID
+        ctm_id_provider^.get_new_ctm_id(item^.ctm_id);
+
+        -- zařadit do hash tabulky
+        ctmids.store(item);
+        end if;
+
+      -- vrátit ven
+      ctm_id:=item^.ctm_id;
+      end do_get_ctmid_from_hashitem;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_ctm_entity_id =
+    -- Zjistí CTM ID zadané entity.
+    -- Pokud entita ještě nemá přiděleno CTM ID, zapamatuje si jej.
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_ctm_id_hash_item;         -- prvek hash tabulky mapující pointer na CTM ID
+
+    begin
+      -- zkusit nalézt záznam pro dodanou entitu
+      ctmids.find(pentity_to_hash_item_id(entity),item);
+
+      -- vratit CTM ID z nalezene/nenalezene polozky hash tabulky
+      do_get_ctmid_from_hashitem(item,entity,pentity_to_hash_item_id(entity),result);
+      end get_ctm_entity_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_ctm_region_id =
+    -- Zjistí CTM ID zadaného regionu.
+    -- Pokud region ještě nemá přiděleno CTM ID, zapamatuje si jej.
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_ctm_id_hash_item;         -- prvek hash tabulky mapující pointer na CTM ID
+
+    begin
+      -- zkusit nalézt záznam pro dodany region
+      ctmids.find(pregion_to_hash_item_id(region),item);
+
+      -- vratit CTM ID z nalezene/nenalezene polozky hash tabulky
+      do_get_ctmid_from_hashitem(item,nil,pregion_to_hash_item_id(region),result);
+      end get_ctm_region_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static has_ctm_entity_id =              
+    -- Zjistí zda ma [entity] pridelen CTM ID
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_ctm_id_hash_item;         -- prvek hash tabulky mapující pointer na CTM ID
+
+    begin
+      -- zkusit nalézt záznam pro dodanou entitu
+      ctmids.find(pentity_to_hash_item_id(entity),item);
+      result:=item<>nil;
+      end has_ctm_entity_id;
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    static has_ctm_region_id =                    
+    -- Zjistí zda ma [region] pridelen CTM ID
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_ctm_id_hash_item;         -- prvek hash tabulky mapující pointer na CTM ID
+
+    begin
+      -- zkusit nalézt záznam pro dodany region
+      ctmids.find(pregion_to_hash_item_id(region),item);
+      result:=item<>nil;
+      end has_ctm_region_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- Inicializace
+    ------------------------------------------------------------------------------------------------
+    begin
+      ctmids.init(3755,c_ctm_id_hash_item:tag,true);
+      end entry;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    exit = 
+    -- Finalizace
+    ------------------------------------------------------------------------------------------------
+    begin
+      ctmids.delete_all;
+      end exit;
+
+    end c_ctm_id_export_registry;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private c_ctm_id_partitioned_registry =
+-- CTM ID registry rozdělené podle kompilačních partition.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    class c_partition_hash_item = extend c_hash_table_item;
+    -- Položka hash tabulky reprezentující jednu partition.
+    ------------------------------------------------------------------------------------------------
+
+        var
+          root     : pentity_compile;            -- root kompilační partition
+          ctm_id   : c_ctm_id_export_registry;   -- registry CTM ID této partition
+        
+        end c_partition_hash_item;
+
+    type
+      p_partition_hash_item = ^class c_partition_hash_item;
+
+    var
+      -- globální poskytovatel CTM pro všechny partition
+      ctm_id_provider : aliased c_ctm_id_provider; 
+
+    ------------------------------------------------------------------------------------------------
+    static get_partition_from_entity (
+        entity     : in pentity;                 -- referenční entita mající ID hledané partition
+        partition  : out p_partition_hash_item;  -- nalezená partition
+        create     : in t_logical := true) =     -- T-vytvořit nový záznam, pokud není nalezen
+    -- Podle ID partition obsaženého v referenční entitě [entity] dohledá záznam partition v této 
+    -- hash tabulce. Pokud partition nenalezne a [create] je True, záznam pro ní založí a vloží ho 
+    -- do hash tabulky.
+    ------------------------------------------------------------------------------------------------
+    with
+      cc_base.cc_sym;
+
+    begin
+      -- zkusit nalézt již existující záznam
+      find(t_hash_item_id(entity^.partition_id),partition);
+
+      -- pokud se nenalezla, založit novou a přidat ji
+      if partition=nil and create then
+        begin
+          -- alokovat paměť
+          new partition;
+
+          -- přidělit hash ID
+          partition^.item_id:=t_hash_item_id(entity^.partition_id);
+
+          -- dosadit root kompilační partition;
+          partition^.root:=sym_get_enclosing_or_self(entity,et_compile);
+
+          -- inicializovat registry CTM ID této partition
+          partition^.ctm_id.init(^ctm_id_provider);
+
+          -- zařadit do hash tabulky
+          store(partition);
+
+        rollback
+          discard partition;
+          end;
+        end if;
+      end get_partition_from_entity;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_partition_from_region (
+        region     : in pregion;                 -- referenční region mající ID hledané partition
+        partition  : out p_partition_hash_item) =-- nalezená partition
+    -- Podle ID partition obsaženého v referenčním regionu [region] dohledá záznam partition v této 
+    -- hash tabulce. Pokud partition nenalezne, vrátí NIL.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zkusit nalézt již existující záznam
+      find(t_hash_item_id(region^.partition_id),partition);
+      end get_partition_from_region;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_ctm_entity_id =
+    -- Zjistí CTM ID zadané entity.
+    -- Pokud entita ještě nemá přiděleno CTM ID, zapamatuje si jej.
+    ------------------------------------------------------------------------------------------------
+    var
+      partition    : p_partition_hash_item;
+
+    begin
+      -- podle čísla partition dohledat správnou subtabulku
+      get_partition_from_entity(entity,partition);
+      
+      -- přesměrovat volání na tamní CTM ID registry
+      result:=partition^.ctm_id.get_ctm_entity_id(entity);
+      end get_ctm_entity_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_ctm_region_id =
+    -- Zjistí CTM ID zadaného regionu.
+    -- Pokud region ještě nemá přiděleno CTM ID, zapamatuje si jej.
+    ------------------------------------------------------------------------------------------------
+    var
+      partition    : p_partition_hash_item;
+
+    begin
+      -- podle čísla partition dohledat správnou subtabulku
+      get_partition_from_region(region,partition);
+      verify({VERIFY=}001214,partition=nil);
+      
+      -- přesměrovat volání na tamní CTM ID registry
+      result:=partition^.ctm_id.get_ctm_region_id(region);
+      end get_ctm_region_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static has_ctm_entity_id =
+    -- Zjistí zda ma [entity] pridelen CTM ID
+    ------------------------------------------------------------------------------------------------
+    var
+      partition    : p_partition_hash_item;
+
+    begin
+      -- podle čísla partition dohledat správnou subtabulku
+      get_partition_from_entity(entity,partition,for create use false);
+      
+      -- přesměrovat volání na tamní CTM ID registry
+      result:=partition<>nil and then partition^.ctm_id.has_ctm_entity_id(entity);
+      end has_ctm_entity_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static has_ctm_region_id =
+    -- Zjistí zda ma [region] pridelen CTM ID
+    ------------------------------------------------------------------------------------------------
+    var
+      partition    : p_partition_hash_item;
+
+    begin
+      -- podle čísla partition dohledat správnou subtabulku
+      get_partition_from_region(region,partition);
+      
+      -- přesměrovat volání na tamní CTM ID registry
+      result:=partition<>nil and then partition^.ctm_id.has_ctm_region_id(region);
+      end has_ctm_region_id;
+
+         
+
+    ------------------------------------------------------------------------------------------------
+    override assign_hash_id =
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- automatické přidělování ID není podporováno
+      verify({VERIFY=}001213);
+      end assign_hash_id;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    class private c_ctm_id_partitioned_registry_iterator =
+    -- Speciální dvouúrovňový iterátor entit přes všechny evidované partition.
+    ------------------------------------------------------------------------------------------------
+
+        use
+          supervised c_ctm_id_export_registry;
+
+        var
+          registry        : p_ctm_id_partitioned_registry; -- související CTM ID registry
+          first_partition : t_logical := true;   -- T-hledat první partition
+          last_partition  : p_partition_hash_item; -- poslední nalezená partition
+          first_entity    : t_logical;           -- T-hledat první entitu
+          last_entity     : c_ctm_id_export_registry.p_ctm_id_hash_item; -- poslední nalezená entita
+
+        --------------------------------------------------------------------------------------------
+        static init =
+        -- Inicializace iterátoru.
+        --------------------------------------------------------------------------------------------
+        begin
+          this.registry:=registry;
+          first_partition:=true;
+          end init;
+
+                                                
+
+        --------------------------------------------------------------------------------------------
+        static get_partition =
+        -- Iteruje partitiony.
+        --------------------------------------------------------------------------------------------
+        begin
+          -- je to první volání ?
+          if first_partition
+
+            -- ano => vrátit první partition
+            then 
+              registry^.set_first(last_partition);
+              first_partition:=false;
+
+            -- ne => najít další partition
+            else 
+              registry^.set_next(last_partition);
+              end if;
+
+          -- příští volání [get_entity] bude jistě první
+          first_entity:=true;
+          last_entity:=nil;
+
+          -- předat výsledek
+          result:=last_partition<>nil;
+          if result then 
+            partition:=t_partition_id(last_partition^.item_id);
+            root:=last_partition^.root;
+            end if;
+          end get_partition;
+
+
+
+        --------------------------------------------------------------------------------------------
+        static get_entity =
+        -- Iteruje entity v rámci poslední iterované partition.
+        --------------------------------------------------------------------------------------------
+        use
+          supervised c_ctm_id_export_registry;
+
+        begin
+          -- je to první volání ?
+          if first_entity
+
+            -- ano => vrátit první partition
+            then 
+              last_partition^.ctm_id.ctmids.set_first(last_entity);
+              first_entity:=false;
+
+            -- ne => najít další partition
+            else 
+              last_partition^.ctm_id.ctmids.set_next(last_entity);
+              end if;
+
+          -- předat výsledek
+          result:=last_entity<>nil;
+          if last_entity<>nil then
+            entity:=last_entity^.entity;
+            ctm_id:=last_entity^.ctm_id;
+            end if;
+          end get_entity;
+
+        end c_ctm_id_partitioned_registry_iterator;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- Inicializace
+    ------------------------------------------------------------------------------------------------
+    begin
+      init(37,c_partition_hash_item:tag,false);
+      end entry;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    exit = 
+    -- Finalizace
+    ------------------------------------------------------------------------------------------------
+    begin
+      delete_all;
+      end exit;
+
+    end c_ctm_id_partitioned_registry;
+
+
+
+----------------------------------------------------------------------------------------------------
+class private c_ctm_id_import_registry =
+-- Importní CTM ID registry bez rolišení podle kompilačních partition.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    class c_entity_hash_item = extend c_hash_table_item;
+    -- Položka hash tabulky.
+    ------------------------------------------------------------------------------------------------
+
+        var
+          entity   : pentity;            -- entita
+
+        end c_entity_hash_item;
+
+    type
+      p_entity_hash_item = ^class c_entity_hash_item;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    class c_region_hash_item = extend c_hash_table_item;
+    -- Položka hash tabulky.
+    ------------------------------------------------------------------------------------------------
+
+        var
+          region   : pregion;            -- region
+
+        end c_region_hash_item;
+
+    type
+      p_region_hash_item = ^class c_region_hash_item;
+
+
+
+    var
+      entities     : c_manual_hash_table;        -- mapa entit
+      regions      : c_manual_hash_table;        -- mapa regionu
+
+    ------------------------------------------------------------------------------------------------
+    static ctm_id_to_hash_item_id (
+        ctmid      : t_ctm_id)
+        return t_hash_item_id =
+    -- Zkonvertuje CTM ID na hash item id
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=t_hash_item_id(ctmid);
+      end ctm_id_to_hash_item_id;
+    
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_entity =
+    -- Zjistí entitu zadané CTM ID.
+    -- Pokud CTM ID nemá přidělenou entitu, vrati [nil].
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_entity_hash_item;         -- prvek hash tabulky
+
+    begin
+      -- najdi polozku
+      entities.find(ctm_id_to_hash_item_id(ctmid), item);
+
+      -- nalezena?
+      if item=nil 
+
+        -- ne - nil
+        then result:=nil;
+        
+        -- ano - podle polozky
+        else result:=item^.entity;
+        end if;
+      end get_entity;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static get_region =
+    -- Zjistí region zadané CTM ID.
+    -- Pokud CTM ID ještě nemá přidělen region, vrati [nil].
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_region_hash_item;         -- prvek hash tabulky
+
+    begin
+      -- najdi polozku
+      regions.find(ctm_id_to_hash_item_id(ctmid), item);
+
+      -- nalezena?
+      if item=nil 
+        -- ne - nil
+        then result:=nil;
+        
+        -- ano - podle polozky
+        else result:=item^.region;
+        end if;
+      end get_region;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static create_entity =
+    -- Vytvori novou entitu a zapamatuje si jeji CTM ID.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nemelo by se volat dvakrat pro jednu polozku
+      verify({VERIFY=}001139,get_entity(ctmid)<>nil);
+
+      -- vytvořit entitu
+      sym_new_entity(etype,entity);
+
+      -- zařadit do hash tabulky
+      register_entity(ctmid,entity);
+      end create_entity;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static create_entity_type =
+    -- Vytvori novou entitu a zapamatuje si jeji CTM ID.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vytvořit entitu
+      if dtype=dt_class
+        then create_entity(ctmid,et_class,entity)
+        else create_entity(ctmid,et_type,entity);
+        end if;
+      
+      -- nastavit datový typ
+      entity^.stype:=dtype;
+      end create_entity_type;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static create_region =
+    -- Vytvori novy region a zapamatuje si jeho CTM ID.
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_region_hash_item;         -- prvek hash tabulky
+
+    begin
+      -- nemelo by se volat dvakrat pro jednu polozku
+      verify({VERIFY=}001140,get_region(ctmid)<>nil);
+
+      -- vytvořit
+      sym_new_region(rtype,region);
+
+      -- zařadit do hierarchie
+      if context.region=nil
+
+        -- první region v hierarchii
+        then
+          -- do aktuálního neúplného kontextu doplnit nově vytvořený kořenový region
+          context.region:=region;
+
+          -- nově vytvořený kořenový region dosadit jako primární region aktuální entity
+          context.entity^.regions[rc_primary]:=region;
+
+        -- vnořený region
+        else
+          -- region zařadit jako vnořený do existující struktury
+          sym_add_region(context,region);
+          end if;
+
+      -- sestavit kontext nově založeného regionu
+      region_context.entity:=context.entity;
+      region_context.region:=region;
+
+      -- zařadit do hash tabulky
+      new item;
+      item^.item_id:=ctm_id_to_hash_item_id(ctmid);
+      item^.region :=region;
+      regions.store(item);
+      end create_region;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static register_entity =
+    -- Zaregistruje existující entitu pod dodaným CTM ID.
+    ------------------------------------------------------------------------------------------------
+    var
+      item         : p_entity_hash_item;         -- prvek hash tabulky
+
+    begin
+      -- zařadit do hash tabulky
+      new item;
+      item^.item_id:=ctm_id_to_hash_item_id(ctmid);
+      item^.entity :=entity;
+      entities.store(item);
+      end register_entity;
+      
+      
+
+    ------------------------------------------------------------------------------------------------
+    entry =
+    -- Inicializace
+    ------------------------------------------------------------------------------------------------
+    begin
+      entities.init(3755,c_entity_hash_item:tag,true);
+      regions.init(3755,c_region_hash_item:tag,true);
+      end entry;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    exit = 
+    -- Finalizace
+    ------------------------------------------------------------------------------------------------
+    begin
+      entities.delete_all;
+      regions.delete_all;
+      end exit;
+
+    end c_ctm_id_import_registry;
+
+end cc_registry;
