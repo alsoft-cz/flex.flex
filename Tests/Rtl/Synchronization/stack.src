@@ -1,4 +1,4 @@
-----------------------------------------------------------------------------------------------------
+        ----------------------------------------------------------------------------------------------------
 program stack =
 -- Rtl library only
 -- Programming Language Flex Samples.
@@ -6,10 +6,9 @@ program stack =
 ----------------------------------------------------------------------------------------------------
 with
      flex
-    ,flex.thread
+    ,flex.tasks
     ,flex.synchronization
-    ,flex.os_api
-    --,testlib
+    ,flex.hw_api
     ,standard
     ,standard.console
     ,standard.conversions
@@ -19,10 +18,12 @@ const
     maxcount       = $40_0000;
 
 var
-    wr1            : aliased t_thread_ref;
-    wr2            : aliased t_thread_ref;
-    re1            : aliased t_thread_ref;
-    wa1            : aliased t_thread_ref;
+    wr1            : aliased t_rtl_task_ref_local;
+    wr2            : aliased t_rtl_task_ref_local;
+    re1            : aliased t_rtl_task_ref_local;
+    re2            : aliased t_rtl_task_ref_local;
+    wa1            : aliased t_rtl_task_ref_local;
+
     s              : aliased t_rtl_sstack;
     wrcounter      : aliased t_rtl_native_signed;
     recounter      : aliased t_rtl_native_signed;
@@ -43,10 +44,25 @@ begin
   rtl_interlocked_inc_out(^aproxlen,len);
   rtl_interlocked_inc_out(^wrcounter,item^);
   rtl_sstack_push(s,item);
+
+  --pop
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^recounter,lastwr);
+  rtl_sstack_pop(s,t_rtl_pointer(item));
+  discard item;
+
+  
   new item;
   rtl_interlocked_inc_out(^aproxlen,len);
   rtl_interlocked_inc_out(^wrcounter,item^);
   rtl_sstack_push(s,item);
+  
+  --pop
+  rtl_interlocked_dec_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^recounter,lastwr);
+  rtl_sstack_pop(s,t_rtl_pointer(item));
+  discard item;
+  
   new item;
   rtl_interlocked_inc_out(^aproxlen,len);
   rtl_interlocked_inc_out(^wrcounter,item^);
@@ -67,37 +83,37 @@ begin
   --pop
   rtl_interlocked_dec_out(^aproxlen,len);
   rtl_interlocked_inc_out(^recounter,lastwr);
-  if rtl_sstack_pop(s,t_rtl_pointer(item)) then
-    discard item;
-    end if;
+  rtl_sstack_pop(s,t_rtl_pointer(item));
+  discard item;
 
   rtl_interlocked_dec_out(^aproxlen,len);
   rtl_interlocked_inc_out(^recounter,lastwr);
-  if rtl_sstack_pop(s,t_rtl_pointer(item)) then
-    discard item;
-    end if;
+  rtl_sstack_pop(s,t_rtl_pointer(item));
+  discard item;
 
   rtl_interlocked_dec_out(^aproxlen,len);
   rtl_interlocked_inc_out(^recounter,lastwr);
-  if rtl_sstack_pop(s,t_rtl_pointer(item)) then
-    discard item;
-    end if;
+  rtl_sstack_pop(s,t_rtl_pointer(item));
+  discard item;
 
   rtl_interlocked_dec_out(^aproxlen,len);
   rtl_interlocked_inc_out(^recounter,lastwr);
-  if rtl_sstack_pop(s,t_rtl_pointer(item)) then
-    discard item;
-    end if;
+  rtl_sstack_pop(s,t_rtl_pointer(item));
+  discard item;
+
+  new item;
+  rtl_interlocked_inc_out(^aproxlen,len);
+  rtl_interlocked_inc_out(^wrcounter,item^);
+  rtl_sstack_push(s,item);
 
   rtl_interlocked_dec_out(^aproxlen,len);
   rtl_interlocked_inc_out(^recounter,lastwr);
-  if rtl_sstack_pop(s,t_rtl_pointer(item)) then
-    discard item;
-    end if;
-
+  rtl_sstack_pop(s,t_rtl_pointer(item));
+  discard item;
+  
   rtl_interlocked_dec_out(^aproxlen,len);
   rtl_interlocked_inc_out(^recounter,lastwr);
-  if rtl_sstack_pop(s,t_rtl_pointer(item)) then
+  if rtl_sstack_try_pop(s,t_rtl_pointer(item),1000) then
     discard item;
     end if;
 
@@ -106,7 +122,7 @@ begin
   end simple;
 
 ----------------------------------------------------------------------------------------------------
-procedure writet:t_rtl_thread_entry =
+procedure writet:t_rtl_task_entry =
 ----------------------------------------------------------------------------------------------------
 var
     oldcounter     : t_rtl_native_signed;
@@ -117,14 +133,16 @@ var
 begin
   write_line('write begin');
   loop
-    new item;
     rtl_interlocked_inc_out(^aproxlen,len);
     rtl_interlocked_inc_out(^wrcounter,lastcount);
-    item^:=lastcount;
-    rtl_sstack_push(s,item);
-    if lastcount>=maxcount then
+    if lastcount+1>maxcount then
+      rtl_interlocked_dec_out(^aproxlen,len);
+      rtl_interlocked_dec_out(^wrcounter,lastcount);
       break;
       end if;
+    new item;
+    item^:=lastcount;
+    rtl_sstack_push(s,item);
 
     -- chytracky zpomalovac
     if len>$1_0000 then
@@ -151,7 +169,7 @@ leave
   end writet;
 
 ----------------------------------------------------------------------------------------------------
-procedure readt:t_rtl_thread_entry =
+procedure readt:t_rtl_task_entry =
 ----------------------------------------------------------------------------------------------------
 var
     item           : p_rtl_native_signed;
@@ -162,16 +180,19 @@ var
 begin
   write_line('read begin');
   loop
-    if rtl_sstack_pop(s,t_rtl_pointer(item)) then
+    if rtl_sstack_try_pop(s,t_rtl_pointer(item),1000) then
       rtl_interlocked_dec_out(^aproxlen,len);
       rtl_interlocked_inc_out(^recounter,lastcount);
       --very low performance write_line
       --write_line(signed_to_string(item^,false));
       discard item;
-      if lastcount>=maxcount then
+      if lastcount+1=maxcount then
         break;
         end if;
     else
+      if recounter=maxcount then
+        break;
+        end if;
       --write_line('Sleep');
       rtl_sleep(0);
       end if;
@@ -181,29 +202,29 @@ catch
   write_line('read exception pending');
 leave
   write('read end ');
-  write_line(signed_to_string(lastitem,false));
+  write_line(signed_to_string(lastitem));
   end readt;
 
 
 ----------------------------------------------------------------------------------------------------
-procedure watcht:t_rtl_thread_entry =
+procedure watcht:t_rtl_task_entry =
 ----------------------------------------------------------------------------------------------------
 begin
   loop
-    write(signed_to_string(wrcounter,false));
+    write(signed_to_string(wrcounter));
     write(' ');
-    write(signed_to_string(recounter,false));
+    write(signed_to_string(recounter));
     write(' ');
-    write_line(signed_to_string(aproxlen,false));
+    write_line(signed_to_string(aproxlen));
     rtl_sleep(1000);
     end loop;
 leave
   write('watch end ');
-  write(signed_to_string(wrcounter,false));
+  write(signed_to_string(wrcounter));
   write(' ');
-  write(signed_to_string(recounter,false));
+  write(signed_to_string(recounter));
   write(' ');
-  write_line(signed_to_string(aproxlen,false));
+  write_line(signed_to_string(aproxlen));
   end watcht;
 
 
@@ -213,20 +234,29 @@ leave
 ----------------------------------------------------------------------------------------------------
 
 begin
-  rtl_sstack_new(s,true);
+  rtl_sstack_new(s,st_critical);
   wrcounter:=0;
   recounter:=0;
   simple;
 
-  rtl_start_thread(^wa1,^watcht,false,thread_priority_normal,nil);
-  rtl_start_thread(^re1,^readt,false,thread_priority_normal,nil);
-  rtl_start_thread(^wr1,^writet,false,thread_priority_normal,nil);
-  rtl_start_thread(^wr2,^writet,false,thread_priority_normal,nil);
+  rtl_start_task(^watcht,^wa1,false,task_priority_normal,nil);
+  rtl_start_task(^readt,^re1,false,task_priority_normal,nil);
+  --rtl_start_task(^readt,^re2,false,task_priority_normal,nil);
+  rtl_start_task(^writet,^wr1,false,task_priority_normal,nil);
+  rtl_start_task(^writet,^wr2,false,task_priority_normal,nil);
   --run
   --rtl_sleep(10000);
-  rtl_wait_and_finish_thread(wr1);
-  rtl_wait_and_finish_thread(wr2);
-  rtl_wait_and_finish_thread(re1);
-  rtl_kill_when_need_and_finish_thread(wa1);
+  rtl_wait_and_finish_task(wr1);
+  rtl_wait_and_finish_task(wr2);
+  rtl_wait_and_finish_task(re1);
+  --rtl_wait_and_finish_task(re2);
+
+  if recounter<>wrcounter then
+    write_line('divne nesedi pocet');
+  else
+    write_line('pocet sedi :-)');
+    end if;
+  
+  rtl_kill_when_need_and_finish_task(wa1);
   rtl_sstack_discard(s);
   end stack;

@@ -6,8 +6,20 @@ module private memory =
 ----------------------------------------------------------------------------------------------------
 with
    synchronization
-  ,thread
+  ,tasks
+  ,structures
   ;
+
+#if not #declared rtl_memory_debug; then;
+const
+  rtl_memory_debug = false;
+#else;
+var
+  msg_dump_leaks   : static const string 22 of t_syschar := 'Dumped memory leaks'\$0d\$0a\$0;
+#end if;
+
+var
+    systemheap     : system_heap.p_rtl_systemmemheap;
 
 #separate private blocks;
 #separate private chains;
@@ -16,21 +28,16 @@ with
 #separate private system_pages;
 
 var
---%%TODO threadvar 
-    actual_thread_heap : p_rtl_memheap := nil;
-    actual_thread_chain: p_rtl_chain := nil;
+--%%TODO task_var 
+    actual_task_heap : p_rtl_memheap := nil;
+    actual_task_chain: p_rtl_chain := nil;
 
 var
-    systemheap     : system_heap.c_rtl_systemmemheap;
     systempages    : system_pages.c_rtl_systemmempages;
 
 const
     largeblocksize : t_rtl_native_unsigned       = 64*1024;
 
-#if not #declared rtl_memory_debug; then;
-const
-  rtl_memory_debug = false;
-#end if;
 #if rtl_advanced_segregated_heap then;
 var
     segregatedheap : segregated_heap.p_rtl_segregatedmemheap;
@@ -43,15 +50,17 @@ procedure rtl_alloc =
 ----------------------------------------------------------------------------------------------------
 begin
   if size>=largeblocksize then
-    systempages.memmgr_alloc({num}0,addr,size,actual_thread_chain);
+    systempages.memmgr_alloc({num}0,addr,size,actual_task_chain);
   else
-    if (actual_thread_heap=nil) then
-      systemheap.memmgr_alloc({num}0,addr,size,actual_thread_chain);
+    if (actual_task_heap=nil) then
+      systemheap^.memmgr_alloc({num}0,addr,size,actual_task_chain);
     else
-      actual_thread_heap^.memmgr_alloc({num}0,addr,size,actual_thread_chain);
+      actual_task_heap^.memmgr_alloc({num}0,addr,size,actual_task_chain);
       end if;
     end if;
   end rtl_alloc;
+
+
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_adjust =
@@ -71,6 +80,8 @@ begin
     raise memory_corrupt_error;}
   end rtl_adjust;
 
+
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_free =
 -- free memory
@@ -82,19 +93,56 @@ begin
     return;
     end if;
   header:=adr2hdr(addr);
-  header^.dealocator^.memmgr_free({num}0,addr,actual_thread_chain);
+  header^.dealocator^.memmgr_free({num}0,addr,actual_task_chain);
   addr:=nil;
 {%%TODO catch
   when others do
     raise memory_corrupt_error;}
   end rtl_free;
 
+
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_validate_heap =
 ----------------------------------------------------------------------------------------------------
 begin
-  systemheap.memmgr_validate;
+  systemheap^.memmgr_validate;
   end rtl_validate_heap;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_dump_heap =
+----------------------------------------------------------------------------------------------------
+var
+    count          : t_rtl_native_unsigned;
+begin
+  systemheap^.memmgr_dump(count);
+  end rtl_dump_heap;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_early_heap_initialize =
+----------------------------------------------------------------------------------------------------
+with 
+  supervised system_heap;
+
+begin
+  system_heap.rtl_early_sysheap_init(systemheap);
+  end rtl_early_heap_initialize;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_late_heap_finalize =
+----------------------------------------------------------------------------------------------------
+with 
+  supervised system_heap;
+
+begin
+  system_heap.rtl_late_sysheap_deinit(systemheap);
+  end rtl_late_heap_finalize;
+
 
 
 #if rtl_advanced_segregated_heap or rtl_memory_debug then;
@@ -102,28 +150,36 @@ begin
 entry =
 ----------------------------------------------------------------------------------------------------
 begin
-  #if rtl_memory_debug then;
-  new actual_thread_chain;
-  #end if;
+  --#if rtl_memory_debug then;
+  --new actual_task_chain;
+  --#end if;
+
   #if rtl_advanced_segregated_heap  then;
   new segregatedheap;
-  actual_thread_heap:=p_rtl_memheap(segregatedheap:unchecked);
+  actual_task_heap:=p_rtl_memheap(segregatedheap:unchecked);
   #end if;
+
   end entry;
+
+
 
 ----------------------------------------------------------------------------------------------------
 exit =
 ----------------------------------------------------------------------------------------------------
 begin
-  #if rtl_memory_debug then;
-  discard actual_thread_chain;
-  #end if;
+  --#if rtl_memory_debug then;
+  --discard actual_task_chain;
+  --#end if;
+
   #if rtl_advanced_segregated_heap  then;
   discard segregatedheap;
-  actual_thread_heap:=nil;
+  actual_task_heap:=nil;
   #end if;
+
   end exit;
 #end if;
+
+
 
 ---- Compiler magic --------------------------------------------------------------------------------
 #pragma assign(alloc,rtl_alloc);

@@ -1,0 +1,80 @@
+---------------------------------------------------------------------------------------------------
+module private exceptions =
+-- Flex Run-time Library
+-- task variables
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+with  os_api
+     ,flex.exceptions
+     ,flex.exceptions.seh
+     ,error
+     ;
+
+#if rtl_debug_dump_on_exception then;
+var
+  msg_raise_external : static const string 25 of t_syschar := 'raise external exception'\$0;
+#end if;
+
+
+----------------------------------------------------------------------------------------------------
+procedure my_win32_exception_apc : t_winnt_apc_callback=
+#pragma convention(my_win32_exception_apc,system);
+#pragma stackframe(my_win32_exception_apc,stack_pointer_relative);                        
+----------------------------------------------------------------------------------------------------
+begin
+  end my_win32_exception_apc;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_raise_external_exception =
+-- raises an exception into other task
+----------------------------------------------------------------------------------------------------
+var
+    context        : aliased t_winnt_context;
+    handler        : p_external_handler;
+    callback       : p_winnt_apc_callback;
+
+begin
+  #if rtl_debug_dump_on_exception then;
+  rtl_dump_exception(msg_raise_external,etag,edata);
+  #end if;
+  rtl_debuger_break_exception;
+  rtl_critical_lock(taskheader^.locker);
+  if taskheader^.isrunning then
+    rtl_event_wait(taskheader^.exceptions.tasks.canwrite);
+    rtl_suspend_task_internal(taskheader);
+    taskheader^.exceptions.tasks.pending.etag:=etag;
+    taskheader^.exceptions.tasks.pending.edata:=edata;
+    if not taskheader^.exceptions.tasks.issequential then
+       context.contextflags:=winnt_CONTEXT_i486 + winnt_CONTEXT_CONTROL;
+       if GetThreadContext(taskheader^.ostask.taskhandle,^context)=0 then
+        raise tasking_error;
+        end if;
+      handler:=^rtl_external_exception_handler;
+      context.reip:unchecked:=handler;
+      if SetThreadContext(taskheader^.ostask.taskhandle,^context)=0 then
+        raise tasking_error;
+        end if;
+
+      rtl_resume_task_internal(taskheader);
+
+      -- nastavuju prazdny alert abych probudil task ktery spi na nejakem mutexu atd.
+      -- zafunguje pouze pro alertable cekani
+      callback:=^my_win32_exception_apc;
+      if QueueUserAPC(callback,taskheader^.ostask.taskhandle,0)=0 then
+        raise tasking_error;
+        end if;
+    else
+      taskheader^.exceptions.tasks.ispending:=true;
+      rtl_resume_task_internal(taskheader);
+      end if;
+    -- je treba odemknout task header
+    rtl_critical_unlock(taskheader^.locker);
+  else
+    -- je treba odemknout task header
+    rtl_critical_unlock(taskheader^.locker);
+    -- uz nebezi
+    raise tasking_task_not_running;
+    end if;
+  end rtl_raise_external_exception;
+end exceptions;

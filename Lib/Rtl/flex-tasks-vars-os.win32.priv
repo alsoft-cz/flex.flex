@@ -1,0 +1,172 @@
+---------------------------------------------------------------------------------------------------
+module private os =
+-- Flex Run-time Library
+-- Task variables
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_initialize_tasks_immediate_task_var =
+----------------------------------------------------------------------------------------------------
+var
+    mytaskheader : p_task_header;
+    taskheader   : p_task_header;
+    exceptback     : t_rtl_exceptions_info;
+begin
+  mytaskheader:=rtl_get_current_task;
+  rtl_critical_lock(task_list_lock);
+  taskheader:=task_list_first;
+  while(taskheader<>nil) loop
+
+    -- zamknu si ho
+    rtl_critical_lock(taskheader^.locker);
+
+    --zastavim ho
+    if taskheader<>mytaskheader then
+      rtl_suspend_task_internal(taskheader);
+      end if;
+    
+    --zalohuju jeho estack
+    exceptback:=taskheader^.exceptions.info;
+
+    --nastavim si tam svuj aby vyjimka padala na muj estack
+    taskheader^.exceptions.info:=mytaskheader^.exceptions.info;
+
+    --nastavim jeho TIB
+    #syntax asm;
+      --set new value
+      mov    eax,taskheader
+      mov    fs:[t_winnt_tib.aruserpointer],eax
+      #end asm;
+
+    -- nastavit jako systemovou taskovou promennou
+    if TlsSetValue(stask_header,LPVOID(taskheader:unchecked))=0 then
+      raise tasking_task_var_error;
+      end if;
+
+    begin
+      --inicializuju jeho jmenem
+      if vars.rtl_create_task_var(task_varid,taskheader,nil)=nil then
+        raise tasking_task_var_error;
+        end if;
+    leave
+
+      --obnovim jeho estack
+      taskheader^.exceptions.info:=exceptback;
+
+      --nastavim zase svuj TIB
+      #syntax asm;
+        --set new value
+        mov    eax,mytaskheader
+        mov    fs:[t_winnt_tib.aruserpointer],eax
+        #end asm;
+
+      -- nastavit jako systemovou taskovou promennou
+      if TlsSetValue(stask_header,LPVOID(mytaskheader:unchecked))=0 then
+        raise tasking_error;
+        end if;
+
+      --zase ho pustim
+      if taskheader<>mytaskheader then
+        rtl_resume_task_internal(taskheader);
+        end if;
+
+      -- zase ho odemknu
+      rtl_critical_lock(taskheader^.locker);
+
+      end;
+
+    taskheader:=taskheader^.listnext;
+    end loop;
+leave
+  rtl_critical_unlock(task_list_lock);
+  end rtl_initialize_tasks_immediate_task_var; 
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinitialize_tasks_task_var =
+----------------------------------------------------------------------------------------------------
+with exceptions;
+var
+    mytaskheader : p_task_header;
+    taskheader   : p_task_header;
+    exceptback     : t_rtl_exceptions_info;
+    etag           : t_rtl_tag;
+    edata          : t_rtl_unsigned32;
+
+
+begin
+  mytaskheader:=rtl_get_current_task;
+  rtl_critical_lock(task_list_lock);
+  taskheader:=task_list_first;
+  while(taskheader<>nil) loop
+    -- zamknu si ho
+    rtl_critical_lock(taskheader^.locker);
+
+    --zastavim ho
+    if taskheader<>mytaskheader then
+      rtl_suspend_task_internal(taskheader);
+      end if;
+
+    --zalohuju jeho estack
+    exceptback:=taskheader^.exceptions.info;
+
+    --nastavim si tam svuj aby vyjimka padala na muj estack
+    taskheader^.exceptions.info:=mytaskheader^.exceptions.info;
+
+    --nastavim jeho TIB
+    #syntax asm;
+      --set new value
+      mov    eax,taskheader
+      mov    fs:[t_winnt_tib.aruserpointer],eax
+      #end asm;
+
+    -- nastavit jako systemovou taskovou promennou
+    if TlsSetValue(stask_header,LPVOID(taskheader:unchecked))=0 then
+      raise tasking_task_var_error;
+      end if;
+
+    begin
+      -- uvolnim jeho jmenem
+      vars.rtl_free_task_var(task_varid,taskheader);
+    catch
+      -- pokud se neco stalo hodi to tam externe
+      when others do
+        rtl_get_exception (etag,edata);
+        rtl_raise_external_exception(taskheader,etag,edata);
+      end;
+
+    --obnovim jeho estack
+    taskheader^.exceptions.info:=exceptback;
+
+    --nastavim zase svuj TIB
+    #syntax asm;
+      --set new value
+      mov    eax,mytaskheader
+      mov    fs:[t_winnt_tib.aruserpointer],eax
+      #end asm;
+
+    -- nastavit jako systemovou taskovou promennou
+    if TlsSetValue(stask_header,LPVOID(mytaskheader:unchecked))=0 then
+      raise tasking_error;
+      end if;
+
+    --zase ho pustim
+    if taskheader<>mytaskheader then
+      rtl_resume_task_internal(taskheader);
+      end if;
+
+    -- zase ho odemknu
+    rtl_critical_lock(taskheader^.locker);
+
+
+    taskheader:=taskheader^.listnext;
+    end loop;
+ 
+leave
+  rtl_critical_unlock(task_list_lock);
+  end rtl_deinitialize_tasks_task_var; 
+
+
+end os;

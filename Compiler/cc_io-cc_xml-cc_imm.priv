@@ -1,0 +1,139 @@
+----------------------------------------------------------------------------------------------------
+module private cc_imm =
+-- P©eklada‡ Flexu.
+-- V˜stup p©¡m˜ch hodnot
+----------------------------------------------------------------------------------------------------
+-- honzap : 24.11.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  standard.files, 
+  standard.streams,
+  standard.characters,
+  standard.conversions,
+  advanced,
+  advanced.xml,
+  advanced.xml.xml_tokenizer,
+  cc_def.cc_lexsym,
+  cc_base.cc_sym,
+  cc_base.cc_attr,
+  cc_def.cc_unitype,
+  advanced.low_level.unchecked_memory_access;
+
+------------------------------------------------------------------------------------------------
+procedure unchecked_to_string (
+    value          : in unchecked;               -- data p©ev dˆn  na hex dump
+    len            : in t_unsigned32)            -- d‚lka dat [value]
+    return p_char32ustr =
+-- P©evede unchecked kus pamˆti na ©etˆzec jako hex dump
+------------------------------------------------------------------------------------------------
+
+    --------------------------------------------------------------------------------------------
+    procedure dump_byte (
+        byte   : in t_unsigned8;                 -- byte, kter˜ se m  p©ev dˆt
+        s      : out t_char32ustr) =             -- ©etˆzec, do kter‚ho se p¡¨e v˜sledek
+    -- Zkonvertuje jeden byte do hexadecimalni soustavy.
+    --------------------------------------------------------------------------------------------
+    var
+      hex_chars : const array 0..15 of t_char32:=  -- pole pro p©evod do hex soustavy
+          ["0","1","2","3","4","5","6","7","8","9","A","B","C","D","E","F"];
+
+    begin
+      s & hex_chars[byte div 16];
+      s & hex_chars[byte mod 16];
+      end dump_byte;
+
+var
+  a                : p_unsigned8array;           -- buffer
+
+begin
+  -- pokud nen¡ co zapisovat, konec
+  if len=0 then return end if;
+
+  -- alokovat pomocnou pamˆt
+  new a range len;
+  new result range len*2;
+
+  -- kop¡rovat znaky
+  memory_copy(value,a^[0],len);
+  for i in a^:range loop
+    dump_byte(a^[i],result^);
+    end loop;
+
+leave
+  discard a;
+  end unchecked_to_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure xml_dump_imm_value =
+----------------------------------------------------------------------------------------------------
+var
+  hex              : p_char32ustr;
+
+begin
+  if not dump_imm_values then return; end if;
+  xml^.go_in(name);
+  xml^.write_attribute('ic',timmclass_export_id[value.ic]);
+  xml^.write_text_element('ui',unsigned_to_string(uniint_to_unsigned(value.ui)));
+  --TODO value.ur:tunireal
+
+  if value.citems.items<>nil then
+    xml^.go_in('citems');
+    hex:=unchecked_to_string(value.citems.items^[0],value.citems.len*value.citems.isize);
+    xml^.write_attribute('len',unsigned_to_string(value.citems.len));
+    xml^.write_attribute('isize',unsigned_to_string(value.citems.isize));
+    xml^.write_text(hex^);
+    xml^.go_out('citems');
+    end if;
+
+  if value.aitems<>nil then
+    xml^.go_in('aitems');
+    begin
+      xml^.go_in('list');
+      for i in value.aitems^.list^:range loop
+        xml^.write_attribute('hval',unsigned_to_string(uniint_to_unsigned(value.aitems^.list^[i].hval)));
+        xml^.write_attribute('lval',unsigned_to_string(uniint_to_unsigned(value.aitems^.list^[i].lval)));
+        xml_dump_imm_value(xml,'val',value.aitems^.list^[i].val);
+        end loop;
+      xml^.go_out('list');
+      end;
+    xml_dump_imm_value(xml,'others',value.aitems^.othersval);
+    xml^.go_out('aitems');
+    end if;
+
+  if value.ritems<>nil then
+    xml^.go_in('ritems');
+    begin
+      xml^.go_in('list');
+      for i in value.ritems^.list^:range loop
+        if value.ritems^.list^[i].item<>nil then xml^.write_text_element('item',sym_get_qid(value.ritems^.list^[i].item));end if;
+        xml_dump_imm_value(xml,'val',value.ritems^.list^[i].val);
+        end loop;
+      xml^.go_out('list');
+      end;
+    xml_dump_imm_value(xml,'others',value.ritems^.othersval);
+    xml^.go_out('ritems');
+    end if;
+
+  if value.sitems<>nil then
+    xml^.go_in('sitems');
+    begin
+      xml^.go_in('list');
+      for i in value.sitems^.list^:range loop
+        xml^.write_attribute('hval',unsigned_to_string(uniint_to_unsigned(value.sitems^.list^[i].hval)));
+        xml^.write_attribute('lval',unsigned_to_string(uniint_to_unsigned(value.sitems^.list^[i].lval)));
+        end loop;
+      xml^.go_out('list');
+      end;
+    xml^.go_out('sitems');
+    end if;
+
+  xml^.go_out(name);
+leave
+  discard hex;
+  end xml_dump_imm_value;
+
+end cc_imm;
+

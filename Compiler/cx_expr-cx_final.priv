@@ -7,7 +7,7 @@ module private cx_final =
 ----------------------------------------------------------------------------------------------------
 
 with
-  cc_attr,cc_sym,
+  cc_attr,cc_sym,cc_type,
   cx_util,cx_imm;
 
 
@@ -34,7 +34,7 @@ begin
 
 -- %%HYNEK - zobecnit??
 ----------------------------------------------------------------------------------------------------
-procedure is_type_ranged (
+procedure t_is_ranged (
     typ            : in typeview)
                      return t_logical =
 -- vrati T, pokud je zadany typ "ranged" - ma logicke meze mensi nez jsou fyzicke meze argumentu
@@ -50,18 +50,15 @@ begin
   -- souvisejici entita typu vyrazu
   penttyp:=typ.getctype;
 
-  result:=false;
-
   -- vyraz je ranged pouze pro ordinalni typy
-  verify(717, not (penttyp^.stype in dts_ordinal));
+  verify({VERIFY=}000717,penttyp^.stype not in dts_ordinal);
 
   -- zjisti parametry typu
   cpu^.getordparams1(penttyp^.stype, penttyp^.bits,typsize,phlval,phhval);
 
   -- porovnej logicke a fyzicke meze
   result:=penttyp^.lval<>phlval or penttyp^.hval<>phhval;
-
-  end is_type_ranged;
+  end t_is_ranged;
 
 
 
@@ -72,7 +69,8 @@ procedure do_final (
     ptyp           : in typeview;       -- po‘adovan˜ typ v˜razu
     usage          : in expusage;       -- pou‘it¡ v˜razu
     info           : in expinfo;        -- informace o pr–bˆhu anal˜zy
-    fin_context    : in out t_final_context); -- kontext finalizace
+    fin_context    : in out t_final_context; -- kontext finalizace
+    catch_mode     : in t_catch_mode:=catch_mode_implicit); -- zp–sob, jak zachyt vat chyby resume_error
 -- Finalizace.
 ----------------------------------------------------------------------------------------------------
 
@@ -113,7 +111,7 @@ procedure a_final_operator (
         -- komponenta
         when nck_component do do_final(curr,expr,ptyp.getbase(curr),usage,info,fin_context);
 
-        when others do verify(375,true);
+        when others do verify({VERIFY=}000375,true);
         end case;
       end c_final;
 
@@ -124,8 +122,9 @@ var
   er_zprac         : t_logical;                  -- finalizace prav˜ch podv˜raz–                
   el_type          : typeview;
   er_type          : typeview;                   
-  rrd              : t_relative_range_disposition;
   ass_type         : typeview;
+  a                : tuniint;                    -- hodnota konst. operandu
+
 
 begin
   -- oddˆlit podv˜razy 
@@ -152,7 +151,7 @@ begin
         when tc_right   do do_final(curr,el,nulltype,eu_read,info,fin_context);
         when tc_both    do do_final(curr,el,expr^.t ,eu_read,info,fin_context);
         when tc_concat  do c_final(curr,el,expr^.t ,eu_read,info,fin_context);
-        when others     do verify(373,true);
+        when others     do verify({VERIFY=}000373,true);
         end case;
       end if;
   
@@ -178,7 +177,7 @@ begin
       when tc_right  do do_final(curr,er,expr^.t ,eu_read,info,fin_context);
       when tc_both   do do_final(curr,er,expr^.t ,eu_read,info,fin_context);
       when tc_concat do c_final(curr,er,expr^.t ,eu_read,info,fin_context);
-      when others    do verify(374,true);
+      when others    do verify({VERIFY=}000374,true);
       end case;
 
     -- povedla se finalizace podv˜razu ? 
@@ -197,19 +196,15 @@ begin
   -- operator
   case expr^.oper
     
-    -- %%HYNEK - centralizovat podminky pro kontroly mezi
-
     -- scitani, odcitani, nasobeni
     when op_add,op_sub,op_mul do
       -- typ vyrazu s plnym pohledem, ordinalni a bez modularni aritmetiky
-      if expr^.t.tview=tview_full and then expr^.t.stype in dts_ordinal and then 
-         expr^.t.getintaritm<>tia_modular then
-      
+      if t_is_nonmod_ordinal(expr^.t) then
         -- treba provest overflow kontrolu a kontrolu mezi vysledku
         expr^.set_run_check(rchcl_gen,rch_ordinal_overflow);
       
         -- ma typ vyrazu logicke meze mensi nez fyzicke?
-        if is_type_ranged(expr^.t) then
+        if t_is_ranged(expr^.t) then
           -- ano - provest jeste kontrolu mezi
           expr^.set_run_check(rchcl_gen,rch_ordinal_range);
           expr^.set_rangecheck_type(rchcl_gen,expr^.t);
@@ -217,40 +212,28 @@ begin
         end if;
 
       -- typ vysledku s plnym pohledem, ordinalni a bez modularni aritmetiky
-      if expr^.assign and then
-         ass_type.tview=tview_full and then ass_type.stype in dts_ordinal and then
-         ass_type.getintaritm<>tia_modular then
-
-        -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
-        rrd:=t_get_relative_range_disposition(expr^.t,ass_type);
-        
-        -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
-        if rrd<>rrd_equalset and rrd<>rrd_subset then
+      if expr^.assign and then t_is_nonmod_ordinal(ass_type)
+      -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
+      and then not t_is_range_inclusive(ass_type,expr^.t)
+        then
           -- kontrola rozsahu
           expr^.set_run_check(rchcl_load,rch_ordinal_range);
           expr^.set_rangecheck_type(rchcl_load,ass_type);
           end if;
-
-        end if;
     
     -- prirazeni
     when op_assign do
-      -- nekonstantni full ordinal --> nemodularni full ordinal
-      if er0^.ntype<>nt_imm and then
-         ass_type.tview=tview_full and then ass_type.stype in dts_ordinal and then
-         ass_type.getintaritm<>tia_modular and then
-         er_type.tview=tview_full and then er_type.stype in dts_ordinal then
-        
-        -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
-        rrd:=t_get_relative_range_disposition(er_type,ass_type);
-
-        -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
-        if rrd<>rrd_equalset and rrd<>rrd_subset then
-          -- ano - kontrola rozsahu
+      -- zdroj je nekonstantn¡ full ordinal
+      if er0^.ntype<>nt_imm and then t_is_sts(er_type,dts_ordinal)
+      -- c¡l je nemodul rn¡ full ordinal
+      and then t_is_nonmod_ordinal(ass_type)
+      -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
+      and then not t_is_range_inclusive(ass_type,er_type)
+        then
+          -- kontrola rozsahu
           er0^.set_run_check(rchcl_load,rch_ordinal_range);
           er0^.set_rangecheck_type(rchcl_load,ass_type);
           end if;
-        end if;
 
     when others do ;
     end case;
@@ -260,6 +243,56 @@ begin
     el:=nil;
     return;
     end if;
+
+  -- detekovat chyby konst. v˜raz–
+  case expr^.oper
+    -- celo‡¡seln‚ dˆlen¡ (zbytek po dˆlen¡)
+    when op_idiv,op_imod do
+      -- zkontrolovat prav‚ operandy
+      er:=er0;
+      while er<>nil loop
+        -- prav˜ operand konstantn¡
+        if er^.ntype=nt_imm then
+          -- na‡¡st hodnotu prav‚ho operandu
+          load_uniint(pexpimm(er)^.imm,a);
+
+          -- X div 0 --> chyba
+          if a=ui_0 then
+            ce^.seterror({CCERR=}000543,ce_divzero);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+          end if;
+
+        er:=er^.next;
+        end loop;
+
+    -- shift doleva, doprava
+    when op_shl,op_shr do
+      -- zkontrolovat prav‚ operandy
+      er:=er0;
+      while er<>nil loop
+        -- prav˜ operand konstantn¡
+        if er^.ntype=nt_imm then
+          -- na‡¡st hodnotu prav‚ho operandu
+          load_uniint(pexpimm(er)^.imm,a);
+
+          -- prav˜ operand z porn˜
+          if a<ui_0 then
+            ce^.seterror({CCERR=}000544,ce_shift);
+            expr^.errpos;
+            {%%RESUME ce^.raiseerror;}
+            ce^.resumeerror;
+            end if;
+          end if;
+
+        er:=er^.next;
+        end loop;
+    
+    when others do
+
+    end case;
 
   -- finalizace £spˆ¨nˆ dokon‡ena
   expr^.zprac:=ep_final;
@@ -279,8 +312,8 @@ procedure a_final_unary (
 ----------------------------------------------------------------------------------------------------
 var
   el               : pexpnode;                   -- podv˜razy
-  rrd              : t_relative_range_disposition;
   ass_type         : typeview;                   -- skutecny typ prirazeni
+  a                : tuniint;                    -- hodnota konst. operandu
 
 begin
   -- oddˆlit podv˜razy
@@ -299,6 +332,22 @@ begin
     else do_final(curr,el,expr^.t,eu_read,info,fin_context);
     end if;
 
+  -- operace nad p©¡mou ordin ln¡ hodnotou
+  if t_is_sts(expr^.t,dts_ordinal) and el^.ntype=nt_imm then
+    -- na‡¡st hodnotu operandu
+    load_uniint(pexpimm(el)^.imm,a);
+
+    -- p©edch–dce prvn¡ hodnoty
+    if (expr^.oper=un_pred and a=expr^.t.getlval())
+    -- n sledn¡k posledn¡ hodnoty
+    or (expr^.oper=un_succ and a=expr^.t.gethval())
+      then
+        ce^.seterror({CCERR=}000545,ce_resultrange);
+        expr^.errpos;
+        ce^.raiseerror;
+        end if;
+    end if;
+
   -- mame typ prirazeni?
   if fin_context.assign_typ.getutype=nil
     -- NE - pouzi typ vyrazu
@@ -312,14 +361,12 @@ begin
     -- operatory scitani, odcitani, nasobeni
     when un_succ, un_pred, un_minus, un_abs do
       -- typ vyrazu s plnym pohledem, ordinalni a bez modularni aritmetiky
-      if expr^.t.tview=tview_full and then expr^.t.stype in dts_ordinal and then 
-         expr^.t.getintaritm<>tia_modular then
-    
+      if t_is_nonmod_ordinal(expr^.t) then
         -- treba provest overflow kontrolu a kontrolu mezi vysledku
         expr^.set_run_check(rchcl_gen,rch_ordinal_overflow);
     
-        -- ma typ vyrazu logicke meze mensi nez fyzicke?
-        if is_type_ranged(expr^.t) then
+        -- ma typ vyrazu logicke meze mensi nez fyzicke
+        if t_is_ranged(expr^.t) then
           -- ano - provest jeste kontrolu mezi
           expr^.set_run_check(rchcl_gen,rch_ordinal_range);
           expr^.set_rangecheck_type(rchcl_gen,expr^.t);
@@ -327,20 +374,14 @@ begin
         end if;
 
       -- typ vysledku s plnym pohledem, ordinalni a bez modularni aritmetiky
-      if expr^.assign and then
-         ass_type.tview=tview_full and then ass_type.stype in dts_ordinal and then
-         ass_type.getintaritm<>tia_modular then
-
-        -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
-        rrd:=t_get_relative_range_disposition(expr^.t,ass_type);
-        
-        -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
-        if rrd<>rrd_equalset and rrd<>rrd_subset then
+      if expr^.assign and then t_is_nonmod_ordinal(ass_type)
+      -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu
+      and then not t_is_range_inclusive(ass_type,expr^.t)
+        then
           -- kontrola rozsahu
           expr^.set_run_check(rchcl_load,rch_ordinal_range);
           expr^.set_rangecheck_type(rchcl_load,ass_type);
           end if;
-        end if;
    
     when others do ;
     end case;
@@ -414,32 +455,32 @@ begin
 
                     -- konstantn¡ => z pis zak z n
                     when va_const     do
-                        ce^.seterror({CCERR=}000439,ce_i_write_access);
+                        ce^.seterror({CCERR=}000424,ce_i_write_access);
                         expr^.errpos;
                         ce^.resumeerror;
 
                     -- chr nˆn  => z pis nˆkde povolen, nˆkde zak z n => zkoumat d l
                     when va_protected do
                         if not sym_is_included_or_ancestor(curr.entity,sym_get_container(psym)) then
-                          ce^.seterror({CCERR=}000440,ce_i_write_access);
+                          ce^.seterror({CCERR=}000425,ce_i_write_access);
                           expr^.errpos;
                           ce^.resumeerror;
                           end if;
 
-                    when others do verify(605,true);
+                    when others do verify({VERIFY=}000605,true);
                     end case;
 
               -- parametr
               when et_param do
                   -- zapisovat nelze do IN parametru
                   if pentity_param(psym)^.mode=pm_in then
-                    ce^.seterror({CCERR=}000441,ce_i_write_access);
+                    ce^.seterror({CCERR=}000426,ce_i_write_access);
                     expr^.errpos;
                     ce^.resumeerror;
                     end if;
 
               -- nic jin‚ho neum¡me
-              when others do verify(604,true);
+              when others do verify({VERIFY=}000604,true);
               end case;
             end if;
           end if;
@@ -452,7 +493,7 @@ begin
           end if;
 
         -- z pis nen¡ povolen
-        verify(607,usage in expusageset:[eu_write,eu_change]);
+        verify({VERIFY=}000607,usage in expusageset:[eu_write,eu_change]);
 
     -- procedura
     when nc_proc do
@@ -475,7 +516,7 @@ begin
           end if;
 
         -- je povolen jen form ln¡ p©¡stup a z¡sk n¡ adresy
-        verify(608,usage not in expusageset:[eu_formal,eu_addr]);
+        verify({VERIFY=}000608,usage not in expusageset:[eu_formal,eu_addr]);
 
     -- zpr va
     when nc_message     do
@@ -485,7 +526,7 @@ begin
           end if;
 
         -- je povolen jen form ln¡ p©¡stup a z¡sk n¡ adresy
-        verify(609,usage not in expusageset:[eu_formal,eu_addr]);
+        verify({VERIFY=}000609,usage not in expusageset:[eu_formal,eu_addr]);
 
     -- typ
     when nc_type do
@@ -495,7 +536,7 @@ begin
           end if;
 
         -- je povolen jen form ln¡ p©¡stup a pou‘it¡ hodnoty (tagu)
-        verify(620,usage not in expusageset:[{%%X Doplnˆno EU_READ, je to dob©e??}eu_read,eu_use,eu_formal]);
+        verify({VERIFY=}000620,usage not in expusageset:[{%%X Doplnˆno EU_READ, je to dob©e??}eu_read,eu_use,eu_formal]);
 
     -- nˆco jin‚ho
     when others do
@@ -505,7 +546,7 @@ begin
           end if;
 
         -- je povolen jen form ln¡ p©¡stup
-        verify(606,usage not in expusageset:[{%%X Doplnˆno EU_NONE}eu_none,eu_formal]);
+        verify({VERIFY=}000606,usage not in expusageset:[{%%X Doplnˆno EU_NONE}eu_none,eu_formal]);
     end case;
 
   -- povedla se finalizace podv˜razu ? 
@@ -531,6 +572,7 @@ var
   change           : t_logical;                  -- T-zmˆnila se reprezentace konstanty
 
 begin
+  verify({VERIFY=}000887,usage=eu_write);
   if ptyp.tview<>tview_null
 
     -- po‘adov n konkr‚tn¡ typ konstanty
@@ -549,31 +591,29 @@ begin
 
       -- test spr vnosti
       if (expr^.t.tview=tview_full) and (usage in expusageset:[eu_read,eu_use,eu_formal]) then
-        begin
-          imm_check(curr,expr^.imm,expr^.t);
-        catch
-          when resume_error, compiler_error do
-              expr^.errpos;
-              raise;
-          end;
+        imm_check(curr,expr^.imm,expr^.t);
         end if;
 
     -- nen¡ ur‡en typ 
     else
-      -- prov‚st test mez¡ 
-      if usage in expusageset:[eu_use,eu_formal] then
-        --... %%X
+      -- prov‚st test mez¡
+      if (expr^.t.tview=tview_full) and (usage in expusageset:[eu_use,eu_formal]) then
+        imm_check(curr,expr^.imm,expr^.t);
         end if;
       end if;
 
   -- %%X ?
-  --verifyx(531,(expr^.imm.ic=ic_set and expr^.imm.sitems^.lcount>expr^.imm.sitems^.lsize)
+  --verifyx({VERIFY=}000531,(expr^.imm.ic=ic_set and expr^.imm.sitems^.lcount>expr^.imm.sitems^.lsize)
   --         or (expr^.imm.ic=ic_array and expr^.imm.aitems^.lcount>expr^.imm.aitems^.lsize)
   --         or (expr^.imm.ic=ic_record and expr^.imm.ritems^.lcount>expr^.imm.ritems^.lsize),expr^.pos);
 
-
   -- finalizace £spˆ¨nˆ dokon‡ena 
   expr^.zprac:=ep_final;
+
+catch
+  when resume_error, compiler_error do
+      expr^.errpos;
+      raise;
   end a_final_imm;
 
 
@@ -618,7 +658,7 @@ begin
           -- IN OUT
           when pm_inout do do_final(curr,arg^.sub,arg^.t,eu_change,info,fin_context);
 
-          when others   do verify(180,true);
+          when others   do verify({VERIFY=}000180,true);
           end case;
         arg^.zprac:=arg^.sub^.zprac;
 
@@ -691,7 +731,6 @@ var
   er               : pexpnode;                   -- podv˜razy
   el_range         : typeview;
   er_type          : typeview;                   
-  rrd              : t_relative_range_disposition;
 
 begin
   -- oddˆlit podv˜razy
@@ -708,17 +747,23 @@ begin
   er_type:=er^.t;
 
   -- pravy podvyraz konstanta?
-  if er^.ntype<>nt_imm then
-    -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
-    rrd:=t_get_relative_range_disposition(er_type, el_range);
-    
-    -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
-    if rrd<>rrd_equalset and rrd<>rrd_subset then
-      -- kontrola rozsahu
-      er^.set_run_check(rchcl_load,rch_ordinal_range);
-      er^.set_rangecheck_type(rchcl_load,el_range);
+  if er^.ntype<>nt_imm
+  -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu
+  and then not t_is_range_inclusive(el_range,er_type)
+    then
+      -- jedna se o indexovani retezce?
+      if el^.t.stype in dts_string
+        
+        -- ano - kontrola indexovani retezce
+        then
+          expr^.set_run_check(rchcl_gen,rch_stringindex_range);
+
+        -- ne - bezna kontrola rozsahu
+        else 
+          er^.set_run_check(rchcl_load,rch_ordinal_range);
+          er^.set_rangecheck_type(rchcl_load,el_range);
+          end if;
       end if;
-    end if;
 
   -- povedla se finalizace podv˜raz– ? 
   if (el^.zprac<ep_final) or (er^.zprac<ep_final) then return; end if;
@@ -776,19 +821,19 @@ begin
 
       -- konstantn¡ => z pis zak z n
       when va_const     do
-          ce^.seterror({CCERR=}000442,ce_i_write_access);
+          ce^.seterror({CCERR=}000427,ce_i_write_access);
           expr^.errpos;
           ce^.resumeerror;
 
       -- chr nˆn  => z pis nˆkde povolen, nˆkde zak z n => zkoumat d l
       when va_protected do
           if not sym_is_included_or_ancestor(curr.entity,sym_get_container(expr^.sub^.t.getctype)) then
-            ce^.seterror({CCERR=}000443,ce_i_write_access);
+            ce^.seterror({CCERR=}000428,ce_i_write_access);
             expr^.errpos;
             ce^.resumeerror;
             end if;
 
-      when others do verify(610,true);
+      when others do verify({VERIFY=}000610,true);
       end case;
     end if;
 
@@ -826,7 +871,7 @@ begin
 
     -- u‘ivatelem definovan˜ atribut 
     then
-      unimplemented(51);
+      unimplemented({UNIMP=}000051);
 
     -- jazykem definovan˜ atribut 
     else
@@ -839,14 +884,14 @@ begin
         {%%X Nen¡ t©eba pro dynamick‚ atributy nˆkdy zmˆnit pou‘it¡ ? }
         when atc_dynamic do do_final(curr,el,nulltype,usage,info,fin_context);
       --when atc_generic do u_nimplemented(50);
-        when others      do verify(128,true);
+        when others      do verify({VERIFY=}000128,true);
         end case;
       vyhodnoceno:=vyhodnoceno and (el^.zprac>=ep_final);
       end if;
 
   -- finalizovat seznam argument–
   while arglist<>nil loop
-    unimplemented(49);
+    unimplemented({UNIMP=}000049);
     end loop;
 
   -- povedlo se vyhodnocen¡ v¨ech podv˜raz– ?
@@ -872,7 +917,6 @@ var
   el               : pexpnode;                   -- podv˜raz
   arg              : pexpitem;                   -- argument
   er               : pexpitem;
-  rrd              : t_relative_range_disposition;
   
 begin
   -- oddˆlit podv˜razy 
@@ -886,23 +930,17 @@ begin
   do_final(curr,arg^.sub,nulltype,usage,info,fin_context);
   arg^.zprac:=arg^.sub^.zprac;
 
-  -- pro typecast nekonstanta full view --> full view
-  if er^.ntype<>nt_imm and
-     er^.t.tview=tview_full and expr^.t.tview=tview_full then
-    -- a ordinal --> ordinal', kde ordinal' nema modularni aritmetiku
-    if er^.t.stype in dts_ordinal and then expr^.t.stype in dts_ordinal and then expr^.t.getintaritm<>tia_modular then
-      -- zjisti vzajemnou polohu mezi ciloveho a zdrojoveho typu
-      rrd:=t_get_relative_range_disposition(er^.t,expr^.t);
-
-      -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu?
-      if rrd<>rrd_equalset and rrd<>rrd_subset then
-        -- ano - treba provest kontrolu mezi
-        er^.set_run_check(rchcl_load,rch_ordinal_range);
-        er^.set_rangecheck_type(rchcl_load,expr^.t);
-        end if;
-      
+  -- pro typecast nekonstanta full view, ordinal
+  if er^.ntype<>nt_imm and then t_is_sts(er^.t,dts_ordinal)
+  -- po‘adov n je full view, ordinal', nemodul rn¡
+  and then t_is_nonmod_ordinal(expr^.t)
+  -- rozsah zdrojoveho ani stejny ani podmnozinou ciloveho typu
+  and then not t_is_range_inclusive(expr^.t,er^.t)
+    then
+      -- provest kontrolu mezi
+      er^.set_run_check(rchcl_load,rch_ordinal_range);
+      er^.set_rangecheck_type(rchcl_load,expr^.t);
       end if;
-    end if;
   
   -- povedla se finalizace podv˜raz– ? 
   if (el^.zprac<ep_final) or (arg^.zprac<ep_final) then return; end if;
@@ -974,8 +1012,27 @@ begin
       vyhodnoceno:=true;
       end if;
 
-  -- finalizovat slo‘ky 
-  -- Pozn mka: toto ji‘ za©¡dil optimaliz tor 
+  -- finalizovat slo‘ky (kolik je definov no slo‘ek, nen¡ jich p©¡li¨?)
+
+  -- pole, ©etˆzec
+  if t_is_sts(expr^.t,[dt_array,{dt_uarray,}dt_string{,dt_ustring}]) then
+    verify({VERIFY=}000895,expr^.t.tview<>tview_full);
+
+    declare var
+      len          : tuniint;                    -- po‡et slo‘ek
+    begin
+      -- zjistit max. po‡et konst. slo‘ek
+      imm_get_length(expr^.imm,len);
+
+      -- nep©ekro‡il index mez pole ?
+      if len>expr^.t.getrange(curr).getlength then
+        ce^.seterror({CCERR=}000550,ce_toomanyitems);
+        expr^.errpos;
+        {%%X ce^.raiseerror};
+        ce^.resumeerror;
+        end if;
+      end declare;
+    end if;
 
   -- povedla se finalizace podv˜raz– ? 
   if not vyhodnoceno then return; end if;
@@ -1019,7 +1076,7 @@ begin
       -- odesl n¡ zpr vy
       when nt_accept do do_final(curr,arg^.sub,arg^.t,eu_write,info,fin_context);
 
-      when others    do verify(306,true);
+      when others    do verify({VERIFY=}000306,true);
       end case;
     arg^.zprac:=arg^.sub^.zprac;
 
@@ -1063,10 +1120,13 @@ procedure do_final =
 -- Finalizace.
 ----------------------------------------------------------------------------------------------------
 begin
-  verify(126,expr=nil);
+  verify({VERIFY=}000126,expr=nil);
 
   -- zpracov vat jen v˜razy z bezprost©ednˆ p©edchoz¡ f ze 
   if expr^.zprac<>pred ep_final then return; end if;
+
+  -- zpracovat jen v˜razy, ve kter˜ch se neobjevila chyba v p©edchoz¡ch pr–chodech
+  if expr^.erroneous then return end if;
 
   -- zkontrolovat v˜raz 
   case expr^.ntype
@@ -1119,9 +1179,19 @@ begin
     when nt_this      do a_final_this(curr,pexpthis(expr),ptyp,usage,info,fin_context);;
 
     -- jin‚ symboly tu nemaj¡ co dˆlat
-    when others       do verify(127,true);
+    when others       do verify({VERIFY=}000127,true);
     end case;
 
+catch 
+  when resume_error do
+      -- kontrola
+      verify({VERIFY=}000857,expr^.zprac>=ep_final);
+
+      -- nastavit p©¡znak, ‘e tento uzel byl chybn˜
+      expr^.erroneous:=true;
+
+      -- znovu vyvolat vyj¡mku
+      if not node_catch_resume_error(catch_mode,expr^.ntype) then raise;end if;
   end do_final;
 
 
@@ -1134,7 +1204,7 @@ var
   fin_context : t_final_context;
 
 begin
-  do_final(curr,expr,ptyp,usage,info,fin_context);
+  do_final(curr,expr,ptyp,usage,info,fin_context,catch_mode);
   end a_final;
 
 

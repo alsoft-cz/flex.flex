@@ -10,8 +10,11 @@ type
   p_handle = t_rtl_pointer;
   dword   = t_rtl_unsigned32;
   pdword  = ^t_rtl_unsigned32;
-  inbool  = t_rtl_logical32;
+  inbool  = t_rtl_logical;
   bool    = t_rtl_unsigned32;
+  byte    = t_rtl_unsigned8;
+  word    = t_rtl_unsigned16;
+  mword   = mod unsigned 16;
   size_t  = t_rtl_unsigned32;
   lvoid   = t_rtl_pointer;
   lpvoid  = t_rtl_pointer;
@@ -39,6 +42,7 @@ const
 
   wait_failed        : t_rtl_unsigned32 = $ffffffff;
   wait_object_0      : t_rtl_unsigned32 = $00000000;
+  wait_object_63     : t_rtl_unsigned32 = $0000003f;
   wait_timeout       : t_rtl_unsigned32 = $00000102;
   wait_abandoned     : t_rtl_unsigned32 = $00000080;
   wait_io_completion : t_rtl_unsigned32 = $000000c0;
@@ -61,6 +65,15 @@ const
   winnt_thread_priority_above_normal : tprio     =1;
   winnt_thread_priority_highest : tprio          =2;
   winnt_thread_priority_time_critical : tprio    =15;
+
+  -- Heap
+  winnt_process_heap_region                      : mword = $01;
+  winnt_process_heap_uncommitted_range           : mword = $02;
+  winnt_process_heap_entry_busy                  : mword = $04;
+  winnt_process_heap_entry_moveable              : mword = $10;
+  winnt_process_heap_entry_ddeshare              : mword = $20;
+
+
 
 --#define thread_get_context               (0x0008)  
 --#define thread_set_context               (0x0010)  
@@ -98,7 +111,11 @@ const
   exception_priv_instruction         : t_rtl_unsigned32 = $c0000096; 
   exception_single_step              : t_rtl_unsigned32 = $80000004; 
   exception_stack_overflow           : t_rtl_unsigned32 = $c00000fd; 
+  exception_possible_deadlock        : t_rtl_unsigned32 = $c0000194;
+
   flag_exception_noncontinuable      : t_rtl_unsigned32 = $00000001;
+
+  winnt_maximum_wait_objects         : t_rtl_unsigned32 = 64;
 
 
 ----------------------------------------------------------------------------------------------------
@@ -216,6 +233,31 @@ type
 
   t_system_ticks = mod unsigned 32;
 
+
+  t_winnt_process_heap_entry = record
+      lpdata       : t_rtl_pointer;
+      cbdata       : t_rtl_native_unsigned;
+      cboverhead   : byte;
+      iregionindex : byte;
+      wflags       : mword;
+      t_004        : record
+        block        : record
+          hmem         : t_handle;
+          dwreserved   : array 0..2 of dword;
+          end record for position use 0;
+        region            : record
+          dwcommittedsize : dword;
+          dwuncommittedsize : dword;
+          lpfirstblock    : lpvoid;
+          lplastblock     : lpvoid;
+          end record for position use 0;
+        end record;
+      end record;
+
+    p_winnt_process_heap_entry = ^t_winnt_process_heap_entry for machine_pointer use true;
+
+    t_winnt_multiple_objects = array of t_handle;
+    p_winnt_multiple_objects = ^t_winnt_multiple_objects  for machine_pointer use true;
 
 
 ----------------------------------------------------------------------------------------------------
@@ -336,6 +378,16 @@ procedure WaitForSingleObjectEx(
 #pragma convention(WaitForSingleObjectEx,system);
 #pragma import(WaitForSingleObjectEx,'WaitForSingleObjectEx','kernel32.dll');
 ----------------------------------------------------------------------------------------------------
+procedure WaitForMultipleObjectsEx(
+    nCount          : in dword; 
+    lpHandles       : in p_winnt_multiple_objects; 
+    bWaitAll        : in inbool; 
+    dwMilliseconds  : in t_rtl_timeout;
+    bAlertable      : in inbool)
+                      return dword;
+#pragma convention(WaitForMultipleObjectsEx,system);
+#pragma import(WaitForMultipleObjectsEx,'WaitForMultipleObjectsEx','kernel32.dll');
+----------------------------------------------------------------------------------------------------
 procedure CreateEventA(
     lpEventAttributes : in t_rtl_pointer; 
     bManualReset    : in inbool; 
@@ -439,6 +491,13 @@ procedure HeapValidate(
 #pragma convention(HeapValidate,system);
 #pragma import(HeapValidate,'HeapValidate','kernel32.dll');
 ----------------------------------------------------------------------------------------------------
+procedure HeapWalk(
+    hHeap           : in t_handle; 
+    lpEntry         : in p_winnt_process_heap_entry)
+                      return bool;
+#pragma convention(HeapWalk,system);
+#pragma import(HeapWalk,'HeapWalk','kernel32.dll');
+----------------------------------------------------------------------------------------------------
 
 {
 ----------------------------------------------------------------------------------------------------
@@ -500,6 +559,12 @@ procedure SetThreadPriority(
                       return bool;
 #pragma convention(SetThreadPriority,system);
 #pragma import(SetThreadPriority,'SetThreadPriority','kernel32.dll');
+----------------------------------------------------------------------------------------------------
+procedure GetThreadPriority(
+    hThread         : in t_handle)
+                      return TPRIO;
+#pragma convention(GetThreadPriority,system);
+#pragma import(GetThreadPriority,'GetThreadPriority','kernel32.dll'); 
 ----------------------------------------------------------------------------------------------------
 procedure SleepEx(
     dwMilliseconds  : in dword;

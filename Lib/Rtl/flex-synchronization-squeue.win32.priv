@@ -1,0 +1,610 @@
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_try_draw_out_cr(
+    squeue         : in out ref t_rtl_squeue_cr;
+    btrynext       : in t_rtl_logical;
+    data           : out t_rtl_pointer;
+    milisec        : in t_rtl_timeout;
+    filter         : in p_rtl_expression)
+    return         t_rtl_logical =
+-- try withdraw data
+----------------------------------------------------------------------------------------------------
+var
+    datanode       : p_rtl_doubly_p_item;
+    start          : t_system_ticks;
+    elapsed        : t_system_ticks;
+    timeout        : t_rtl_timeout;
+
+begin
+  timeout:=milisec;
+  if milisec>0 then 
+    start:=GetTickCount();
+    end if;
+
+  loop
+    --zkusim si jeden vzit
+    result:=rtl_critisem_try_lock(squeue.counter,timeout);
+    if not result then
+      return;
+      end if;
+
+    -- zamknu
+    rtl_critical_lock(squeue.lock);
+
+      rtl_doubly_list_first(p_rtl_doubly_item(datanode:unchecked),squeue);
+      -- otestuju filter
+      if filter<>nil then
+        result:=rtl_expr_evaluate(filter,datanode^.data);
+        end if;
+
+      if result then
+        rtl_doubly_list_remove(p_rtl_doubly_item(datanode:unchecked),squeue);
+        data:=datanode^.data;
+        discard datanode;
+
+        -- zmensim pocet prvku ve fronte
+        pred squeue.lcounter;
+        end if;
+
+      if squeue.lcounter>0 then
+        -- povolim dalsimu tasku cteni
+        if btrynext then
+          rtl_critisem_unlock_all(squeue.trynext);
+          end if;
+        rtl_critisem_unlock(squeue.counter);
+        end if;
+
+    -- odemknu
+    rtl_critical_unlock(squeue.lock);
+
+    -- pokud cekam na dalsi
+    if not result then
+      -- vypocitam zbytek casu
+      if milisec>0 then 
+        elapsed:=GetTickCount()-start;
+        timeout - t_rtl_timeout(elapsed);
+        if timeout<1 then timeout:=0; end if;
+        end if;
+
+      -- cekam na dalsi prvek
+      if not rtl_critisem_try_lock(squeue.trynext,timeout) then
+        return;
+        end if;
+    
+      -- vypocitam zbytek casu rpo dalsi kolo
+      if milisec>0 then 
+        elapsed:=GetTickCount()-start;
+        timeout - t_rtl_timeout(elapsed);
+        if timeout<1 then timeout:=0; end if;
+        end if;
+      end if;
+    until (result);
+  end rtl_squeue_try_draw_out_cr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_append_cr(
+    squeue         : in out ref t_rtl_squeue_cr;
+    btrynext       : in t_rtl_logical;
+    data           : in t_rtl_pointer) =
+-- insert data into queue
+----------------------------------------------------------------------------------------------------
+var
+    newnode        : p_rtl_doubly_p_item;
+
+begin
+  -- vytvorim prvek
+  new newnode;
+  newnode^.data:=data;
+  
+  -- zamknu
+  rtl_critical_lock(squeue.lock);
+
+    -- vlozim prvek
+    rtl_doubly_list_append(p_rtl_doubly_item(newnode:unchecked),squeue);
+
+    -- zvednu pocet prvku ve fronte
+    succ squeue.lcounter;
+    if squeue.lcounter=1 then
+      -- povolim dalsimu tasku cteni
+      if btrynext then
+        rtl_critisem_unlock_all(squeue.trynext);
+        end if;
+      rtl_critisem_unlock(squeue.counter);
+      end if;
+
+  -- odemknu
+  rtl_critical_unlock(squeue.lock);
+  end rtl_squeue_append_cr;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_append_nb(
+    squeue         : in out ref t_rtl_squeue_nb;
+    btrynext       : in t_rtl_logical;
+    data           : in t_rtl_pointer) =
+-- insert data into queue
+----------------------------------------------------------------------------------------------------
+var
+  zero             : t_rtl_ref_snapshot;
+  oldtail          : aliased t_rtl_ref_snapshot;
+  wrktail          : t_rtl_ref_snapshot;
+  newnode          : t_rtl_ref_local;
+  prevnode         : t_rtl_ref_local;
+  old_count        : t_rtl_native_signed;
+
+label
+  restart
+  ;
+
+begin
+  rtl_ref_create_local(newnode,data,squeue.freedata,t_rtl_ref_ns_singly);
+
+restart:
+  rtl_ref_shared_to_snapshot(squeue.tail,oldtail);
+
+  -- zkopiruju si pointer na "posledni prvek"
+  if not rtl_ref_shared_to_local(squeue.tail,prevnode,oldtail) then
+      pause_nop;
+    goto restart; 
+    end if;
+
+  --hledam jestli je opravdu posledni
+  rtl_ref_shared_to_snapshot(prevnode.node^.next,wrktail);
+  while wrktail.node<>nil loop
+
+    -- neni posledni takze si posunu ukazatel na posledni
+    if not rtl_ref_shared_to_local(prevnode.node^.next,prevnode,wrktail) then
+      pause_nop;
+      goto restart; 
+      end if;
+
+    -- zkusim prehodit pointer na "posledni prvek" na tenhle prvek
+    if not rtl_ref_local_to_shared(prevnode,squeue.tail,oldtail,^oldtail) then
+      pause_nop;
+      goto restart; 
+      end if;
+    -- podarilo se udelam si novy snapshot
+    rtl_ref_shared_to_snapshot(prevnode.node^.next,wrktail);
+    end loop;
+
+  -- mam docasneho reprezentanta posledniho prvku
+  -- zkusim do nej nakopirovat novy node za predpokladu ze je opravdu posledni
+  if not rtl_ref_local_to_shared(newnode,prevnode.node^.next,zero) then
+    pause_nop;
+    goto restart; 
+    end if;
+
+  -- podarilo se mi 
+  -- zkusim prehodit pointer na "posledni prvek" na tenhle prvek
+  if not rtl_ref_local_to_shared(newnode,squeue.tail,oldtail) then
+    -- pokud se nepodarilo tak to asi udelal nekdo jiny a mne to nevadi
+    end if;
+
+  -- uvolnim predchozi prvek
+  rtl_ref_discard_local(prevnode);
+
+  -- uvolnim novy prvek
+  rtl_ref_discard_local(newnode);
+
+  -- zvednu pocet prvku ve fronte a nebo povolim dalsimu tasku cteni
+  if btrynext then
+    rtl_critisem_unlock_out(squeue.counter,old_count);
+    -- jestli je tam prave jeden prvek probudim cekatele na dalsi prvek
+    if old_count=0 then
+      rtl_critisem_unlock_all(squeue.trynext);
+      end if;
+  else
+    rtl_interlocked_dec(p_rtl_native_signed(^squeue.counter:unchecked));
+    end if;
+  end rtl_squeue_append_nb;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_draw_out_now_nb (
+    squeue         : in out ref t_rtl_squeue_nb;
+    data           : out t_rtl_pointer;
+    trynext        : out t_rtl_logical;
+    filter         : in p_rtl_expression)
+    return t_rtl_logical =
+----------------------------------------------------------------------------------------------------
+var
+  temp             : t_rtl_ref_snapshot;
+  nextsnap         : t_rtl_ref_snapshot;
+  oldtail          : t_rtl_ref_snapshot;
+  dumbnode         : t_rtl_ref_local;
+  nextnode         : t_rtl_ref_local;
+
+label
+  restart;
+
+begin
+restart:
+  rtl_ref_shared_to_snapshot(squeue.head,temp);
+
+  -- zkopiruju si pointer na prvni "dumb" node
+  if not rtl_ref_shared_to_local(squeue.head,dumbnode,temp) then
+    pause_nop;
+    goto restart; 
+    end if;
+
+  -- otestuju jestli neni fronta prazdna
+  rtl_ref_shared_to_snapshot(dumbnode.node^.next,nextsnap);
+  if nextsnap.node=nil then
+    -- je prazdna, uklidim
+    data:=nil;
+    result:=false;
+    rtl_ref_discard_local(nextnode);
+    rtl_ref_discard_local(dumbnode);
+    return;
+    end if;
+  
+  -- z dumb node zkopiruju pointer na dalsi
+  if not rtl_ref_shared_to_local(dumbnode.node^.next,nextnode,nextsnap) then
+    pause_nop;
+    goto restart; 
+    end if;
+  
+  -- otestuju filter
+  if filter<>nil then
+    result:=not rtl_expr_evaluate(filter,nextnode.node^.data);
+    -- neproslo filtrem, cekej na dalsi
+    if not result then
+      trynext:=true;
+      data:=nil;
+      rtl_ref_discard_local(nextnode);
+      rtl_ref_discard_local(dumbnode);
+      return;
+      end if;
+    end if;
+
+  -- ujistim se ze tail neukazuje na predchozi prvek
+  rtl_ref_shared_to_snapshot(squeue.tail,oldtail);
+  if oldtail.node=dumbnode.node then
+    if not rtl_ref_local_to_shared(nextnode,squeue.tail,oldtail) then
+      -- ignoruju vysledek
+      end if;
+    end if;
+
+
+  -- zkusim ten dalsi nastavit jako prvni
+  if not rtl_ref_local_to_shared(nextnode,squeue.head,temp) then
+    pause_nop;
+    goto restart; 
+    end if;
+
+  --podarilo se, prectu si data
+  data:=nextnode.node^.data;
+  nextnode.node^.data:=nil;
+
+  -- uvolnim pointer na dalsi prvek
+  if not rtl_ref_discard_shared(dumbnode.node^.next,nextsnap) then
+    raise synchronization_error;
+    end if;
+
+  rtl_ref_discard_local(nextnode);
+
+  -- uvolnim dumb
+  rtl_ref_discard_local(dumbnode);
+  result:=true;
+  end rtl_squeue_draw_out_now_nb;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_try_draw_out_nb(
+    squeue         : in out ref t_rtl_squeue_nb;
+    btrynext       : in t_rtl_logical;
+    data           : out t_rtl_pointer;
+    milisec        : in t_rtl_timeout;
+    filter         : in p_rtl_expression)
+    return         t_rtl_logical =
+-- try withdraw data
+----------------------------------------------------------------------------------------------------
+var
+    start          : t_system_ticks;
+    elapsed        : t_system_ticks;
+    timeout        : t_rtl_timeout;
+    trynext        : t_rtl_logical;
+
+begin
+  -- reknu ze si beru jeden prvek
+  if btrynext then
+    rtl_critisem_force_lock(squeue.counter);
+    end if;
+
+  -- zkusim si ho opravdu vzit
+  result:=rtl_squeue_draw_out_now_nb(squeue,data,trynext,filter);
+
+  -- pokud neumi cekani tak uz na nic necekam
+  if milisec=t_rtl_wait_immediate or result then
+    if btrynext then
+      if result then
+        -- vpustim cekatele na dalsi
+        rtl_critisem_unlock_all(squeue.trynext);
+      else
+        --uklidit po neuspesnem pokusu
+        rtl_critisem_force_unlock(squeue.counter);
+        end if;
+      end if;
+    return;
+    end if;
+
+  -- pokud je potreba pocitat cas tak zjistim start
+  timeout:=milisec;
+  if milisec>0 then
+    start:=GetTickCount();
+    end if;
+
+  -- cekat na dalsi prvek ?
+  if trynext then
+    -- cekam na dalsi prvek
+    if not rtl_critisem_try_lock(squeue.trynext,timeout) then
+      result:=false;
+      return;
+      end if;
+  
+    -- vypocitam zbytek casu pro dalsi cekani
+    if milisec>0 then 
+      elapsed:=GetTickCount()-start;
+      timeout - t_rtl_timeout(elapsed);
+      if timeout<1 then timeout:=0; end if;
+      end if;
+    end if;
+
+  -- nepodarilo se mi vzit si prvek na prvni pokus bez blokovani a zarovem mam cekat
+  rtl_critisem_force_unlock(squeue.counter);
+  loop
+    -- pockam az nekdo signalizuje ze je tam alespon jeden prvek
+    if not rtl_critisem_try_lock(squeue.counter,timeout) then
+      -- timeout
+      result:=false;
+      return;
+      end if;
+
+    -- zkusim jestli mne nekdo nepredbehne
+    result:=rtl_squeue_draw_out_now_nb(squeue,data,trynext,filter);
+
+    -- podarilo se sebrat prvek, koncim
+    if result then 
+      -- vpustim cekatele na dalsi
+      if btrynext then
+        rtl_critisem_unlock_all(squeue.trynext);
+        end if;
+      return; 
+      end if;
+
+    -- pokus se nezdaril vratim pocitadlo itemu
+    rtl_critisem_force_unlock(squeue.counter);
+
+    -- pokud je potreba pocitat cas tak zjistim kolik ubehlo
+    if milisec>0 then
+      elapsed:=GetTickCount()-start;
+      timeout - t_rtl_timeout(elapsed);
+      if timeout<1 then
+        -- timeout
+        result:=false;
+        return;
+        end if;
+      end if;
+
+    -- mam cekat na dalsi ?
+    if trynext then
+      -- cekam na dalsi prvek
+      if not rtl_critisem_try_lock(squeue.trynext,timeout) then
+        result:=false;
+        return;
+        end if;
+    
+      -- vypocitam zbytek casu pro dalsi cekani
+      if milisec>0 then 
+        elapsed:=GetTickCount()-start;
+        timeout - t_rtl_timeout(elapsed);
+        if timeout<1 then timeout:=0; end if;
+        end if;
+      end if;
+    end loop;
+  end rtl_squeue_try_draw_out_nb;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_append =
+----------------------------------------------------------------------------------------------------
+begin
+  if squeue.style in t_rtl_concurency_style_set:[rtl_cst_nonkernel,rtl_cst_nonblocking] then
+    rtl_squeue_append_nb(squeue.nonblocking,squeue.style=rtl_cst_nonblocking,data);
+  else
+    rtl_squeue_append_cr(squeue.critical,squeue.style=rtl_cst_waitable,data);
+    end if;
+  end rtl_squeue_append;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_try_draw_out =
+----------------------------------------------------------------------------------------------------
+var
+  trynext          : t_rtl_logical;
+
+begin
+  case squeue.style
+    when rtl_cst_nonkernel do
+      result:=rtl_squeue_draw_out_now_nb(squeue.nonblocking,data,trynext,nil)
+    when rtl_cst_nonblocking do
+      result:=rtl_squeue_try_draw_out_nb(squeue.nonblocking,true,data,milisec,filter);
+    when rtl_cst_critical do
+      result:=rtl_squeue_try_draw_out_cr(squeue.critical,false,data,milisec,nil);
+    when rtl_cst_waitable do
+      result:=rtl_squeue_try_draw_out_cr(squeue.critical,false,data,milisec,filter);
+    end case;
+  end rtl_squeue_try_draw_out;
+  
+  
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_draw_out =
+----------------------------------------------------------------------------------------------------
+var
+  trynext          : t_rtl_logical;
+
+begin
+  case squeue.style
+    when rtl_cst_nonkernel do
+      if not rtl_squeue_draw_out_now_nb(squeue.nonblocking,data,trynext,nil) then
+        raise synchronization_error;
+        end if;
+    when rtl_cst_nonblocking do
+      if not rtl_squeue_try_draw_out_nb(squeue.nonblocking,true,data,t_rtl_wait_infinite,filter) then
+        raise synchronization_error;
+        end if;
+    when rtl_cst_critical do
+      if not rtl_squeue_try_draw_out_cr(squeue.critical,false,data,t_rtl_wait_infinite,nil) then
+        raise synchronization_error;
+        end if;
+    when rtl_cst_waitable do
+      if not rtl_squeue_try_draw_out_cr(squeue.critical,true,data,t_rtl_wait_infinite,filter) then
+        raise synchronization_error;
+        end if;
+    end case;
+  end rtl_squeue_draw_out;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_new =
+----------------------------------------------------------------------------------------------------
+var
+    temp           : t_rtl_ref_local;
+
+begin
+  squeue.style:=style;
+  case squeue.style
+    when rtl_cst_nonkernel do
+      squeue.nonblocking.freedata:=freedata;
+      rtl_ref_create_local(temp,nil,freedata,t_rtl_ref_ns_singly);
+      rtl_ref_local_to_local_shared(temp,squeue.nonblocking.head);
+      rtl_ref_local_to_local_shared(temp,squeue.nonblocking.tail);
+      rtl_ref_discard_local(temp);
+    when rtl_cst_nonblocking do
+      rtl_critisem_new_owned(squeue.nonblocking.trynext,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
+      rtl_critisem_new_owned(squeue.nonblocking.counter,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
+      squeue.nonblocking.freedata:=freedata;
+      rtl_ref_create_local(temp,nil,freedata,t_rtl_ref_ns_singly);
+      rtl_ref_local_to_local_shared(temp,squeue.nonblocking.head);
+      rtl_ref_local_to_local_shared(temp,squeue.nonblocking.tail);
+      rtl_ref_discard_local(temp);
+    when rtl_cst_critical do
+      squeue.critical.freedata:=freedata;
+      rtl_doubly_list_create(squeue.critical);
+      rtl_critisem_new_owned(squeue.critical.counter,1,1);
+      rtl_critical_new(squeue.critical.lock);
+      squeue.critical.lcounter:=0;
+    when rtl_cst_waitable do
+      squeue.critical.freedata:=freedata;
+      rtl_doubly_list_create(squeue.critical);
+      rtl_critisem_new_owned(squeue.critical.counter,1,1);
+      rtl_critical_new(squeue.critical.lock);
+      rtl_critisem_new_owned(squeue.critical.trynext,t_rtl_native_signed:last-2,t_rtl_native_signed:last-2);
+      squeue.critical.lcounter:=0;
+    end case;
+  end rtl_squeue_new;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_discard =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_squeue_reset(squeue);
+  case squeue.style
+    when rtl_cst_nonkernel do
+      rtl_ref_discard_local_shared(squeue.nonblocking.head);
+      rtl_ref_discard_local_shared(squeue.nonblocking.tail);
+    when rtl_cst_nonblocking do
+      rtl_ref_discard_local_shared(squeue.nonblocking.head);
+      rtl_ref_discard_local_shared(squeue.nonblocking.tail);
+      rtl_critisem_discard(squeue.nonblocking.counter);
+      rtl_critisem_discard(squeue.nonblocking.trynext);
+    when rtl_cst_critical do
+      rtl_critisem_discard(squeue.critical.counter);
+      rtl_critical_discard(squeue.critical.lock);
+      rtl_doubly_list_discard(squeue.critical);
+    when rtl_cst_waitable do
+      rtl_critisem_discard(squeue.critical.counter);
+      rtl_critical_discard(squeue.critical.lock);
+      rtl_critisem_discard(squeue.critical.trynext);
+      rtl_doubly_list_discard(squeue.critical);
+    end case;
+  end rtl_squeue_discard;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_reset =
+----------------------------------------------------------------------------------------------------
+var
+  data             :  t_rtl_pointer;
+
+begin
+  case squeue.style
+    when rtl_cst_nonkernel,rtl_cst_nonblocking do
+      while rtl_squeue_try_draw_out_nb(squeue.nonblocking,false,data,t_rtl_wait_immediate,nil) loop
+        if squeue.nonblocking.freedata<>nil then
+          squeue.nonblocking.freedata^(data);
+          end if;
+        end loop;
+    when rtl_cst_critical,rtl_cst_waitable do
+      while rtl_squeue_try_draw_out_cr(squeue.critical,false,data,t_rtl_wait_immediate,nil) loop
+        if squeue.critical.freedata<>nil then
+          squeue.critical.freedata^(data);
+          end if;
+        end loop;
+    end case;
+  end rtl_squeue_reset;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_squeue_wait_empty =
+----------------------------------------------------------------------------------------------------
+var
+    start          : t_system_ticks;
+    elapsed        : t_system_ticks;
+    timeout        : t_rtl_timeout;
+
+begin
+  case squeue.style
+    when rtl_cst_nonkernel,rtl_cst_nonblocking,rtl_cst_critical do
+      result:=false;
+    when rtl_cst_waitable do
+      result:=false;
+      -- cas
+      timeout:=milisec;
+      if milisec>0 then
+        start:=GetTickCount();
+        end if;
+
+      -- dokud nebude prazdna nebo dokud timeout
+      while (squeue.critical.counter.lock_count>0) loop
+        if not rtl_critisem_try_lock(squeue.critical.trynext,milisec) then
+          return;
+          end if;
+        if squeue.critical.counter.lock_count<=0 then
+          result:=true;
+          rtl_critisem_unlock_all(squeue.critical.trynext);
+          return;
+          end if;
+        rtl_critisem_unlock_all(squeue.critical.trynext);
+        if milisec>0 then 
+          elapsed:=GetTickCount()-start;
+          timeout - t_rtl_timeout(elapsed);
+          if timeout<1 then 
+            return;
+            end if;
+          end if;
+        end loop;
+      result:=true;
+    end case;
+  end rtl_squeue_wait_empty;

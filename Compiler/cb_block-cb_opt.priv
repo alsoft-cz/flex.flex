@@ -10,19 +10,46 @@ with
   cx_expr.cx_imm,
   cx_expr.cx_util;
 
+type
+  -- kontext p©¡kazu
+  blcontext        = record
+      loop_end     : pentity_label;              -- n vˆ¨t¡ pro [break] (pro optimalizaci
+                                                 -- jednopr–chodov˜ch cykl–, viz %%TECH pozn mka)
+      end record;
+
 ------ %%TECH --------------------------------------------------------------------------------------
 -- V˜sledkem optimalizace konkr‚tn¡ho uzlu m–‘e b˜t:
 --     - ten sam˜ uzel,
 --     - jin˜ uzel,
 --     - ‘ dn˜ uzel (uzel se zcela vynech ),
 --     - s‚rie nˆkolika uzl–.
+--
+-- V˜sledkem optimalizace jednopr–chodov‚ho cyklu je jeho tˆlo (p©¡p. declare blok pro for cyklus).
+-- V tomto p©¡padˆ je nutn‚ vytvo©it n vˆ¨t¡ konce tˆla cyklu, zmˆnit [break] p©¡kazy cyklu
+-- na [goto] a dodat jim toto n vˆ¨t¡ pomoc¡ parametru [context] optimaliza‡n¡ch procedur.
 ----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_opt_node (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in out pblnode;             -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in blinfo;                  -- informace o pr–bˆhu anal˜zy
+    catch_mode     : in t_catch_mode:=catch_mode_implicit); -- zp–sob, jak zachyt vat chyby resume_error
+-- Optimalizace jednoho uzlu.
+----------------------------------------------------------------------------------------------------
+
+
+
 
 ----------------------------------------------------------------------------------------------------
 procedure b_opt_sequence (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     list           : in out bllist;              -- prvn¡ uzel sekvence
     all            : out t_logical;              -- T-v¨echny p©¡kazy zkontrolov ny
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace posloupnosti p©¡kaz–.
 ----------------------------------------------------------------------------------------------------
@@ -30,7 +57,8 @@ var
   pbl              : pblnode;                    -- p©edchoz¡ p©¡kaz
   cbl              : pblnode;                    -- aktu ln¡ p©¡kaz
   nbl              : pblnode;                    -- n sleduj¡c¡ p©¡kaz
-
+  labels_only      : t_logical :=true;           -- T-optimalizovan  sekvence je pr zdn ,
+                                                 -- nebo obsahuje pouze nev˜znamn˜ k¢d (n vˆ¨t¡)
 begin
   -- optimistick˜ p©edpoklad
   all:=true;
@@ -46,7 +74,7 @@ begin
     cbl^.next:=nil;
 
     -- optimalizace p©¡kazu
-    b_opt(curr,cbl,info);
+    b_opt_node(curr,cbl,context,info);
 
     if cbl<>nil
 
@@ -86,6 +114,86 @@ begin
     -- dal¨¡ p©¡kaz
     cbl:=nbl;
     end loop;
+  
+  -- optimalizace skok– v r mci sekvence
+  pbl:=nil;
+  cbl:=list.first;
+  while cbl<>nil loop
+    -- poznamenat si n sleduj¡c¡ blok
+    nbl:=cbl^.next;
+
+    -- optimalizovat sekvenci [goto]/[break] ... [label]/konec bloku
+    case cbl^.btype
+      -- [goto], [break]
+      when bt_break,bt_goto do
+          declare var
+            -- prvn¡ a posledn¡ uzel se subsekvence, kter  bude ze sekvence vypu¨tˆna
+            -- pouze pro hl ¨en¡ pozice hintu
+            skip_first : pblnode;                -- prvn¡ uzel
+            skip_last  : pblnode :=nil;          -- posledn¡ uzel
+          begin
+            skip_first:=nbl;
+
+            -- naj¡t nejbli‘¨¡ [label], pop©. konec bloku
+            while nbl<>nil and then nbl^.btype<>bt_label loop
+              skip_last:=nbl;
+              nbl:=nbl^.next;
+              end loop;
+      
+            -- vypsat hint
+            if skip_first<>nil and then skip_last<>nil
+            and then ch_unreachable_code in curr.entity^.compv.hints then
+              ce^.sethint(curr,{CCERR=}000529,ch_unreachable_code);
+              sequence_errpos(skip_first,skip_last);
+              end if;
+            end declare;
+
+          -- zkontrolovat, zda je pozice toto‘n  s c¡lem skoku
+          if nbl<>nil and then cbl^.btype=bt_goto and then pblgoto(cbl)^.plabel=pbllabel(nbl)^.plabel
+            -- odstranit i [goto]
+            then
+              cbl:=pbl;
+
+            -- k¢d
+            else
+              labels_only:=false;
+              end if;
+
+          -- odstranit p©esko‡en‚ bloky ze sekvence
+          if cbl<>nil
+            then cbl^.next:=nbl;
+            else list.first:=nbl;
+            end if;
+
+          -- posunout se za eventu ln¡ [label]
+          if nbl<>nil
+            then
+              cbl:=nbl;
+              nbl:=nbl^.next;
+            else
+              -- konec seznamu
+              list.last:=cbl;
+              end if;
+
+      -- [label]
+      when bt_label do
+          -- nedˆlat nic
+
+      -- funk‡n¡ k¢d
+      when others do
+          labels_only:=false;
+        end case;
+          
+    -- dal¨¡ blok sekvence
+    pbl:=cbl;
+    cbl:=nbl;
+    end loop;
+
+  -- sekvence neobsahuje funk‡n¡ k¢d => odstranit celou sekvenci
+  if labels_only then
+    list.first:=nil;
+    list.last:=nil;
+    end if;
   end b_opt_sequence;
 
 
@@ -94,6 +202,7 @@ begin
 procedure b_opt_cmd (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblcmd;              -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©i©azovac¡ho p©¡kazu.
 ----------------------------------------------------------------------------------------------------
@@ -119,11 +228,24 @@ begin
 procedure b_opt_break (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblbreak;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
--- Optimalizace p©¡kazu BREAK.
+-- Optimalizace p©¡kazu [break].
 ----------------------------------------------------------------------------------------------------
 begin
-  -- nen¡ co optimalizovat (%%X nebo ano ?)
+  -- v d–sledku optimalizace jednopr–chodov‚ho cyklu je pot©eba zmˆnit [break] v [goto]
+  if context.loop_end<>nil then
+    declare var
+      pbg          : pblgoto;                    -- uzel [goto]
+    begin
+      -- vytvo©it nov˜ uzel [goto] skoku
+      derivenode(pbg,bl,info,bt_goto);
+      pbg^.plabel:=context.loop_end;
+
+      -- nahradit uzel [break] za uzel [goto]
+      bl:=pblnode(pbg);
+      end declare;
+    end if;
 
   -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
   bl^.zprac:=bp_opt;
@@ -135,6 +257,7 @@ begin
 procedure b_opt_return (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblreturn;           -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu RETURN.
 ----------------------------------------------------------------------------------------------------
@@ -150,6 +273,7 @@ begin
 procedure b_opt_raise (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblraise;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu RAISE.
 ----------------------------------------------------------------------------------------------------
@@ -165,6 +289,7 @@ begin
 procedure b_opt_send (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblsend;             -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kaz– SEND.
 ----------------------------------------------------------------------------------------------------
@@ -180,6 +305,7 @@ begin
 procedure b_opt_goto (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblgoto;             -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu GOTO.
 ----------------------------------------------------------------------------------------------------
@@ -195,6 +321,7 @@ begin
 procedure b_opt_new (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblnew;              -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu NEW.
 ----------------------------------------------------------------------------------------------------
@@ -210,6 +337,7 @@ begin
 procedure b_opt_discard (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pbldiscard;          -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu DISCARD.
 ----------------------------------------------------------------------------------------------------
@@ -225,6 +353,7 @@ begin
 procedure b_opt_adjust (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pbladjust;           -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu ADJUST.
 ----------------------------------------------------------------------------------------------------
@@ -240,6 +369,7 @@ begin
 procedure b_opt_delay (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pbldelay;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu DELAY.
 ----------------------------------------------------------------------------------------------------
@@ -255,50 +385,396 @@ begin
 procedure b_opt_if (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblif;               -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu IF.
 ----------------------------------------------------------------------------------------------------
 var
-  sub              : pblif_cond;                 -- vˆtve IF
+  psub             : pblif_cond;                 -- p©edchoz¡ vˆtev if
+  sub              : pblif_cond;                 -- aktu ln¡ vˆtev if
   all              : t_logical;                  -- vyhodnocen¡ bloku
   allx             : t_logical;                  -- vyhodnocen¡ bloku
-{
-  e                : tentityeval;
-}
+
+
+  
+    ------------------------------------------------------------------------------------------------
+    procedure opt_const_cond =
+    -- Optimalizace vˆtv¡ s konstantn¡ podm¡nkou.
+    ------------------------------------------------------------------------------------------------
+    var
+      ul           : tunilogical;                -- hodnota konst. podm¡nky
+    
+    begin
+      -- optimalizace v¨ech vˆtv¡ podle typu podm¡nky
+      psub:=nil;
+      sub:=pblif_cond(bl^.sub.first);
+      while sub<>nil loop
+        -- zpracovat vˆtev podle typu podm¡nky
+        if sub^.cond<>nil and x_is_constant(sub^.cond)
+          -- podm¡nka je konstantn¡
+          then
+            -- generovat hint
+            if ch_constant_condition in curr.entity^.compv.hints then
+              ce^.sethint(curr,{CCERR=}000530,ch_constant_condition);
+              sub^.cond^.errpos;
+              end if;
+
+            -- na‡¡st log. hodnotu podm¡nky
+            x_const_logical(sub^.cond,ul);
+
+            -- podle log. hodnoty podm¡nky upravit seznam vˆtv¡ ifu
+            if unilogical_to_logical(not ul)
+              -- false => zahodit vˆtev
+              then
+                -- generovat hint
+                if ch_unreachable_code in curr.entity^.compv.hints then
+                  ce^.sethint(curr,{CCERR=}000531,ch_unreachable_code);
+                  node_errpos(sub);
+                  end if;
+
+                if psub<>nil
+                  then psub^.next:=sub^.next;
+                  else bl^.sub.first:=sub^.next;
+                  end if;
+                if sub^.next=nil then
+                  bl^.sub.last:=psub;
+                  end if;
+          
+              -- true => u‡init tuto vˆtev posledn¡ (else) vˆtv¡ ifu
+              else
+                -- generovat hint pro v¨echny p©¡padn‚ dal¨¡ vˆtve
+                if ch_unreachable_code in curr.entity^.compv.hints then
+                  declare var
+                    usub   : pblif_cond;         -- nedosa‘iteln  vˆtev ifu
+                  begin
+                    usub:=sub^.next;
+                    while usub<>nil loop
+                      -- generovat hint
+                      ce^.sethint(curr,{CCERR=}000532,ch_unreachable_code);
+                      node_errpos(usub);
+
+                      usub:=usub^.next;
+                      end loop;
+                    end declare;
+                  end if;
+
+                if sub^.sub.first<>nil
+                  -- vˆtev je nepr zdn  => bude posledn¡ vˆtv¡ ifu
+                  then
+                    sub^.next:=nil;
+                    bl^.sub.last:=sub;
+                    sub^.cond:=nil;
+
+                  -- vˆtev je pr zdn  => odstranit i ji samotnou
+                  else
+                    if psub<>nil
+                      then psub^.next:=nil;
+                      else bl^.sub.first:=nil;
+                      end if;
+                    bl^.sub.last:=psub;
+                    end if;
+                end if;
+
+          -- podm¡nka nen¡ konstantn¡
+          else
+            psub:=sub;
+          end if;
+
+        -- dal¨¡ vˆtev
+        sub:=sub^.next;
+        end loop;
+      end opt_const_cond;
+
+    
+
+    ------------------------------------------------------------------------------------------------
+    procedure opt_empty_tail =
+    -- Optimalizace pr zdn˜ch vˆtv¡ na konci ifu. Takov‚ vˆtve jsou zahazov ny.
+    -- POZOR! Tuto optimalizaci je mo‘no povolit jen za p©edpokladu, ‘e vyhodnocen¡
+    -- podm¡nky vˆtve je bez side-efekt–.
+    -- Prozat¡m zak z no.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- naj¡t posledn¡ nepr zdnou vˆtev
+      psub:=nil;
+      sub:=pblif_cond(bl^.sub.first);
+      while sub<>nil loop
+        if sub^.sub.first<>nil then
+          psub:=sub;
+          end if;
+        sub:=sub^.next;
+        end loop;
+
+      -- v ifu jsou nˆjak‚ nepr zdn‚ vˆtve a na konci je alespo¤ jedna pr zdn  vˆtev
+      if psub<>nil and then psub^.next<>nil then
+        -- pro odstra¤ovan‚ vˆtve vypsat warning (kv–li mo‘n˜m side-efekt–m vol n¡ v podm¡nk ch)
+        if cw_cond_removed in curr.entity^.compv.warns then
+          -- generovat warning
+          ce^.setwarning(curr,{CCERR=}000533,cw_cond_removed);
+          sequence_errpos(psub^.next,pblif(bl)^.sub.last);
+          end if;
+
+        -- odstranit pr zdn‚ vˆtve z konce seznamu
+        psub^.next:=nil;
+        pblif(bl)^.sub.last:=psub;
+
+      -- v ifu jsou pouze pr zdn‚ vˆtve
+      elsif psub=nil and pblif(bl)^.sub.first<>nil then
+        -- pro odstra¤ovan‚ vˆtve vypsat warning (kv–li mo‘n˜m side-efekt–m vol n¡ v podm¡nk ch)
+        if cw_cond_removed in curr.entity^.compv.warns then
+          -- generovat warning
+          ce^.setwarning(curr,{CCERR=}000542,cw_cond_removed);
+          sequence_errpos(pblif(bl)^.sub.first,pblif(bl)^.sub.last);
+          end if;
+
+        -- odstranit v¨echny vˆtve
+        pblif(bl)^.sub.first:=nil;
+        end if;
+      end opt_empty_tail;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure opt_swap_and_cut =
+    -- Optimalizace [if] tvaru [if <nekonst. podm¡nka> then else <tˆlo> end if;].
+    -- Optimalizuje se na tvar [if <negace podm¡nky> then <tˆlo> end if;].
+    ------------------------------------------------------------------------------------------------
+    var
+      newcond      : pexpnode;                   -- nov  podm¡nka
+
+    begin
+      -- [if] je tvaru [if <nekonst. podm¡nka> then else <tˆlo> end if;]
+      if bl^.sub.first^.next=bl^.sub.last
+      and pblif_cond(bl^.sub.first)^.sub.first=nil
+      and pblif_cond(bl^.sub.last)^.cond=nil
+        -- zmˆnit [if] na tvar [if not <podm¡nka> then <tˆlo> end if;]
+        then
+          -- negovat podm¡nku
+          x_negate_logical(curr,newcond,pblif_cond(bl^.sub.first)^.cond);
+          pblif_cond(bl^.sub.first)^.cond:=newcond;
+
+          -- zamˆnit blok podm¡nˆn‚ vˆtve za blok [else] vˆtve a odstranit [else] vˆtev
+          pblif_cond(bl^.sub.first)^.sub:=pblif_cond(bl^.sub.last)^.sub;
+          bl^.sub.first^.next:=nil;
+          bl^.sub.last:=bl^.sub.first;
+          end if;
+      end opt_swap_and_cut;
+
+
 begin
   -- optimistick˜ p©edpoklad
   all:=true;
 
-  -- form ln¡ kontrola v¨ech vˆtv¡
+  -- form ln¡ kontrola blok– v¨ech vˆtv¡
   sub:=pblif_cond(bl^.sub.first);
   while sub<>nil loop
-    verify(540,sub^.btype<>bt_if_cond);
-
-    -- nen¡ podm¡nka konstantn¡ ?
-    if sub^.cond<>nil and x_is_constant(sub^.cond) then
-      -- generovat hint
-      if ch_constant_condition in curr.entity^.compv.hints then
-        ce^.sethint(curr,{CCERR=}000000,ch_constant_condition);
-        sub^.cond^.errpos;
-        end if;
-
-      {%%X za©¡dit se podle hodnoty podm¡nky}
-      end if;
+    verify({VERIFY=}000540,sub^.btype<>bt_if_cond);
 
     -- kontrola bloku
-    b_opt_sequence(curr,sub^.sub,allx,info);
+    b_opt_sequence(curr,sub^.sub,allx,context,info);
     all:=all and allx;
 
     -- dal¨¡ vˆtev
-    sub:=pblif_cond(sub^.next);
+    sub:=sub^.next;
     end loop;
+  
+  -- povedla se form ln¡ kontrola blok– v¨ech vˆtv¡ ?
+  if not all then return; end if;
 
-  -- povedla se form ln¡ kontrola v¨ech vˆtv¡ ?
+  -- optimalizuj vˆtve s konstantn¡mi podm¡nkami
+  opt_const_cond();
+
+  -- optimalizuj pr zdn‚ vˆtve na konci [if]
+  {opt_empty_tail();}
+
+  -- nezbyla ‘ dn  vˆtev
+  if bl^.sub.first=nil then
+    -- generovat hint
+    if ch_unreachable_code in curr.entity^.compv.hints then
+      ce^.sethint(curr,{CCERR=}000534,ch_unreachable_code);
+      node_errpos(bl);
+      end if;
+
+    -- vypustit cel˜ [if]
+    bl:=nil;
+
+  -- zbyla pouze [else] vˆtev
+  elsif pblif_cond(bl^.sub.first)^.cond=nil then
+    -- generovat hint
+    if ch_if_reduced in curr.entity^.compv.hints then
+      ce^.sethint(curr,{CCERR=}000535,ch_if_reduced);
+      node_errpos(bl);
+      end if;
+
+    -- nahradit cel˜ [if] blokem [else] vˆtve
+    bl:=pblif_cond(bl^.sub.first)^.sub.first;
+
+  else
+    -- optimalizuj [if] tvaru [if <nekonst. podm¡nka> then else <tˆlo> end if;]
+    opt_swap_and_cut();
+
+    -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
+    bl^.zprac:=bp_opt;
+    end if;
+  end b_opt_if;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_opt_bypassed_loop (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in out pblcompound) =       -- p©¡kaz
+-- Optimalizace bezpr–chodov‚ho cyklu. Vygeneruje hint a zahod¡ cel˜ cyklus.
+----------------------------------------------------------------------------------------------------
+begin
+  -- generovat hint
+  if ch_unreachable_code in curr.entity^.compv.hints then
+    ce^.sethint(curr,{CCERR=}000536,ch_unreachable_code);
+    node_errpos(bl);
+    end if;
+
+  -- zahodit cel˜ cyklus
+  bl:=nil;
+  end b_opt_bypassed_loop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_opt_one_pass_loop (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in out pblcompound;         -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
+-- Optimalizace jednopr–chodov‚ho cyklu. Vytvo©¡ n vˆ¨t¡ pro eventu ln¡ [break] (viz %%TECH)
+-- a p©id  je na konec tˆla cyklu. Generuje hint.
+----------------------------------------------------------------------------------------------------
+with
+  cd_decl.cd_create;
+
+var
+  all              : t_logical;                  -- v˜sledek optimalizace bloku
+  pbllbl           : pbllabel;                   -- blok n vˆ¨t¡
+  plabel           : pentity_label;              -- n vˆ¨t¡
+  clabel           : tcontext;                   -- kontext n vˆ¨t¡
+  newcontext       : blcontext;                  -- aktualizovan˜ kontext
+
+begin
+  -- generovat hint
+  if ch_one_pass_loop in curr.entity^.compv.hints then
+    ce^.sethint(curr,{CCERR=}000537,ch_one_pass_loop);
+    node_errpos(bl);
+    end if;
+
+  -- vytvo©it intern¡ symbol n vˆ¨t¡, nevyhodnocovat deklaraci
+  d_create_internal(curr,plabel,clabel,et_label,nil);
+  plabel^.reachable:=true;                       -- n vˆ¨t¡ je pou‘iteln‚ jako c¡l skoku
+  plabel^.placed:=true;                          -- n vˆ¨t¡ je um¡stˆno
+  --plabel^.num:=0;                                -- ‡¡slo n vˆ¨t¡ (net©eba)
+  --plabel^.level:=0;                              -- £rove¤ um¡stˆn¡ n vˆ¨t¡ (net©eba)
+  d_end_internal(plabel^,false);
+
+  -- vytvo©it uzel n vˆ¨t¡
+  newnode(pbllbl,info,bt_label);
+  pbllbl^.plabel:=plabel;
+
+  -- za©adit uzel n vˆ¨t¡ na konec tˆla cyklu
+  if bl^.sub.last<>nil
+    then bl^.sub.last^.next:=pbllbl;
+    else bl^.sub.first:=pbllbl;
+    end if;
+  bl^.sub.last:=pbllbl;
+
+  -- propagovat n vˆ¨t¡ do nov‚ho kontextu
+  newcontext:=context;
+  newcontext.loop_end:=plabel;
+
+  -- optimalizovat blok
+  b_opt_sequence(curr,bl^.sub,all,newcontext,info);
+
+  -- tˆlo cyklu se optimalizac¡ vytratilo => je to v¨echno
+  if bl^.sub.first=nil then return; end if;
+
+  -- vyhodnotil se blok ?
+  if not all then return; end if;
+
+  -- nahradit cyklus blokem tˆla
+  case bl^.btype
+    -- for cyklus
+    when bt_for do
+        -- nahradit for blok declare blokem s ©¡d¡c¡ promˆnnou
+        declare var
+          pdbl     : pbldeclare;                 -- declare blok
+        begin
+          derivenode(pdbl,bl,info,bt_declare);
+          pdbl^.declare_region:=pblfor(bl)^.for_region;
+          pdbl^.sub:=bl^.sub;
+          pdbl^.zprac:=bl^.zprac;
+          bl:=pblnode(pdbl);
+        end declare;
+    
+    -- loop cyklus
+    when bt_loop do
+        -- nahradit loop jeho tˆlem
+        bl:=bl^.sub.first;
+
+    -- nic jin‚ho to nemohlo b˜t
+    {when others do}
+    end case;
+
+  -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
+  bl^.zprac:=bp_opt;
+  end b_opt_one_pass_loop;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_opt_infinite_loop (
+    curr           : in tcontext;                -- p©ekl dan˜ prvek
+    bl             : in out pblcompound;         -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
+    info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
+-- Optimalizace nekone‡n‚ho cyklu (nekone‡nost v d–sledku optimalizace). Vyp¡¨e hint a konvertuje
+-- cyklus na konstrukci [loop ... end loop;].
+----------------------------------------------------------------------------------------------------
+var
+  all              : t_logical;                  -- v˜sledek optimalizace bloku
+
+begin
+  -- generovat hint
+  if ch_infinite_loop in curr.entity^.compv.hints then
+    ce^.sethint(curr,{CCERR=}000538,ch_infinite_loop);
+    node_errpos(bl);
+    end if;
+
+  -- vytvo©it nekone‡n˜ loop
+  case bl^.btype
+      -- while
+      when bt_while do
+        declare var
+          pil      : pblloop;                    -- nekone‡n˜ loop
+        begin
+          derivenode(pil,bl,info,bt_loop);
+          pil^.sub:=bl^.sub;
+          bl:=pblnode(pil);
+          end declare;
+
+      -- loop
+      when bt_loop do
+        pblloop(bl)^.cond:=nil;
+
+      -- nic jin‚ho to nemohlo b˜t
+      {when others do}
+    end case;
+
+  -- optimalizovat blok
+  b_opt_sequence(curr,bl^.sub,all,context,info);
+
+  -- vyhodnotil se blok ?
   if not all then return; end if;
 
   -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
   bl^.zprac:=bp_opt;
-  end b_opt_if;
+  end b_opt_infinite_loop;
 
 
 
@@ -306,32 +782,52 @@ begin
 procedure b_opt_loop (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblloop;             -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu LOOP.
 ----------------------------------------------------------------------------------------------------
 var
   all              : t_logical;                  -- v˜sledek optimalizace bloku
+  e                : tentityeval;                -- vyhodnocen¡ konst. podm¡nky
+  ul               : tunilogical;                -- hodnota konst. podm¡nky
 
 begin
-  -- optimalizovat blok
-  b_opt_sequence(curr,bl^.sub,all,info);
+  if (bl^.cond<>nil) and x_is_constant(bl^.cond)
+    -- podm¡nka je konstantn¡
+    then
+      -- generovat hint
+      if ch_constant_condition in curr.entity^.compv.hints then
+        ce^.sethint(curr,{CCERR=}000539,ch_constant_condition);
+        bl^.cond^.errpos;
+        end if;
 
-  -- vyhodnotil se blok ?
-  if not all then return; end if;
+      -- na‡¡st log. hodnotu podm¡nky
+      x_const_logical(bl^.cond,ul);
 
-  -- nen¡ podm¡nka konstantn¡ ?
-  if (bl^.cond<>nil) and x_is_constant(bl^.cond) then
-    -- generovat hint
-    if ch_constant_condition in curr.entity^.compv.hints then
-      ce^.sethint(curr,{CCERR=}000000,ch_constant_condition);
-      bl^.cond^.errpos;
+      -- optimalizovat loop
+      if unilogical_to_logical(ul)
+        -- podm¡nka je v‘dy splnˆna => jednopr–chodov˜ cyklus
+        then
+          -- optimalizovat jednopr–chodov˜ cyklus
+          b_opt_one_pass_loop(curr,bl,context,info);
+
+        -- podm¡nka nen¡ nikdy splnˆna
+        else
+          -- optimalizovat nekone‡n˜ cyklus
+          b_opt_infinite_loop(curr,bl,context,info);
+          end if;
+
+    -- podm¡nka je nekonstantn¡, nebo chyb¡ (nekone‡n˜ cyklus)
+    else
+      -- optimalizovat blok
+      b_opt_sequence(curr,bl^.sub,all,context,info);
+
+      -- vyhodnotil se blok ?
+      if not all then return; end if;
+
+      -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
+      bl^.zprac:=bp_opt;
       end if;
-
-    {%%X za©¡dit se podle hodnoty podm¡nky}
-    end if;
-
-  -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
-  bl^.zprac:=bp_opt;
   end b_opt_loop;
 
 
@@ -340,6 +836,7 @@ begin
 procedure b_opt_for (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblfor;              -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu FOR.
 ----------------------------------------------------------------------------------------------------
@@ -347,18 +844,66 @@ with
   cc_base,
   cc_base.cc_sym;
 
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure opt (
+        a          : in tuniint;                 -- doln¡ mez ©¡d¡c¡ promˆnn‚
+        b          : in tuniint) =               -- horn¡ mez ©¡d¡c¡ promˆnn‚
+    -- Optimalizovat cyklus. Jednopr–chodov˜ cyklus je nahrazen tˆlem, 0-pr–chodov˜ je odstranˆn.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- jeden pr–chod
+      if a=b then
+        -- optimalizovat jednopr–chodov˜ cyklus
+        b_opt_one_pass_loop(curr,bl,context,info);
+
+      -- ‘ dn˜ pr–chod
+      elsif a>b then
+        -- optimalizovat bezpr–chodov˜ cyklus
+        b_opt_bypassed_loop(curr,bl);
+
+      -- v¡ce, ne‘ jeden pr–chod => neoptimalizuje se
+      {else}
+        end if;
+      end opt;
+
+
 var
   all              : t_logical;                  -- v˜sledek optimalizace bloku
 
 begin
-  -- optimalizovat blok
-  b_opt_sequence(sym_build_context(curr.entity,bl^.for_region),bl^.sub,all,info);
+  -- meze implicitn¡, nebo definov ny konstantn¡m rozsahem
+  if bl^.xrange=nil
+  or else (bl^.xrange^.ntype=nt_range
+  and then bl^.xrange^.sub^.ntype=nt_imm
+  and then bl^.xrange^.sub^.next^.ntype=nt_imm)
+    then
+      -- optimalizovat
+      opt(bl^.for_var^.typ.getctype^.lval,bl^.for_var^.typ.getctype^.hval);
 
-  -- vyhodnotil se blok ?
-  if not all then return; end if;
+  -- meze definov ny po‡tem hodnot typu
+  elsif bl^.xrange^.nclass=nc_type then
+    verify({VERIFY=}000873,bl^.xrange^.t.getutype=nil);
 
-  -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
-  bl^.zprac:=bp_opt;
+    -- optimalizovat
+    opt(bl^.xrange^.t.getctype^.lval,bl^.xrange^.t.getctype^.hval);
+
+  -- nic jin‚ho neoptimalizovat
+  {else}
+    end if;
+
+  -- st le je zapot©eb¡ optimalizovat blok
+  if bl<>nil and then bl^.zprac<>bp_opt then
+    -- optimalizovat blok
+    b_opt_sequence(sym_build_context(curr.entity,bl^.for_region),bl^.sub,all,context,info);
+
+    -- vyhodnotil se blok ?
+    if not all then return; end if;
+
+    -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
+    bl^.zprac:=bp_opt;
+    end if;
   end b_opt_for;
 
 
@@ -367,32 +912,52 @@ begin
 procedure b_opt_while (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblwhile;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu WHILE.
 ----------------------------------------------------------------------------------------------------
 var
   all              : t_logical;                  -- v˜sledek optimalizace bloku
+  e                : tentityeval;                -- vyhodnocen¡ konst. podm¡nky
+  ul               : tunilogical;                -- hodnota konst. podm¡nky
 
 begin
-  -- optimalizovat blok
-  b_opt_sequence(curr,bl^.sub,all,info);
+  if x_is_constant(bl^.cond)
+    -- podm¡nka je konstantn¡
+    then
+      -- generovat hint
+      if ch_constant_condition in curr.entity^.compv.hints then
+        ce^.sethint(curr,{CCERR=}000540,ch_constant_condition);
+        bl^.cond^.errpos;
+        end if;
 
-  -- vyhodnotil se blok ?
-  if not all then return; end if;
+      -- na‡¡st log. hodnotu podm¡nky
+      x_const_logical(bl^.cond,ul);
 
-  -- nen¡ podm¡nka konstantn¡ ?
-  if x_is_constant(bl^.cond) then
-    -- generovat hint
-    if ch_constant_condition in curr.entity^.compv.hints then
-      ce^.sethint(curr,{CCERR=}000000,ch_constant_condition);
-      bl^.cond^.errpos;
+      -- optimalizovat while
+      if unilogical_to_logical(ul)
+        -- log. hodnota podm¡nky je true
+        then
+          -- optimalizovat nekone‡n˜ cyklus
+          b_opt_infinite_loop(curr,bl,context,info);
+
+        -- log. hodnota podm¡nky je false
+        else
+          -- optimalizovat bezpr–chodov˜ cyklus 
+          b_opt_bypassed_loop(curr,bl);
+          end if;
+
+    -- podm¡nka je nekonstantn¡
+    else
+      -- optimalizovat blok
+      b_opt_sequence(curr,bl^.sub,all,context,info);
+
+      -- vyhodnotil se blok ?
+      if not all then return; end if;
+
+      -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
+      bl^.zprac:=bp_opt;
       end if;
-
-    {%%X za©¡dit se podle hodnoty podm¡nky}
-    end if;
-
-  -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
-  bl^.zprac:=bp_opt;
   end b_opt_while;
 
 
@@ -401,6 +966,7 @@ begin
 procedure b_opt_case (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblcase;             -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu CASE.
 ----------------------------------------------------------------------------------------------------
@@ -442,7 +1008,7 @@ begin
 
       -- seznam v˜bˆr–
       when bct_choice do
-          verify(427,blwhen^.list=nil or else blwhen^.list^:length=0);
+          verify({VERIFY=}000427,blwhen^.list=nil or else blwhen^.list^:length=0);
 
           -- pamˆŸ pro optimalizovan˜ seznam v˜bˆr– lze p©edalokovat p©edem,
           -- stejnˆ se vˆt¨inou nic nezoptimalizuje...
@@ -465,7 +1031,7 @@ begin
               case pexprange(exp)^.rkind
                 -- konstantn¡ rozsah
                 when erk_static do
-                    verify(425,(exp^.sub^.ntype<>nt_imm) or (exp^.sub^.next^.ntype<>nt_imm));
+                    verify({VERIFY=}000425,(exp^.sub^.ntype<>nt_imm) or (exp^.sub^.next^.ntype<>nt_imm));
                     load_uniint(pexpimm(exp^.sub)^.imm,ui1);
                     load_uniint(pexpimm(exp^.sub^.next)^.imm,ui2);
                     choice_add_range(blwhen^.clist,ui1,ui2,exp);
@@ -473,18 +1039,18 @@ begin
 
                 -- jeden bod
                 when erk_single do
-                    verify(426,(exp^.sub^.ntype<>nt_imm) or (exp^.sub^.next^.ntype<>nt_imm));
+                    verify({VERIFY=}000426,(exp^.sub^.ntype<>nt_imm) or (exp^.sub^.next^.ntype<>nt_imm));
                     load_uniint(pexpimm(exp^.sub)^.imm,ui1);
                     choice_add_single(curr,blwhen^.clist,ui1,exp);
 
 
                 -- pr zdn˜ rozsah
                 when erk_null   do
-                    ce^.setwarning(curr,{CCERR=}000309,cw_null_choice);
+                    ce^.setwarning(curr,{CCERR=}000019,cw_null_choice);
                     exp^.errpos;
 
 
-                when others do verify(424,true);
+                when others do verify({VERIFY=}000424,true);
                 end case;
 
             -- jm‚no typu
@@ -492,7 +1058,7 @@ begin
               choice_add_range(blwhen^.clist,exp^.t.getlval,exp^.t.gethval,exp);
 
             else 
-              verify(422,true);
+              verify({VERIFY=}000745,true);
               end if;
             end loop;
 
@@ -531,11 +1097,11 @@ begin
           pblwhen:=blwhen;
 
 
-      when others do verify(423,true);
+      when others do verify({VERIFY=}000423,true);
       end case;
 
     -- optimalizovat p©¡kazy
-    b_opt_sequence(curr,blwhen^.sub,allx,info);
+    b_opt_sequence(curr,blwhen^.sub,allx,context,info);
     all and allx;
 
     -- dal¨¡ vˆtev
@@ -560,6 +1126,7 @@ begin
 procedure b_opt_accept (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblaccept;           -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu ACCEPT
 ----------------------------------------------------------------------------------------------------
@@ -576,6 +1143,7 @@ procedure b_opt_catch (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out bllist;              -- p©¡kaz
     all            : out t_logical;              -- T-v¨echny p©¡kazy zkontrolov ny
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace p©¡kazu CATCH
 ----------------------------------------------------------------------------------------------------
@@ -588,10 +1156,10 @@ begin
   blwhen:=pblwhen_m(bl.first);
   all:=true;
   while blwhen<>nil loop
-    verify(312,blwhen^.ctype=bct_choice and then (blwhen^.list=nil or else blwhen^.list^:length=0));
+    verify({VERIFY=}000312,blwhen^.ctype=bct_choice and then (blwhen^.list=nil or else blwhen^.list^:length=0));
 
     -- p©¡kazy
-    b_opt_sequence(curr,blwhen^.sub,allx,info);
+    b_opt_sequence(curr,blwhen^.sub,allx,context,info);
     allx:=allx and all;
 
     -- optimalizace p©¡kazu £spˆ¨nˆ dokon‡ena
@@ -608,6 +1176,7 @@ begin
 procedure b_opt_block (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblblock;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace bloku p©¡kaz–.
 ----------------------------------------------------------------------------------------------------
@@ -620,19 +1189,19 @@ var
 
 begin
   -- p©¡kazov  ‡ st
-  b_opt_sequence(curr,bl^.sub,all1,info);
+  b_opt_sequence(curr,bl^.sub,all1,context,info);
 
   -- ‡ st CATCH
-  b_opt_catch{sequence}(curr,bl^.bcatch,all2,info);
+  b_opt_catch{sequence}(curr,bl^.bcatch,all2,context,info);
 
   -- ‡ st ROLLBACK
-  b_opt_sequence(curr,bl^.brollback,all3,info);
+  b_opt_sequence(curr,bl^.brollback,all3,context,info);
 
   -- ‡ st COMMIT
-  b_opt_sequence(curr,bl^.bcommit,all4,info);
+  b_opt_sequence(curr,bl^.bcommit,all4,context,info);
 
   -- ‡ st LEAVE
-  b_opt_sequence(curr,bl^.bleave,all5,info);
+  b_opt_sequence(curr,bl^.bleave,all5,context,info);
 
   -- povedla se optimalizace v¨ech vˆtv¡  ?
   if not (all1 and all2 and all3 and all4 and all5) then return; end if;
@@ -647,11 +1216,12 @@ begin
 procedure b_opt_protected (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblblock;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace protected bloku p©¡kaz–.
 ----------------------------------------------------------------------------------------------------
 begin
-  b_opt_block(curr,pblblock(bl),info);
+  b_opt_block(curr,pblblock(bl),context,info);
   end b_opt_protected;
 
 
@@ -660,11 +1230,12 @@ begin
 procedure b_opt_sequential (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pblblock;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace sekven‡n¡ho bloku p©¡kaz–.
 ----------------------------------------------------------------------------------------------------
 begin
-  b_opt_block(curr,pblblock(bl),info);
+  b_opt_block(curr,pblblock(bl),context,info);
   end b_opt_sequential;
 
 
@@ -673,6 +1244,7 @@ begin
 procedure b_opt_declare (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pbldeclare;          -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace bloku p©¡kaz–.
 ----------------------------------------------------------------------------------------------------
@@ -681,7 +1253,7 @@ with
   cc_base.cc_sym;
 
 begin
-  b_opt_block(sym_build_context(curr.entity,bl^.declare_region),pblblock(bl),info);
+  b_opt_block(sym_build_context(curr.entity,bl^.declare_region),pblblock(bl),context,info);
   end b_opt_declare;
 
 
@@ -690,6 +1262,7 @@ begin
 procedure b_opt_label (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pbllabel;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace n vˆ¨t¡.
 ----------------------------------------------------------------------------------------------------
@@ -704,6 +1277,7 @@ begin
 procedure b_opt_asm (
     curr           : in tcontext;                -- p©ekl dan˜ prvek
     bl             : in out pbllabel;            -- p©¡kaz
+    context        : in blcontext;               -- aktu ln¡ kontext
     info           : in blinfo) =                -- informace o pr–bˆhu anal˜zy
 -- Optimalizace k¢du v assembleru
 ----------------------------------------------------------------------------------------------------
@@ -715,86 +1289,117 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure b_opt =
--- Optimalizace bloku p©¡kaz–.
+procedure b_opt_node =
+-- Optimalizace jednoho uzlu.
 ----------------------------------------------------------------------------------------------------
 begin
-  verify(100,bl=nil);
+  verify({VERIFY=}000100,bl=nil);
 
   -- jednou optimalizovan‚ p©¡kazy p©esko‡it
   if bl^.zprac<>pred bp_opt then return; end if;
 
+  -- pokud nastala chyba uzlu v minul˜ch pr–chodech, konec
+  if bl^.erroneous then return; end if;
+
   -- zkontrolovat v˜raz
   case bl^.btype
     -- p©i©azovac¡ p©¡kaz
-    when bt_cmd         do b_opt_cmd(curr,pblcmd(bl),info);
+    when bt_cmd         do b_opt_cmd(curr,pblcmd(bl),context,info);
 
     -- p©¡kaz BREAK
-    when bt_break       do b_opt_break(curr,pblbreak(bl),info);
+    when bt_break       do b_opt_break(curr,pblbreak(bl),context,info);
 
     -- p©¡kaz RETURN
-    when bt_return      do b_opt_return(curr,pblreturn(bl),info);
+    when bt_return      do b_opt_return(curr,pblreturn(bl),context,info);
 
     -- p©¡kaz RAISE
-    when bt_raise       do b_opt_raise(curr,pblraise(bl),info);
+    when bt_raise       do b_opt_raise(curr,pblraise(bl),context,info);
 
     -- p©¡kaz SEND
-    when bt_send        do b_opt_send(curr,pblsend(bl),info);
+    when bt_send        do b_opt_send(curr,pblsend(bl),context,info);
 
     -- p©¡kaz GOTO
-    when bt_goto        do b_opt_goto(curr,pblgoto(bl),info);
+    when bt_goto        do b_opt_goto(curr,pblgoto(bl),context,info);
 
     -- p©¡kaz NEW
-    when bt_new         do b_opt_new(curr,pblnew(bl),info);
+    when bt_new         do b_opt_new(curr,pblnew(bl),context,info);
 
     -- p©¡kaz DISCARD
-    when bt_discard     do b_opt_discard(curr,pbldiscard(bl),info);
+    when bt_discard     do b_opt_discard(curr,pbldiscard(bl),context,info);
 
     -- p©¡kaz ADJUST
-    when bt_adjust      do b_opt_adjust(curr,pbladjust(bl),info);
+    when bt_adjust      do b_opt_adjust(curr,pbladjust(bl),context,info);
 
     -- p©¡kaz DELAY
-    when bt_delay       do b_opt_delay(curr,pbldelay(bl),info);
+    when bt_delay       do b_opt_delay(curr,pbldelay(bl),context,info);
 
     -- p©¡kaz IF
-    when bt_if          do b_opt_if(curr,pblif(bl),info);
+    when bt_if          do b_opt_if(curr,pblif(bl),context,info);
 
     -- p©¡kaz LOOP
-    when bt_loop        do b_opt_loop(curr,pblloop(bl),info);
+    when bt_loop        do b_opt_loop(curr,pblloop(bl),context,info);
 
     -- p©¡kaz FOR
-    when bt_for         do b_opt_for(curr,pblfor(bl),info);
+    when bt_for         do b_opt_for(curr,pblfor(bl),context,info);
 
     -- p©¡kaz WHILE
-    when bt_while       do b_opt_while(curr,pblwhile(bl),info);
+    when bt_while       do b_opt_while(curr,pblwhile(bl),context,info);
 
     -- p©¡kaz CASE
-    when bt_case        do b_opt_case(curr,pblcase(bl),info);
+    when bt_case        do b_opt_case(curr,pblcase(bl),context,info);
 
     -- p©¡kaz ACCEPT
-    when bt_accept      do b_opt_accept(curr,pblaccept(bl),info);
+    when bt_accept      do b_opt_accept(curr,pblaccept(bl),context,info);
 
     -- blok p©¡kaz–
-    when bt_block       do b_opt_block(curr,pblblock(bl),info);
+    when bt_block       do b_opt_block(curr,pblblock(bl),context,info);
 
     -- protected blok p©¡kazu
-    when bt_protected   do b_opt_protected(curr,pblblock(bl),info);
+    when bt_protected   do b_opt_protected(curr,pblblock(bl),context,info);
 
     -- sekven‡n¡ blok p©¡kazu
-    when bt_sequential  do b_opt_sequential(curr,pblblock(bl),info);
+    when bt_sequential  do b_opt_sequential(curr,pblblock(bl),context,info);
 
     -- blok p©¡kaz–
-    when bt_declare     do b_opt_declare(curr,pbldeclare(bl),info);
+    when bt_declare     do b_opt_declare(curr,pbldeclare(bl),context,info);
 
     -- n vˆ¨t¡
-    when bt_label       do b_opt_label(curr,pbllabel(bl),info);
+    when bt_label       do b_opt_label(curr,pbllabel(bl),context,info);
 
     -- k¢d v assmebleru
-    when bt_asm         do b_opt_asm(curr,pbllabel(bl),info);
+    when bt_asm         do b_opt_asm(curr,pbllabel(bl),context,info);
 
     -- jin‚ symboly tu nemaj¡ co dˆlat
-    when others do verify(101,true);
+    when others do verify({VERIFY=}000101,true);
     end case;
+
+  catch 
+    when resume_error do
+      -- kontrola
+      verify({VERIFY=}000858,bl^.zprac>=bp_opt);
+
+      -- nastavit p©¡znak, ‘e tento uzel byl chybn˜
+      bl^.erroneous:=true;
+
+      -- znovu vyvolat vyj¡mku
+      if block_catch_resume_error(catch_mode,bl^.btype) then raise;end if;
+  end b_opt_node;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure b_opt =
+-- Optimalizace bloku p©¡kaz–.
+----------------------------------------------------------------------------------------------------
+var
+  context          : blcontext;
+
+begin
+  -- sestavit po‡ te‡n¡ kontext
+  context.loop_end:=nil;
+
+  -- prov‚st optimalizaci
+  b_opt_node(curr,bl,context,info);
   end b_opt;
 
 

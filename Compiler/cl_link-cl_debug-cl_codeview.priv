@@ -585,6 +585,30 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure generate_public_table (
+    _gpublic       : in out p_codeview_symbol) = -- prvn¡ symbol tabulky
+-- Vygeneruje popis glob ln¡ho public symbolu
+----------------------------------------------------------------------------------------------------
+var
+  gpublic          : p_codeview_symbol;
+
+begin
+  gpublic:=_gpublic;
+  while gpublic<>nil loop
+    -- symbol je v po‘adovan‚m stavu
+    if gpublic^.status=tcvs_init then
+      -- nastavit £rove¤ zpracov n¡ symbol–
+      gpublic^.status:=tcvs_build;
+      end if;
+    
+    -- dal¨¡ symbol
+    gpublic:=gpublic^.next;
+    end loop;
+  end generate_public_table;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure dump_module (
     _module        : in p_codeview_module;          -- codeview module
     _num           : in t_word;                     -- cislo modulu
@@ -1241,7 +1265,7 @@ begin
         end if;
 
       -- jedna se o mnozuinu znamych typu ?
-      if tentity^.tentity in t_codeview_symbol_type_set:[s_udt,s_dataref] then
+      if tentity^.tentity in t_codeview_symbol_type_set:[s_udt,s_dataref,s_align] then
         -- podle typu symbolu se rozhodneme co s nim
         if tentity^.tentity=s_udt then
           -- velikost symbolu zarovanana na modulo 4
@@ -1251,6 +1275,11 @@ begin
         elsif tentity^.tentity=s_dataref then
           -- velikost symbolu zarovanana na modulo 4
           tentity^.dumplength:=14;
+          tentity^.dumplength:=((tentity^.dumplength+3) div 4) * 4;
+        
+        elsif tentity^.tentity=s_align then
+          -- velikost symbolu zarovanana na modulo 4
+          tentity^.dumplength:=15+tentity^.asymbol^.name:length;
           tentity^.dumplength:=((tentity^.dumplength+3) div 4) * 4;
           end if;
 
@@ -1316,13 +1345,26 @@ begin
         offset:=(((offset+3) div 4) * 4);
 
       elsif tentity^.tentity=s_dataref then
-        -- velikost symbolu zarovanana na modulo 4
+          -- velikost symbolu zarovanana na modulo 4
+          size:=tentity^.dumplength-2;
+          advanced.low_level.unchecked_memory_access.memory_copy(size,_buffer^[offset],2); offset:=offset+2;
+          advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[tentity^.tentity],_buffer^[offset],2); offset:=offset+2;
+          { checksum } offset:=offset+4;
+          { offset } advanced.low_level.unchecked_memory_access.memory_copy(tentity^.asymbol^.myoffset,_buffer^[offset],4); offset:=offset+4;
+          { module } advanced.low_level.unchecked_memory_access.memory_copy(tentity^.modul^.num,_buffer^[offset],2); offset:=offset+2;
+          offset:=(((offset+3) div 4) * 4);
+
+      elsif tentity^.tentity=s_align then
         size:=tentity^.dumplength-2;
         advanced.low_level.unchecked_memory_access.memory_copy(size,_buffer^[offset],2); offset:=offset+2;
-        advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[tentity^.tentity],_buffer^[offset],2); offset:=offset+2;
-        { checksum } offset:=offset+4;
-        { offset } advanced.low_level.unchecked_memory_access.memory_copy(tentity^.asymbol^.myoffset,_buffer^[offset],4); offset:=offset+4;
-        { module } advanced.low_level.unchecked_memory_access.memory_copy(tentity^.modul^.num,_buffer^[offset],2); offset:=offset+2;
+        advanced.low_level.unchecked_memory_access.memory_copy(codeview_symbol_type_code[tentity^.asymbol^.tentity],_buffer^[offset],2); offset:=offset+2;
+        advanced.low_level.unchecked_memory_access.memory_copy(tentity^.asymbol^.indextype,_buffer^[offset],4); offset:=offset+4;
+        advanced.low_level.unchecked_memory_access.memory_copy(tentity^.asymbol^.offset,_buffer^[offset],4); offset:=offset+4;
+        advanced.low_level.unchecked_memory_access.memory_copy(tentity^.asymbol^.segment,_buffer^[offset],2); offset:=offset+2;
+        b3:=tentity^.asymbol^.name:length;
+        advanced.low_level.unchecked_memory_access.memory_copy(b3,_buffer^[offset],1);
+        advanced.low_level.unchecked_memory_access.memory_copy(tentity^.asymbol^.name[1],_buffer^[offset+1],tentity^.asymbol^.name:length);
+        offset:=offset+tentity^.name:length+1;
         offset:=(((offset+3) div 4) * 4);
         end if;
 
@@ -1463,6 +1505,8 @@ class private t_codeview =
       first_gsymbol: p_codeview_symbol;          -- seznam globalnich symbolu
       last_gsymbol : p_codeview_symbol;          -- ukazatel na konec globalnich symbolu
 
+      first_gpublic: p_codeview_symbol;          -- seznam glob ln¡ch public symbol–
+      last_gpublic : p_codeview_symbol;          -- ukazatel na konec glob. public symbol–
       -- pomocne informace
       status       : t_codeview_status;          -- status codeview informaci
 
@@ -1790,7 +1834,8 @@ class private t_codeview =
     ------------------------------------------------------------------------------------------------
     var
       alignsym     : p_codeview_alignsym;        -- codeview alignsym objekt
-      gsymbol      : p_codeview_symbol;          -- codeview symbol
+--      gsymbol      : p_codeview_symbol;          -- codeview symbol
+      gpublic      : p_codeview_symbol;          -- codeview global public symbol
 
     begin
       -- pokud neni kam promennou zaregistrovat, tak to delat nebudeme
@@ -1810,7 +1855,8 @@ class private t_codeview =
       -- globalni nebo lokalni promenna modulu
       if _alignsym^.visible=etv_public then
         alignsym^.tentity:=s_gdata32;
-        -- zaradime do tabulky globalnich symbolu
+
+{        -- zaradime do tabulky globalnich symbolu
         new gsymbol;
 
         -- vyplnime informce o typu
@@ -1823,6 +1869,21 @@ class private t_codeview =
         if last_gsymbol<>nil then last_gsymbol^.next:=gsymbol; end if;
         last_gsymbol:=gsymbol;
         if first_gsymbol=nil then first_gsymbol:=gsymbol; end if;
+}
+
+        -- za©adit do tabulky glob ln¡ch public symbol–
+        new gpublic;
+
+        -- vyplnit informace o typu
+        gpublic^.status:=tcvs_init;
+        gpublic^.asymbol:=alignsym;
+        gpublic^.tentity:=s_align;
+        gpublic^.modul:=_cvmodule;
+
+        gpublic^.prev:=last_gpublic;
+        if last_gpublic<>nil then last_gpublic^.next:=gpublic; end if;
+        last_gpublic:=gpublic;
+        if first_gpublic=nil then first_gpublic:=gpublic; end if;
 
       else
         alignsym^.tentity:=s_ldata32;
@@ -1886,7 +1947,7 @@ class private t_codeview =
           region   : pregion;                     -- zpracov van˜ region
 
         begin
-		  -- zpracujeme v¨echny symboly
+          -- zpracujeme v¨echny symboly
           tentity:=_context.region^.entities.first;
           while tentity<>nil loop
             trace_module(tentity,_cvrmodule,_cvralign);
@@ -2075,6 +2136,11 @@ class private t_codeview =
       if first_gsymbol<>nil then
         generate_symbol_table(first_gsymbol,gtypes);
         end if;
+
+      -- tabulka glob ln¡ch public symbol–
+      if first_gpublic<>nil then
+        generate_public_table(first_gpublic);
+        end if;
       end generate;
                               
 
@@ -2202,6 +2268,17 @@ class private t_codeview =
         modul:=modul^.next;
         succ modulenum;
         end loop;
+
+      -- 2.5. tabulka globalnich public symbol–
+      if first_gpublic<>nil then
+        add_dir_item(diritem,sst_globalpub,$FFFF,ifo);
+
+        dump_symbol_table(first_gpublic,diritem^.dump_data,size,diritem^.dump_length);
+
+        -- inkrementujeme offset na dalsi podsekci
+        ifo:=ifo+size;
+        diritem^.cb:=diritem^.dump_length;
+        end if;
 
       -- 3. tabulka globalnich symbolu
       if first_gsymbol<>nil then

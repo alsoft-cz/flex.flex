@@ -6,23 +6,29 @@ module private exceptions =
 ----------------------------------------------------------------------------------------------------
 with
   synchronization,
-  thread,
+  tasks,
   os_api,
   hw_api,
   error;
 
+
 var
-  msg_unhandled      : static const string 22 of t_syschar := 'unhandled exception'\$0d\$0a\$0;
+  msg_unhandled      : static const string 20 of t_syschar := 'unhandled exception'\$0;
+  msg_task           : static const string 13 of t_syschar := ' in task id '\$0;
 #if rtl_debug_dump_on_exception then;
-  msg_raise          : static const string 18 of t_syschar := 'raise exception'\$0d\$0a\$0;
-  msg_reraise        : static const string 20 of t_syschar := 'reraise exception'\$0d\$0a\$0;
-  msg_raise_system   : static const string 25 of t_syschar := 'raise system exception'\$0d\$0a\$0;
-  msg_pending_system : static const string 27 of t_syschar := 'pending system exception'\$0d\$0a\$0;
-  msg_noncont_system : static const string 31 of t_syschar := 'noncontinue system exception'\$0d\$0a\$0;
-  msg_breakpoint     : static const string 21 of t_syschar := 'debuger breakpoint'\$0d\$0a\$0;
-  msg_discard        : static const string 20 of t_syschar := 'discard exception'\$0d\$0a\$0;
-  msg_memory         : static const string 29 of t_syschar := 'access violation exception'\$0d\$0a\$0;
+  msg_raise          : static const string 16 of t_syschar := 'raise exception'\$0;
+  msg_reraise        : static const string 18 of t_syschar := 'reraise exception'\$0;
+  msg_check          : static const string 23 of t_syschar := 'compare with exception'\$0;
+  msg_pending        : static const string 18 of t_syschar := 'pending exception'\$0;
+  msg_raise_system   : static const string 23 of t_syschar := 'raise system exception'\$0;
+  msg_ext_pending    : static const string 27 of t_syschar := 'pending external exception'\$0;
+  msg_pending_system : static const string 25 of t_syschar := 'pending system exception'\$0;
+  msg_noncont_system : static const string 29 of t_syschar := 'noncontinue system exception'\$0;
+  msg_breakpoint     : static const string 19 of t_syschar := 'debuger breakpoint'\$0;
+  msg_discard        : static const string 18 of t_syschar := 'discard exception'\$0;
+  msg_memory         : static const string 27 of t_syschar := 'access violation exception'\$0;
 #end if;
+
 
 
 
@@ -103,10 +109,6 @@ labelid:
     -- nastavim vyjimku
     mov    edx,edata                                       -- get exception data from caller
     mov    [ebx+t_rtl_except_row.edata],edx                -- set data into estack row
-  #if #environment compiler_version;='4.0.3.7' then;
-    mov    edx,ecode                                       -- get exception code from caller
-    mov    [ebx+t_rtl_except_row.ecode],edx                -- set code into estack row
-  #end if;
     mov    edx,etag                                        -- get exception tag from caller
     mov    [ebx+t_rtl_except_row.etag],edx                 -- set tag into estack row
     #end set_erow_data;
@@ -232,11 +234,10 @@ begin
     mov    ecx,fs:[t_winnt_tib.aruserpointer]                            -- get pointer to tib
     mov    exceptions,ecx
     #end asm;
-#if #environment compiler_version;='4.0.3.7' then;
-  rtl_set_exception(exceptions^.tasks.pending.ecode,exceptions^.tasks.pending.etag,exceptions^.tasks.pending.edata);
-#else;
+  #if rtl_debug_dump_on_exception then;
+    rtl_dump_exception(msg_ext_pending,exceptions^.tasks.pending.etag,exceptions^.tasks.pending.edata);
+    #end if;
   rtl_set_exception(exceptions^.tasks.pending.etag,exceptions^.tasks.pending.edata);
-#end if;
   rtl_event_set(exceptions^.tasks.canwrite);
   #syntax asm;
     get_xframe
@@ -254,9 +255,6 @@ procedure rtl_external_pending=
 -- handle external exception with sequential
 ----------------------------------------------------------------------------------------------------
 var
-#if #environment compiler_version;='4.0.3.7' then;
-  ecode            : t_rtl_unsigned32;
-#end if;
   etag             : t_rtl_tag;
   edata            : t_rtl_unsigned32; 
   exceptions       : p_rtl_exceptions;
@@ -266,12 +264,12 @@ begin
     mov    ecx,fs:[t_winnt_tib.aruserpointer]                            -- get pointer to tib
     mov    exceptions,ecx
     #end asm;
-#if #environment compiler_version;='4.0.3.7' then;
-  ecode:=exceptions^.tasks.pending.ecode;
-#end if;
   etag:=exceptions^.tasks.pending.etag;
   edata:=exceptions^.tasks.pending.edata;
   exceptions^.tasks.ispending:=false;
+  #if rtl_debug_dump_on_exception then;
+    rtl_dump_exception(msg_ext_pending,etag,edata);
+    #end if;
   #syntax asm;
     get_xframe_stacktop
     alloc_estackrow
@@ -317,11 +315,7 @@ procedure rtl_raise_exception =
 -- raises an exception.
 ----------------------------------------------------------------------------------------------------
 begin
-#if #environment compiler_version;='4.0.3.7' then;
-  rtl_debug_dump_exception(msg_raise,ecode,etag,edata);
-#else;
-  rtl_debug_dump_exception(msg_raise,etag,edata);
-#end if;
+  rtl_debug_dump_exception(msg_raise);
   rtl_debuger_break_exception;
   #syntax asm;
     get_xframe_stacktop
@@ -341,11 +335,7 @@ procedure rtl_set_exception =
 -- sets an exception.
 ----------------------------------------------------------------------------------------------------
 begin
-#if #environment compiler_version;='4.0.3.7' then;
-  rtl_debug_dump_exception(msg_reraise,ecode,etag,edata);
-#else;
-  rtl_debug_dump_exception(msg_reraise,etag,edata);
-#end if;
+  rtl_debug_dump_exception(msg_reraise);
   rtl_debuger_break_exception;
   #syntax asm;
     get_xframe_stacktop
@@ -407,15 +397,34 @@ begin
     mov    eax,[eax+t_rtl_except_frame.except_base]        -- get exception stack base adress
     -- test active exception
     cmp    [ecx+t_rtl_exceptions_info.stacktop],eax
-    -- jump end sequential
-    je     @1
-
-    restore_ebp_esp_eax_jump(edi)
-    jmp    eax
-
-@1:
+    
+    -- jump if pending
+    jne     @1
     -- no active exception, exit
     ret
+@1:
+    #end asm;
+  #if rtl_debug_dump_on_exception then;
+    #syntax asm;
+      push   edi
+      get_xframe_stacktop
+      mov    edx,[ebx+t_rtl_except_row.etag]
+      push   edx
+      mov    edx,[ebx+t_rtl_except_row.edata]
+      push   edx
+      push   0
+      #end asm;
+    rtl_debug_dump_exception(msg_pending);
+    #syntax asm;
+      pop    eax
+      pop    eax
+      pop    eax
+      pop    edi
+      #end asm;
+    #end if;
+  #syntax asm;
+    restore_ebp_esp_eax_jump(edi)
+    jmp    eax
     #end asm;
   end rtl_end_xframe;
 
@@ -443,13 +452,9 @@ begin
     je     @1
 
     -- raise unhandled exception
-    mov    edx,[ebx+t_rtl_except_row.edata]
-    push   edx
     mov    edx,[ebx+t_rtl_except_row.etag]
-#if #environment compiler_version;='4.0.3.7' then;
     push   edx
-    mov    edx,[ebx+t_rtl_except_row.ecode]
-#end if;
+    mov    edx,[ebx+t_rtl_except_row.edata]
     push   edx
     call   rtl_raise_unhandled_exception
 
@@ -458,7 +463,6 @@ begin
     ret
     #end asm;
   end rtl_end_topmost_xframe;
-
 
 
 #if rtl_debug_dump_on_exception then;
@@ -472,14 +476,9 @@ begin
     get_stacktop
     mov row,ebx
     #end asm;
-  #if #environment compiler_version;='4.0.3.7' then;
-    rtl_debug_dump_exception(msg_discard,row^.ecode,row^.etag,row^.edata);
-  #else;
-    rtl_debug_dump_exception(msg_discard,row^.etag,row^.edata);
-  #end if;
+  rtl_dump_exception(msg_discard,row^.etag,row^.edata);
   end rtl_discard_exception_dump;
 #end if;
-
 
 
 ----------------------------------------------------------------------------------------------------
@@ -489,9 +488,9 @@ procedure rtl_discard_exception =
 -- discards currently raised exception.
 ----------------------------------------------------------------------------------------------------
 begin
-#if rtl_debug_dump_on_exception then;
-  rtl_discard_exception_dump;
-#end if;
+  #if rtl_debug_dump_on_exception then;
+    rtl_discard_exception_dump;
+    #end if;
   #syntax asm;
     get_xframe_stacktop
     start_sequential
@@ -520,31 +519,39 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure rtl_check_code;
-#pragma stackframe(rtl_check_code,stack_pointer_relative);
-procedure rtl_check_code =
+procedure rtl_check_tag;
+#pragma stackframe(rtl_check_tag,stack_pointer_relative);
+procedure rtl_check_tag =
 -- tests if the given exception code matches the currently raise exception.
 ----------------------------------------------------------------------------------------------------
-#if #environment compiler_version;='4.0.3.8' then;
 with
   flex.tags;
-#end if;
 
 begin
+  #if rtl_debug_dump_on_exception then;
+    #syntax asm;
+      push   eax
+      push   0
+      push   0
+      #end asm;
+    rtl_debug_dump_exception(msg_check);
+    #syntax asm;
+      pop    eax
+      pop    eax
+      pop    eax
+      #end asm;
+    #end if;
+
   #syntax asm;                                   -- input tag in eax
     get_stacktop
-  #if #environment compiler_version;='4.0.3.7' then;
-    cmp    [ebx+t_rtl_except_row.etag],eax       -- test tag, output in eflags.zf
-  #else;
     sub    esp,4                                 -- make room for return value
     push   <t_rtl_tag> [ebx+t_rtl_except_row.etag]
     push   eax
     call   rtl_is_descendant_or_equal            -- test if input tag is >= peding exception tag
     pop    eax
     cmp    eax,1                                 -- output in eflags.zf
-  #end if;
     #end asm;
-  end rtl_check_code;
+  end rtl_check_tag;
 
 
 
@@ -562,9 +569,6 @@ begin
 @10:
     #end asm;
   if row<>nil then
-  #if #environment compiler_version;='4.0.3.7' then;
-    ecode:=row^.ecode;
-  #end if;
     etag:=row^.etag;
     edata:=row^.edata;
     end if;
@@ -578,8 +582,8 @@ procedure rtl_terminate_unhandled_exception =
 ----------------------------------------------------------------------------------------------------
 begin
   rtl_error_write(msg_unhandled);
-  --%%TODO terminate child threads ?
-  rtl_terminate_thread;
+  --%%TODO terminate child tasks ?
+  rtl_terminate_task;
   end rtl_terminate_unhandled_exception;
 
 
@@ -588,19 +592,10 @@ begin
 procedure rtl_raise_unhandled_exception =
 ----------------------------------------------------------------------------------------------------
 begin
-#if #environment compiler_version;='4.0.3.7' then;
-  rtl_dump_unhandled_exception(msg_unhandled,ecode,etag,edata);
-#else;
-  rtl_dump_unhandled_exception(msg_unhandled,etag,edata);
-  rtl_debug_dump_exception(msg_unhandled,etag,edata);
-#end if;
+  rtl_dump_exception(msg_unhandled,etag,edata);
   rtl_debuger_break_exception;
   seh.rtl_pop_task_exceptions_win32;
-#if #environment compiler_version;='4.0.3.7' then;
-  seh.rtl_raise_system_exception(false,ecode,etag,edata);
-#else;
   seh.rtl_raise_system_exception(false,etag,edata);
-#end if;
   end rtl_raise_unhandled_exception;
 
 
@@ -637,6 +632,50 @@ begin
 
 
 
+#if rtl_debug_dump_on_exception then;
+----------------------------------------------------------------------------------------------------
+procedure rtl_debug_dump_exception =
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    mov  eax,[esp+8+0]  -- len
+    push eax
+    mov  eax,[esp+4+4]  -- str
+    push eax
+    mov  eax,[esp+20+8] -- tag
+    push eax
+    mov  eax,[esp+16+12] -- data
+    push eax
+    call rtl_dump_exception
+    #end asm;
+  end rtl_debug_dump_exception;
+#end if;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_dump_exception =
+----------------------------------------------------------------------------------------------------
+with 
+    error
+    ,tags
+    ,tags.types
+    ;
+
+var
+   desc         : p_desc_entity;
+
+begin
+  desc:=p_desc_entity(etag:unchecked);
+  rtl_error_write(msgz);
+  --rtl_error_write(msg_task);
+  --rtl_error_write_unsigned_hex(GetCurrenttaskId());
+  rtl_error_write(msg_space);
+  rtl_error_write_uni(desc^.id);
+  rtl_error_write(msg_crlf);
+  end rtl_dump_exception;
+
+
+
 ----------------------------------------------------------------------------------------------------
 #separate private seh;
 ----------------------------------------------------------------------------------------------------
@@ -648,7 +687,7 @@ begin
 #pragma assign(set_exception      ,flex.exceptions.rtl_set_exception);
 #pragma assign(raise_exception    ,flex.exceptions.rtl_raise_exception);
 #pragma assign(discard_exception  ,flex.exceptions.rtl_discard_exception);
-#pragma assign(check_code         ,flex.exceptions.rtl_check_code);
+#pragma assign(check_code         ,flex.exceptions.rtl_check_tag);
 #pragma assign(unhandled_exception,flex.exceptions.rtl_terminate_unhandled_exception);
 #pragma assign(begin_sequential   ,flex.exceptions.rtl_begin_sequential);
 #pragma assign(end_sequential     ,flex.exceptions.rtl_end_sequential);

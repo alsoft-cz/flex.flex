@@ -84,21 +84,40 @@ begin
 procedure rtl_raise_system_exception =
 -- raises an exception using windows SEH
 ----------------------------------------------------------------------------------------------------
+with 
+    tags;
+
+var
+    sysecode       : t_rtl_unsigned32;
+    syseflags      : t_rtl_unsigned32;
+
 begin
-#if #environment compiler_version;='4.0.3.7' then;
-  rtl_debug_dump_exception(msg_raise_system,ecode,etag,edata);
-#else;
-  rtl_debug_dump_exception(msg_raise_system,etag,edata);
-#end if;
+#if rtl_debug_dump_on_exception then;
+  rtl_dump_exception(msg_raise_system,etag,edata);
+  #end if;
   rtl_debuger_break_exception;
-  --%%TODO doddelat data, parametry, pocet
-  if econtinue then
-    RaiseException(exception_access_violation,0,0,nil);
-  else
-    RaiseException(exception_noncontinuable_exception,FLAG_EXCEPTION_NONCONTINUABLE,0,nil);
+  
+  --%%TODO doddelat parametry
+  if not econtinue then
+    syseflags:=FLAG_EXCEPTION_NONCONTINUABLE;
     end if;
+
+    if rtl_is_ancestor_or_equal(memory_error:tag,etag) then
+      sysecode:=exception_access_violation;
+    elsif rtl_is_ancestor_or_equal(numeric_error:tag,etag) then
+      sysecode:=exception_int_divide_by_zero;
+    elsif rtl_is_ancestor_or_equal(constraint_error:tag,etag) then
+      sysecode:=exception_array_bounds_exceeded;
+    elsif rtl_is_ancestor_or_equal(tasking_error:tag,etag) then
+      sysecode:=exception_possible_deadlock;
+    else
+      syseflags:=FLAG_EXCEPTION_NONCONTINUABLE;
+      sysecode:=exception_noncontinuable_exception;
+      end if;
+  
+  RaiseException(sysecode,syseflags,0,nil);
   -- never run
-  rtl_terminate_thread;
+  rtl_terminate_task;
   end rtl_raise_system_exception;
 
   
@@ -107,9 +126,6 @@ begin
 procedure winnt_except_handler = 
 ----------------------------------------------------------------------------------------------------
 var
-#if #environment compiler_version;='4.0.3.7' then;
-  ecode            : t_rtl_unsigned32;
-#end if;
   etag             : t_rtl_tag;
   edata            : t_rtl_pointer;
 
@@ -128,6 +144,13 @@ begin
     alloc_estackrow
     #end asm;
   case exceptionrecord^.exceptioncode
+    when exception_access_violation do
+        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
+        etag:=memory_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_memory,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
+
     when exception_array_bounds_exceeded do
         etag:=constraint_error:tag;
 
@@ -177,27 +200,16 @@ begin
 
     when exception_noncontinuable_exception do
         etag:=t_rtl_tag(exceptionrecord^.exceptioncode:unchecked);
-      #if #environment compiler_version;='4.0.3.7' then;
-        ecode:=exceptionrecord^.exceptioninfo[0];
-      #end if;
         edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
-      #if #environment compiler_version;='4.0.3.7' then;
-        rtl_debug_dump_exception(msg_noncont_system,ecode,etag,t_rtl_unsigned32(edata:unchecked));
-      #else;
-        rtl_debug_dump_exception(msg_noncont_system,etag,t_rtl_unsigned32(edata:unchecked));
-      #end if;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_noncont_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
         #syntax asm;
           mov eax,1{exceptioncontinuesearch}
           ret
           #end asm;
 
     when exception_breakpoint do
-        {
-        etag:=exceptionrecord^.exceptioncode;
-        ecode:=exceptionrecord^.exceptioninfo[0];
-        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
-        rtl_debug_dump_exception(msg_breakpoint,ecode,etag,edata);
-        }
         #if rtl_breakpoints_without_debuger then;
           #syntax asm;
             mov eax,1{exceptioncontinuesearch}
@@ -211,29 +223,12 @@ begin
             #end asm;
         #end if;
 
-    when exception_access_violation do
-      #if #environment compiler_version;='4.0.3.7' then;
-        ecode:=exceptionrecord^.exceptioninfo[0];
-      #end if;
-        edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
-      #if #environment compiler_version;='4.0.3.7' then;
-        rtl_debug_dump_exception(msg_memory,etag,ecode,t_rtl_unsigned32(edata:unchecked));
-      #else;
-        rtl_debug_dump_exception(msg_memory,etag,t_rtl_unsigned32(edata:unchecked));
-      #end if;
-        etag:=memory_error:tag;
-
     when others do
-      #if #environment compiler_version;='4.0.3.7' then;
-        ecode:=exceptionrecord^.exceptioninfo[0];
-      #end if;
         edata:=t_rtl_pointer(exceptionrecord^.exceptioninfo[1]:unchecked);
-      #if #environment compiler_version;='4.0.3.7' then;
-        rtl_debug_dump_exception(msg_pending_system,etag,ecode,t_rtl_unsigned32(edata:unchecked));
-      #else;
-        rtl_debug_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
-      #end if;
         etag:=program_error:tag;
+        #if rtl_debug_dump_on_exception then;
+        rtl_dump_exception(msg_pending_system,etag,t_rtl_unsigned32(edata:unchecked));
+        #end if;
     end case;
 
   #syntax asm;

@@ -6,6 +6,37 @@
 ----------------------------------------------------------------------------------------------------
 
 ----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_force_lock(
+    critisem_object   : in out t_rtl_critisem);
+-- Lock critisem without testing if it is possible
+-- Very special use
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_force_unlock(
+    critisem_object   : in out t_rtl_critisem);
+-- UnLock critisem without testing if it is possible
+-- Very special use in pair with rtl_critisem_force_lock
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_wait_only (
+    critisem_object   : in out t_rtl_critisem;
+    milisec           : in t_rtl_timeout)
+    return         t_rtl_logical;
+-- Try if critisem is unlocked .
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_try_lock_out (
+    critisem_object   : in out t_rtl_critisem;
+    milisec           : in t_rtl_timeout;
+    old_value         : out t_rtl_native_signed)
+    return         t_rtl_logical;
+-- Try lock critisem, if return true, retuns old counter
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_unlock_max (
+    critisem_object   : in out t_rtl_critisem;
+    maximum_in        : in t_rtl_native_signed);
+-- Unlock critisem.
+----------------------------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------------------------
 procedure rtl_critisem_get_semaphore(
     critisem_object: in out ref t_rtl_critisem;
     semaphore      : out ref t_rtl_semaphore) =
@@ -18,13 +49,14 @@ begin
   semaphore:=critisem_object.lock_semaphore;
   if semaphore=rtl_nil_semaphore then
     rtl_semaphore_new_owned(semaphore,critisem_object.max_in,critisem_object.max_in);
-    rtl_interlocked_compare_exchange_ptr(^t_rtl_native_unsigned(critisem_object.lock_semaphore),
-                                          t_rtl_native_unsigned(semaphore),
-                                          t_rtl_native_unsigned(rtl_nil_semaphore),
-                                          t_rtl_native_unsigned(old_value));
+    rtl_interlocked_compare_exchange(    ^t_rtl_native_signed(critisem_object.lock_semaphore),
+                                          t_rtl_native_signed(semaphore),
+                                          t_rtl_native_signed(rtl_nil_semaphore),
+                                          t_rtl_native_signed(old_value));
     if old_value<>rtl_nil_semaphore then
       --nekdo mne predbehnul
       rtl_semaphore_discard(semaphore);
+      semaphore:=critisem_object.lock_semaphore;
       end if;
     end if;
   end rtl_critisem_get_semaphore;
@@ -89,11 +121,11 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 procedure rtl_critisem_try_lock_now (
-    critisem_object: in out ref t_rtl_critisem)
-    return         t_rtl_logical8 =
+    critisem_object  : in out ref t_rtl_critisem;
+    old_value        : out t_rtl_native_signed)
+    return         t_rtl_logical =
 ----------------------------------------------------------------------------------------------------
 var
-  old_value        : t_rtl_native_signed;
   spin             : t_rtl_native_unsigned;
 
 begin
@@ -105,6 +137,7 @@ begin
       return;
       end if;
     if spin>=critisem_object.spin_count then
+      old_value:=1;
       result:=false;
       return;
       end if;
@@ -132,6 +165,33 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_unlock_out =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_interlocked_dec_out(^critisem_object.lock_count,old_count);
+  if old_count>0 then
+    rtl_critisem_unwait_critisem(critisem_object,1);
+    end if;
+  end rtl_critisem_unlock_out;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_unlock_max =
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_native_signed;
+
+begin
+  rtl_interlocked_dec_if_greater_than(^critisem_object.lock_count,1,-maximum_in,old_value);
+  if old_value>0 then
+    rtl_critisem_unwait_critisem(critisem_object,1);
+    end if;
+  end rtl_critisem_unlock_max;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure rtl_critisem_unlock_multi =
 ----------------------------------------------------------------------------------------------------
 var
@@ -147,6 +207,21 @@ begin
       end if;
     end if;
   end rtl_critisem_unlock_multi;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_unlock_all =
+----------------------------------------------------------------------------------------------------
+var
+  old_value        : t_rtl_native_signed;
+
+begin
+  rtl_interlocked_exchange(^critisem_object.lock_count,0,old_value);
+  if old_value>0 then
+    rtl_critisem_unwait_critisem(critisem_object,old_value);
+    end if;
+  end rtl_critisem_unlock_all;
 
 
 
@@ -178,14 +253,26 @@ begin
 procedure rtl_critisem_try_lock =
 ----------------------------------------------------------------------------------------------------
 var
+    old            : t_rtl_native_signed;
+
+begin
+  result:=rtl_critisem_try_lock_out(critisem_object,milisec,old);
+  end rtl_critisem_try_lock;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_try_lock_out =
+----------------------------------------------------------------------------------------------------
+var
   semaphore        : t_rtl_semaphore;
-  old_value        : t_rtl_native_signed;
 #if rtl_debug_break_try_spin then;
   longloop         : t_rtl_native_signed;
 #end if;
+  old_value2       : t_rtl_native_signed;
 
 begin
-  result:=rtl_critisem_try_lock_now(critisem_object);
+  result:=rtl_critisem_try_lock_now(critisem_object,old_value);
   if result or milisec=t_rtl_wait_immediate then
     return;
     end if;
@@ -203,8 +290,9 @@ begin
   longloop:=0;
 #end if;
   while not result loop
-    rtl_interlocked_dec_if_greater_than(^critisem_object.lock_count,1,0,old_value);
-    if old_value>0 then
+    rtl_interlocked_dec_if_greater_than(^critisem_object.lock_count,1,0,old_value2);
+    if old_value2>0 then
+      old_value:=1;
       return;
     else
       result:=rtl_semaphore_try_lock(semaphore,t_rtl_wait_immediate);
@@ -219,9 +307,21 @@ begin
         raise synchronization_error;
         end if;
     #end if;
+    pause_nop;
     end loop;
+  end rtl_critisem_try_lock_out;
 
-  end rtl_critisem_try_lock;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_critisem_wait_only =
+----------------------------------------------------------------------------------------------------
+begin
+  --%%TODO?? tohle neni uplne idealni reseni protoze critisem blikne
+  result:=rtl_critisem_try_lock(critisem_object,milisec);
+  if result then
+    rtl_critisem_unlock(critisem_object);
+    end if;
+  end rtl_critisem_wait_only;
 
 
 
@@ -231,6 +331,7 @@ procedure rtl_critisem_force_lock =
 begin
   rtl_interlocked_inc(^critisem_object.lock_count);
   end rtl_critisem_force_lock;
+
 
 
 ----------------------------------------------------------------------------------------------------

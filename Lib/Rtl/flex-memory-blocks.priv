@@ -5,8 +5,12 @@
 -- Copyright (C) 1999-2003 A && L soft
 ----------------------------------------------------------------------------------------------------
 
+
 var
   memory_blocks_conter : t_rtl_native_unsigned; -- block age helper
+  msg_block        : static const string 10 of t_syschar := 'Block at '\0;
+  msg_size         : static const string 7 of t_syschar := ' Size '\0;
+  msg_type         : static const string 7 of t_syschar := ' Type '\0;
 
 type
   --%%TODO fill of unchecked array 
@@ -84,7 +88,7 @@ begin
   -- PavelS
   memory_blocks_conter + 1;
   hdr^.age:=memory_blocks_conter;
-  hdr^.thread:=t_rtl_pointer(rtl_get_current_thread);
+  hdr^.task_id:=rtl_get_current_task_id;
   -- hdr^.hints:=0; --%%TODO ?
 
   -- zaradit do retezu
@@ -179,11 +183,82 @@ begin
 
 
 
+#if rtl_memory_debug then;
 ------------------------------------------------------------------------------------------------
 procedure dump_header =
 ------------------------------------------------------------------------------------------------
+with 
+    error
+    ,tags
+    ,tags.types
+    ;
+
+type
+  t_dump_row    =  array 0..15 of t_rtl_unsigned8;
+  t_dump_table  =  array of t_dump_row;
+  p_dump_table  =  ^t_dump_table;
+
+var
+   data         : p_rtl_unsigned32_array;
+   desc         : p_desc_entity;
+   table        : p_dump_table;
+   rows         : t_rtl_unsigned32; 
+
 begin
+  data:=p_rtl_unsigned32_array(hdr2adr(hdr));
+  table:=p_dump_table(data:unchecked);
+  rtl_error_write(msg_block);
+  rtl_error_write_unsigned_hex(t_rtl_native_unsigned(data:unchecked));
+  rtl_error_write(msg_size);
+  rtl_error_write_unsigned_hex(hdr^.size);
+  -- zkusim vypsat typ
+  if hdr^.size>=8 then
+    rtl_error_write(msg_type);
+    desc:=p_desc_entity(data^[0]:unchecked);
+    -- pokus o cteni t_desc_entity
+    begin
+      rtl_error_write_uni(desc^.id)
+    catch
+      when others do ;
+      end;
+    end if;
+  rtl_error_write(msg_crlf);
+
+  -- zkusim vypsat nejake data
+  rows:=hdr^.size div 16;
+  if rows>3 then
+    rows:=3;
+    end if;
+
+  for row in 0 .. rows loop
+    rtl_error_write_unsigned_hex(row*16+t_rtl_native_unsigned(data:unchecked));
+    rtl_error_write(msg_pipe);
+    for col in 0 .. 15 loop
+      if row*16+col>=hdr^.size then
+        rtl_error_write(msg_space3);
+      else
+        rtl_error_write_byte_hex(table^[row][col]);
+        end if;
+      end loop;
+    rtl_error_write(msg_pipe);
+    for col2 in 0 .. 15 loop
+      if row*16+col2>=hdr^.size then
+        rtl_error_write(msg_space);
+      else
+        rtl_error_write_byte(table^[row][col2]);
+        end if;
+      end loop;
+    --rtl_error_write(msg_crlf);
+    end loop;
+
+
+catch
+  when others do ;
+    -- catch all
+leave
+  rtl_error_write(msg_crlf);
   end dump_header;
+#end if;
 
 
 --end blocks;

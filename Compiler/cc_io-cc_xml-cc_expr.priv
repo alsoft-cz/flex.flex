@@ -1,0 +1,502 @@
+----------------------------------------------------------------------------------------------------
+module private cc_expr =
+-- V˜stup v˜raz– do XML
+----------------------------------------------------------------------------------------------------
+-- honzap : 8.12.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  cc_def,
+  cc_base.cc_attr,
+  cc_def.cc_unitype,
+  cc_io.cc_xml.cc_util,
+  cc_base.cc_sym,
+  cc_base.cc_type,
+  cc_base.cc_rtl,
+  cc_io.cc_xml.cc_imm,
+  cc_io.cc_xml.cc_entity;
+
+----------------------------------------------------------------------------------------------------
+procedure nodeflagset_to_string (
+    value          : in nodeflagset)
+    return t_char32str =
+-- P©evod mno‘iny na ©etˆzec
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat v¨echny hodnoty v˜‡tov‚ho typu blocktype
+  for bt in nodeflags loop
+    -- pokud je pr vˆ zpracov van  hodnota obsa‘ena v mno‘inˆ, zapsat ji do v˜sledku
+    if bt in value then
+      result & nodeflags_export_id[bt] & ' ';
+      end if;
+    end loop;
+  end nodeflagset_to_string;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure xml_dump_typeview (
+    t              : in typeview;                -- dumped structure
+    xml            : in p_xml_dumper;            -- XML dumper
+    name           : in t_char32ustr) =          -- jm‚no obalov‚ho elementu
+----------------------------------------------------------------------------------------------------
+begin
+  -- obaluj¡c¡ element
+  xml^.go_in(name);
+
+  -- dump
+  xml^.write_text_element('tview',ttypeviewtxt[t.tview]);
+  if t.getutype<>nil then xml^.write_text_element('ptyp',sym_get_qid(t.getutype)) end if;
+
+  -- konec obaluj¡c¡ho elementu
+  xml^.go_out(name);
+  end xml_dump_typeview;
+
+
+----------------------------------------------------------------------------------------------------
+class private c_expr_dumper =
+-- T©¡da pro v˜stup v˜razu do XML
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override enter_node =
+    -- ud lost
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zano©en¡
+      xml^.go_in(nodetype_export_id[node^.ntype]);
+      end enter_node;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override leave_node =
+    -- ud lost
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vyno©en¡
+      xml^.go_out(nodetype_export_id[node^.ntype]);
+      end leave_node;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override before_traverse_subtrees =
+    -- ud lost
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zano©en¡
+      xml^.go_in('subtrees');
+      end before_traverse_subtrees;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override after_traverse_subtrees =
+    -- ud lost
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vyno©en¡
+      xml^.go_out('subtrees');
+      end after_traverse_subtrees;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expnode =
+    -- dump b zov‚ t©¡dy expnode
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- dump atribut–
+      xml^.write_attribute('org',expphase_export_id[node^.org]);
+      xml^.write_attribute('nflags',expphase_export_id[node^.zprac]);
+
+      -- dump element–
+      xml^.write_text_element('nclass',nodeclass_export_id[node^.nclass]);
+      xml^.write_text_element('nflags',nodeflagset_to_string(node^.nflags));
+      dump_rtattribs(xml,'rtattribs',node^.rta_avail,node^.rta_used);
+      xml_dump_lex_pos_block(xml,'pos',node^.pos);
+      xml^.write_text_element('concatkind',nodeconcatkindtxt[node^.concatkind]);
+      xml_dump_typeview(node^.t,xml,'t');
+      end process_node_expnode;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expnoper =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- dump - nejd©¡ve atributy
+      xml^.write_attribute('assign',t_logical_export_id[node^.assign]);
+
+      -- zpracovat p©edka
+      process_node_expnode(node);
+
+      -- dump
+      xml^.write_text_element('arity',expoperarity_export_id[node^.arity]);
+      end process_node_expnoper;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expoper =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- dump - nejd©¡ve atributy
+      xml^.write_attribute('name',expopertype_export_id[node^.oper]);
+
+      -- zpracovat p©edka
+      process_node_expnoper(node);
+      end process_node_expoper;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expunary =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- dump - nejd©¡ve atributy
+      xml^.write_attribute('oper',expunarytype_export_id[node^.oper]);
+
+      -- zpracovat p©edka
+      process_node_expnoper(node);
+      end process_node_expunary;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expcomponent =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expunary0(node);
+
+      -- dump
+      if node^.id<>nil then xml^.write_text_element('id',entityident_to_string(node^.id^));end if;
+      if node^.s.psym<>nil then xml^.write_text_element('s.psym',sym_get_qid(node^.s.psym));end if;
+      end process_node_expcomponent;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expimm =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- dump - nejd©¡ve atributy
+      xml^.write_attribute('immkind',timmentrykind_export_id[node^.immkind]);
+      xml^.write_attribute('linked',linkstatus_export_id[node^.linked]);
+
+      -- zpracovat p©edka
+      process_node_expnode(node);
+
+      -- dump
+      xml_dump_imm_value(xml,'imm',node^.imm);
+      end process_node_expimm;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_exprange =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expambiguous(node);
+
+      -- dump
+      xml^.write_text_element('rkkind',exprangekind_export_id[node^.rkind]);
+      end process_node_exprange;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_explist =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- dump - nejd©¡ve atributy
+      xml^.write_attribute('qualified',t_logical_export_id[node^.qualified]);
+
+      -- zpracovat p©edka
+      process_node_expnode(node);
+      end process_node_explist;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expitem =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+
+      -- dump
+      xml^.write_text_element('itype',expitemtype_export_id[node^.itype]);
+      if node^.id<>nil then xml^.write_text_element('id',entityident_to_string(node^.id^));end if;
+      if node^.sym<>nil then xml^.write_text_element('sym',sym_get_qid(node^.sym));end if;
+      end process_node_expitem;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expindex =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+
+      -- dump
+      xml^.write_text_element('itype',expindextype_export_id[node^.itype]);
+      end process_node_expindex;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expref =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+      end process_node_expref;
+
+
+    
+    ------------------------------------------------------------------------------------------------
+    override process_node_expderef =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+      end process_node_expderef;
+
+    
+    
+    ------------------------------------------------------------------------------------------------
+    override process_node_expattrib =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_explist(node);
+
+      -- dump
+      xml^.write_text_element('aclass',tattrclass_export_id[node^.aclass]);
+      xml^.write_text_element('atf',tattrformal_export_id[node^.atf]);
+      xml^.write_text_element('ata',tattractual_export_id[node^.ata]);
+      if node^.id<>nil then xml^.write_text_element('id',entityident_to_string(node^.id^));end if;
+      if node^.asym<>nil then xml^.write_text_element('asym',sym_get_qid(node^.asym));end if;
+      if node^.xsym<>nil then xml^.write_text_element('xsym',sym_get_qid(node^.xsym));end if;
+      end process_node_expattrib;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expaggregate =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_explist(node);
+
+      -- dump
+      xml_dump_imm_value(xml,'imm',node^.imm);
+      end process_node_expaggregate;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expthis =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+      end process_node_expthis;
+
+
+    
+    ------------------------------------------------------------------------------------------------
+    override process_node_expinterface_cast =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expbinary0(node);
+      end process_node_expinterface_cast;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expcurrent =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+
+      -- dump
+      xml^.write_text_element('spectype',tspectype_export_id[node^.spectype]);
+      xml^.write_text_element('entity',tcurrentity_export_id[node^.entity]);
+      end process_node_expcurrent;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expcallspec =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_explist(node);
+
+      -- dump
+      xml^.write_text_element('spectype',tspectype_export_id[node^.spectype]);
+      if node^.spec<>nil then xml^.write_text_element('spec',sym_get_qid(node^.spec));end if;
+      end process_node_expcallspec;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expfake_tag =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+
+      -- dump
+      xml_dump_class_interface(node^.interface,xml,'interface');
+      end process_node_expfake_tag;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expcall_rtl =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    var 
+      id           : pentityident;               -- identifik tor
+    begin
+      -- zpracovat data p©edka uzlu [node]
+      process_node_explist(node);
+
+      -- zapsat node^.rtl_proc
+      rtl_get_entity_id(node^.rtl_proc,id);
+      if id<>nil then xml^.write_text_element('rtl_proc',entityident_to_string(id^));end if;
+      end process_node_expcall_rtl;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_exptask_var_slot =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expunary0(node);
+      end process_node_exptask_var_slot;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expunary0 =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+      end process_node_expunary0;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expambiguous =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+
+      -- dump
+      -- TODO dump protected slozek
+      end process_node_expambiguous;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override process_node_expbinary0 =
+    -- zpracov n¡ uzlu - dump
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zpracovat p©edka
+      process_node_expnode(node);
+      end process_node_expbinary0;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    static init =
+    -- inicializace
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- inicializovat
+      this.xml:=xml;
+      end init;
+
+    end c_expr_dumper;
+
+
+----------------------------------------------------------------------------------------------------
+procedure dump_expression_to_file =
+-- Provede dump v˜razu do XML souboru
+----------------------------------------------------------------------------------------------------
+var
+  xml              : p_file_xml_dumper;          -- souborov˜ xml dumper
+
+begin
+  -- vyvo©it instanci
+  new xml;
+
+  -- inicializovat
+  xml^.init(file);
+
+  -- vlastn¡ dump
+  dump_expression_to_xml(expr,xml);
+leave
+  discard xml;
+  end dump_expression_to_file;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure dump_expression_to_xml =
+-- Provede dump v˜razu do XML dumperu
+----------------------------------------------------------------------------------------------------
+var
+  dumper           : p_expr_dumper;              -- dumper v˜razu
+
+begin
+  -- vyvo©it instanci
+  new dumper;
+
+  -- inicializivat
+  dumper^.init(xml);
+
+  -- vlastn¡ dump
+  dumper^.traverse_expr(expr);
+
+leave
+  -- uvolnit pamˆt
+  discard dumper;
+  end dump_expression_to_xml;
+
+end cc_expr;

@@ -1,0 +1,243 @@
+----------------------------------------------------------------------------------------------------
+program sset =
+-- Rtl library only
+-- Programming Language Flex Samples.
+-- Copyright (C) 2003 A && L soft, s.r.o.
+----------------------------------------------------------------------------------------------------
+with
+     flex
+    ,flex.tasks
+    ,flex.synchronization
+    ,flex.hw_api
+    ,flex.memory
+    --,testlib
+    ,standard
+    ,standard.console
+    ,standard.conversions
+    ;
+
+const
+    maxcount       = $40_0000;
+
+var
+    wr1            : aliased t_rtl_task_ref_local;
+    wr2            : aliased t_rtl_task_ref_local;
+    re1            : aliased t_rtl_task_ref_local;
+    re2            : aliased t_rtl_task_ref_local;
+    wa1            : aliased t_rtl_task_ref_local;
+
+    s              : aliased t_rtl_sset;
+    wrcounter      : aliased t_rtl_native_signed;
+    recounter      : aliased t_rtl_native_signed;
+    aproxlen       : aliased t_rtl_native_signed;
+
+
+----------------------------------------------------------------------------------------------------
+procedure simple =
+----------------------------------------------------------------------------------------------------
+var
+    item           : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastitem       : t_rtl_native_signed;
+    lastcount      : t_rtl_native_signed;
+    i              : aliased t_rtl_sset_iterrator;
+    success        : aliased t_rtl_logical;
+
+begin
+  new item;
+  rtl_sset_append(s,t_rtl_pointer(item),^i);
+  new item;
+  rtl_sset_append(s,t_rtl_pointer(item),^i);
+  rtl_sset_start(s,i,t_rtl_pointer(item));
+  while rtl_sset_remove(s,i,^success) loop
+    end loop;
+  rtl_sset_stop(s,i);
+  end simple;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure writet:t_rtl_task_entry =
+----------------------------------------------------------------------------------------------------
+var
+    oldcounter     : t_rtl_native_signed;
+    item           : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastcount      : t_rtl_native_signed;
+
+begin
+  write_line('write begin');
+  loop
+    new item;
+    rtl_interlocked_inc_out(^aproxlen,len);
+    rtl_interlocked_inc_out(^wrcounter,lastcount);
+    item^:=lastcount;
+    rtl_sset_append(s,item);
+    if lastcount>=maxcount then
+      break;
+      end if;
+
+    -- chytracky zpomalovac
+    while aproxlen>$1_0000 loop
+      rtl_sleep(0);
+      end loop;
+    
+    end loop;
+catch 
+  when others do
+  write_line('write exception pending');
+leave
+  write_line('write end');
+  end writet;
+
+----------------------------------------------------------------------------------------------------
+procedure readt:t_rtl_task_entry =
+----------------------------------------------------------------------------------------------------
+var
+    item           : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastitem       : t_rtl_native_signed;
+    lastcount      : t_rtl_native_signed;
+    c              : t_rtl_native_signed;
+    i              : aliased t_rtl_sset_iterrator;
+    success        : aliased t_rtl_logical;
+
+begin
+  write_line('read begin');
+  loop
+    if rtl_sset_try_start(s,i,t_rtl_pointer(item),1000) then
+      while rtl_sset_remove(s,i,^success) loop
+        if success then
+          rtl_interlocked_dec_out(^aproxlen,len);
+          rtl_interlocked_inc_out(^recounter,lastcount);
+          end if;
+        end loop;
+      rtl_sset_stop(s,i);
+      write_line('read stop');
+      if success then
+        rtl_interlocked_dec_out(^aproxlen,len);
+        rtl_interlocked_inc_out(^recounter,lastcount);
+        success:=false;
+        if lastcount>=maxcount then
+          return;
+          end if;
+        end if;
+    else
+      rtl_sset_stop(s,i);
+      if recounter>=maxcount then
+        return;
+        end if;
+      --write_line('Sleep');
+      if (aproxlen<5) then
+        rtl_sleep(0);
+        end if;
+      end if;
+    end loop;
+catch 
+  when others do
+  write_line('read exception pending');
+leave
+  rtl_sset_stop(s,i);
+  write('read end ');
+  write_line(signed_to_string(lastitem,false));
+  end readt;
+
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure lookt:t_rtl_task_entry =
+----------------------------------------------------------------------------------------------------
+var
+    item           : p_rtl_native_signed;
+    len            : t_rtl_native_signed;
+    lastitem       : t_rtl_native_signed;
+    lastcount      : t_rtl_native_signed;
+    i              : aliased t_rtl_sset_iterrator;
+    success        : aliased t_rtl_logical;
+
+begin
+  write_line('look begin');
+  loop
+    if rtl_sset_try_start(s,i,t_rtl_pointer(item),1000) then
+      loop
+        if recounter>=maxcount then
+          return;
+          end if;
+        until not rtl_sset_next(s,i,t_rtl_pointer(item));
+      rtl_sset_stop(s,i);
+      write_line('look stop');
+    else
+      rtl_sset_stop(s,i);
+      if recounter>=maxcount then
+        return;
+        end if;
+      end if;
+    rtl_sleep(0);
+    end loop;
+catch 
+  when others do
+  write_line('look exception pending');
+leave
+  rtl_sset_stop(s,i);
+  write('look end ');
+  write_line(signed_to_string(lastitem,false));
+  end lookt;
+
+
+----------------------------------------------------------------------------------------------------
+procedure watcht:t_rtl_task_entry =
+----------------------------------------------------------------------------------------------------
+begin
+  loop
+    write(signed_to_string(wrcounter,false));
+    write(' ');
+    write(signed_to_string(recounter,false));
+    write(' ');
+    write_line(signed_to_string(aproxlen,false));
+    rtl_sleep(1000);
+    end loop;
+leave
+  write('watch end ');
+  write(signed_to_string(wrcounter,false));
+  write(' ');
+  write(signed_to_string(recounter,false));
+  write(' ');
+  write_line(signed_to_string(aproxlen,false));
+  end watcht;
+
+
+----------------------------------------------------------------------------------------------------
+-- main
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_sset_new(s,st_critical,^rtl_sset_free_data_discard);
+  --rtl_sset_new(s,st_nonblocking,^rtl_sset_free_data_discard);
+
+  --simple;
+  
+  wrcounter:=0;
+  recounter:=0;
+  aproxlen:=0;
+
+  rtl_start_task(^watcht,^wa1,false,task_priority_normal,nil);
+  rtl_start_task(^readt,^re1,false,task_priority_normal,nil);
+  --rtl_start_task(^readt,^re2,false,task_priority_normal,nil);
+  rtl_start_task(^writet,^wr1,false,task_priority_normal,nil);
+  rtl_start_task(^writet,^wr2,false,task_priority_normal,nil);
+  --run
+  --rtl_sleep(10000);
+  rtl_wait_and_finish_task(wr1);
+  rtl_wait_and_finish_task(wr2);
+  rtl_wait_and_finish_task(re1);
+  --rtl_wait_and_finish_task(re2);
+  --rtl_wait_and_finish_task(re3);
+  --rtl_wait_and_finish_task(lo1);
+  rtl_kill_when_need_and_finish_task(wa1);
+  if recounter<>wrcounter then
+    write_line('divne nesedi pocet');
+  else
+    write_line('pocet sedi :-)');
+    end if;
+  rtl_sset_discard(s);
+  end sset;

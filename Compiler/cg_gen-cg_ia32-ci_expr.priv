@@ -117,9 +117,10 @@ with
   cc_def.cc_codes,
   cc_def.cc_var,
   cc_base,
-  cc_base.cc_debug,
   cc_base.cc_type,
   cc_base.cc_util,
+  cc_base.cc_rtl,
+  cc_base.cc_debug,
   cc_attr,
   cx_expr,
   cx_expr.cx_util,
@@ -140,50 +141,57 @@ with
   cp_cpu.cp_ia32.ci_instr,
   cc_options;
 
------ %%TECH Reëimy generov†n° vòrazu ------------------------------------
--- Gener†tor vòrazñ dok†ëe pracovat v nàkolika reëimech, resp. p©ed†vat
--- vòsledek vòpoátu vòrazu v nàkolika rñznòch tvarech.
---   Procedury pro generov†n° rñznòch druhñ uzlñ (I_GEN_*) pracuj° v jakÇmsi
--- z†kladn°m reëimu, kterò standardnà generuje vòsledek v jakÇmsi p©irozenà
--- minim†ln°m tvaru - souáet dvou celoá°selnòch vòrazñ vr†t° v registru,
--- agreg†t pole v doáasnÇ promànnÇ apod.
---   Procedura I_LOAD nav°c dovoluje vòsledek p©evÇst do poëadovanÇho tvaru
--- nebo s n°m provÇst poëadovanou operaci (nap©°klad uloëit na stack).
---   Poëadovanò tvar vòsledku je specifikov†n kontextem generov†n° vòrazu,
--- zejmÇna promànnou CONTEXT.MODE:
---   - lm_gen        -- vòsledek je v p©irozenÇm tvaru bez £prav
---   - lm_addr       -- adresa objektu uráenÇho podvòrazem (p©edpokl†d† se,
---                      ëe podvòraz uráuje objekt; je-li to hodnota, bude
---                      vòsledkem pravdàpodobnà chybn† interpretace hodnoty)
---                        Pokud je nastaven preferovanò registr (v m¢du
---                      IRM_ADDR), naáte adresu do nàj.
---   - lm_addr_attr  -- adresa objektu obsahuj°c°ho dynamickÇ atributy (pokud
---                      je podvòraz parametr p©ed†vanò hodnotou (promànn†
---                      s implicitn° dereferenc°), je vòsledkem adresa
+----- %%TECH Reëimy generov†n° vòrazu --------------------------------------------------------------
+-- Gener†tor vòrazñ dok†ëe pracovat v nàkolika reëimech, resp. p©ed†vat vòsledek vòpoátu vòrazu 
+-- v nàkolika rñznòch tvarech.
+--   Procedury pro generov†n° rñznòch druhñ uzlñ ([i_gen_*]) pracuj° v uráitÇm z†kladn°m reëimu, 
+-- kterò standardnà generuje vòsledek ve svòm zpñsobem p©irozenà minim†ln°m tvaru - souáet dvou 
+-- celoá°selnòch vòrazñ vr†t° v registru, agreg†t pole v doáasnÇ promànnÇ, promànnou coby 
+-- specifikaci jej° adresy a podobnà.
+--
+-- Procedura [i_load] nav°c dovoluje vòsledek p©evÇst do poëadovanÇho tvaru nebo s n°m provÇst 
+-- poëadovanou operaci (nap©°klad uloëit na stack).
+--   Poëadovanò tvar vòsledku je specifikov†n kontextem generov†n° vòrazu, zejmÇna promànnou 
+-- [context.mode]. Rozli®uj° se m¢dy naáten° vòrazu vedouc° na hodnotu objektu a m¢dy vedouc° na
+-- adresu hodnoty objektu. Speci†ln°m p©°padem je m¢d [lm_gen], kterò p©ed†v† vòsledek v p©irozenÇm
+-- tvaru bez £prav.
+--
+-- M¢dy vedouc° na hodnotu objektu:
+--
+--   [lm_conv]       -- vòsledek v p©irozenÇm tvaru je konvertov†n na poëadovanò typ
+--   [lm_reg]        -- vòsledek je naáten do registru (mimo p©°mòch hodnot)
+--   [lm_reg_all]    -- vòsledek je naáten do registru i kdyë je to p©°m† hodnota
+--   [lm_imm8_cl]    -- vòsledek je konvertov†n na osmibitovou p©°mou hodnotu nebo uloëen do CL
+--                      (s o©°znut°m)
+--   [lm_reg_eax]    -- vòsledek je uloëen do EAX
+--   [lm_push_value] -- hodnota vòrazu je uloëena na stack
+--   [lm_temp_value] -- hodnotu vòrazu je uloëena do temporary promànnÇ, kromà p©°mÇ hodnoty, 
+--                      kter† je ponech†na v pñvodn°m stavu
+--   [lm_pointer]    -- hodnota vòrazu typu pointer je normalizov†na podle dodanÇho typu pointer
+--                      (=p©id†/odstran°/konvertuje dynamickÇ atributy); je vr†cen buÉ pñvodn° 
+--                      operand nebo adresa temporary promànnÇ se zkonstruovanòm pointerem
+--   [lm_pointer_reg]-- jako p©edchoz°, ale lze-li to, tak je pointer vr†cen v registru
+--
+--   P©ed aplikac° hodnotovÇho m¢du naáten° je vol†na metoda [i_ensure_value], kter† zajist°, ëe
+--   operand skuteánà reprezentuje hodnotu.
+-- 
+-- M¢dy vedouc° na adresu hodnoty objektu:
+--
+--   [lm_addr]       -- adresa objektu uráenÇho podvòrazem; pokud je nastaven preferovanò registr 
+--                      (v m¢du [irm_addr]), naáte adresu do nàj
+--   [lm_addr_attr]  -- adresa objektu obsahuj°c°ho dynamickÇ atributy (pokud je podvòraz parametr 
+--                      p©ed†vanò hodnotou (promànn† s implicitn° dereferenc°), je vòsledkem adresa
 --                      pointeru na tento objekt; podrobnàji viz d†le)
---   - lm_conv       -- vòsledek v p©irozenÇm tvaru je konvertov†n na
---                      poëadovanò typ
---   - lm_reg        -- vòsledek je naáten do registru (mimo p©°mòch hodnot)
---   - lm_reg_all    -- vòsledek je naáten do registru i kdyë je to p©°m†
---                      hodnota
---   - lm_imm8_cl    -- vòsledek je konvertov†n na osmibitovou p©°mou hodnotu
---                      nebo uloëen do CL (s o©°znut°m)
---   - lm_reg_eax    -- vòsledek je uloëen do EAX
---   - lm_imm_to_rel -- je-li vòsledkem p©°m† hodnota, je interpretov†na jako
---                      relativn° adresa
---   - lm_push_value -- hodnota vòrazu je uloëena na stack
---   - lm_push_addr  -- adresa hodnoty vòrazu je uloëena na stack
---   - lm_push_and_load_addr -- adresa hodnoty vòrazu je uloëena na stack
---                      a souáasnà vr†cena jako vòsledek vòpoátu vòrazu
---   - lm_temp_value -- hodnotu vòrazu uloë° do temporary promànnÇ, kromà
---                      p©°mÇ hodnoty, kterou nech† v pñvodn°m stavu
---   - lm_temp_addr  -- adresu objektu uloë° do temporary promànnÇ
---   - lm_pointer,   -- hodnotu vòrazu typu pointer normalizuje podle
---                      dodanÇho typu pointer (=p©id†/odstran°/konvertuje
---                      dynamickÇ atributy) a vr†t° buÉ pñvodn° operand, nebo
---                      uloë° do temporary promànnÇ a vr†t° jej° adresu
---   - lm_pointer_reg-- jako p©edchoz°, ale lze-li to, tak vr†t° pointer
---                      v registru
+--   [lm_imm_to_rel] -- je-li vòsledkem p©°m† hodnota, je interpretov†na jako relativn° adresa
+--   [lm_push_addr]  -- adresa hodnoty vòrazu je uloëena na stack
+--   [lm_push_and_load_addr] -- adresa hodnoty vòrazu je uloëena na stack a souáasnà vr†cena jako 
+--                      vòsledek vòpoátu vòrazu
+--   [lm_temp_addr]  -- adresa objektu je uloëena do temporary promànnÇ
+--
+--   P©ed aplikac° adresn°ho m¢du naáten° je vol†na metoda [i_ensure_address], kter† zajist°, ëe
+--   operand skuteánà reprezentuje hodnotu. Pokud reprezentuje hodnotu bez adresy (nap©°klad
+--   mezivòsledek uloëenò v registru, p©°m† hodnota a podobnà), uloë° ji do pracovn° promànnÇ
+--   a vr†t° adresu tÇto pracovn° promànnÇ.
 --
 -- P©i generov†n° mus° bòt zvl†®tn° pozornost vànov†na dynamickòm atributñm.
 -- PoëadovanÇ dynamickÇ atributy jsou uloëeny v promànnÇ CONTEXT.RTA a jsou
@@ -205,9 +213,9 @@ with
 --     - agreg†t                  -- :last a :size se vypoá°taj° p©i
 --                                   konstrukci agreg†tu, nebo jsou uráeny
 --                                   staticky
---------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------
 
------ %%TECH Generov†n° zkr†cenòch p©i©azen° -----------------------------
+----- %%TECH Generov†n° zkr†cenòch p©i©azen° -------------------------------------------------------
 -- Podle definice jazyka se kr†cenÇ p©i©azen° tvaru "A1 op ... op An" chov†
 -- stejnà jako p©i©azen° tvaru "A1 := A1 op ... op An". Z toho vyplòvaj°
 -- omezen° pro gener†tor k¢du - kdyë je nap©°klad op=+, nelze k A1 p©iá°tat
@@ -215,7 +223,7 @@ with
 --   Podobnà t©eba p©i spojov†n° ©etàzcñ se mus° d†t pozor na p©°pad "s & s".
 -- Lze sice postupnà p©ipojovat operandy vpravo k operandu vlevo, ale nesm°
 -- se p©i tom zmànit hodnota :length levÇho operandu.
---------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------
 
 
 var
@@ -374,7 +382,23 @@ begin
   -- vygenerovat podvòraz
   i_gen(inst,info,subcontext,sub,vysl);
 
+  -- m† se naá°st hodnota
+  if subcontext.mode in lms_value then
+    -- zajistit, ëe se jedn† opravdu o hodnotu
+    i_ensure_value(inst,info,subcontext,vysl);
+
+  -- m† se naá°st adresa
+  elsif subcontext.mode in lms_addr then
+    -- zajistit, ëe se jedn† opravdu o adresu hodnoty
+    i_ensure_address(inst,info,subcontext,vysl);
+
+  -- nàjakò nezn†mò reëim naáten° vòrazu
+  elsif subcontext.mode<>lm_gen then
+    verify({VERIFY=}000877,true);
+    end if;
+
   -- provest behove kontroly dokud je vysledek cerstvy
+  {%%X p©i lms_addr nemaj° runtime kontroly smysl, ne ? }
   ci_rcheck.i_gen_runtime_checks(inst,info,subcontext,rchcl_load,sub^,vysl);
 
   -- naá°st hodnotu
@@ -384,16 +408,25 @@ begin
 
     -- naá°st adresu
     when lm_addr        do
-        if (subcontext.rpref.reg<>in_none) and (subcontext.rpref.mode=irm_addr)
+        -- zajistit, ëe se jedn† opravdu o adresu hodnoty
+        -- i_ensure_address(inst,info,subcontext,vysl);
+
+        -- naá°st adresu
+        if subcontext.rpref.reg<>in_none and subcontext.rpref.mode=irm_addr
           then i_gen_lea(inst,info,subcontext,vysl,subcontext.rpref.reg);
           else i_gen_lea(inst,info,subcontext,vysl,in_none);
           end if;
 
     -- adresa objektu s dynamickòmi atributy
-    when lm_addr_attr   do -- nic nedàlat
+    when lm_addr_attr   do
+        -- zajistit, ëe se jedn† opravdu o adresu hodnoty
+        -- i_ensure_address(inst,info,subcontext,vysl);
 
     -- konvertovat na typ vòsledku
     when lm_conv        do
+        -- zajistit, ëe se jedn† opravdu o hodnotu
+        -- i_ensure_value(inst,info,subcontext,vysl);
+        
         -- li®°-li se od velikosti podvòrazu...
         if subcontext.rsize<>vysl.size then
           if vysl.optype=io_imm
@@ -405,21 +438,45 @@ begin
           end if;
 
     -- konvertovat a naá°st do registru
-    when lm_reg         do i_gen_loadreg(inst,info,subcontext,sub^.t.getctype,vysl,false,irm_int);
+    when lm_reg         do 
+        -- zajistit, ëe se jedn† opravdu o hodnotu
+        -- i_ensure_value(inst,info,subcontext,vysl);
+        
+        -- naá°st
+        i_gen_loadreg(inst,info,subcontext,sub^.t.getctype,vysl,false,irm_int);
 
     -- konvertovat a naá°st do registru (i p©°mou hodnotu)
-    when lm_reg_all     do i_gen_loadreg(inst,info,subcontext,sub^.t.getctype,vysl,true,irm_int);
+    when lm_reg_all     do 
+        -- zajistit, ëe se jedn† opravdu o hodnotu
+        -- i_ensure_value(inst,info,subcontext,vysl);
+        
+        -- naá°st
+        i_gen_loadreg(inst,info,subcontext,sub^.t.getctype,vysl,true,irm_int);
 
     -- konvertovat a naá°st do CL nebo ponechat const.
-    when lm_imm8_cl     do i_gen_loadimm8cl(inst,info,subcontext,vysl);
+    when lm_imm8_cl     do 
+        -- zajistit, ëe se jedn† opravdu o hodnotu
+        -- i_ensure_value(inst,info,subcontext,vysl);
+        
+        -- naá°st
+        i_gen_loadimm8cl(inst,info,subcontext,vysl);
 
     -- konvertovat a naá°st do EAX
-    when lm_reg_eax     do i_gen_loadeax(inst,info,subcontext,vysl);
+    when lm_reg_eax     do 
+        -- zajistit, ëe se jedn† opravdu o hodnotu
+        -- i_ensure_value(inst,info,subcontext,vysl);
+        
+        -- naá°st
+        i_gen_loadeax(inst,info,subcontext,vysl);
 
-    -- konvertovat p©°mou hodnotu na relativn° adresu
-    when lm_imm_to_rel  do if vysl.optype=io_imm then
-        vysl.transform_imm_to_rel;
-        end if;
+    -- konvertovat p©°mou hodnotu na relativn° adresu            
+    when lm_imm_to_rel  do                                       --<<<<<<<< ??????
+        if vysl.optype=io_imm then
+          verify({VERIFY=}000861,vysl.edtype<>edt_address);
+          vysl.transform_imm_to_rel;
+          end if;
+
+--vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
 
     -- naá°st hodnotu a uloëit na stack
     when lm_push_value  do
@@ -431,44 +488,22 @@ begin
         -- uloëit na stack
         i_gen_pushstack(inst,info,subcontext,vysl);
 
-        -- uvolnit nepot©ebnò vòsledek
-        --i_free(info,subcontext,vysl);
-
-        -- ë†dnò vòsledek se vracet nebude
-        --nullop(vysl,io_none);
-
     -- naá°st adresu a uloëit na stack, pop©°padà vr†tit kopii v registru
     when lm_push_addr, lm_push_and_load_addr do
         -- Ondra 15.5.2002 : Pro dereferenci se naáten° adresy màn° na naáten° hodnoty pointeru,
-        -- protoëe v takovÇ p©°padà dereference nic nedereferencuje, ale maxim†lnà transformuje
+        -- protoëe v takovÇm p©°padà dereference nic nedereferencuje, ale maxim†lnà transformuje
         -- dereferencovanò pointer na vòslednò pointer.
         if sub^.ntype<>nt_deref then
           -- naá°st adresu
           i_gen_lea(inst,info,subcontext,vysl,in_none);
           end if;
 
-        -- %%HYNEK -- other commit
-        {
-        -- je [vysl] hodnota, respektive ne adresa/pointer?
-        if (vysl.optype=io_imm or vysl.optype=io_reg) and vysl.edtype<>edt_pointer and vysl.edtype<>edt_address and vysl.edtype<>edt_offset then 
-          -- nacist do docasne promenne
-          i_gen_loadtemp(inst,info,subcontext,vysl);
-          
-          -- a ziskat adresu teto
-          i_gen_lea(inst,info,subcontext,vysl,IN_NONE);
-          end if;
-        }
-
         -- uloëit na stack
         i_gen_pushstack(inst,info,subcontext,vysl);
 
         -- pokud nen° vòsledek ë†d†n, tak se ho zbavit
         if subcontext.mode<>lm_push_and_load_addr then
-          -- uvolnit nepot©ebnò vòsledek
-          --i_free(info,subcontext,vysl);
-
           -- ë†dnò vòsledek se vracet nebude
-          --nullop(vysl,io_none);
           vysl.free(info,subcontext);
           end if;
 
@@ -488,7 +523,7 @@ begin
         i_gen_loadtemp(inst,info,subcontext,vysl);
 
     -- uloëit adresu do temporary promànnÇ
-    when lm_temp_addr   do ;
+--  when lm_temp_addr   do unimplemented({UNIMP=}000238);
 
     -- naá°st a normalizovat pointer
     when lm_pointer     do i_gen_loadpointer(inst,info,subcontext,sub^.t.getctype,false,vysl);
@@ -496,7 +531,10 @@ begin
     -- naá°st a normalizovat pointer, preferovanà uloëit do registru
     when lm_pointer_reg do i_gen_loadpointer(inst,info,subcontext,sub^.t.getctype,true,vysl);
 
-    when others do verify(415,true);
+    -- adresa slotu t†skovÇ promànnÇ
+    when lm_task_var_slot do -- nic nedelat
+    
+    when others do verify({VERIFY=}000415,true);
     end case;
 
   -- p©evÇst operand z kontextu podvòrazu do kontextu vòrazu
@@ -535,7 +573,7 @@ var
   newcontext       : iexprcontext;               -- kontext podvòrazñ
 
 begin
-  verify(134,expr^.arity<>eoa_2);
+  verify({VERIFY=}000134,expr^.arity<>eoa_2);
 
   if expr^.assign
     -- p©i©azen°    : opaánÇ po©ad° operandñ
@@ -590,8 +628,8 @@ var
   newcontext       : iexprcontext;               -- kontext podvòrazñ
 
 begin
-  verify(433,expr^.arity<>eoa_2);
-  verify(484,typ^.stype<>dt_pointer);
+  verify({VERIFY=}000801,expr^.arity<>eoa_2);
+  verify({VERIFY=}000484,typ^.stype<>dt_pointer);
 
   if expr^.assign
 
@@ -638,7 +676,7 @@ var
   rest             : typeview;                   -- spoleánò typ operandñ
 
 begin
-  verify(139,expr^.arity<>eoa_2);
+  verify({VERIFY=}000139,expr^.arity<>eoa_2);
 
   -- podvòrazy
   expr^.get(el,er);
@@ -670,6 +708,26 @@ leave
 
 
 ----------------------------------------------------------------------------------------------------
+procedure i_gen_task_var_slot (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o prñbàhu generov†n°
+    context        : in out iexprcontext;        -- kontext generov†n° vòrazu
+    expr           : in pexptaskvarslot;         -- strom
+    vysl           : out c_operand) =            -- vòsledek
+-- Selektor slotu t†skovÇ promànnÇ,
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : iexprcontext;               -- kontext podvòrazñ
+
+begin
+  -- vygenerovat a naá°st adresu slotu t†skovÇ promànnÇ
+  i_newcontext(context,newcontext,lm_task_var_slot,nil);
+  i_load(inst,info,newcontext,context,expr^.sub,vysl);
+  end i_gen_task_var_slot;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure i_gen_op_compare_binary : topergen =
 -- Porovn†v†n° dvou obecnòch bin†rn°ch blokñ (e.g. array, record, set) (= <>).
 ----------------------------------------------------------------------------------------------------
@@ -692,7 +750,7 @@ procedure i_gen_op_compare_binary : topergen =
 
         -- dynamick† velikost
         then
-          unimplementedx(170,expr^.pos);
+          unimplementedx({UNIMP=}000170,expr^.pos);
 
         -- statick† veliksot
         else
@@ -704,7 +762,7 @@ procedure i_gen_op_compare_binary : topergen =
             -- naá°st levò operand
             i_newcontext(context,newcontext,lm_gen,nil);
             i_load(inst,info,newcontext,context,x,op1);
-            verifyx(524,op1.optype<>io_mem,x^.pos);
+            verifyx({VERIFY=}000524,op1.optype<>io_mem,x^.pos);
 
             -- redukovat poáet registrñ
             i_gen_reduceop(inst,info,context,op1);
@@ -786,7 +844,7 @@ var
   er               : pexpnode;                   -- pravò podvòraz
 
 begin
-  verify(501,(expr^.arity<>eoa_2) or not (expr^.oper in expopertypeset:[op_eq,op_ne]));
+  verify({VERIFY=}000802,(expr^.arity<>eoa_2) or not (expr^.oper in expopertypeset:[op_eq,op_ne]));
 
   -- podvòrazy
   expr^.get(el,er);
@@ -879,11 +937,11 @@ begin
 
     -- jeden z operandñ m† dynamickou velikost
     elsif x_has_dynamic_size(el) xor x_has_dynamic_size(er) then
-      unimplemented(171);
+      unimplemented({UNIMP=}000171);
 
     -- oba maj° dynamickou velikost
     else
-      unimplemented(172);
+      unimplemented({UNIMP=}000172);
       end if;
     end if;
   end i_gen_op_compare_binary;
@@ -924,7 +982,7 @@ begin
 
     -- ano => porovnat po á†stech
     then
-      unimplemented(177);
+      unimplemented({UNIMP=}000177);
 
     -- ne => porovnat jako bin†rn° bloky
     else}
@@ -944,7 +1002,7 @@ begin
 
     -- ano => porovnat po á†stech
     then
-      unimplemented(178);
+      unimplemented({UNIMP=}000178);
 
     -- ne => porovnat jako bin†rn° bloky
     else}
@@ -964,7 +1022,7 @@ var
   newcontext       : iexprcontext;               -- kontext podvòrazñ
 
 begin
-  verify(140,expr^.arity<>eoa_2);
+  verify({VERIFY=}000140,expr^.arity<>eoa_2);
 
   -- podvòrazy
   expr^.get(el,er);
@@ -979,7 +1037,7 @@ begin
         op1edi     : c_operand;                  -- adresa levÇho operandu v EDI
 
       begin
-        {verify(517,not (rta_size in el^.rta_used{%%ATTR}));}
+        {verify({VERIFY=}000803,not (rta_size in el^.rta_used{%%ATTR}));}
 
         -- vygenerovat levò operand
         i_newcontext(context,newcontext,lm_addr_attr,nil);
@@ -1010,7 +1068,7 @@ begin
 
         -- co si m†me poá°t bez dynamickÇho atributu ?
         else
-          verify(517,true)
+          verify({VERIFY=}000804,true)
           end if;
 
         -- registr EDI
@@ -1040,7 +1098,7 @@ begin
 
                 -- pravò operand m† tÇë dynamickou velikost
                 then
-                  verify(518,not (rta_size in er^.rta_used{%%ATTR}));
+                  verify({VERIFY=}000518,not (rta_size in er^.rta_used{%%ATTR}));
 
                   -- vygenerovat pravò operand
                   i_newcontext(context,newcontext,lm_addr_attr,nil);
@@ -1191,7 +1249,7 @@ begin
                   case op2.optype
                     when io_stack do i_gen_pop_static(inst,info,context,op1,size);
                     when io_mem   do i_gen_move_static(inst,info,context,op2,op1,size);
-                    when others   do verify(488,true);
+                    when others   do verify({VERIFY=}000488,true);
                     end case;
 
                   -- %%X A co vòsledek ??             
@@ -1228,7 +1286,7 @@ begin
           -- p©i©azen°
           when op_assign do i_gen_op_assign(inst,info,context,expr,vysl);
 
-          when others do verify(187,true);
+          when others do verify({VERIFY=}000187,true);
           end case;
 
     -- Full view
@@ -1241,13 +1299,13 @@ begin
           stype:=x_resolve_opdtype(expr,true);
 
           -- mame nejaky generator?
-          verifyx(99,opertab[expr^.oper,stype]=nil,expr^.pos);
+          verifyx({VERIFY=}000099,opertab[expr^.oper,stype]=nil,expr^.pos);
 
           -- zavolej prislusny generator
           opertab[expr^.oper,stype]^(inst,info,context,expr,vysl);
           end declare;
 
-    when others do verifyx(186,true,expr^.pos);
+    when others do verifyx({VERIFY=}000186,true,expr^.pos);
     end case;
   end i_gen_operator;
 
@@ -1322,7 +1380,7 @@ begin
             when un_succ   do addii(inst,info,ii_add,pop^,op_1,op0);
             when un_pred   do addii(inst,info,ii_sub,pop^,op_1,op0);
             when un_bitnot do addii(inst,info,ii_not,pop^,op0,op0);
-            when others do verify(47,true);
+            when others do verify({VERIFY=}000047,true);
             end case;
 
           -- provest behove kontroly operace operatoru
@@ -1369,7 +1427,7 @@ begin
           -- dàl† takhle: xor op1,(true xor false)
           when io_reg, io_mem do addii(inst,info,ii_xor,op1,op_1,op0);
 
-          when others do verify(470,true);
+          when others do verify({VERIFY=}000470,true);
           end case;
 
         -- vòsledek
@@ -1378,9 +1436,9 @@ begin
     -- absolutn° hodnota
     when un_abs do
         -- %%TODO - nezapomenout na kontroly mezi
-        unimplemented(29);
+        unimplemented({UNIMP=}000029);
 
-    when others do verify(46,true);
+    when others do verify({VERIFY=}000046,true);
     end case;
 
 leave
@@ -1421,7 +1479,7 @@ begin
   dattrib:=context.rta*expr^.rta_used{%%ATTR};
 
   -- p©ipravit ukazatel do zdrojovÇ oblasti
-  verify(333,vysl.optype<>io_mem);
+  verify({VERIFY=}000333,vysl.optype<>io_mem);
   opsrc.clone(inst,info,context,vysl);
   getrtattribsetsize(expr^.rta_used{%%ATTR},x);
   --%%X ZbyteánÇ p©etypov†n°, dodefinovat shift_displacement o TIMM32 hodnotu
@@ -1482,7 +1540,7 @@ begin
               optemp.create_imm(edt_unsigned,opsrc.size,0);
 
               -- li®° se pro pole a pro ©etàzce
-              verify(335,not t_is_sts(expr^.t,dts_index));
+              verify({VERIFY=}000335,not t_is_sts(expr^.t,dts_index));
               srange:=expr^.t.getctype^.srange.getctype;
               case expr^.t.stype
                 -- pole
@@ -1495,10 +1553,10 @@ begin
                     -- :last je :last
                     optemp.set_imm(uniint_to_imm32(srange^.hval));
 
-                when others do verify(336,true);
+                when others do verify({VERIFY=}000336,true);
                 end case;
 
-          when others do verify(332,true);
+          when others do verify({VERIFY=}000332,true);
           end case;
 
         -- uloëit
@@ -1553,20 +1611,35 @@ begin
 
           -- p©°mo promànn†
           then
-            verify(91,expr^.s.psym=nil);
+            verify({VERIFY=}000091,expr^.s.psym=nil);
 
             declare var
               pvar : pentity_var;                -- promànn† pro zjednodu®en°
+
+              -- koncovò element†rn° datovò typ a velikost operandu - nez†vis° na m¢du promànnÇ
+              final_edtype : t_elementary_data_type;
+              final_size   : t_unsigned;
 
             begin
               -- promànn† pro zjednodu®en°
               pvar:=pentity_var(expr^.s.psym);
 
+              -- uráit koncovò element†rn° datovò typ a koncovou velikost
+              final_edtype:=edtype_from_expr(expr);
+              if expr^.t.hassize
+                then final_size:=unidata_size_to_unsigned(expr^.t.getsize);
+                else final_size:=0;
+                end if;
+
               case pvar^.mclass
                 -- automatick†
                 when mc_auto do
                     declare var
-                      nindex : t_unsigned;         -- index vno©en° promànnÇ
+                      nindex  : t_unsigned;      -- index vno©en° promànnÇ
+
+                      -- poá†teán° element†rn° datovò typ a velikost operandu - z†vis° na m¢du promànnÇ
+                      initial_edtype : t_elementary_data_type;
+                      initial_size   : t_unsigned;
 
                     begin
                       -- nemohla by to bòt promànn† z nad©azenÇho podprogramu ?
@@ -1577,6 +1650,21 @@ begin
                           pred nindex;
                           end loop;
                         end if;
+
+                      -- podle m¢du promànnÇ uráit poá†teán° element†rn° datovò typ a velikost
+                      case pvar^.vmode
+                        -- p©°mò p©°stup: oboj° je identickÇ s koncovòmi £daji
+                        when vm_direct do 
+                            initial_edtype:=final_edtype;
+                            initial_size  :=final_size;
+
+                        -- p©°stup p©es referenci: oboj° je vëdy natvrdo stejnÇ
+                        when vm_ref    do 
+                            initial_edtype:=edt_address;
+                            initial_size  :=4;
+
+                        when others    do verify({VERIFY=}000862,true);
+                        end case;
 
                       -- p©ipravit operand
                       if nindex=0
@@ -1590,7 +1678,7 @@ begin
                             getvaraddr(inst,info,pvar,disp);
 
                             -- sestavit adresu b†zovanou podle frame pointeru
-                            vysl.create_memory_address_on_stack(inst,edt_binary,0,disp);
+                            vysl.create_memory_address_on_stack(inst,initial_edtype,initial_size,disp);
                             end declare;
 
                         -- je z nad©azenÇho podprogramu
@@ -1613,7 +1701,7 @@ begin
                             end declare;
 
                           -- zmànit operand na adresn°
-                          vysl.transform_reg_to_mem(edt_binary,0);
+                          vysl.transform_reg_to_mem(initial_edtype,initial_size);
                         { %%X
                           Dva z†sadn° problÇmy:
                             -- ENTER akceptuje pouze 16bitovou velikost prostoru na stacku -> nutnÇ
@@ -1630,7 +1718,7 @@ begin
                           begin
                             -- nad©azenò podprogram
                             pcode:=inst.nested.nlist^[nindex];
-                            verify(501,picodegen_subprog(pcode^.codegen)^.ifirst<>picodegen_subprog(pcode^.codegen)^.ilast);
+                            verify({VERIFY=}000805,picodegen_subprog(pcode^.codegen)^.ifirst<>picodegen_subprog(pcode^.codegen)^.ilast);
 
                             -- zjistit adresu promànnÇ
                             getvaraddr(picodegen_subprog(pcode^.codegen)^.ifirst^,info,pvar,disp);
@@ -1650,7 +1738,7 @@ begin
                     -- touto £pravou ztrat°m, protoëe p©i poëadavku na takovÇ
                     -- atributy by se vyë†daly i pro tento parametr (aspo§ by
                     -- to tak màlo bòt).
-                    verify(334,context.rta*(pvar^.rta_avail{allrta}-pvar^.rta_used{usedrta})<>rtattribset:[]);
+                    verify({VERIFY=}000334,context.rta*(pvar^.rta_avail{allrta}-pvar^.rta_used{usedrta})<>rtattribset:[]);
                     expr^.rta_used{%%ATTR}:=pvar^.rta_used{usedrta};
 
                     -- chceme uloëit i dynamickÇ atributy ?
@@ -1658,18 +1746,17 @@ begin
                       i_gen_rtattrib(inst,info,context,expr,vysl);
                       end if;
 
-                    ----- %%TECH Implicitn° dereference --------------------
-                    --
-                    --------------------------------------------------------
+                    -- implicitn° dereference
                     if pvar^.vmode=vm_ref and context.mode<>lm_addr_attr then
                       declare var
                         optemp : c_operand;
                       begin
+                      {
                         -- opravit typ a velikost operandu (p©i p©°pravà jsme 
                         -- moënost [vm_ref] nezohlednili, tak to teÉ mus°me napravit)
                         vysl.adjust_edtype(edt_address);
                         vysl.adjust_size(4);
-
+                      }
                         -- alokovat pracovn° registr
                         optemp.create_new_register(inst,info,context,edt_address,4);
 
@@ -1680,23 +1767,23 @@ begin
                         vysl.replace(info,context,optemp);
 
                         -- zmànit operand na adresn°
-                        vysl.transform_reg_to_mem(edt_binary,0);
+                        vysl.transform_reg_to_mem(final_edtype,final_size);
                       leave
                         -- uvolnit pracovn° operand
                         optemp.free(info,context);
                         end declare;
                       end if;
-
+                  {
                     -- velikost operandu
                     if expr^.t.hassize
                       then vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
                       else vysl.adjust_size(0);
                       end if;
-
+                  }
                 -- statick†
                 when mc_static do
                     -- adresa promànnÇ
-                    vysl.create_memory_address(inst,info,context,edt_binary,unidata_size_to_unsigned(expr^.t.getsize),ir_none,0);
+                    vysl.create_memory_address(inst,info,context,final_edtype,final_size,ir_none,0);
                     vysl.set_relo_entity(expr^.s.psym);
 
                     -- chceme uloëit i dynamickÇ atributy ?
@@ -1704,23 +1791,61 @@ begin
                       i_gen_rtattrib(inst,info,context,expr,vysl);
                       end if;
 
+                -- taskov† promànn†
+                when mc_task do
+                    if context.mode=lm_task_var_slot 
+
+                      -- adresa slotu taskovÇ promànnÇ
+                      then
+                        -- p©ipravit adresu slotu
+                        vysl.create_imm(edt_address,4,0);
+                        vysl.set_relo_entity(expr^.s.psym);
+
+                      -- hodnota taskovÇ promànnÇ
+                      else
+                        declare var
+                          slot : c_operand;      -- slot taskovÇ promànnÇ
+
+                        begin
+                          -- na stacku rezervovat prostor pro n†vratovou hodnotu - adresa hodnoty taskovÇ promànnÇ
+                          addii(inst,info,ii_sub,op_esp,op_4,op0);
+
+                          -- handle taskovÇ promànnÇ uloëit na stack
+                          slot.create_memory_address(inst,info,context,edt_unsigned,4,ir_none,0);
+                          slot.set_relo_entity(expr^.s.psym);
+                          addii(inst,info,ii_push,slot,op0,op0);
+
+                          -- p©eloëit handle taskovÇ promànnÇ na adresu jej° hodnoty
+                          addcallrtl(inst,info,context,rtl_get_task_var,true);
+
+                          -- vyzvednout ze stacku adresu hodnoty taskovÇ promànnÇ
+                          vysl.create_new_register(inst,info,context,edt_address,4);
+                          addii(inst,info,ii_pop,vysl,op0,op0);
+                          vysl.transform_reg_to_mem(edtype_from_expr(expr),unidata_size_to_unsigned(expr^.t.getsize));
+
+                        leave
+                          slot.free(info,context);
+                          end declare;
+                        end if;
+
+
                 -- promànn† t©°dy
                 when mc_class do
                     -- naá°st adresu sloëky
-                    i_load_this_address(inst,info,context,expr^.t.getsize,pvar^.addr,vysl);
+                    i_load_this_address(inst,info,context,final_edtype,final_size,pvar^.addr,vysl);
 
                     -- chceme uloëit i dynamickÇ atributy ?
                     if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
                       i_gen_rtattrib(inst,info,context,expr,vysl);
                       end if;
 
-                when others do verify(71,true);
+                when others do verify({VERIFY=}000071,true);
                 end case;
               end declare;
 
           -- selektor
           else
-            verify(90,(expr^.s.psym=nil) or{and} not (pentity_var(expr^.s.psym)^.mclass in mcs_offset));
+            verify({VERIFY=}000090,(expr^.s.psym=nil) or{and} not (pentity_var(expr^.s.psym)^.mclass in mcs_offset));
 
             -- vygenerovat podvòraz
             i_newcontext(context,newcontext,lm_gen,nil);
@@ -1728,7 +1853,7 @@ begin
 
             -- obnovit registry
             vysl.refresh(inst,info,context);
-            verify(92,vysl.optype<>io_mem);
+            verify({VERIFY=}000092,vysl.optype<>io_mem);
 
             -- adresa
             vysl.shift_displacement(imm32_to_signed{%%X}(unidata_addr_to_imm32(pentity_var(expr^.s.psym)^.addr{pivarlink(pentity_var(expr^.s.psym)^.codegen)^.addr})));
@@ -1758,7 +1883,7 @@ begin
         vysl.create_imm(edt_unsigned,0,0);
         vysl.set_relo_entity(expr^.s.psym);
 
-    when others do verify(621,true);
+    when others do verify({VERIFY=}000621,true);
     end case;
   end i_gen_component;
 
@@ -1773,13 +1898,18 @@ procedure i_gen_imm (
     vysl           : out c_operand) =            -- vòsledek
 -- Generov†n° k¢du p©°mÇ hodnoty.
 ----------------------------------------------------------------------------------------------------
+var
+  edtype           : t_elementary_data_type;     -- element†rn° datovò typ p©°mÇ hodnoty
 begin
+  -- uráit element†rn° datovò typ p©°mÇ hodnoty
+  edtype:=edtype_from_expr(expr);
+
   if context.mode in lms_addr
 
     -- zaj°m† n†s adresa hodnoty
     then
       -- adresa
-      vysl.create_memory_address(inst,info,context,edt_binary,unidata_size_to_unsigned(expr^.t.getsize),ir_none,0);
+      vysl.create_memory_address(inst,info,context,edtype,unidata_size_to_unsigned(expr^.t.getsize),ir_none,0);
       vysl.set_relo_imm(expr);
 
       -- chceme uloëit i dynamickÇ atributy ?
@@ -1793,8 +1923,8 @@ begin
         -- ordin†ln° hodnota
         when ic_ordinal do
             if t_is_sts(expr^.t,dts_unitype)
-              then vysl.create_imm(edt_unsigned,0,uniint_to_imm32(expr^.imm.ui));
-              else vysl.create_imm(edt_unsigned,unidata_size_to_unsigned(expr^.t.getsize),uniint_to_imm32(expr^.imm.ui));
+              then vysl.create_imm(edtype,0,uniint_to_imm32(expr^.imm.ui));
+              else vysl.create_imm(edtype,unidata_size_to_unsigned(expr^.t.getsize),uniint_to_imm32(expr^.imm.ui));
               end if;
 
          { No a to je pr†và ten omyl. Tohle se mus° ©e®it s vyuëit°m NATTYP
@@ -1805,7 +1935,7 @@ begin
             -- p©edchoz° f†ze p©ekladu. NicmÇnà stejnà by poëadovan† velikost
             -- konstanty màla bòt alespo§ takov†, jako je jej° skuteán† velikost.
             {..X Bohuëel nem†m jak to otestovat... }
-            {verify(129,not (expr^.t.stype in dts_unitype) and uishrink(expr^.imm.ui,,));}
+            {verify({VERIFY=}000129,not (expr^.t.stype in dts_unitype) and uishrink(expr^.imm.ui,,));}
             vysl.size:=0;
           { Pñvodn°, m†lo funkán° verze
             (var(unsigned 32)<=imm(unsigned 16) --> cmp reg32,imm16)
@@ -1823,22 +1953,22 @@ begin
               x : t_unsigned;
             begin
               x:=unidata_size_to_unsigned(context.outtyp.size);
-              verifyx(556,x<>1 and x<>2 and x<>4{%%TODO(SET) not (x in [1,2,4])},expr^.pos);
+              verifyx({VERIFY=}000556,x<>1 and x<>2 and x<>4{%%TODO(SET) not (x in [1,2,4])},expr^.pos);
               end declare;
-            vysl.create_imm(edt_binary,0,0);
+            vysl.create_imm(edtype,0,0);
             -- %%X No a tady bych pot©eboval vàdàt poëadovanò typ, nebo ne ?
 
         -- kondenzovanÇ pole nebo agreg†t
         when ic_condensed,ic_array,ic_set,ic_record do
-            {verifyx(530,((expr^.imm.ic=ic_set) and (expr^.imm.sitems^.lcount>expr^.imm.sitems^.lsize))
+            {verifyx({VERIFY=}000530,((expr^.imm.ic=ic_set) and (expr^.imm.sitems^.lcount>expr^.imm.sitems^.lsize))
                      or ((expr^.imm.ic=ic_array) and (expr^.imm.aitems^.lcount>expr^.imm.aitems^.lsize))
                      or ((expr^.imm.ic=ic_record) and (expr^.imm.ritems^.lcount>expr^.imm.ritems^.lsize)),expr^.pos);}
             {!!}
-            vysl.create_memory_address(inst,info,context,edt_binary,unidata_size_to_unsigned(expr^.t.getsize),ir_none,0);
+            vysl.create_memory_address(inst,info,context,edtype,unidata_size_to_unsigned(expr^.t.getsize),ir_none,0);
             vysl.set_relo_imm(expr);
 
         -- %%X
-        when others do verify(72,true);
+        when others do verify({VERIFY=}000072,true);
         end case;
       end if;
   end i_gen_imm;
@@ -1868,7 +1998,7 @@ begin
 
   case expr^.t.stype
     -- record
-    when dt_record do unimplemented(152);
+    when dt_record do unimplemented({UNIMP=}000152);
 
     -- pole
     when dt_array do
@@ -1889,20 +2019,20 @@ begin
 
           end loop;
       }
-        unimplemented(165);
+        unimplemented({UNIMP=}000165);
 
 
     -- neomezene pole
-    when dt_uarray do unimplemented(155);
+    when dt_uarray do unimplemented({UNIMP=}000155);
 
     -- ©etàzec
-    when dt_string,dt_ustring do unimplemented(153);
+    when dt_string,dt_ustring do unimplemented({UNIMP=}000153);
 
     -- mnoëina
-    when dt_set do unimplementedx(154,expr^.pos);
+    when dt_set do unimplementedx({UNIMP=}000154,expr^.pos);
 
     -- ostatn° typy tu nemaj° co dàlat
-    when others do verify(473,true);
+    when others do verify({VERIFY=}000473,true);
     end case
   end i_gen_aggregate;
 
@@ -1935,7 +2065,7 @@ begin
       -- podle zvolenÇ instance
       then call:=pinst^.profile.call;
       -- default konvence pro tuto proceduru
-      else call:=picodegen_subprog(pproc^.codegen)^.def_call;
+      else call:=get_call_conv(pentity(pproc)^);
       end if;
     end if;
 
@@ -1947,10 +2077,11 @@ begin
 
     -- z©ejmà je to pointer na proceduru
     else
-      verify(510,expr^.sub^.ntype<>nt_deref);
+      verify({VERIFY=}000510,expr^.sub^.ntype<>nt_deref);
       ptyp:=expr^.sub^.t.getctype;
+      call:=get_call_conv(pentity(ptyp)^);
       end if;
-  verify(511,(ptyp<>nil) and (ptyp^.stype<>dt_procedure));
+  verify({VERIFY=}000511,(ptyp<>nil) and (ptyp^.stype<>dt_procedure));
 
   -- Ondra 14.5.2002 : Tak tohle je %%X %%TODO(REGALLOC) ** KRUTè ** z†plata !!
   -- P©esunut°m SAVEREGS tàsnà p©ed instrukci CALL zabra§uju rekurzivn°mu
@@ -1958,7 +2089,7 @@ begin
   -- alok†toru registrñ, kterou se mi zat°m nepoda©ilo vy©e®it. ProblÇm spoá°v†
   -- v tom, ëe schov†n°m registru se ztr†c° informace o jeho (ne)pouëit°, takëe
   -- p©i rekurzivn°m vol†n° I_GEN_CALL_SUBPROGRAM se schov†v† znova, coë m† za
-  -- n†sledek unimplemented(118) v I_RETRIEVE.
+  -- n†sledek unimplemented({UNIMP=}000212) v I_RETRIEVE.
 {
   -- uloëit v®echny pouëitÇ registry
   -- %%X Omezit jen na registry skuteánà pouëitÇ ve volanÇ procedu©e
@@ -1977,7 +2108,8 @@ procedure i_gen_call_subprogram_parameters (
     pproc          : in pentity_subprogram;      -- volan† procedura
     call           : in icallconvention;         -- volac° konvence
     pinst          : in picodeinst;              -- instance volanÇ procedury
-    ptyp           : in pentity_type) =          -- typ procedury
+    ptyp           : in pentity_type;            -- typ procedury
+    params_size     : out t_unsigned) =          -- velikost skutecnych parametru v bytech (bez parametru instance)
 -- Generov†n° k¢du vol†n° procedury: generov†n° skuteánòch parametrñ.
 ----------------------------------------------------------------------------------------------------
 var
@@ -2045,11 +2177,13 @@ begin
           -- speci†ln° p©°pad: p©ed†v† se NIL hodnotou
           then
             i_gen_pushnil(inst,info,context,arg^.t.getctype^.size);
+            params_size+unidata_size_to_unsigned(arg^.t.getctype^.size);
 
           -- v®echny ostatn° p©°pady
           else
             declare var
               newcontext : iexprcontext;         -- kontext podvòrazñ
+              rta_size   : timm32;
 
             begin
               -- p©ipravit kontext
@@ -2058,27 +2192,38 @@ begin
                 when pp_value     do
                     i_newcontext(context,newcontext,lm_push_value,arg^.t.getutype);
                     i_setoutpref(newcontext,iop_stack);
+                    params_size+unidata_size_to_unsigned(arg^.t.getctype^.size);
 
                 -- odkazem
-                when pp_ref       do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});
+                when pp_ref       do 
+                    i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});
+                    params_size+lpointer32;
 
                 -- odkazem, bez typovÇ kontroly
-                when pp_unchecked do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});
+                when pp_unchecked do 
+                    i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});
+                    params_size+lpointer32;
 
                 -- odkazem, váetnà odvozenòch typñ
-                when pp_class     do i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});--unimplemented(74);
+                when pp_class     do 
+                    i_newcontext(context,newcontext,lm_push_addr,nil{arg^.t.getutype});--unimplemented({UNIMP=}000074);
+                    params_size+lpointer32;
 
                 -- odkazem, ©°d°c° parametr virtu†ln°ho vol†n°
-                when pp_virtual   do unimplemented(82);
+                when pp_virtual   do unimplemented({UNIMP=}000082);
 
-                when others do verify(63,true);
+                when others do verify({VERIFY=}000063,true);
                 end case;
 
               -- jakÇ dynamickÇ atributy n†s zaj°maj° ?
               newcontext.rta:=pentity_param(arg^.sym)^.rta_used{usedrta};
 
               -- parametr p©edanò hodnotou nem† dynamickÇ atributy
-              verify(327,(pentity_param(arg^.sym)^.pass=pp_value) and (newcontext.rta<>rtattribset:[]));
+              verify({VERIFY=}000327,(pentity_param(arg^.sym)^.pass=pp_value) and (newcontext.rta<>rtattribset:[]));
+
+              -- velikost pouzitych runtime atributu
+              getrtattribsetsize(newcontext.rta,rta_size);
+              params_size+imm32_to_unsigned(rta_size);
 
               -- vygenerovat parametr
               declare var
@@ -2093,7 +2238,7 @@ begin
 
       -- pouë°t implicitn° hodnotu
       else
-        unimplemented(176);
+        unimplemented({UNIMP=}000176);
         end if;
 
     -- dal®° parametr
@@ -2119,6 +2264,8 @@ var
   pinst            : picodeinst;                 -- instance volanÇ procedury
   ptyp             : pentity_type;               -- typ procedury
   newcontext       : iexprcontext;               -- kontext podvòrazñ
+  params_size      : t_unsigned;                 -- velikost pushlych parametru v bytech
+  instance_needed  : t_logical:=false;           -- T-pushuje se instance, F-nepushuje
 
 begin
   ---- (1) p©°prava vol†n°: zjistit instanci, volac° konvenci, typ procedury ----
@@ -2139,7 +2286,7 @@ begin
         -- odkazem
         then
           -- alokovat, t©eba nàkde na stacku, prostor pro n†vratovou hodnotu
-          op1.create_temporary(inst,info,edt_binary,resultsize);
+          op1.create_temporary(inst,info,edtype_from_expr(expr),resultsize);
 
           -- z°skanou adresu p©evÇst na absolutn°
           i_gen_lea(inst,info,context,op1,in_none);
@@ -2158,10 +2305,10 @@ begin
 
             -- zkonvertovat na operand
             op1.create_imm(edt_unsigned,0,unsigned_to_imm32(alignedsize));
-            end declare;
 
-          -- sn°ëit hodnotu ESP o velikost promànnÇ
-          addii(inst,info,ii_sub,op_esp,op1,op0);
+            -- sn°ëit hodnotu ESP o velikost promànnÇ
+            addii(inst,info,ii_sub,op_esp,op1,op0);
+            end declare;
           end if;
 
     leave  
@@ -2172,7 +2319,7 @@ begin
 
 
   ---- (3) zpracovat argumenty ----
-  i_gen_call_subprogram_parameters(inst,info,context,expr,pproc,call,pinst,ptyp);
+  i_gen_call_subprogram_parameters(inst,info,context,expr,pproc,call,pinst,ptyp,params_size);
 
 
   ---- (4) uloëit pointer na instanci a naá°st adresu procedury ----
@@ -2193,7 +2340,7 @@ begin
     case {el^.}nclass
       -- p©°mo procedura
       when nc_proc do
-          verify(380,{(el^.ntype<>nt_component) or (pexpcomponent(el)^.s.psym=nil)
+          verify({VERIFY=}000380,{(el^.ntype<>nt_component) or (pexpcomponent(el)^.s.psym=nil)
                      or} not (pproc^.etype{pexpcomponent(el)^.s.psym^.etype} in ets_subprogram));
 
           ---- jak je to s pointerem na instanci ? ----
@@ -2203,6 +2350,8 @@ begin
 
             -- volitelnà p©edat, nen°-li, pak NIL
             when tip_optional do
+                instance_needed:=true;
+
                 declare var
                   instance : pexpnode;           -- vòraz uráuj°c° instanci t©°dy
 
@@ -2231,6 +2380,8 @@ begin
 
             -- p©edat
             when tip_pass     do
+                instance_needed:=true;
+
                 declare var
                   instance : pexpnode;           -- vòraz uráuj°c° instanci t©°dy
                   op1      : c_operand;          -- operand
@@ -2238,7 +2389,7 @@ begin
                 begin
                   -- naj°t instanci
                   x_classinstance(el^.sub,instance);
-                  verify(381,instance=nil);
+                  verify({VERIFY=}000381,instance=nil);
 
                   -- vygenerovat podvòraz
                   i_newcontext(context,newcontext,lm_push_addr,nil);
@@ -2251,7 +2402,9 @@ begin
 
             -- virtu†ln° vol†n°
             when tip_dispatch do
-                verify(527,el^.ntype<>nt_component or else pproc=nil or else pproc^.etype<>et_virtual);
+                instance_needed:=true;
+
+                verify({VERIFY=}000527,el^.ntype<>nt_component or else pproc=nil or else pproc^.etype<>et_virtual);
 
                 declare var
                   instance : pexpnode;           -- vòraz uráuj°c° instanci t©°dy
@@ -2259,7 +2412,7 @@ begin
                 begin
                   -- naj°t instanci
                   x_classinstance(el^.sub,instance);
-                  verify(526,instance=nil);
+                  verify({VERIFY=}000526,instance=nil);
 
                   -- vygenerovat podvòraz
                   i_newcontext(context,newcontext,lm_addr,nil);
@@ -2291,7 +2444,7 @@ begin
                                                       -- %%TODO(COMPATIBILITY) %%TODO(620) ^^^^^ nahradit p©°mo typem m°sto instance
                   end declare;
 
-            when others do verify(509,true);
+            when others do verify({VERIFY=}000509,true);
             end case;
 
           ---- adresa procedury ----
@@ -2327,13 +2480,15 @@ begin
           opcall.adjust_size(4);
 
           -- jestliëe to nen° zrovna machine pointer na proceduru, tak se zabòvat instanc°
-          verify(723,el^.sub=nil or else not t_is_stype(el^.sub^.t,dt_pointer));
+          verify({VERIFY=}000806,el^.sub=nil or else not t_is_stype(el^.sub^.t,dt_pointer));
           if pf_machine not in el^.sub^.t.getpflags then
             declare var
               optemp : c_operand;                  -- pracovn° registr
               tgcall : itarget;                    -- c°l skoku na vol†n° procedury
 
             begin
+              instance_needed:=true;
+
               -- bude se hodit jeden registr
               optemp.create_new_register(inst,info,context,edt_address,4);
 
@@ -2361,7 +2516,7 @@ begin
               end declare;
             end if;
 
-      when others do verify(379,true);
+      when others do verify({VERIFY=}000379,true);
       end case;
 
     -- Ondra 14.5.2002 : Tak tohle je %%X %%TODO(REGALLOC) ** KRUTè ** z†plata !!
@@ -2375,8 +2530,25 @@ begin
 
     -- ze stacku odstranit parametry, kterÇ tam zbyly po £chylnòch volac°ch konvenc°ch
     if call in iccs_leave_params then
-      unimplemented(203);
-      --addopimm(inst,info,ii_add,op_esp, );
+      if pinst=nil 
+        then
+        -- Jestliëe nen° k dispozici instance volanÇ procedury, nev°me, o kolik bytñ zvò®it
+        -- stack pointer. S touto situac° nen° lehkÇ si poradit. Nast†v†, kdyë volan† procedura
+        -- je deklarov†na uvnit© volaj°c°. Dñvodem je nevòhodnÇ po©ad° generov†n° k¢du tàchto
+        -- dvou procedur. ûe®en°m by mohl bòt p©edvòpoáet profilu parametrñ p©ed vlastn°m
+        -- generov†n°m k¢du áehokoliv.
+        -- %%HYNEK: Zatim vyreseno tak, ze si sami behem generovani volani spocitame kolik se pushlo.
+        --          Neumime zapocitat instanci - napr. dynamicke zjisteni v pripade pointeru na proceduru
+        --          je drobet slozitejsi.
+        
+          if instance_needed then
+            unimplemented({UNIMP=}000203);
+            end if;
+
+          addopimm(inst,info,context,ii_add,op_esp,params_size);      
+        else 
+          addopimm(inst,info,context,ii_add,op_esp,pinst^.profile.retfree);
+          end if;
       end if;
 
   leave
@@ -2389,10 +2561,12 @@ begin
   if expr^.t.tview<>tview_null{stype<>dt_undef} then
     declare var
       resultsize   : t_unsigned;                 -- velikost n†vratovÇ hodnoty
+      resultedtype : t_elementary_data_type;     -- element†rn° datovò typ n†vratovÇ hodnoty
 
     begin
       -- velikost vòsledku
       resultsize:=unidata_size_to_unsigned(expr^.t.getsize);
+      resultedtype:=edtype_from_expr(expr);
 
       -- na stacku
       if call in iccs_ret_stack then
@@ -2407,7 +2581,7 @@ begin
             addii(inst,info,ii_pop,vysl,op0,op0);
 
             -- transformovat na referenci na n†vratovou hodnotu
-            vysl.transform_reg_to_mem(edt_binary,resultsize);
+            vysl.transform_reg_to_mem(resultedtype,resultsize);
 
             -- uvolnit prostor na stacku se d† aë ve chv°li kdy bude vyzvednuta
             -- hodnota na kterou pr†và vrac°me pointer
@@ -2419,7 +2593,7 @@ begin
 
               -- m†me ®tàst°, nad©azen† procedura chce vòsledek na stacku
               then
-                vysl.create_on_stack(edt_binary,resultsize);
+                vysl.create_on_stack(resultedtype,resultsize);
 
               -- jinak s t°m nàco udàlat
               else
@@ -2434,8 +2608,8 @@ begin
                       -- zarovnat
                       addalign(alignedsize,0,resultsize,istackalign);
 
-                      -- vyzvednout adresu vòsledku (nem†me n†hodou kopii ?)
-                      vysl.create_new_register(inst,info,context,edt_binary,resultsize);
+                      -- p©ipravit registr pro vòsledek
+                      vysl.create_new_register(inst,info,context,resultedtype,resultsize);
 
                       -- zmànit velikost registru na maxim†ln° (nelze tak p©°mo alokovat qñli ESI, EDI)
                       vysl.adjust_size(alignedsize);
@@ -2449,7 +2623,7 @@ begin
 
                   else
                     -- alokovat, t©eba nàkde na stacku, prostor pro vòsledek
-                    vysl.create_temporary(inst,info,edt_binary,resultsize);
+                    vysl.create_temporary(inst,info,resultedtype,resultsize);
 
                     -- zkop°rovat ze stacku do vòsledku
                     i_gen_pop_static(inst,info,context,vysl,resultsize);
@@ -2460,12 +2634,12 @@ begin
       -- v EAX
       elsif call in iccs_ret_eax then
         -- vòsledek
-        vysl.create_use_register(inst,info,context,edt_binary,ir_eax);
+        vysl.create_use_register(inst,info,context,resultedtype,ir_eax);
         vysl.adjust_size(resultsize);
 
       -- nàjak† chyba
       else 
-        verify(104,false);
+        verify({VERIFY=}000104,false);
         end if;
 
       -- chceme uloëit i dynamickÇ atributy ?
@@ -2493,7 +2667,7 @@ var
 begin
   -- nalÇzt proceduru
   pproc:=pentity_subprogram(expr^.sub^.getsymbol);
-  verify(513,(pproc<>nil) and not (pproc^.etype in ets_callable));
+  verify({VERIFY=}000513,(pproc<>nil) and not (pproc^.etype in ets_callable));
 
   -- vygenerovat k¢d
   i_gen_call_subprogram(inst,info,context,expr,pproc,vysl);
@@ -2510,6 +2684,9 @@ procedure i_gen_index (
     vysl           : out c_operand) =            -- vòsledek
 -- Generov†n° k¢du indexov†n° pole.
 ----------------------------------------------------------------------------------------------------
+with
+  ci_rcheck;
+
 var
   el               : pexpnode;                   -- levò podvòraz
   er               : pexpnode;                   -- pravò podvòraz
@@ -2526,7 +2703,7 @@ begin
   -- vygenerovat levò podvòraz
   i_newcontext(context,newcontext,lm_gen,nil);
   i_load(inst,info,newcontext,context,el,op1);
-  verify(106,op1.optype<>io_mem);
+  verify({VERIFY=}000106,op1.optype<>io_mem);
 
   -- vygenerovat pravò podvòraz
   -- je t©eba hodnota velikosti IDEFREGSIZE, takëe se typ neuv†d°
@@ -2537,6 +2714,9 @@ begin
   op1.refresh(inst,info,context);
   op2.refresh(inst,info,context);
 
+  -- %%TODO(rch_stringindex_range) - az bude doimplementovana i_gen_stringindex_range_check
+  --i_gen_stringindex_range_check(inst,info,context,expr^,op2);
+
   -- doln° mez pole
   lval:=uniint_to_imm32(el^.t.getctype^.srange.getctype^.lval);
 
@@ -2546,7 +2726,7 @@ begin
   -- z†klad vòsledku
   vysl.clone(inst,info,context,op1);
   vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
-  verify(490,vysl.optype<>io_mem);
+  verify({VERIFY=}000490,vysl.optype<>io_mem);
   -- Pozor: nutnò p©edpoklad pro spr†vnÇ o®et©en° IO_CC
 
   -- sestavit vòslednou adresu
@@ -2592,7 +2772,7 @@ begin
 
     -- promànn†
     when io_mem do
-        unimplemented(71);
+        unimplemented({UNIMP=}000071);
 
     -- podm°nka
     when io_cc do
@@ -2662,7 +2842,7 @@ begin
               end if;
           end declare;
 
-    when others do verify(107,true);
+    when others do verify({VERIFY=}000107,true);
     end case;
 
   -- posunout o intern° á†st ©etàzce
@@ -2710,29 +2890,41 @@ begin
         -- obnovit registry
         vysl.refresh(inst,info,context);
 
-        -- doplnit p©°padnÇ runtime atributy
-        if {context.outtyp.pattrib}expr^.t.getpattrib<>rtattribset:[] then
-          declare var
-            optemp : c_operand;
-          begin
-            -- alokovat pracovn° promànnou
-            optemp.create_temporary(inst,info,edt_pointer,unidata_size_to_unsigned(expr^.t.getsize));
+        -- m† pointer obsahovat nàjakÇ run-time atributy ?
+        if {context.outtyp.pattrib}expr^.t.getpattrib<>rtattribset:[] 
+        
+          -- ano => doplnit je do nàj
+          then
+            declare var
+              optemp : c_operand;
+            begin
+              -- alokovat pracovn° promànnou
+              optemp.create_temporary(inst,info,edt_pointer,unidata_size_to_unsigned(expr^.t.getsize));
 
-            -- zkonstruovat celò pointer
-            i_gen_compose_pointer(inst,info,context,vysl,expr^.t.getctype^.base.getutype,expr^.t.getctype^.base.getutype,{context.outtyp.pattrib}expr^.t.getpattrib,optemp);
+              -- zkonstruovat celò pointer
+              i_gen_compose_pointer(inst,info,context,vysl,expr^.t.getctype^.base.getutype,expr^.t.getctype^.base.getutype,{context.outtyp.pattrib}expr^.t.getpattrib,optemp);
 
-            -- p©edat vòsledek
-            vysl.replace(info,context,optemp);
+              -- p©edat vòsledek
+              vysl.replace(info,context,optemp);
 
-          leave
-            -- uvolnit pracovn° operand
-            optemp.free(info,context);
-            end declare;
-          end if;
+            leave
+              -- uvolnit pracovn° operand
+              optemp.free(info,context);
+              end declare;
+
+          -- ne => pouze zmànit adresn° operand na hodnotovò
+          else
+            -- zmànit element†rn° datovò typ na pointer
+            verify({VERIFY=}000881,vysl.edtype<>edt_address);
+            vysl.adjust_edtype(edt_pointer);
+
+            -- velikost pointeru se mànit nemus°
+            verify({VERIFY=}000882,unidata_size_to_unsigned(expr^.t.getsize)<>vysl.size);
+            end if;
 
     -- pointer na proceduru
     when pc_subprogram do
-        verify(512,(el^.ntype<>nt_component) or (el^.getsymbol=nil));
+        verify({VERIFY=}000512,el^.ntype<>nt_component or el^.getsymbol=nil);
 
         declare var
           instance : pexpnode;                   -- vòraz uráuj°c° instanci t©°dy
@@ -2741,8 +2933,8 @@ begin
         begin
           -- referencovanò podprogram
           pproc:=pentity_subprogram(el^.getsymbol);
-          verify(514,not (pproc^.etype in ets_callable));
-          if pproc^.etype=et_virtual then unimplemented(174); end if;
+          verify({VERIFY=}000514,not (pproc^.etype in ets_callable));
+          if pproc^.etype=et_virtual then unimplemented({UNIMP=}000174); end if;
 
           -- naj°t instanci t©°dy
           x_classinstance(el^.sub,instance);
@@ -2805,7 +2997,7 @@ begin
 
               -- jinÇ p©°pady nemohou nastat
               else
-                verify(515,true)
+                verify({VERIFY=}000515,true)
                 end if;
 
               -- nacpat do pointeru
@@ -2832,12 +3024,12 @@ begin
           end declare;
 
     -- pointer na task
-    when pc_task do unimplemented(64);
+    when pc_task do unimplemented({UNIMP=}000064);
 
     -- pointer na zpr†vu
-    when pc_message do unimplemented(83);
+    when pc_message do unimplemented({UNIMP=}000083);
 
-    when others do verify(112,true);
+    when others do verify({VERIFY=}000807,true);
     end case;
   end i_gen_ref;
 
@@ -2888,7 +3080,7 @@ begin
 
     -- cokoliv jinÇho => dereferencovat
     when others do
-        verifyx(558,context.mode in lms_addr-iexprloadmodeset:[lm_addr],expr^.pos);
+        verifyx({VERIFY=}000558,context.mode in lms_addr-iexprloadmodeset:[lm_addr],expr^.pos);
 
         case el^.t.getpclass
           -- pointer na data
@@ -2898,7 +3090,7 @@ begin
               i_load(inst,info,newcontext,context,el,vysl);
 
               -- adresa
-              vysl.transform_reg_to_mem(edt_binary,0);
+              vysl.transform_reg_to_mem(edtype_from_expr(expr),0);
               if expr^.t.hassize then
                 vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
                 end if;
@@ -2910,12 +3102,12 @@ begin
               i_load(inst,info,newcontext,context,el,vysl);
 
           -- pointer na task
-          when pc_task  do unimplemented(65);
+          when pc_task  do unimplemented({UNIMP=}000065);
 
           -- pointer na zpr†vu
-          when pc_message do unimplemented(84);
+          when pc_message do unimplemented({UNIMP=}000084);
 
-          when others do verify(112,true);
+          when others do verify({VERIFY=}000808,true);
           end case;
     end case;
   end i_gen_deref;
@@ -2976,7 +3168,7 @@ begin
               vysl.create_imm(edt_unsigned,4,0);
               vysl.set_relo_entity(expr^.sub^.getsymbol);
 
-          when others do verifyx(148,true,expr^.pos);
+          when others do verifyx({VERIFY=}000148,true,expr^.pos);
           end case;
 
 
@@ -3039,10 +3231,10 @@ begin
               -- vòsledek je podm°nka
               vysl.create_condition(ic_ne);
 
-          when others do verify(282,true);--u_nimplemented(59);
+          when others do verify({VERIFY=}000282,true);--u_nimplemented(59);
           end case;
 
-    when others do verify(147,true);
+    when others do verify({VERIFY=}000147,true);
     end case;
   end i_gen_attrib;
 
@@ -3098,7 +3290,7 @@ begin
 
               -- jinÇ konverze neum°me
               else 
-                verifyx(611,true,expr^.pos);
+                verifyx({VERIFY=}000611,true,expr^.pos);
                 end if;
             {
               -- vygenerovat
@@ -3114,10 +3306,10 @@ begin
 
           -- ... Partial view
 
-          when others do verify(272,true);
+          when others do verify({VERIFY=}000272,true);
           end case;
 
-    when others do verify(149,true);
+    when others do verify({VERIFY=}000149,true);
     end case;
 
   -- vygenerovat podvòraz
@@ -3156,7 +3348,7 @@ begin
 
     -- m† parametry
     then
-      unimplemented(104);
+      unimplemented({UNIMP=}000104);
 
     -- nem† parametry => na stack d†t NIL
     else
@@ -3194,19 +3386,19 @@ begin
 
     -- ano => zavolat ji p©°mo
     then
-      verify(581,(arglist=nil) or (el<>nil));
+      verify({VERIFY=}000581,(arglist=nil) or (el<>nil));
 
       -- zavolat jako norm†ln° podprogram
       i_gen_call_subprogram(inst,info,context,expr,expr^.spec,vysl);
 
     -- ne => vybrat metodu podle tagu instance t©°dy/modulu
     else
-      verify(582,(el=nil) or (arglist<>nil));
+      verify({VERIFY=}000582,(el=nil) or (arglist<>nil));
 
       case el^.nclass
         -- podvòraz je instance t©°dy
         when nc_var     do
-            verify(583,not el^.t.isclass);
+            verify({VERIFY=}000583,not el^.t.isclass);
 
             -- adresu instance uloëit na stack
             i_newcontext(context,newcontext,lm_push_addr,nil);
@@ -3239,9 +3431,9 @@ begin
 
         -- podvòraz je modul
         when nc_module  do
-            unimplemented(194);
+            unimplemented({UNIMP=}000194);
 
-        when others do verify(406,true);
+        when others do verify({VERIFY=}000809,true);
         end case;
       end if;
 
@@ -3267,15 +3459,15 @@ begin
 
         -- podvòraz je modul
         when nc_module  do
-            unimplemented(407);
+            unimplemented({UNIMP=}000213);
 
 
-        when others do verify(406,true);
+        when others do verify({VERIFY=}000810,true);
         end case;
 
     -- podvòraz nem†me, tud°ë mus°me m°t adresu entry rovnou k dispozici
     when others do
-      unimplemented(125);
+      unimplemented({UNIMP=}000125);
       end if;
 
   -- vòsledek ve®kerò ë†dnò
@@ -3303,11 +3495,12 @@ var
   pinst            : picodeinst;                 -- instance volanÇ procedury
   ptyp             : pentity_type;               -- typ procedury
   newcontext       : iexprcontext;               -- kontext podvòrazñ
+  params_size      : t_unsigned;
 
 begin
   -- nalÇzt RTL proceduru
   rtl_get_entity(expr^.rtl_proc,pproc);
-  verify(718,pproc=nil or else pproc^.etype not in ets_callable);
+  verify({VERIFY=}000718,pproc=nil or else pproc^.etype not in ets_callable);
 
 
   ---- (1) p©°prava vol†n°: zjistit instanci, volac° konvenci, typ procedury ----
@@ -3315,18 +3508,11 @@ begin
 
 
   ---- (2) zpracovat argumenty ----
-  i_gen_call_subprogram_parameters(inst,info,context,expr,pproc,call,pinst,ptyp);
+  i_gen_call_subprogram_parameters(inst,info,context,expr,pproc,call,pinst,ptyp,params_size);
 
 
   ---- (3) vol†n° ----
-  -- Ondra 14.5.2002 : Tak tohle je %%X %%TODO(REGALLOC) ** KRUTè ** z†plata !!
-  -- Podrobnàji viz zakomentovanÇ vol†n° SAVEREGS na zaá†tku tÇto procedury
-  -- uloëit v®echny pouëitÇ registry
-  -- %%X Omezit jen na registry skuteánà pouëitÇ ve volanÇ procedu©e
-  i_reg_save_used(inst,info,context);
-  
-  -- vol†n°
-  addcallrtl(inst,info,context,expr^.rtl_proc);
+  addcallrtl(inst,info,context,expr^.rtl_proc,true);
   end i_gen_call_rtl;
 
 
@@ -3342,8 +3528,8 @@ procedure i_gen_this (
 ----------------------------------------------------------------------------------------------------
 begin
   -- vygenerovat a naá°st adresu instance t©°dy
-  i_load_this_address(inst,info,context,expr^.t.getsize,uda_0,vysl);
-  --verify(696,vysl.size<>unidata_size_to_unsigned(expr^.t.getsize));
+  i_load_this_address(inst,info,context,edtype_from_expr(expr),unidata_size_to_unsigned(expr^.t.getsize),uda_0,vysl);
+  --verify({VERIFY=}000696,vysl.size<>unidata_size_to_unsigned(expr^.t.getsize));
   end i_gen_this;
 
 
@@ -3377,7 +3563,7 @@ with
 #end if;
 
 begin
-  verify(28,(expr=nil) or (expr^.zprac<>expr^.zprac:last));
+  verify({VERIFY=}000028,(expr=nil) or (expr^.zprac<>expr^.zprac:last));
 
   -- vygenerovat vòraz
   case expr^.ntype
@@ -3429,13 +3615,16 @@ begin
     -- fake tag interfacu t©°dy
     when nt_fake_tag  do i_gen_fake_tag(inst,info,context,pexpfaketag(expr),vysl);
 
+    -- selektor slotu taskovÇ promànnÇ
+    when nt_task_var_slot do i_gen_task_var_slot(inst,info,context,pexptaskvarslot(expr),vysl);
+
     -- jinÇ symboly tu nemaj° co dàlat
     when others do
       #if #declared ondra; then;
         dumptree(expr);
         debug_dump(unsigned_to_string(expr^.ntype:ord));
       #end if;
-        verify(29,true);
+        verifyx({VERIFY=}000029,true,expr^.pos);
 
     end case;
   end i_gen;
@@ -3502,7 +3691,7 @@ var
   newcontext       : iexprcontext;               -- kontext podvòrazu
 
 begin
-  verify(601,(ttarget=tgfallthru) and (ftarget=tgfallthru));
+  verify({VERIFY=}000601,(ttarget=tgfallthru) and (ftarget=tgfallthru));
 
 #if dump then;
   if o_is_option_by_entity(opt_dump_code,info.entity^) then
@@ -3603,7 +3792,7 @@ var
   newcontext       : iexprcontext;               -- kontext podvòrazu
 
 begin
-  verify(310,(expr^.ntype<>nt_accept) or not (expr^.sub^.nclass in ncs_message_code));
+  verify({VERIFY=}000310,(expr^.ntype<>nt_accept) or not (expr^.sub^.nclass in ncs_message_code));
 
   begin
     -- p©ipravit kontext

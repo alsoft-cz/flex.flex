@@ -53,9 +53,10 @@ begin
     when nt_send           do new pexplist(node);
     when nt_fake_tag       do new pexpfaketag(node);
     when nt_call_rtl       do new pexpcallrtl(node);
+    when nt_task_var_slot  do new pexptaskvarslot(node);
     --%%TECH NT_NONE se pou‘¡v  pro reprezentaci nezparsovateln˜ch v˜raz–
     when nt_none           do new pexpnode(node);
-    when others            do verify(12,true);
+    when others            do verify({VERIFY=}000012,true);
     end case;
 
   -- inicializovat
@@ -116,7 +117,7 @@ begin
     else node^.nflags-nodeflagset:[nf_const];
     end if;
 
-  verify(723,node^.ntype<>nt_imm and nf_const in node^.nflags);
+  verify({VERIFY=}000833,node^.ntype<>nt_imm and nf_const in node^.nflags);
 
   -- p©evz¡t pozici                          
   srcnode^.getpos(node^.pos);
@@ -285,7 +286,7 @@ class private expnode =
     -- INDEX-t˜ typ uzlu
     ------------------------------------------------------------------------------------------------
     begin
-      verify(287,index<>0);
+      verify({VERIFY=}000287,index<>0);
       typ:=^t;
       end gettype;
 
@@ -421,13 +422,14 @@ class private expnode =
     -- zpusobi interni chybu pokud takova kontrola jiz nastavena
     ------------------------------------------------------------------------------------------------
     begin
-      verify(715,rcheck in rchecks_required[rcheck_class]);
+      verify({VERIFY=}000715,rcheck in rchecks_required[rcheck_class]);
       
       -- %%TODO(SET) generovani kodu pridani promenne do mnoziny neni implementovano
       case rcheck 
         when rch_ordinal_overflow do rchecks_required[rcheck_class]+t_runtime_check_set:[rch_ordinal_overflow];
         when rch_ordinal_range  do rchecks_required[rcheck_class]+t_runtime_check_set:[rch_ordinal_range];
-        when others do verify(716,true);
+        when rch_stringindex_range do rchecks_required[rcheck_class]+t_runtime_check_set:[rch_stringindex_range];
+        when others do verify({VERIFY=}000716,true);
         end case;
       
       end set_run_check;
@@ -633,7 +635,7 @@ class private expambiguous =
       if index=0
         then typ:=^t
         else 
-          verify(286,(tlist=nil) or else (index>tlist^:length));
+          verify({VERIFY=}000286,(tlist=nil) or else (index>tlist^:length));
           typ:=^tlist^[index].t;
           end if;
       end gettype;
@@ -652,7 +654,7 @@ class private expambiguous =
           eri:=er0;
           psym:=psym0;
         else
-          verify(295,(tlist=nil) or else (index>tlist^:length));
+          verify({VERIFY=}000295,(tlist=nil) or else (index>tlist^:length));
           typ:=^tlist^[index].t;
           eli:=tlist^[index].el;
           eri:=tlist^[index].er;
@@ -670,7 +672,7 @@ class private expambiguous =
       if index=0
         then psym:=psym0
         else
-          verify(298,(tlist=nil) or else (index>tlist^:length));
+          verify({VERIFY=}000298,(tlist=nil) or else (index>tlist^:length));
           psym:=tlist^[index].psym;
           end if;
       end gettypesym;
@@ -687,7 +689,7 @@ class private expambiguous =
           eli:=el0;
           eri:=er0;
         else
-          verify(300,(tlist=nil) or else (index>tlist^:length));
+          verify({VERIFY=}000300,(tlist=nil) or else (index>tlist^:length));
           eli:=tlist^[index].el;
           eri:=tlist^[index].er;
           end if;
@@ -713,7 +715,7 @@ class private expambiguous =
     -- Zvol¡ INDEX-t˜ typ jako definitivn¡.
     ------------------------------------------------------------------------------------------------
     begin
-      verify(288,index>0 and then (tlist=nil or else index>tlist^:length));
+      verify({VERIFY=}000288,index>0 and then (tlist=nil or else index>tlist^:length));
 
       -- zkop¡rovat
       if index>0 then
@@ -1006,7 +1008,7 @@ class private expimm =
     --  -- relo
     --  when ic_relo      do result & '<symbol>';
 
-        when others       do verify(258,true);
+        when others       do verify({VERIFY=}000258,true);
         end case;
       end dump;
 
@@ -1104,7 +1106,7 @@ class private explist =
           sub:=el;
           el^.next:=arglist;
         else
-          verify(218,el<>nil);
+          verify({VERIFY=}000218,el<>nil);
           sub:=arglist;
           end if;
       end join;
@@ -1155,6 +1157,21 @@ class private explist =
 
     end explist;
 
+
+----------------------------------------------------------------------------------------------------
+class private exptaskvarslot =
+-- Taskova promenna
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    override dump =
+    -- Dump uzlu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:='task var slot';
+      end dump;
+    
+    end exptaskvarslot;
 
 
 ----------------------------------------------------------------------------------------------------
@@ -1229,7 +1246,7 @@ class private expitem =
         when ei_ident  do result & 'for ' & entityident_to_string(id^) & ' use';
         when ei_choice do result & 'for .. use';
         when ei_others do result & 'for others use';
-        when others    do verify(217,true);
+        when others    do verify({VERIFY=}000217,true);
         end case;
       end dump;
 
@@ -1707,5 +1724,29 @@ begin
   end dumptree;
 
 
+
+
+----------------------------------------------------------------------------------------------------
+procedure node_catch_resume_error =
+-- Vr t¡, zda zachyt vat v˜jimky typu resume_error v uzlu
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat vyj¡mku
+  case catch_mode
+    -- vyj¡mka se m  zachytit
+    when catch_mode_catch do result:=true;
+
+    -- vyj¡mka se m  znovu vyvolat
+    when catch_mode_raise do result:=false;
+
+    -- znovuvyvol n¡ v˜jimky z vis¡ na typu uzlu
+    when catch_mode_implicit do result:=node_type in nodetypeset:[];
+    end case;    
+  end node_catch_resume_error;
+
+----------------------------------------------------------------------------------------------------
+#separate private c_expr_iterator;
+-- Iter tor
+----------------------------------------------------------------------------------------------------
 
 end cx_def;

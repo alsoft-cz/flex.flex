@@ -1,0 +1,701 @@
+----------------------------------------------------------------------------------------------------
+class private c_block_iterator =
+-- T©¡da slou‘¡c¡ k protrasov n¡ blok– zdroj ku
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+static traverse_blnode (
+  node             : pblnode) =
+-- nic nedˆlat
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end traverse_blnode;
+
+
+
+----------------------------------------------------------------------------------------------------
+static traverse_bllist (
+    list           : in bllist) =
+----------------------------------------------------------------------------------------------------
+var
+  b                : pblnode;                    -- iter tor seznamu
+begin
+  -- proj¡t seznam
+  b:=list.first;
+  while b<>nil loop
+    -- zpracovat rekurzivnˆ
+    traverse_block(b);
+
+    -- dal¨¡ prvek
+    b:=b^.next;
+    end loop;
+  end traverse_bllist;
+
+
+
+----------------------------------------------------------------------------------------------------
+static traverse_blsimple (
+    node           : pblsimple) =
+-- Iteruje p©es dˆti [blsimple]
+----------------------------------------------------------------------------------------------------
+begin
+  -- iterovat dˆti p©edka
+  traverse_blnode(node);
+
+  -- zpracovat [node^.bprolog]
+  before_traverse_bprolog(node);
+  traverse_bllist(node^.bprolog);
+  after_traverse_bprolog(node);
+
+  -- zpracovat [node^.bepilog]
+  before_traverse_bepilog(node);
+  traverse_bllist(node^.bepilog);
+  after_traverse_bepilog(node);
+  end traverse_blsimple;
+
+
+
+----------------------------------------------------------------------------------------------------
+static traverse_blcompound (
+    node           : pblcompound) =
+-- Iteruje p©es dˆti [blcompound]
+----------------------------------------------------------------------------------------------------
+begin
+  -- iterovat dˆti p©edka
+  traverse_blnode(node);
+
+  -- zpracovat [node^.sub]
+  before_traverse_sub(node);
+  traverse_bllist(node^.sub);
+  after_traverse_sub(node);
+  end traverse_blcompound;
+
+
+
+----------------------------------------------------------------------------------------------------
+static traverse_blblock (
+    node           : pblblock) =
+-- Iteruje p©es dˆti [blblock]
+----------------------------------------------------------------------------------------------------
+begin
+  -- iterovat dˆti p©edka
+  traverse_blcompound(node);
+
+  -- zpracovat [node^.binit]
+  before_traverse_binit(node);
+  traverse_bllist(node^.binit);
+  after_traverse_binit(node);
+
+  -- zpracovat [node^.bentry]
+  before_traverse_bentry(node);
+  traverse_bllist(node^.bentry);
+  after_traverse_bentry(node);
+
+  -- zpracovat [node^.bcatch]
+  before_traverse_bcatch(node);
+  traverse_bllist(node^.bcatch);
+  after_traverse_bcatch(node);
+
+  -- zpracovat [node^.brollback]
+  before_traverse_brollback(node);
+  traverse_bllist(node^.brollback);
+  after_traverse_brollback(node);
+
+  -- zpracovat [node^.bcommit]
+  before_traverse_bcommit(node);
+  traverse_bllist(node^.bcommit);
+  after_traverse_bcommit(node);
+
+  -- zpracovat [node^.bleave]
+  before_traverse_bleave(node);
+  traverse_bllist(node^.bleave);
+  after_traverse_bleave(node);
+
+  -- zpracovat [node^.bexit]
+  before_traverse_bexit(node);
+  traverse_bllist(node^.bexit);
+  after_traverse_bexit(node);
+  end traverse_blblock;
+
+
+
+----------------------------------------------------------------------------------------------------
+static process_block =
+-- Case p©es v¨echny typy blok–, vol  process_xxx dle typu bloku, do‡asn‚ ©e¨en¡.
+----------------------------------------------------------------------------------------------------
+begin
+  -- spustit metodu dle typu bloku
+  case node^.btype
+    when bt_cmd     do process_blcmd(node);
+    when bt_break   do process_blbreak(node);
+    when bt_return  do process_blreturn(node);
+    when bt_raise   do process_blraise(node);
+    when bt_send    do process_blsend(node);
+    when bt_goto    do process_blgoto(node);
+    when bt_new     do process_blnew(node);
+    when bt_discard do process_bldiscard(node);
+    when bt_adjust  do process_bladjust(node);
+    when bt_delay   do process_bldelay(node);
+    when bt_if      do process_blif(node);
+    when bt_loop    do process_blloop(node);
+    when bt_for     do process_blfor(node);
+    when bt_while   do process_blwhile(node);
+    when bt_case    do process_blcase(node);
+    when bt_accept  do process_blaccept(node);
+    when bt_block   do process_blblock(node);
+    when bt_declare do process_bldeclare(node);
+    when bt_asm     do process_blasm(node);
+    when bt_label   do process_bllabel(node);
+    when bt_when_m  do process_blwhen_m(node);
+    when bt_when_c  do process_blwhen_c(node);
+    when bt_if_cond do process_blif_cond(node);
+    when bt_loop1   do process_blloop1(node);
+    end case;
+  end process_block;
+
+
+
+----------------------------------------------------------------------------------------------------
+static traverse_block =
+-- Projde v¨echny podbloky bloku [node] - spou¨Ÿ iter toru.
+----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}000967,node=nil);
+
+  -- ozn mit vstup do uzlu
+  enter_node(node);
+
+  -- zpracovat data tohoto uzlu
+  process_block(node);
+
+  -- spustit specializovanou metodu dle typu uzlu
+  if node^.btype in blocktypeset:[bt_block,bt_declare] then
+     --%%TODO(TAG) node^:tag>=blblock:tag
+    traverse_blblock(node);
+
+  elsif node^.btype in blocktypeset:[bt_if,bt_for,bt_case,bt_accept,
+                                     bt_loop1,bt_loop,bt_while,bt_if_cond,bt_when_m] then
+        --%%TODO(TAG) node^:tag>=blcompound:tag
+    traverse_blcompound(node);    
+
+  elsif node^.btype in blocktypeset:[bt_cmd,bt_break,bt_return,bt_raise,bt_send,bt_goto,
+                                       bt_new,bt_discard,bt_adjust,bt_delay] then
+         --%%TODO(TAG) node^:tag>=blsimple:tag
+    traverse_blsimple(node);
+
+  else 
+    traverse_blnode(node);
+    end if;
+
+  -- ozn mit opu¨tˆn¡ uzlu
+  leave_node(node);
+  end traverse_block;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blnode =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end process_blnode;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blsimple =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blnode(node);
+  end process_blsimple;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blcond =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcompound(node);
+  end process_blcond;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blcmd =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blsimple(node);
+  end process_blcmd;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blbreak =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blsimple(node);
+  end process_blbreak;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blreturn =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blsimple(node);
+  end process_blreturn;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blmessage =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blsimple(node);
+  end process_blmessage;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blraise =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blmessage(node);
+  end process_blraise;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blsend =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blmessage(node);
+  end process_blsend;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blgoto =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blsimple(node);
+  end process_blgoto;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blalloc =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blsimple(node);
+  end process_blalloc;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blnew =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blalloc(node);
+  end process_blnew;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_bldiscard =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blalloc(node);
+  end process_bldiscard;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_bladjust =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blalloc(node);
+  end process_bladjust;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_bldelay =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blsimple(node);
+  end process_bldelay;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blcompound =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blnode(node);
+  end process_blcompound;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blif =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcompound(node);
+  end process_blif;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blloop =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcond(node);
+  end process_blloop;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blfor =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcompound(node);
+  end process_blfor;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blwhile =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcond(node);
+  end process_blwhile;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blcase =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcompound(node);
+  end process_blcase;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blaccept =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcompound(node);
+  end process_blaccept;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blblock =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcompound(node);
+  end process_blblock;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_bldeclare =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blblock(node);
+  end process_bldeclare;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blasm =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blnode(node);
+  end process_blasm;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_bllabel =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blnode(node);
+  end process_bllabel;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blchoicelist =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcompound(node);
+  end process_blchoicelist;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blwhen_m =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blchoicelist(node);
+  end process_blwhen_m;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blwhen_c =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end process_blwhen_c;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blif_cond =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcond(node);
+  end process_blif_cond;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual process_blloop1 =
+----------------------------------------------------------------------------------------------------
+begin
+  -- zpracovat p©edka uzlu [node]
+  process_blcompound(node);
+  end process_blloop1;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_bprolog =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_bprolog;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_bprolog =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_bprolog;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_bepilog =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_bepilog;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_bepilog =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_bepilog;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_sub =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_sub;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_sub =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_sub;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_binit =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_binit;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_binit =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_binit;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_bentry =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_bentry;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_bentry =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_bentry;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_bcatch =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_bcatch;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_bcatch =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_bcatch;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_brollback =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_brollback;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_brollback =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_brollback;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_bcommit =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_bcommit;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_bcommit =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_bcommit;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_bleave =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_bleave;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_bleave =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_bleave;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual before_traverse_bexit =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end before_traverse_bexit;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual after_traverse_bexit =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end after_traverse_bexit;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual enter_node =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end enter_node;
+
+
+
+----------------------------------------------------------------------------------------------------
+virtual leave_node =
+----------------------------------------------------------------------------------------------------
+begin
+  -- nic nedˆlat
+  end leave_node;
+
+end c_block_iterator;

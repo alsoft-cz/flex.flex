@@ -64,7 +64,8 @@ begin
 procedure addcallrtl (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o p©ekladu
-    rtl            : in t_rtl_entity) =          -- volan˜ intern¡ podprogram
+    rtl            : in t_rtl_entity;            -- volan˜ intern¡ podprogram
+    save_regs      : in t_logical:=false) =      -- ulozit pouzite registry?
 -- P©id  vol n¡ intern¡ho podprogramu.
 -- Varianta [cg_gen.cg_ia32.ci_code.ci_instr.addcallrtl], kter  si sama p©iprav¡ kontext v˜razu.
 ----------------------------------------------------------------------------------------------------
@@ -79,7 +80,7 @@ begin
   i_createcontext(context,lm_gen,nil);
 
   -- zavolat skute‡n˜ [addjump]
-  ci_instr.addcallrtl(inst,info,context,rtl);
+  ci_instr.addcallrtl(inst,info,context,rtl,save_regs);
   end addcallrtl;
 
 
@@ -106,9 +107,9 @@ begin
   picodegen_subprog(curr.codegen)^.ilast:=inst;
 
   -- default volac¡ konvence
-  if picodegen_subprog(curr.codegen)^.def_call=icc_default
+  if get_call_conv(pentity(^curr)^)=icc_default
     then inst^.profile.call:=icc_flex;
-    else inst^.profile.call:=picodegen_subprog(curr.codegen)^.def_call;
+    else inst^.profile.call:=get_call_conv(pentity(^curr)^);
     end if;
 
   -- zvolit stack-frame
@@ -128,7 +129,7 @@ begin
       psym:=curr.context.entity;
       inst^.nested.nlist^:length:=curr.nesting-1;
       for i in reverse inst^.nested.nlist^:range loop
-        verify(500,(psym=nil) or not (psym^.etype in ets_subprogram) or (pentity_code(psym)^.nesting<>i));
+        verify({VERIFY=}000500,(psym=nil) or not (psym^.etype in ets_subprogram) or (pentity_code(psym)^.nesting<>i));
         inst^.nested.nlist^[i]:=pentity_code(psym);
         psym:=psym^.context.entity;
         end loop;
@@ -143,7 +144,8 @@ procedure do_stack_reserve (
     context        : in out iexprcontext;        -- kontext v˜razu
     compi          : in tentity_compile;
     inst           : in out icodeinst;
-    info           : in out igeninfo) =
+    info           : in out igeninfo;
+    opaddr         : out c_operand) =            -- adresa rezervy na stacku
 -- Rezervuje m¡sto na stacku po‘adovan‚ run-time knihovnou pro jej¡ intern¡ struktury.
 ----------------------------------------------------------------------------------------------------
 var
@@ -153,13 +155,8 @@ begin
   -- zjisti velikost rezervovaneho mista
   size:=os^.getstackreserve(compi);
   if size<>0 then
-    setfield(inst,info.espmark,size);
+    opaddr.create_temporary(inst,info,edt_unsigned,size);  
     end if;
-
-  -- %%TODO(HYNEK) - doresit predavani adresy reservovane na stacku
-
-  -- ulo‘it esp na stack
-  addii(inst,info,ii_push,op_esp,op0,op0);
   end do_stack_reserve;
 
 
@@ -169,6 +166,9 @@ procedure i_gen_program_compile (
     curr           : in out tentity_compile) =   -- kompila‡n¡ jednotka
 -- Vygeneruje k¢d kompila‡n¡ jednotky programu
 ----------------------------------------------------------------------------------------------------
+with
+  ci_fragment;
+
 var
   inst             : picodeinst;                 -- instance
   info             : igeninfo;                   -- informace o generov n¡
@@ -205,12 +205,28 @@ begin
   -- vytvo©it stack-frame
   i_gen_entry(curr,inst^,info);
 
-  if not cfg_no_runtime then 
-    -- reservovat misto na stacku
-    do_stack_reserve(context,curr,inst^,info);
+  if not cfg_no_runtime then
     
-    -- inicializovat task control block pro hlavn¡ task
-    addcallrtl(inst^,info,rtl_register_task); 
+    declare var
+      stack_reserve_addr : c_operand;                -- adresa rezervy na stacku
+
+    begin
+      -- reservovat misto na stacku
+      do_stack_reserve(context,curr,inst^,info,stack_reserve_addr);
+      
+      -- inicializovat runtime knihovnu
+      addcallrtl(inst^,info,rtl_early_runtime_initialize); 
+
+      i_gen_lea(inst^,info,context,stack_reserve_addr,in_none);
+
+      addii(inst^,info,ii_push,stack_reserve_addr,op0,op0);
+
+      -- inicializovat task control block pro hlavn¡ task
+      addcallrtl(inst^,info,rtl_register_task);
+    
+    leave
+      stack_reserve_addr.free(info,context);
+      end declare; 
 
     -- vytvo©it exception-frame
     i_create_xframe(inst^,info,framehandler,tg_endxframe);
@@ -251,7 +267,11 @@ begin
     i_set_handler(inst^,info,framehandler,tg_unhandled);
 
     -- deinicializovat task control block pro hlavn¡ task
-    addcallrtl(inst^,info,rtl_unregister_task); 
+    addcallrtl(inst^,info,rtl_unregister_task);
+
+    -- finalizovat runtime knihovnu
+    addcallrtl(inst^,info,rtl_late_runtime_finalize); 
+    
     end if;
 
   -- zru¨it stack-frame
@@ -259,17 +279,18 @@ begin
 
   if not cfg_no_runtime then 
     -- ukon‡it program
-    addcallrtl(inst^,info,rtl_terminate); 
+    addcallrtl(inst^,info,rtl_terminate);
 
     -- adresa obsluhy neobslou‘en˜ch v˜jimek
     settarget(info,tg_unhandled,getaddr(inst^));
 
     -- zavolat osbluhu neobslou‘en˜ch v˜jimek
-    addcallrtl(inst^,info,rtl_unhandled_exception); 
+    addcallrtl(inst^,info,rtl_unhandled_exception);
     end if;
 
   -- vyhodnotit lok ln¡ relokace
   localresolve(curr,inst^,info);
+
   end i_gen_program_compile;
 
 
@@ -280,6 +301,9 @@ procedure i_gen_lib_compile (
     curr           : in out tentity_compile) =   -- kompila‡n¡ jednotka
 -- Vygeneruje k¢d kompila‡n¡ jednotky knihovny
 ----------------------------------------------------------------------------------------------------
+with
+  ci_fragment;
+
 var
   inst             : picodeinst;                 -- instance
   info             : igeninfo;                   -- informace o generov n¡
@@ -319,12 +343,20 @@ begin
   -- stack-frame musi byt EBP relativni
   i_gen_entry(curr,inst^,info);
 
+  -- pushnout esi - windows pouziva pro obnovu stacku
+  declare var
+    opesi   : c_operand;
+  begin
+    opesi.create_use_register(inst^,info,context,edt_unsigned,ir_esi);
+    addii(inst^,info,ii_push,opesi,op0,op0);
+    
+    leave
+      opesi.free(info,context);;
+    end declare;
+
   if not cfg_no_runtime then 
     -- prenastavit vyjimky
     i_set_handler(inst^,info,framehandler,tg_unhandled);
-
-    -- rezervovat misto na stacku
-    do_stack_reserve(context,curr,inst^,info);
     end if;
   
   -- fdwReason je 2. parametr DllMain
@@ -350,8 +382,26 @@ begin
   addjump(inst^,info,context,ic_ne,l1);
   
   if not cfg_no_runtime then 
-    -- inicializovat task control block pro hlavn¡ task
-    addcallrtl(inst^,info,rtl_register_task); 
+
+    declare var
+      stack_reserve_addr : c_operand;                -- adresa rezervy na stacku
+
+    begin
+      -- reservovat misto na stacku
+      do_stack_reserve(context,curr,inst^,info,stack_reserve_addr);
+      
+      -- inicializovat runtime knihovnu
+      addcallrtl(inst^,info,rtl_early_runtime_initialize); 
+
+      i_gen_lea(inst^,info,context,stack_reserve_addr,in_none);
+
+      addii(inst^,info,ii_push,stack_reserve_addr,op0,op0);
+
+      -- inicializovat task control block pro hlavn¡ task
+      addcallrtl(inst^,info,rtl_register_task); 
+    leave
+      stack_reserve_addr.free(info,context);
+      end declare; 
 
     -- vytvo©it exception-frame
     i_create_xframe(inst^,info,framehandler,tg_endxframe);
@@ -377,7 +427,7 @@ begin
     i_set_handler(inst^,info,framehandler,tg_unhandled);
 
     -- deinicializovat task control block pro hlavn¡ task
-    addcallrtl(inst^,info,rtl_unregister_task); 
+    addcallrtl(inst^,info,rtl_unregister_task);
     end if;
 
   -- navratova hodnota
@@ -420,8 +470,22 @@ begin
   addjump(inst^,info,context,ic_ne,l_konec);
 
   if not cfg_no_runtime then 
-    -- inicializovat task control block pro hlavn¡ task
-    addcallrtl(inst^,info,rtl_register_task); 
+    declare var
+      stack_reserve_addr : c_operand;                -- adresa rezervy na stacku
+
+    begin
+      -- reservovat misto na stacku
+      do_stack_reserve(context,curr,inst^,info,stack_reserve_addr);
+      
+      i_gen_lea(inst^,info,context,stack_reserve_addr,in_none);
+
+      addii(inst^,info,ii_push,stack_reserve_addr,op0,op0);
+
+      -- inicializovat task control block pro hlavn¡ task
+      addcallrtl(inst^,info,rtl_register_task); 
+    leave
+      stack_reserve_addr.free(info,context);
+      end declare; 
 
     -- vytvo©it exception-frame
     i_create_xframe(inst^,info,framehandler,tg_endxframe2);
@@ -447,7 +511,10 @@ begin
     i_set_handler(inst^,info,framehandler,tg_unhandled);
 
     -- deinicializovat task control block pro hlavn¡ task
-    addcallrtl(inst^,info,rtl_unregister_task); 
+    addcallrtl(inst^,info,rtl_unregister_task);
+
+    -- finalizovat runtime knihovnu
+    addcallrtl(inst^,info,rtl_late_runtime_finalize); 
     end if;
 
   -- navratova hodnota se pouziva jen pri DLL_PROCESS_ATTACH 
@@ -455,6 +522,17 @@ begin
   -- navesti konce
   settarget(info,l_konec,getaddr(inst^));
 
+  -- popnout esi - windows pouziva pro obnovu stacku
+  declare var
+    opesi   : c_operand;
+  begin
+    opesi.create_use_register(inst^,info,context,edt_unsigned,ir_esi);
+    addii(inst^,info,ii_pop,opesi,op0,op0);
+
+    leave
+      opesi.free(info,context);;
+    end declare;
+  
   opvar.free(info,context);
 
   -- zru¨it stack-frame
@@ -465,7 +543,7 @@ begin
     settarget(info,tg_unhandled,getaddr(inst^));
 
     -- zavolat osbluhu neobslou‘en˜ch v˜jimek
-    addcallrtl(inst^,info,rtl_unhandled_exception); 
+    addcallrtl(inst^,info,rtl_unhandled_exception);
     end if;
   
   -- vyhodnotit lok ln¡ relokace
@@ -492,7 +570,7 @@ begin
     when ct_program do i_gen_program_compile(curr);
     
     -- ostatni nezname
-    when others do verify(667,true);
+    when others do verify({VERIFY=}000667,true);
     end case;
   end i_gen_compile;
 

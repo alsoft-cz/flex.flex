@@ -19,13 +19,8 @@ class private c_rtl_systemmemheap =
     ------------------------------------------------------------------------------------------------
     var
       header       : p_rtl_memmgr_header;
-    begin
 
-      --%%TODO Remove debug
-      --if (memory_blocks_conter mod 2500) = 0 then
-      --  memmgr_validate;
-      --  end if;
-      
+    begin
       header:unchecked:=HeapAlloc(sysheap,HEAP_ZERO_MEMORY,addheader(size));
       if header=nil then
         raise memory_alloc_error;
@@ -34,11 +29,14 @@ class private c_rtl_systemmemheap =
       addr:=hdr2adr(header);
       end memmgr_alloc;
 
+
+
     ------------------------------------------------------------------------------------------------
     override  memmgr_adjust =
     ------------------------------------------------------------------------------------------------
     var
       header       : p_rtl_memmgr_header;
+
     begin
       header:=adr2hdr(addr);
       check_allocated_header(header);
@@ -50,11 +48,14 @@ class private c_rtl_systemmemheap =
       addr:=hdr2adr(header);
       end memmgr_adjust;
 
+
+
     -----------------------------------------------------------------------------------------------
     override  memmgr_free =
     ------------------------------------------------------------------------------------------------
     var
       header       : p_rtl_memmgr_header;
+
     begin
       header:=adr2hdr(addr);
       check_allocated_header(header);
@@ -63,6 +64,8 @@ class private c_rtl_systemmemheap =
         raise memory_corrupt_error;
         end if;
       end memmgr_free;
+
+
 
     -----------------------------------------------------------------------------------------------
     override  memmgr_validate =
@@ -73,13 +76,34 @@ class private c_rtl_systemmemheap =
         end if;
       end memmgr_validate;
     
+
+
+#if rtl_memory_debug then;
+    -----------------------------------------------------------------------------------------------
+    override  memmgr_dump =
+    ------------------------------------------------------------------------------------------------
+    var
+      ent          : aliased t_winnt_process_heap_entry;
+      header       : p_rtl_memmgr_header;
+
+    begin
+      while HeapWalk(sysheap,^ent)<>0 loop
+        if (ent.lpdata<>nil) and ((ent.wflags and winnt_process_heap_entry_busy)<>0) then
+          header:=p_rtl_memmgr_header(ent.lpdata);
+          if header^.dealocator=^this and hdr2adr(header)<>^this then
+            dump_header(header);
+            succ count;
+            end if;
+          end if;
+        end loop;
+      end memmgr_dump;
+#end if;
     
+
     ------------------------------------------------------------------------------------------------
     entry =
     ------------------------------------------------------------------------------------------------
     begin
-      sysheap:=nil;
-
       -- vytvorim si systemovy heap
       -- sysheap:=HeapCreate(0,initial_heap_size,0);
       -- nebo dostanu heap procesu
@@ -89,12 +113,23 @@ class private c_rtl_systemmemheap =
         end if;
       end entry;
 
+
+
     ------------------------------------------------------------------------------------------------
     exit =
     ------------------------------------------------------------------------------------------------
+    with error;
+    var
+      count        : t_rtl_native_unsigned;
+
     begin
-      --%%TODO Remove debug
-      --memmgr_validate;
+      #if rtl_memory_debug then;
+      memmgr_validate;
+      memmgr_dump(count);
+      if count<>0 then
+        rtl_wait_key(msg_dump_leaks);
+        end if;
+      #end if;
 
       -- zrusim systemovy heap
       -- pouze pokud neni heap procesu
@@ -102,6 +137,47 @@ class private c_rtl_systemmemheap =
       --  raise memory_error;
       --  end if;
       end exit;
-
     end c_rtl_systemmemheap;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_early_sysheap_init =
+----------------------------------------------------------------------------------------------------
+with
+  tags.types;
+
+var
+    header       : p_rtl_memmgr_header;
+
+begin
+  header:unchecked:=HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,addheader(c_rtl_systemmemheap:size));
+  if header=nil then
+    raise memory_alloc_error;
+    end if;
+  heap:=hdr2adr(header);
+  set_header_alloc(0,header,c_rtl_systemmemheap:size,heap,false,nil,nil);
+  rtl_setup_class_instance (heap,c_rtl_systemmemheap:tag);
+  end rtl_early_sysheap_init;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_late_sysheap_deinit =
+----------------------------------------------------------------------------------------------------
+with
+  tags.types;
+
+var
+    header       : p_rtl_memmgr_header;
+
+begin
+  rtl_finalize_class_instance(heap);
+  header:=adr2hdr(heap);
+  check_allocated_header(header);
+  set_header_free(0,header,false,nil,nil);
+  if HeapFree(GetProcessHeap(),0,header)=0 then
+    raise memory_corrupt_error;
+    end if;
+  end rtl_late_sysheap_deinit;
 end system_heap;

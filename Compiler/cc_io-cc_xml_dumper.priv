@@ -1,0 +1,199 @@
+----------------------------------------------------------------------------------------------------
+module private cc_xml_dumper =
+-- XML dumper
+----------------------------------------------------------------------------------------------------
+-- honzap : 8.12.2003 : Vytvo©il
+----------------------------------------------------------------------------------------------------
+
+with
+  standard,                 
+  standard.files,           
+  standard.streams,
+  standard.characters,
+  standard.classes,
+  standard.classes.lists,
+  advanced,
+  advanced.xml,
+  advanced.xml.xml_tokenizer;
+
+
+----------------------------------------------------------------------------------------------------
+class private c_xml_dumper =
+-- XML dumper
+-- Interface pro z pis do XML
+-- Jeho implementace m–‘e prov dˆt test, zda volan  operace neporu¨¡ spr vnost v˜sledn‚ho XML
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static write_text_element =
+    -- Zap¡¨e <name>text</name>
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zapsat textov˜ element
+      go_in(name);
+      write_text(text);
+      go_out(name);
+      end write_text_element;
+
+    end c_xml_dumper;
+
+
+type
+  -- stav XML dumperu
+  t_xml_dumper_state = enum
+      xds_out;                                   -- po‡ te‡n¡ stav, jsme venku z elementu
+      xds_in;                                    -- jsme uvnit© elementu
+      end enum;
+
+
+----------------------------------------------------------------------------------------------------
+class private c_file_xml_dumper = 
+-- XML dumper
+-- podrobnˆji viz public ‡ st
+----------------------------------------------------------------------------------------------------
+    var
+      f            : aliased c_text_file;                -- v˜stupn¡ textov˜ soubor
+      encoder      : aliased c_character_encoder_utf8;   -- enkoder - ur‡uje k¢dovou str nku v˜sledn‚ho souboru
+      xml          : aliased c_xml_token_writer;         -- objekt pro zapisov n¡ XML dat
+      state        : t_xml_dumper_state;                 -- stav
+
+    ------------------------------------------------------------------------------------------------
+    static init =
+    -- inicializace
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- vytvo©it soubor
+      f.init_text_name(file);
+      f.create(tfms_write,tfa_sequential,tfss_not_shared,true);
+
+      -- zvolit k¢dov n¡ UTF-8
+      f.set_encoder(^encoder);
+
+      -- inicializovat XML zapisova‡
+      xml.init(f.get_text_output_stream);
+
+      -- inicializovat stav
+      state:=xds_out;
+      end init;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override go_in =
+    -- Provede zano©en¡ do elementu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if state=xds_in then
+        -- mˆnit stav
+        state:=xds_out;
+
+        -- ukon‡it element
+        xml.put_token(xtok_end_element);
+
+        -- od© dkovat
+        xml.put_token(xtok_line_end);
+
+        end if;
+
+      if state=xds_out 
+        then
+          -- zmˆn¡t stav
+          state:=xds_in;
+
+          -- zapsat za‡ tek elementu
+          xml.put_token(xtok_start_element_begin);
+          xml.put_name(name);
+          xml.put_character(" ");
+
+        else
+          raise xml_dumper_error;
+          end if;
+      end go_in;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override go_out =
+    -- Provede vyno©en¡ z elementu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- jsme uvnit© elementu, je to element bez dˆt¡
+      if state=xds_in then
+        -- zap¡¨e />
+        xml.put_token(xtok_end_empty_element);
+
+        -- od© dkov n¡
+        xml.put_token(xtok_line_end);
+
+        -- zmˆnit stav
+        state:=xds_out;
+
+      -- jsme mimo element
+      elsif state=xds_out then
+        -- ukon‡ovac¡ tag
+        xml.put_token(xtok_start_element_end);
+        xml.put_name(name);
+        xml.put_token(xtok_end_element);
+
+        -- od© dkovat
+        xml.put_token(xtok_line_end);
+
+        -- zmˆnit stav
+        state:=xds_out;
+
+      -- chybn˜ stav
+      else 
+        raise xml_dumper_error;
+        end if;
+      end go_out;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override write_attribute =
+    -- Zap¡¨e atribut name="value"
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nen¡ povolen˜ jin˜ stav ne‘ xds_in
+      if state<>xds_in then raise xml_dumper_error end if;
+
+      -- zapsat atribut, stav se zaps n¡m atributu nemˆn¡
+      xml.put_name(name);                   
+      xml.put_token(xtok_eq);                    
+      xml.put_string(value); 
+      xml.put_character(" ");                    
+      end write_attribute;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    override write_text =
+    -- Zap¡¨e textovou hodnotu
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- jsme uvnit© elementu
+      if state=xds_in then
+        -- zap¡¨e >
+        xml.put_token(xtok_end_element);
+
+        -- zmˆnit stav
+        state:=xds_out;
+        end if;
+
+      -- zapsat text
+      xml.put_characters(text);
+      end write_text;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    exit =
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- zav©¡t soubor
+      f.close;
+      end exit;
+
+    end c_file_xml_dumper;
+
+end cc_xml_dumper;

@@ -20,13 +20,14 @@ begin
   semaphore:=critical_object.lock_semaphore;
   if semaphore=rtl_nil_semaphore then
     rtl_semaphore_new_owned(semaphore,1,1);
-    rtl_interlocked_compare_exchange_ptr(^t_rtl_native_unsigned(critical_object.lock_semaphore),
-                                          t_rtl_native_unsigned(semaphore),
-                                          t_rtl_native_unsigned(rtl_nil_semaphore),
-                                          t_rtl_native_unsigned(old_value));
+    rtl_interlocked_compare_exchange(    ^t_rtl_native_signed(critical_object.lock_semaphore),
+                                          t_rtl_native_signed(semaphore),
+                                          t_rtl_native_signed(rtl_nil_semaphore),
+                                          t_rtl_native_signed(old_value));
     if old_value<>rtl_nil_semaphore then
       --nekdo mne predbehnul
       rtl_semaphore_discard(semaphore);
+      semaphore:=critical_object.lock_semaphore;
       end if;
     end if;
   end rtl_critical_get_semaphore;
@@ -55,7 +56,7 @@ begin
   critical_object.lock_count      := -1;
   critical_object.lock_semaphore  :=  rtl_nil_semaphore;
   critical_object.recursion_count :=  0;
-  critical_object.owning_thread   :=  0;
+  critical_object.owning_task   :=  0;
   -- zadne spinovani na jednoprocesorovem stroji
   if target_machine_processor_count=1 then
     critical_object.spin_count      :=  0;
@@ -82,15 +83,15 @@ begin
 ----------------------------------------------------------------------------------------------------
 procedure rtl_critical_try_lock_now (
     critical_object: in out ref t_rtl_critical)
-    return         t_rtl_logical8 =
+    return         t_rtl_logical =
 ----------------------------------------------------------------------------------------------------
 var
   old_value        : t_rtl_native_signed;
   spin             : t_rtl_native_unsigned;
 
 begin
-  if critical_object.owning_thread = GetCurrentThreadId() then
-    --drzi ho tento thread
+  if critical_object.owning_task = rtl_get_current_task_id() then
+    --drzi ho tento task
     rtl_interlocked_inc(^critical_object.lock_count);
     critical_object.recursion_count + 1;
     result:=true;
@@ -99,7 +100,7 @@ begin
     loop
       rtl_interlocked_compare_exchange(^critical_object.lock_count,0,-1,old_value);
       if old_value < 0 then
-        critical_object.owning_thread   := GetCurrentThreadId();
+        critical_object.owning_task   := rtl_get_current_task_id();
         critical_object.recursion_count + 1;
         result:=true;
         return;
@@ -128,7 +129,7 @@ begin
   if critical_object.recursion_count<>0 then
     rtl_interlocked_dec(^critical_object.lock_count);
   else
-    critical_object.owning_thread := 0;
+    critical_object.owning_task := 0;
     rtl_interlocked_dec_out(^critical_object.lock_count,old_value);
     if old_value>0 then
       rtl_critical_unwait_critical(critical_object);
@@ -208,57 +209,14 @@ begin
         raise synchronization_error;
         end if;
     #end if;
+    pause_nop;
     end loop;
 
   if result then
-    critical_object.owning_thread   := GetCurrentThreadId();
+    critical_object.owning_task   := rtl_get_current_task_id();
     critical_object.recursion_count + 1;
     end if;
   end rtl_critical_try_lock;
 
 
-{
-----------------------------------------------------------------------------------------------------
-procedure rtl_critical_new =
--- Create and initialize critical object.
-----------------------------------------------------------------------------------------------------
-begin
-  InitializecriticalSection(p_winnt_critical_section(^critical_object:unchecked));
-  end rtl_critical_new;
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_critical_discard =
--- Discard critical object.
-----------------------------------------------------------------------------------------------------
-begin
-  DeletecriticalSection(p_winnt_critical_section(^critical_object:unchecked));
-  end rtl_critical_discard;
-
-radeji svoje vlastni implementace kvuli alertable cekani
-----------------------------------------------------------------------------------------------------
-procedure rtl_critical_lock =
--- Lock critical.
-----------------------------------------------------------------------------------------------------
-begin
-  EntercriticalSection(p_winnt_critical_section(^critical_object:unchecked));
-  end rtl_critical_lock;
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_critical_try_lock_now (
-    critical_object: in out ref t_rtl_critical)
-    return         t_rtl_logical8 =
-----------------------------------------------------------------------------------------------------
-begin
-  result:=TryEntercriticalSection(p_winnt_critical_section(^critical_object:unchecked));
-  end rtl_critical_try_lock_now;
-
-
-----------------------------------------------------------------------------------------------------
-procedure rtl_critical_unlock =
--- Unlock critical.
-----------------------------------------------------------------------------------------------------
-begin
-  LeavecriticalSection(p_winnt_critical_section(^critical_object:unchecked));
-  end rtl_critical_unlock;
-}
 

@@ -10,73 +10,8 @@ module private ff_cmd_line =
 with
   standard.strings,
   standard.program_control,
-  standard.classes,
-  standard.classes.lists;
-
-type
-  pp_char32ustr    = ^p_char32ustr;
-
--- dop©edn‚ deklarace
-class c_cmdline_directory; type p_cmdline_directory = ^class c_cmdline_directory;
-class c_folder_list;       type p_folder_list       = ^class c_folder_list;
-
-----------------------------------------------------------------------------------------------------
-class c_cmdline_directory = extend c_list_item;
--- Polozka seznamu adresaru, ktere se budou prohledavat
-----------------------------------------------------------------------------------------------------
-
-    var
-      directory    : protected p_text_name;      -- konfiguracni adresar
-      recursive    : protected t_logical;        -- bude se prohledavat rekurzivne
-
-    ------------------------------------------------------------------------------------------------
-    static set_directory (
-        search_dir : in t_text_name;             -- adresar k prohledavani
-        recursive  : in t_logical) =             -- bude se prohledavat rekurzivne
-    -- Nastav¡ jm‚no adres ©e.
-    ------------------------------------------------------------------------------------------------
-    begin
-      new directory range search_dir:last;
-      directory^:=search_dir;
-      this.recursive:=recursive;
-      end set_directory;
-
-
-    ------------------------------------------------------------------------------------------------
-    exit =
-    -- Finalizace.
-    ------------------------------------------------------------------------------------------------
-    begin 
-      discard directory;
-      end exit;
-
-    end c_cmdline_directory;
-
-
-
-----------------------------------------------------------------------------------------------------
-class c_folder_list = extend c_list;
--- Seznam adresaru, ktere se budou prohledavat
-----------------------------------------------------------------------------------------------------
-
-    ------------------------------------------------------------------------------------------------
-    static add_directory (
-        search_dir : in t_text_name;             -- adresar k prohledavani
-        recursive  : in t_logical) =             -- bude se prohledavat rekurzivne
-    -- P©id  do seznamu jm‚no jednoho adres ©e.
-    ------------------------------------------------------------------------------------------------
-    var
-      directory    : p_cmdline_directory;
-
-    begin
-      new directory;
-      directory^.set_directory(search_dir, recursive);
-      insert(directory);
-      end add_directory;
-
-    end c_folder_list;
-
-
+  ff_lib.ff_folders,
+  ff_lib.ff_files;
 
 ----------------------------------------------------------------------------------------------------
 procedure check_parameter (
@@ -136,11 +71,11 @@ with
 
 var
   value            : t_unsigned;
-  error            : t_signed;
+  error            : t_conversion_result;
 
 begin
-  string_to_unsigned(str_copy(param,prefix:length+2,param:length),10,value,error);
-  if error<>0 then
+  string_to_unsigned_primitive(str_copy(param,prefix:length+2,param:length),10,value,error);
+  if error<>tcres_ok then
     os.write('Value of parameter "-');os.write(prefix);os.write('" out of range');
     raise fcc_error;
     end if;
@@ -223,7 +158,7 @@ procedure parse_command_line =
 -- Zpracuje p©¡kazovou © dku p©eklada‡e.
 ----------------------------------------------------------------------------------------------------
 with
-  ff_files;
+  ff_lib.ff_files;
 
 use
   cc_def,
@@ -233,8 +168,7 @@ use
 var
   cmd_line         : p_command_line_parameters;  -- blok © dkov˜ch parametr–
   search_dir       : p_text_name;                -- adres © pro vyhled v n¡                               
-  folder_list      : p_folder_list;              -- seznam adresaru pro prohledavani     
-  directory_def    : p_cmdline_directory;      
+  folder_list      : c_folder_list;              -- seznam adresaru pro prohledavani     
   os_family_name   : p_char32ustr;               -- vyplnena OS family
   os_type_name     : p_char32ustr;               -- vyplneny OS type
   os_subsystem_name: p_char32ustr;               -- vyplneny OS subsystem
@@ -252,9 +186,6 @@ begin
   -- z¡skat blok parametr–
   get_command_line_parameters(cmd_line);
 
-  -- naalokovat seznam 
-  new folder_list;
-
   -- jsou v–bec nˆjak‚ ?
   if cmd_line^:length=0 then
     print_help(os);
@@ -270,7 +201,7 @@ begin
       retrieve_file_name(cmd_line^[i]^,'SD:',search_dir);
 
       -- doplnit do seznamu adres ©– pro odlozene vyhled v n¡
-      folder_list^.add_directory(search_dir^, false);
+      folder_list.add_directory(search_dir^, false);
 
       -- uklid
       discard search_dir;
@@ -281,7 +212,7 @@ begin
       retrieve_file_name(cmd_line^[i]^,'SDR:',search_dir);
 
       -- doplnit do seznamu adres ©– pro odlozene vyhled v n¡
-      folder_list^.add_directory(search_dir^, true);
+      folder_list.add_directory(search_dir^, true);
 
       -- uklid
       discard search_dir
@@ -394,40 +325,20 @@ begin
 
   -- ted jsou vsechny parametry nactene, zkontrolujeme zda jsou zname a pripustnost jejich kombinaci
   {%%TODO(MESSAGE)  chtelo by to misto extra definovane exception pouzit fcc_error a poslat ji parametrem}
-  if (os_family_name <> nil)    then cc_def.cc_desc.set_os_family(os_family_name^, os);        end if;
-  if (os_type_name <> nil)      then cc_def.cc_desc.set_os_type(os_type_name^, os);            end if;
-  if (os_subsystem_name <> nil) then cc_def.cc_desc.set_os_subsystem(os_subsystem_name^, os);  end if;
-  if (cpu_arch_name <> nil)     then cc_def.cc_desc.set_cpu_architecture(cpu_arch_name^, os);  end if;
+  if os_family_name   <>nil then cc_def.cc_desc.set_os_family(os_family_name^,os);       end if;
+  if os_type_name     <>nil then cc_def.cc_desc.set_os_type(os_type_name^,os);           end if;
+  if os_subsystem_name<>nil then cc_def.cc_desc.set_os_subsystem(os_subsystem_name^,os); end if;
+  if cpu_arch_name    <>nil then cc_def.cc_desc.set_cpu_architecture(cpu_arch_name^,os); end if;
 
   -- nastavit prislusne identifikatory do file_source, aby vedel jake jsou pripustne pripony souboru
-  -- ulozit family
-  p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_config_extension(cc_def.cc_desc.get_os_family_name);
-
-  -- ulozit type
-  p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_config_extension(cc_def.cc_desc.get_os_type_name);
-
-  -- ulozit subsystem
-  p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_config_extension(cc_def.cc_desc.get_os_subsystem_name);
-
-  -- ulozit cpu
-  p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_config_extension(cc_def.cc_desc.get_cpu_architecture_name);
+  p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_default_extensions;
 
   -- vsechny parametry nactene a overene, takze je mozne na jejich zaklade nacist seznam souboru   
-  declare var 
-    iterator       : c_list_iterator;
-
-  begin
-    iterator.init(p_list(folder_list)^, tlwd_forward);
-    while iterator.get(p_item(directory_def)) loop
-      p_file_source_external_files(cc_def.cc_var.cfg_files)^.add_search_path(directory_def^.directory^,directory_def^.recursive);
-      end loop;
-    end declare;
+  folder_list.update_file_list;
 
 leave
   -- parametry u‘ nebudou pot©eba
   discard_command_line_parameters(cmd_line);
-  folder_list^.delete_all;
-  discard folder_list;
   discard search_dir;
   discard os_family_name;
   discard os_type_name;

@@ -1,0 +1,743 @@
+---------------------------------------------------------------------------------------------------
+module private tasks =
+-- Flex Run-time Library
+-- task variables
+-- Copyright (C) 1999-2003 A && L soft
+----------------------------------------------------------------------------------------------------
+with
+  os_api,
+  rtl_init,
+  synchronization,
+  references,
+  stack,
+  flex.exceptions,
+  flex.exceptions.seh;
+    
+type
+  t_task_sysTIBuservalue;
+  p_task_sysTIBuservalue = ^t_task_sysTIBuservalue;
+  t_task_sysTIBuservalue = record
+      value        : aliased t_rtl_native_unsigned;
+      prev         : p_task_sysTIBuservalue;
+      end record;
+
+  t_task_physical  = record
+      taskid       : t_rtl_unsigned32;
+      taskhandle   : t_handle;
+      priority     : t_task_priority;
+      end record;
+
+  t_task_header    = record
+      exceptions   : aliased t_rtl_exceptions;
+      stackheader  : t_rtl_stack_header;
+      ostask       : t_task_physical;
+      self_ref     : t_rtl_task_ref_local;
+      parent_ref   : t_rtl_task_ref_local;
+      variables    : vars.t_task_vars;
+      usagecount   : t_rtl_native_unsigned;
+      locker       : t_rtl_critical;
+      listnext     : p_task_header;
+      listprev     : p_task_header;
+      knownstart   : t_rtl_logical;
+      taskpooled   : t_rtl_logical;
+      logicalswitch: t_rtl_logical;
+      isrunning    : t_rtl_logical;
+      TIBusrval    : t_task_sysTIBuservalue;
+      flexreserve  : array 0..15 of t_rtl_native_unsigned;
+      userreserve  : array 0..15 of t_rtl_native_unsigned;
+      end record;
+
+var
+  stask_header     : t_rtl_unsigned32;           -- system TLS slot
+  task_list_first  : p_task_header;
+  task_list_lock   : t_rtl_critical;
+  task_list_count  : t_rtl_native_unsigned;
+
+type
+  t_taskvar_id     = t_rtl_native_unsigned;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_task_safe return p_task_header;
+----------------------------------------------------------------------------------------------------
+procedure rtl_suspend_task_internal(
+    taskheader   : in p_task_header);
+----------------------------------------------------------------------------------------------------
+procedure rtl_resume_task_internal(
+    taskheader   : in p_task_header);
+----------------------------------------------------------------------------------------------------
+procedure rtl_set_task_priority(
+    taskheader   : in p_task_header;
+    priority       : in t_task_priority);
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_task_priority(
+    taskheader   : in p_task_header;
+    priority       : out t_task_priority);
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+#separate private vars;
+#separate private exceptions;
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_task_list_add(
+    taskheader   : in p_task_header) =
+-- zaradi hlavicku tasku do seznamu znamych tasku
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_critical_lock(task_list_lock);
+  taskheader^.listprev:=nil;
+  taskheader^.listnext:=task_list_first;
+  if task_list_first<>nil then
+    task_list_first^.listprev:=taskheader;
+    end if;
+  task_list_first:=taskheader;
+  task_list_count + 1;
+  rtl_critical_unlock(task_list_lock);
+  end rtl_task_list_add;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_task_list_del(
+    taskheader   : in p_task_header) =
+-- vyradi hlavicku tasku ze seznamu znamych tasku
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_critical_lock(task_list_lock);
+  if taskheader^.listprev=nil then
+    task_list_first:=taskheader^.listnext;
+    if task_list_first<>nil then
+      task_list_first^.listprev:=nil;
+      end if;
+    taskheader^.listnext:=nil;
+  else
+    if taskheader^.listnext<>nil then
+      taskheader^.listnext^.listprev:=taskheader^.listprev;
+      end if;
+    taskheader^.listprev^.listnext:=taskheader^.listnext;
+    taskheader^.listprev:=nil;
+    taskheader^.listnext:=nil;
+    end if;
+  task_list_count - 1;
+  rtl_critical_unlock(task_list_lock);
+  end rtl_task_list_del;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_task_safe =
+-- vrati hlavicku tasku
+----------------------------------------------------------------------------------------------------
+begin 
+  result:unchecked:=TlsGetValue(stask_header);
+  end rtl_get_current_task_safe;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_task =
+-- vrati hlavicku tasku
+-- rychlejsi varianta 
+----------------------------------------------------------------------------------------------------
+begin 
+  #syntax asm;
+      mov    eax,fs:[t_winnt_tib.aruserpointer]
+      mov    result,eax
+      #end asm;
+  end rtl_get_current_task;
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_task_id =
+----------------------------------------------------------------------------------------------------
+begin 
+  #syntax asm;
+      mov    eax,fs:[t_winnt_tib.self]
+      mov    result,eax
+      #end asm;
+  end rtl_get_current_task_id;
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_suspend_task_internal =
+-- uspi task
+----------------------------------------------------------------------------------------------------
+begin 
+  if SuspendThread(taskheader^.ostask.taskhandle)=$FFFFFFFF then 
+    raise tasking_error;
+    end if;
+  end rtl_suspend_task_internal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_resume_task_internal =
+-- probudi task
+----------------------------------------------------------------------------------------------------
+begin 
+  if ResumeThread(taskheader^.ostask.taskhandle)=$FFFFFFFF then 
+    raise tasking_error;
+    end if;
+  end rtl_resume_task_internal;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_set_task_priority =
+-- nastavi prioritu tasku
+----------------------------------------------------------------------------------------------------
+var
+  prio             : TPRIO;
+
+begin
+  case priority
+    when task_priority_idle          do prio:=winnt_thread_priority_idle;
+    when task_priority_lowest        do prio:=winnt_thread_priority_lowest;
+    when task_priority_below_normal  do prio:=winnt_thread_priority_below_normal;
+    when task_priority_normal        do prio:=winnt_thread_priority_normal;
+    when task_priority_above_normal  do prio:=winnt_thread_priority_above_normal;
+    when task_priority_highest       do prio:=winnt_thread_priority_highest;
+    when task_priority_time_critical do prio:=winnt_thread_priority_time_critical;
+    end case;
+  
+  if SetThreadPriority(taskheader^.ostask.taskhandle,prio)=0 then
+    raise tasking_priority_set_failed;
+    end if;
+  end rtl_set_task_priority;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_task_priority =
+-- nastavi prioritu tasku
+----------------------------------------------------------------------------------------------------
+begin
+  case GetThreadPriority(taskheader^.ostask.taskhandle)
+    when winnt_thread_priority_idle          do priority:=task_priority_idle;
+    when winnt_thread_priority_lowest        do priority:=task_priority_lowest;
+    when winnt_thread_priority_below_normal  do priority:=task_priority_below_normal;
+    when winnt_thread_priority_normal        do priority:=task_priority_normal;
+    when winnt_thread_priority_above_normal  do priority:=task_priority_above_normal;
+    when winnt_thread_priority_highest       do priority:=task_priority_highest;
+    when winnt_thread_priority_time_critical do priority:=task_priority_time_critical;
+    end case;
+  end rtl_get_task_priority;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_get_current_task_ref =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_ref_local_to_local(rtl_get_current_task()^.self_ref,task_ref);
+  end rtl_get_current_task_ref;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_task_exception_initialize =
+----------------------------------------------------------------------------------------------------
+var
+    tibvalptr      : ^ t_rtl_native_unsigned;
+
+begin
+  
+  --nastavim svuj TIB
+  taskheader^.TIBusrval.prev:=nil;
+  tibvalptr:=^taskheader^.TIBusrval.value;
+  #syntax asm;
+    --backup old value of TIB user val
+    mov    eax,fs:[t_winnt_tib.aruserpointer]
+    mov    edx,tibvalptr
+    mov    [edx],eax  {%%TODO(asm) mov maintaskheader.TIBusrval.value,eax }
+    --set new value
+    mov    eax,taskheader
+    mov    fs:[t_winnt_tib.aruserpointer],eax
+    #end asm;
+
+  -- nastavit jako systemovou taskovou promennou
+  if TlsSetValue(stask_header,LPVOID(taskheader:unchecked))=0 then
+    raise tasking_error;
+    end if;
+
+  -- nastavit SEH handler
+  taskheader^.stackheader.seh_handler:=sys_eh;
+
+  -- inicializovat vyjimky
+  rtl_init_task_exceptions(^taskheader^.exceptions);
+  rtl_init_task_exceptions_win32(taskheader^.stackheader.seh_handler);
+  end rtl_task_exception_initialize;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_task_exception_finalize =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_deinit_task_exceptions(^taskheader^.exceptions);
+  rtl_deinit_task_exceptions_win32(taskheader^.stackheader.seh_handler);
+  end rtl_task_exception_finalize;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_task_header(
+    knownstart     : in t_rtl_logical;
+    initvars       : in t_rtl_logical;
+    taskheader   : in p_task_header) =
+----------------------------------------------------------------------------------------------------
+var
+  parentheader       : p_task_header;
+
+begin
+    taskheader^.variables:=nil;
+    taskheader^.flexreserve:=nil;
+    taskheader^.userreserve:=nil;
+    taskheader^.usagecount:=1;
+    taskheader^.listnext:=nil;
+    taskheader^.listprev:=nil;
+    taskheader^.isrunning:=true;
+    taskheader^.knownstart:=knownstart;
+    rtl_critical_new(taskheader^.locker);
+    if knownstart then
+      if initvars then
+        parentheader:=p_task_header(rtl_ref_derefrence(taskheader^.parent_ref));
+        if parentheader=nil then
+          raise tasking_error;
+          end if;
+        vars.rtl_initialize_all_task_vars(taskheader,parentheader);
+        end if;
+      rtl_task_list_add(taskheader);
+      end if;
+  end rtl_init_task_header;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinit_task_header(
+    taskheader   : in p_task_header) =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_ref_discard_local(taskheader^.parent_ref);
+  rtl_ref_discard_local(taskheader^.self_ref);
+  vars.rtl_discard_all_task_vars(taskheader);
+  if taskheader^.knownstart then
+    rtl_task_list_del(taskheader);
+    end if;
+  end rtl_deinit_task_header;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_init_task_helper(
+    task_header  : p_task_header)=
+----------------------------------------------------------------------------------------------------
+var
+  prochandle   : t_handle;
+  taskhandle : aliased t_handle;
+  dupresult    : BOOL;
+
+begin
+  -- nastavit jako systemovou taskovou promennou
+  if TlsSetValue(stask_header,LPVOID(task_header:unchecked))=0 then
+    raise tasking_error;
+    end if;
+  prochandle:=GetCurrentProcess;
+  dupresult:=DuplicateHandle(prochandle,GetCurrentThread,prochandle,^taskhandle:unchecked,0,false,DUPLICATE_SAME_ACCESS);
+  task_header^.ostask.taskhandle:=taskhandle;
+    if dupresult=0 or task_header^.ostask.taskhandle=nil then 
+    raise tasking_error;
+    end if;
+  end rtl_init_task_helper;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_deinit_task_helper(
+    task_header  : p_task_header)=
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_critical_lock(task_header^.locker);
+  if CloseHandle(t_handle(task_header^.ostask.taskhandle))=0 then
+    raise tasking_error;
+    end if;
+  task_header^.ostask.taskhandle:=INVALID_HANDLE;
+  task_header^.ostask.taskid:=INVALID_HANDLE;
+  if TlsSetValue(stask_header,nil)=0 then
+    raise tasking_error;
+    end if;
+  rtl_critical_discard(task_header^.locker);
+  end rtl_deinit_task_helper;
+
+
+
+type 
+  t_task_starter = record
+      selfptr      : t_rtl_pointer;
+      userdata     : p_rtl_unchecked;
+      task_entry : p_rtl_task_entry;
+      taskheader : p_task_header;
+      suspended    : t_rtl_logical;
+      wait_event   : t_rtl_event;
+      end record;
+  p_task_starter = ^t_task_starter for machine_pointer use true;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure task_entry_internal:t_rtl_thread_entry_win32= 
+----------------------------------------------------------------------------------------------------
+var
+    stacpy         : t_task_starter;
+    taskheader     : p_task_header;
+    sys_except_handler : aliased t_rtl_exceptions_handler;
+    unhandledx     : t_rtl_except_row;
+begin
+  stacpy:=p_task_starter(starter)^;
+  taskheader:=stacpy.taskheader;
+  rtl_task_exception_initialize(taskheader,^sys_except_handler);
+  rtl_init_task_header(true,true,taskheader);
+
+  --vytvorit prvni exception frame
+  begin
+
+    -- set priority
+    begin
+      rtl_set_task_priority(taskheader,taskheader^.ostask.priority);
+      -- nekdy se nepodari, nevim proc
+    catch
+      when tasking_priority_set_failed do ;
+      -- ignore ?
+      end;
+
+    -- allow parent run
+    rtl_event_set(stacpy.wait_event);
+  
+    --suspend if need
+    if stacpy.suspended then
+      rtl_suspend_task_internal(stacpy.taskheader);
+      end if;
+
+    begin
+      -- volat uzivatelsky kod
+      stacpy.task_entry^(stacpy.selfptr,stacpy.userdata);
+    catch
+      when task_abort do ;
+    leave
+      -- odinicializovat taskove vlastnosti
+      rtl_critical_lock(stacpy.taskheader^.locker);
+      stacpy.taskheader^.isrunning:=false;
+      rtl_deinit_task_header(stacpy.taskheader);
+      if TlsSetValue(stask_header,nil)=0 then
+        raise tasking_error;
+        end if;
+      rtl_critical_unlock(stacpy.taskheader^.locker);
+      end;
+    -- odinicializovat taskove vlastnosti
+    rtl_task_exception_finalize(taskheader);
+    rtl_terminate_task;
+  catch
+    when others do
+      rtl_get_exception(unhandledx.etag,unhandledx.edata);
+      rtl_raise_unhandled_exception(unhandledx.etag,unhandledx.edata);
+    end;
+  end task_entry_internal;
+#pragma convention(task_entry_internal,system);
+
+
+
+#if rtl_advanced_tasks_pooled then;
+#separate private pool;
+----------------------------------------------------------------------------------------------------
+procedure rtl_start_pool_task =
+----------------------------------------------------------------------------------------------------
+begin
+  pool.rtl_start_pool_task(task_entry,priority,selfptr,userdata);
+  end rtl_start_pool_task;
+#else;
+----------------------------------------------------------------------------------------------------
+procedure rtl_start_pool_task =
+----------------------------------------------------------------------------------------------------
+begin
+  rtl_start_task(task_entry,nil,false,priority,selfptr,userdata);
+  end rtl_start_pool_task;
+#end if;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_start_task =
+----------------------------------------------------------------------------------------------------
+var
+  starter          : aliased t_task_starter;
+  i                : DWORD;
+  taskheader     : p_task_header;
+
+begin 
+  new taskheader;
+  starter.selfptr:=selfptr;
+  starter.userdata:=userdata;
+  starter.task_entry:=task_entry;
+  starter.taskheader:=taskheader;
+  starter.suspended:=suspended;
+  rtl_ref_create_local(taskheader^.self_ref,taskheader,^rtl_ref_collector_discard,t_rtl_ref_ns_simple);
+  rtl_get_current_task_ref(taskheader^.parent_ref);
+  if task_ref<>nil then
+    rtl_ref_local_to_local(taskheader^.self_ref,task_ref^);
+    end if;
+  taskheader^.ostask.priority:=priority;
+  rtl_event_new(starter.wait_event);
+  starter.taskheader^.ostask.taskhandle:=CreateThread(nil,64*1024{%%TODO remove when dynamic stack}*8{},^task_entry_internal,^starter,STACK_SIZE_PARAM_IS_A_RESERVATION,taskheader^.ostask.taskid);
+  if taskheader^.ostask.taskhandle=0 then
+    discard taskheader;
+    rtl_event_discard(starter.wait_event);
+    raise tasking_error;
+    end if;
+  rtl_event_wait(starter.wait_event);
+  rtl_event_discard(starter.wait_event);
+  end rtl_start_task;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_register_task =
+----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.8' then;
+with rtl_init;
+#end if;
+
+var
+  taskheader       : p_task_header;
+  tibvalptr        : ^ t_rtl_native_unsigned;
+  TBIPrev          : p_task_sysTIBuservalue;
+  unknown          : t_rtl_logical:=true;
+
+begin
+  taskheader:=rtl_get_current_task_safe;
+  if taskheader<>nil then
+    unknown:=false;
+    taskheader^.usagecount + 1;
+    --zalohuju posledni TIB
+    new TBIPrev;
+    TBIPrev^.prev:=taskheader^.TIBusrval.prev;
+    TBIPrev^.value:=taskheader^.TIBusrval.value;
+    taskheader^.TIBusrval.prev:=TBIPrev;
+  else
+    #if #environment compiler_version;='4.0.3.8' then;
+    rtl_early_runtime_initialize;
+    #end if;
+    new taskheader;
+    rtl_ref_create_local(taskheader^.self_ref,taskheader,^rtl_ref_collector_discard,t_rtl_ref_ns_simple);
+    taskheader^.TIBusrval.prev:=nil;
+    if TlsSetValue(stask_header,taskheader)=0 then
+      raise tasking_error;
+      end if;
+    end if;
+
+  if unknown then
+    -- inicializovat
+    rtl_task_exception_initialize(taskheader,p_rtl_exceptions_handler(topstackspace));
+
+    rtl_init_task_helper(taskheader);
+    rtl_init_task_header(false,false,taskheader);
+
+    rtl_get_task_priority(taskheader,taskheader^.ostask.priority);
+  else
+    --obnovim svuj TIB
+    tibvalptr:=^taskheader^.TIBusrval.value;
+    #syntax asm;
+      --backup old value of TIB user val
+      mov    eax,fs:[t_winnt_tib.aruserpointer]
+      mov    edx,tibvalptr
+      mov    [edx],eax  {%%TODO(asm) mov maintaskheader.TIBusrval.value,eax }
+      --set new value
+      mov    eax,taskheader
+      mov    fs:[t_winnt_tib.aruserpointer],eax
+      #end asm;
+    end if;
+  end rtl_register_task;
+
+-- compiler magic
+#pragma assign(register_task,rtl_register_task);
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_unregister_task =
+----------------------------------------------------------------------------------------------------
+#if #environment compiler_version;='4.0.3.8' then;
+with rtl_init;
+#end if;
+
+var
+  taskheader       : p_task_header;
+  tibval           : t_rtl_native_unsigned;
+  tibptr           : p_task_sysTIBuservalue;
+
+begin
+  taskheader:=rtl_get_current_task_safe;
+  if taskheader=nil then
+    raise tasking_error;
+    end if;
+  taskheader^.usagecount - 1;
+  tibval:=taskheader^.TIBusrval.value;
+  tibptr:=taskheader^.TIBusrval.prev;
+  if tibptr<>nil then
+    taskheader^.TIBusrval.value:=tibptr^.value;
+    taskheader^.TIBusrval.prev:=tibptr^.prev;
+    discard tibptr;
+    end if;
+  if taskheader^.usagecount=0 then
+    rtl_critical_lock(taskheader^.locker);
+    taskheader^.isrunning:=false;
+    rtl_ref_local_disconnect_data(taskheader^.self_ref);
+    rtl_deinit_task_header(taskheader);
+    rtl_deinit_task_helper(taskheader);
+    rtl_critical_discard(taskheader^.locker);
+    rtl_task_exception_finalize(taskheader);
+    discard taskheader;
+#if #environment compiler_version;='4.0.3.8' then;
+    rtl_late_runtime_finalize;
+#end if;
+    end if;
+  #syntax asm;
+    --restore prev value
+    mov    eax,tibval
+    mov    fs:[t_winnt_tib.aruserpointer],eax
+    #end asm;
+  #syntax asm;
+    mov    eax,0
+    #end asm;
+  end rtl_unregister_task;
+
+-- compiler magic
+#pragma assign(unregister_task,rtl_unregister_task);
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_wait_and_finish_task =
+----------------------------------------------------------------------------------------------------
+var
+  taskheader       : p_task_header;
+
+begin 
+  taskheader:=p_task_header(rtl_ref_derefrence(task_ref));
+  if taskheader=nil then
+    raise tasking_error;
+    end if;
+  if WaitForSingleObjectEx(taskheader^.ostask.taskhandle,t_rtl_wait_infinite,true)=WAIT_FAILED then
+    raise tasking_error;
+    end if;
+  if SleepEx(0,true)=0 then
+    end if;
+  rtl_critical_lock(taskheader^.locker);
+  rtl_ref_local_disconnect_data(task_ref);
+  if CloseHandle(t_handle(taskheader^.ostask.taskhandle))=0 then
+    raise tasking_error;
+    end if;
+  taskheader^.ostask.taskhandle:=INVALID_HANDLE;
+  taskheader^.ostask.taskid:=INVALID_HANDLE;
+  rtl_critical_discard(taskheader^.locker);
+  rtl_ref_discard_local(task_ref);
+  discard taskheader;
+  end rtl_wait_and_finish_task;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_kill_when_need_and_finish_task =
+----------------------------------------------------------------------------------------------------
+var
+  taskheader       : p_task_header;
+
+begin
+  taskheader:=p_task_header(rtl_ref_derefrence(task_ref));
+  if taskheader<>nil then
+    begin
+      exceptions.rtl_raise_external_exception(taskheader,task_abort:tag,0);
+    catch
+      when tasking_task_not_running do ;
+      end;
+    --%% TODO stale bezi ... na vyjimku nereaguje ? kill ?
+    {
+    if not Terminatetask(t_handle(task_ref.taskheader^.taskhandle),0) then 
+      raise tasking_error;
+      end if;
+    }
+    end if;
+
+  rtl_wait_and_finish_task(task_ref);
+  end rtl_kill_when_need_and_finish_task;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_try_wait_for_finish_task =
+----------------------------------------------------------------------------------------------------
+var
+  taskheader       : p_task_header;
+
+begin 
+  taskheader:=p_task_header(rtl_ref_derefrence(task_ref));
+  if taskheader<>nil then
+    result:=rtl_kernel_try(t_rtl_kernel_object(taskheader^.ostask.taskhandle:unchecked),milisec);
+    if result then
+      rtl_ref_discard_local(task_ref);
+      end if;
+  else
+    rtl_ref_discard_local(task_ref);
+    result:=true;
+    end if;
+  end rtl_try_wait_for_finish_task;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_wait_for_finish_task =
+----------------------------------------------------------------------------------------------------
+var
+  taskheader       : p_task_header;
+
+begin 
+  if not rtl_try_wait_for_finish_task(task_ref,t_rtl_wait_infinite) then
+    raise tasking_error;
+    end if;
+  end rtl_wait_for_finish_task;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_terminate_task =
+----------------------------------------------------------------------------------------------------
+begin
+  ExitThread(0);
+  end rtl_terminate_task;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_early_tasks_initialize =
+----------------------------------------------------------------------------------------------------
+begin
+  task_list_count:=0;
+  stask_header:=TlsAlloc;
+  rtl_critical_new(task_list_lock);
+  end rtl_early_tasks_initialize;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_late_tasks_finalize =
+----------------------------------------------------------------------------------------------------
+begin
+  if TlsFree(stask_header)=0 then
+    raise tasking_error;
+    end if;
+  rtl_critical_discard(task_list_lock);
+  end rtl_late_tasks_finalize;
+end tasks;

@@ -35,7 +35,19 @@ module private types =
 --
 ----------------------------------------------------------------------------------------------------
 
+type
+  -- layout of the hidden fields of a class instance
+  t_rtl_internal_class_layout = record
+      class_tag    : t_rtl_tag;                  -- tag of the type of the class
+      class_status : t_rtl_native_mod_unsigned;  -- status bit-field
+      end record
+          for alignment use 1
+          for size      use 8;
 
+const
+  -- bits of the [@status] hidden field
+  class_status_initialized = 2$0000_0000_0000_0001; -- instance is initialized
+  class_status_interface   = 2$0000_0000_0000_0010; -- instance is an instance of an interface
 
 ----------------------------------------------------------------------------------------------------
 #template generate_rtl_call_special_method_priv (
@@ -231,6 +243,92 @@ procedure rtl_get_last_from_tag (
 begin
   result:=rtl_get_size_from_tag(data_ptr,data_tag) div p_desc_type(p_desc_type_indexed(data_tag:unchecked)^.range_tag:unchecked)^.size;
   end rtl_get_last_from_tag;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_setup_class_instance =
+-- Sets-up an instance of a class. 
+-- Assigns the class-type tag to the hidden [@tag] field, calls the [@init] and [@entry] special
+-- methods and sets the [@status] hidden field to initialized.
+-- Do not use for set-up of exposed-classes' instances.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    -- pointer to the instance
+    mov    eax,instance
+
+    -- set-up the [@tag] field
+    mov    edx,class_tag
+    mov    <t_rtl_tag> [eax+t_rtl_internal_class_layout.class_tag],edx
+
+    -- call @init and @entry
+    push   eax
+    push   eax
+    call   rtl_call_init
+    call   rtl_call_entry
+
+    -- set the [@status] field to initialized
+    mov    eax,instance
+    mov    <t_rtl_native_mod_unsigned> [eax+t_rtl_internal_class_layout.class_status],class_status_initialized
+    #end asm;
+  end rtl_setup_class_instance;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_finalize_class_instance =
+-- Finalizes an instance of a class. 
+-- Calls the [@init] and [@entry] special methods and resets the [@status] hidden field.
+-- Does nothing for uninitialized instances.
+-- Can be used for finalization of exposed-classes' instances.
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    -- pointer to the instance
+    mov    eax,instance
+
+    -- ensure the class was initialized
+    test   <t_rtl_native_mod_unsigned> [eax+t_rtl_internal_class_layout.class_status],class_status_initialized
+    jz     @1
+
+    -- call @exit
+    push   eax
+    call   rtl_call_exit
+
+    -- reset the [@status] field
+    mov    eax,instance
+    mov    <t_rtl_native_mod_unsigned> [eax+t_rtl_internal_class_layout.class_status],0
+
+@1:
+    #end asm;
+  end rtl_finalize_class_instance;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_setup_instance =
+----------------------------------------------------------------------------------------------------
+begin
+  end rtl_setup_instance;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_adjust_instance =
+----------------------------------------------------------------------------------------------------
+begin
+  end rtl_adjust_instance;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_finalize_instance =
+----------------------------------------------------------------------------------------------------
+begin
+  end rtl_finalize_instance;
+
+
 
 
 

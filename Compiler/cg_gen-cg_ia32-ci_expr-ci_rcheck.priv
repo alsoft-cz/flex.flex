@@ -26,14 +26,14 @@ var
 
 begin
   -- nemuzeme kontrolovat unchecked typ
-  verify(706,val_typ.tview<>tview_full);
+  verify({VERIFY=}000706,val_typ.tview<>tview_full);
 
   -- umime jen ordinalni typy
-  verify(707,not (val_typ.stype in dts_ordinal));
+  verify({VERIFY=}000707,not (val_typ.stype in dts_ordinal));
 
   -- umime jen typy priznivych velikosti - 1, 2, 4 byty
   size:=unidata_size_to_unsigned(val_typ.getsize);
-  verify(708, size<>1 and size<>2 and size<>4);
+  verify({VERIFY=}000708, size<>1 and size<>2 and size<>4);
 
   -- alokovat navesti
   newtarget(info,l);
@@ -91,16 +91,16 @@ var
 begin
 
   -- nemuzeme kontrolovat unchecked ordinalni typ
-  verify(709,val_typ.tview<>tview_full or dest_typ.tview<>tview_full);
+  verify({VERIFY=}000709,val_typ.tview<>tview_full or dest_typ.tview<>tview_full);
 
   -- jedna se o typy jine nez ordinalni?
-  verify(710, not (val_typ.stype in dts_ordinal and dest_typ.stype in dts_ordinal));
+  verify({VERIFY=}000710, not (val_typ.stype in dts_ordinal and dest_typ.stype in dts_ordinal));
 
   -- umime jen typy priznivych velikosti - 1, 2, 4 byty
   size:=unidata_size_to_unsigned(val_typ.getsize);
-  verify(711, size<>1 and size<>2 and size<>4);
+  verify({VERIFY=}000711, size<>1 and size<>2 and size<>4);
   size:=unidata_size_to_unsigned(dest_typ.getsize);
-  verify(712, size<>1 and size<>2 and size<>4);
+  verify({VERIFY=}000712, size<>1 and size<>2 and size<>4);
   
   -- souvisejici entity typu vyrazu
   penttyp:=dest_typ.getctype;
@@ -115,6 +115,10 @@ begin
   -- budeme porovnavat znamenkove?
   dest_signed:=penttyp^.stype=dt_signed;
   val_signed:=pvaltyp^.stype=dt_signed;
+
+  #if #declared hynek; #and then; hynek then;
+    #error 'Hynku, Hynku, komentuj trochu vic...';
+  #end if;
 
   val_size:=pvaltyp^.size;
 
@@ -140,7 +144,7 @@ begin
 
           end if;
     else
-      verify(996,lval_sign or hval_sign);
+      verify({VERIFY=}000796,lval_sign or hval_sign);
       
       if val_signed 
         then
@@ -161,7 +165,7 @@ begin
       end if;
   
   -- alespon jedna podminka by mela byt platna, jinak je algoritmus nahore blbe
-  verify(998,pre_cond=ic_ucond and lo_cond=ic_ucond and hi_cond=ic_ucond);
+  verify({VERIFY=}000797,pre_cond=ic_ucond and lo_cond=ic_ucond and hi_cond=ic_ucond);
   
 --  val.adjustsize
   
@@ -183,7 +187,7 @@ begin
     when ic_ucond do ;
     
     -- ostatni je chyba
-    when others do verify(713,true);
+    when others do verify({VERIFY=}000713,true);
     end case;
 
   declare 
@@ -232,48 +236,72 @@ begin
   end i_gen_ordinal_range_check;
 
   
-  ----------------------------------------------------------------------------------------------------
-  procedure i_gen_runtime_checks =
-  -- hlavni procedura pro generovani behovych kontrol
-  ----------------------------------------------------------------------------------------------------
-  var
-    val_size          : t_unsigned;
-    range_typ         : typeview;
-    range_type_size   : tunidata_size;
+----------------------------------------------------------------------------------------------------
+procedure i_gen_runtime_checks =
+-- procedura pro generovani obecnych behovych kontrol
+----------------------------------------------------------------------------------------------------
+var
+  val_size          : t_unsigned;
+  range_typ         : typeview;
+  range_type_size   : tunidata_size;
 
-  begin
+begin
+  -- ordinalni preteceni/podteceni
+  if rch_ordinal_overflow in expr.get_run_checks(rcheck_class) then
+    i_gen_ordinal_overflow_check(inst,info,context,expr.t,val);
+    end if;
+   
+  -- ordinalni kontrola mezi
+  if rch_ordinal_range in expr.get_run_checks(rcheck_class) then
+    -- velikost typu proti kteremu provedeme kontrolu mezi
+    range_typ:=expr.get_rangecheck_type(rcheck_class);
+    range_type_size:=range_typ.getsize;
+
+    -- velikost [val]
+    val_size:=val.size;
+
+    verify({VERIFY=}000714,unsigned_to_unidata_size(val_size)<>expr.t.getsize);
     
-    -- ordinalni preteceni/podteceni
-    if rch_ordinal_overflow in expr.get_run_checks(rcheck_class) then
-      i_gen_ordinal_overflow_check(inst,info,context,expr.t,val);
-      end if;
-     
-    -- ordinalni kontrola mezi
-    if rch_ordinal_range in expr.get_run_checks(rcheck_class) then
-      -- velikost typu proti kteremu provedeme kontrolu mezi
-      range_typ:=expr.get_rangecheck_type(rcheck_class);
-      range_type_size:=range_typ.getsize;
+    begin
+      -- docasne uprav velikost 
+      if range_type_size>unsigned_to_unidata_size(val_size) then
+        --val.adjust_size(unidata_size_to_unsigned(range_type_size));
+        end if;
 
-      -- velikost [val]
-      val_size:=val.size;
+      i_gen_ordinal_range_check(inst,info,context,range_typ,expr.t,val);
+    
+    leave
+      -- vrat velikost z5
+      --val.adjust_size(val_size);
+      end;
 
-      verify(714,unsigned_to_unidata_size(val_size)<>expr.t.getsize);
-      
-      begin
-        -- docasne uprav velikost 
-        if range_type_size>unsigned_to_unidata_size(val_size) then
-          --val.adjust_size(unidata_size_to_unsigned(range_type_size));
-          end if;
+    end if;
+  end i_gen_runtime_checks;
 
-        i_gen_ordinal_range_check(inst,info,context,range_typ,expr.t,val);
-      
-      leave
-        -- vrat velikost z5
-        --val.adjust_size(val_size);
-        end;
 
-      end if;
 
-    end i_gen_runtime_checks;
+----------------------------------------------------------------------------------------------------
+procedure i_gen_stringindex_range_check =
+-- generovani runtime kontroly rozsahu indexovani retezce
+----------------------------------------------------------------------------------------------------
+var
+  el               : pexpnode;                   -- podv˜razy
+  er               : pexpnode;                   -- podv˜razy
 
-  end ci_rcheck;
+begin
+  -- oddˆlit podv˜razy
+  expr.get(el,er);
+
+  -- jen pro indexovani retezce
+  verify({VERIFY=}000990,not (el^.t.stype in dts_string));
+  
+  -- je treba generovat runtime kontrolu?
+  if rch_stringindex_range in expr.get_run_checks(rchcl_gen) then
+    -- %%TODO(rch_stringindex_range) - implementovat az bude pridana podpora pro nacteni runtime atributu length
+    unimplemented({UNIMP=}000265);
+    end if;
+
+  end i_gen_stringindex_range_check;
+
+
+end ci_rcheck;

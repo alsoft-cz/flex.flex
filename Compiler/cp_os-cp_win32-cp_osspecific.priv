@@ -19,7 +19,7 @@ var
 begin
   --%%X um¡m importovat jen procedury, ne metody
   if proc^.etype<>et_procedure then
-    ce^.seterror({CCERR=}000315,ce_cantimport);
+    ce^.seterror({CCERR=}000388,ce_cantimport);
     {%%POS}
     ce^.raiseerror;
     end if;
@@ -49,25 +49,60 @@ var
   call             : icallconvention;  -- volac¡ konvence
 
 begin
-  -- nem  ji‘ p©i©azenu volac¡ konvenci ?
-  if i_get_convention^(proc^)<>icc_default then
-    ce^.seterror({CCERR=}000316,ce_conventionset);
-    ce^.setparam(sym_get_qid(proc));
-    {%%POS}
-    ce^.raiseerror;
+  
+  verify({VERIFY=}000939,proc=nil);
+
+  -- podprogram?
+  if proc^.etype in ets_subprogram then
+    -- nem  ji‘ p©i©azenu volac¡ konvenci ?
+    if i_get_convention_subprogram^(pentity_subprogram(proc)^)<>icc_default or
+       i_get_convention_proctype^(pentity_subprogram(proc)^.typ.getctype^)<>icc_default then
+
+      ce^.seterror({CCERR=}000389,ce_conventionset);
+      ce^.setparam(sym_get_qid(proc));
+      {%%POS}
+      ce^.raiseerror;
+      end if;
+
+    -- ur‡it volac¡ konvenci
+    i_id_to_convention(id,call);
+    if call=icc_default then
+      ce^.seterror({CCERR=}000390,ce_i_convention);
+      ce^.setparam(entityident_to_string(id));
+      {%%POS}
+      ce^.raiseerror;
+      end if;
+
+    -- p©i©adit konvenci
+    i_set_convention_subprogram^(pentity_subprogram(proc)^,call);
+  
+  -- proceduralni typ?
+  elsif proc^.etype=et_type and then pentity_type(proc)^.stype=dt_procedure then
+    -- nem  ji‘ p©i©azenu volac¡ konvenci ?
+    if i_get_convention_proctype^(pentity_type(proc)^)<>icc_default then
+      ce^.seterror({CCERR=}000554,ce_conventionset);
+      ce^.setparam(sym_get_qid(proc));
+      {%%POS}
+      ce^.raiseerror;
+      end if;
+
+    -- ur‡it volac¡ konvenci
+    i_id_to_convention(id,call);
+    if call=icc_default then
+      ce^.seterror({CCERR=}000556,ce_i_convention);
+      ce^.setparam(entityident_to_string(id));
+      {%%POS}
+      ce^.raiseerror;
+      end if;
+
+    -- p©i©adit konvenci
+    i_set_convention_proctype^(pentity_type(proc)^,call);
+
+  else
+    -- jen proceduralni typy a podprogramy
+    verify({VERIFY=}000910, true);
     end if;
 
-  -- ur‡it volac¡ konvenci
-  i_id_to_convention(id,call);
-  if call=icc_default then
-    ce^.seterror({CCERR=}000317,ce_i_convention);
-    ce^.setparam(entityident_to_string(id));
-    {%%POS}
-    ce^.raiseerror;
-    end if;
-
-  -- p©i©adit konvenci
-  i_set_convention^(proc^,call);
   end setconvention;
 
 
@@ -82,11 +117,11 @@ var
 
 begin
   -- chybny parametr?
-  verify(658,modl=nil);   
+  verify({VERIFY=}000658,modl=nil);   
   
   -- ma modul jiz definovanou informaci pro knihovnu?
   if modl^.lib_info<>nil then
-    ce^.seterror({CCERR=}000777,ce_libtyped);
+    ce^.seterror({CCERR=}000391,ce_libtyped);
     ce^.loadpos;
     ce^.resumeerror;
     return;
@@ -97,7 +132,7 @@ begin
 
   -- je platny identifikator id?
   if not res then
-    ce^.seterror({CCERR=}000777,ce_libtypeunknown);
+    ce^.seterror({CCERR=}000392,ce_libtypeunknown);
     ce^.setparam(entityident_to_string(id));
     ce^.loadpos;
     ce^.resumeerror;
@@ -107,7 +142,7 @@ begin
   new plibraryinfo(modl^.lib_info);
 
   -- vytvoren?
-  verify(659,modl^.lib_info=nil);   
+  verify({VERIFY=}000659,modl^.lib_info=nil);   
 
   plibraryinfo(modl^.lib_info)^.lib_type:=lib;
   end setlibrary;
@@ -124,11 +159,11 @@ with
 
 begin
   -- chybny parametr?
-  verify(660,proc=nil);
+  verify({VERIFY=}000660,proc=nil);
 
   -- ma procedura jiz definovanou informaci pro export?
   if proc^.export_info<>nil then
-    ce^.seterror({CCERR=}000777,ce_exported);
+    ce^.seterror({CCERR=}000393,ce_exported);
     ce^.setparam(sym_get_qid(proc));
     ce^.loadpos;
     ce^.resumeerror;
@@ -136,7 +171,46 @@ begin
     end if;
 
   new pexportinfo(proc^.export_info);
+  
+  pexportinfo(proc^.export_info)^.export_name:=expname;
   end exportproc;
+
+
+
+----------------------------------------------------------------------------------------------------
+override exportvar =
+-- Export procedury do extern¡ knihovny.
+----------------------------------------------------------------------------------------------------
+with 
+  cc_base,
+  cc_base.cc_sym;
+
+begin
+  -- chybny parametr?
+  verify({VERIFY=}000903,variable=nil);
+
+  -- ma procedura jiz definovanou informaci pro export?
+  if variable^.export_info<>nil then
+    ce^.seterror({CCERR=}000553,ce_exported);
+    ce^.setparam(sym_get_qid(variable));
+    ce^.loadpos;
+    ce^.resumeerror;
+    return;
+    end if;
+
+  -- %%TODO(HYNEK) - dodeat export taskovych promennych
+  -- pouze taskove a staticke promenne
+  if variable^.mclass<>mc_static {and variable^.mclass<>mc_task}then
+    ce^.seterror({CCERR=}000555,ce_export_var_restrict);
+    ce^.setparam(sym_get_qid(variable));
+    ce^.loadpos;
+    ce^.resumeerror;
+    end if;
+
+  new pexportinfo(variable^.export_info);
+  
+  pexportinfo(variable^.export_info)^.export_name:=expname;
+  end exportvar;
 
 
 
@@ -172,7 +246,7 @@ begin
     result:=$10000000;
   else
     -- neznamy typ kompilacni jednotky
-    verify(669,true);
+    verify({VERIFY=}000669,true);
     end if;
   end getimagebase;
 
