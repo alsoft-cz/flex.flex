@@ -9,6 +9,7 @@ module private cb_parse =
 with
   cc_base,
   cc_base.cc_sym,
+  cc_base.cc_type,
   cc_lex;
 
 ----------------------------------------------------------------------------------------------------
@@ -344,6 +345,41 @@ begin
 
   -- konec deklarace řídící proměnné cyklu
   d_end(bl^.for_var^,for_var_pos);
+
+  -- zjistit, zda čistě náhodou někdo nepoužil konstrukci ve tvaru for i in 0..<x>-<y> loop
+  if bl^.xrange^.ntype=nt_range then
+    declare var
+      erange       : pexprange;                  -- rozsah
+      el           : pexpnode;                   -- levý operand rozsaru
+      er           : pexpnode;                   -- pravý operand rozsahu
+      lval         : tuniint;                    -- dolní mez
+      t            : typeview;                   -- pohled na typ proměnné řídící proměnné cyklu
+
+    begin
+      -- zjistit rozsah
+      erange:=bl^.xrange;
+      erange^.get(el,er);
+
+      -- pokud je pravá část rozsahu ve tvaru <x>-<y>
+      if erange^.rkind=erk_dynamic and then er^.ntype=nt_operator and then pexpoper(er)^.oper=op_sub then
+        -- sestavit typeview na typ řídící proměnné
+        t.init(curr,bl^.for_var^.typ.getctype);
+
+        -- zjistit dolní hranici rozsahu řídící proměnné
+        lval:=t.getlval;
+
+        -- zjistit,zda je levý operand rozsahu ordinální konstanta
+        if el^.ntype=nt_imm and then pexpimm(el)^.imm.ic=ic_ordinal then
+          -- Pokud je dolní hranice rozsahu řídící proměnné rovna dolní hranici rozsahu for cyklu,
+          -- nahlásit hint
+          if lval=pexpimm(el)^.imm.ui then
+            ce^.sethint(for_context,{CCERR=}000573,ch_unsafe_range);
+            ce^.loadpos;
+            end if;
+          end if;
+        end if;
+      end declare;
+    end if;
 
   -- LOOP
   if followlex(for_context,lex_loop) then

@@ -1,0 +1,367 @@
+﻿----------------------------------------------------------------------------------------------------
+module private ci_rta =
+-- Překladač Flexu.
+-- Manipulace s run-time atributy.
+----------------------------------------------------------------------------------------------------
+-- Ondra : 07.11.2003 : Vytvořil
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_rta_load =
+-- Načte zadaný run-time atribut do registru. Jestliže ho je možné určit staticky, tak samozřejmě
+-- předá ven přímou hodnotu a registr se nepoužije.
+----------------------------------------------------------------------------------------------------
+with
+  advanced.low_level.bit_operations,
+  standard.conversions,
+  standard.console,
+  cc_base.cc_rtl;
+
+    ------------------------------------------------------------------------------------------------
+    procedure skip_preceding_address =
+    -- Přeskočí adresu (posune displacement ve výsledku) ležící před zjišťovaným run-time atributem.
+    ------------------------------------------------------------------------------------------------
+    begin
+      vysl.shift_displacement(4);
+      end skip_preceding_address;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure skip_preceding_rtattribs =
+    -- Přeskočí run-time atributy (posune displacement ve výsledku) ležící před zjišťovaným run-time
+    -- atributem [rta]. Před ním ležící atributy se poznají tak, že mají stejný režim zjištění jako
+    -- zjišťovaný atribut.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if rta>rta:first then
+        declare var
+          rta_set  : rtattribset;              -- atributy ležící v adrese před zjišťovaným
+          rta_size : timm32;                   -- velikost prostoru, který tyto atributy zabírají
+        begin
+          -- sestavit množinu atributů uložených v adrese před zjišťovaným atributem
+          for xrta in rta:first..pred rta loop
+            if op.rta_info[xrta].mode=op.rta_info[rta].mode then
+              bit_set(rta_set,t_bit_index(xrta:ord));
+              end if;
+            end loop;
+
+          -- vypočítat velikost prostoru, který tyto atributy zabírají
+          getrtattribsetsize(rta_set,rta_size);
+
+          -- tento prostor přeskočit
+          vysl.shift_displacement(imm32_to_signed(rta_size));
+          end declare;
+        end if;
+      end skip_preceding_rtattribs;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure prepare_register (
+        opreg      : out c_operand) =            -- výsledný připravený registr
+    -- S ohledem na preferovaný registr [pref_reg] připraví vhodný registr pro uložení atributu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- použít preferovaný regisyr
+      if pref_reg<>in_none then opreg.create_use_register(inst,info,context,edt_unsigned,iunitoreg[pref_reg,4]);
+      -- přednostně zkust znovupoužít registr ze zdrojového operandu
+      elsif reuse_reg then opreg.create_new_register_from_operand(inst,info,context,edt_unsigned,4,op);
+      -- alokovat libovolný
+      else opreg.create_new_register(inst,info,context,edt_unsigned,4);
+      end if;
+      end prepare_register;
+
+begin
+  -- způsob zjištění run-time atributu nám již předvypočítala sémantická analýza
+  case op.rta_info[rta].mode
+    -- staticky určit podle datového typu operandu
+    when rtm_static             do 
+        declare var
+          ptyp     : pentity_type;               -- typ výrazu souvisejícího s operandem
+
+        begin
+          -- zjistit původní typ výrazu souvisejícího s operandem
+          ptyp:=op.get_orgtyp(context);                      
+          verify({VERIFY=}000996,ptyp=nil);
+
+          -- typ se musí ještě upravit podle nepřímosti atributu
+          case op.rta_info[rta].indirection
+            when rti_this_value       do -- beze změn
+            when rti_referenced_value do 
+                verify({VERIFY=}000998,ptyp^.stype<>dt_pointer);
+                ptyp:=ptyp^.base.getutype;
+            end case;
+
+          case rta
+            -- :tag
+            when rta_tag  do 
+                verify({VERIFY=}001000,tf_tagged not in ptyp^.tflags);
+                vysl.create_imm(edt_unsigned,4,0);
+                vysl.set_relo_entity(ptyp);
+
+            -- :last
+            when rta_last do 
+                -- je zřejmé, že :last má smysl pouze pro indexovatelné typy
+                verify({VERIFY=}000999,ptyp=nil or else ptyp^.stype not in dts_index);
+                vysl.create_imm(edt_unsigned,4,uniint_to_unsigned(ptyp^.srange.getctype^.hval));
+
+            -- :size
+            when rta_size do 
+                -- ne vždy je typ k dispozici (například pro typ výrazu "^unchecked" a nepřímost [rti_referenced_value])
+                if ptyp=nil
+                  then vysl.create_imm(edt_unsigned,4,0);
+                  else vysl.create_imm(edt_unsigned,4,unidata_size_to_unsigned(ptyp^.size));
+                  end if;
+
+            -- :length
+            when rta_length do
+                -- je zřejmé, že statické :length má smysl pouze pro constrained pole nebo univerzální pole
+                verify({VERIFY=}001018,ptyp=nil or else ptyp^.stype<>dt_array);
+                vysl.create_imm(edt_unsigned,4,uniint_to_unsigned(uniint_length(ptyp^.srange.getctype^.lval,ptyp^.srange.getctype^.hval)));
+
+            when others do verify({VERIFY=}000995);
+            end case;
+          end declare;
+
+    -- uložen v hodnotě, kterou operand reprezentuje
+    when rtm_stored_in_value    do 
+        verify({VERIFY=}000981,op.edtype not in edts_with_rtattrib or op.optype<>io_mem);
+
+        -- připravit adresu run-time atributu
+        vysl.clone(inst,info,context,op);
+        vysl.adjust_edtype(edt_unsigned); 
+        vysl.adjust_size(4);
+
+        -- přeskočit prostor, který zabírá uložená adresa
+        if op.edtype=edt_pointer then
+          skip_preceding_address;
+          end if;
+
+        -- přeskočit prostor, který zabírají předchozí uložené atributy
+        skip_preceding_rtattribs;
+    
+    -- uložen v pointeru
+    when rtm_stored_in_address  do 
+        -- připravit adresu run-time atributu
+        vysl.clone(inst,info,context,op);
+        case vysl.optype
+          when io_reg,io_imm do vysl.transform_imm_or_reg_to_mem(edt_unsigned,4);
+          when io_mem        do vysl.adjust_edtype(edt_unsigned); vysl.adjust_size(4);
+          when others        do verify({VERIFY=}000961,true);
+          end case;
+
+        -- přeskočit prostor, který zabírá uložená adresa
+        skip_preceding_address;
+
+        -- přeskočit prostor, který zabírají předchozí uložené atributy
+        skip_preceding_rtattribs;
+
+    -- uložen v tagu dynamického typu hodnoty
+    when rtm_stored_in_tag      do 
+        -- rezervovat místo na stacku pro návratovou hodnotu
+        i_gen_stack_top_reserve(inst,info,context,4);
+
+        -- uložit adresu dat na stack
+        declare var
+          optemp   : c_operand;
+        begin
+          optemp.clone(inst,info,context,op);
+          optemp.adjust_edtype(edt_unsigned); 
+          optemp.adjust_size(4);
+          addii(inst,info,ii_push,optemp,op0,op0);
+        leave
+          optemp.free(info,context);
+          end declare;
+
+        -- uložit :tag na stack
+        i_rta_push(inst,info,context,op,rta_tag);
+
+        -- zjistit hodnotu atributu
+        case rta
+          when rta_size do addcallrtl(inst,info,context,rtl_get_size_from_tag,for save_regs use true);
+          when rta_last do addcallrtl(inst,info,context,rtl_get_last_from_tag,for save_regs use true);
+          when others   do verify({VERIFY=}000963,true);
+          end case;
+
+        -- registr pro výsledek
+        prepare_register(vysl);
+
+        -- odebrat výsledek ze stacku
+        addii(inst,info,ii_pop,vysl,op0,op0);
+
+    -- vypočten z dynamického atributu :size
+    when rtm_computed_from_size do unimplemented({UNIMP=}000253);   
+
+    -- vypočten z dynamického atributu :last
+    when rtm_computed_from_last do
+        verify({VERIFY=}001021,op.rta_info[rta_last].mode=rtm_static);
+
+        -- získat dynamický atribut :last
+        i_rta_load(inst,info,context,op,rta_last,vysl,for no_memory use true,for pref_reg use pref_reg);
+
+        -- ze získaného :last vypočítat požadovaný atribut
+        case rta
+          -- konvertovat :last na :length
+          when rta_length do
+              -- inkrementovat - jistě to bude :length unconstrained pole a to je indexované od nuly
+              addii(inst,info,ii_inc,vysl,op0,op0);
+
+          -- jiné atributy z :last vypočítat neumíme
+          when others do verify({VERIFY=}001020);
+          end case;
+    
+    -- jiné módy neumíme
+    when others do verify({VERIFY=}001100);
+    end case;
+
+  -- jestliže je to požadováno, tak načíst atribut do registru
+  if no_memory and vysl.optype=io_mem then
+    declare var
+      opreg        : c_operand;                  -- registr pro uložení atributu
+
+    begin
+      -- připravit vhodný registr
+      prepare_register(opreg);
+
+      -- načíst do registru
+      addii(inst,info,ii_mov,opreg,vysl,op0);
+
+      -- předat ven
+      vysl.replace(info,context,opreg);
+
+    leave
+      -- uvolnit pracovní operand
+      opreg.free(info,context);
+      end declare;
+    end if;
+  end i_rta_load;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_rta_load_address =
+-- Sestaví operand reprezentující adresu zadaného run-time atributu. Zdrojový operand [op] musí být 
+-- typu [io_mem] a ukazovat na pointer, ve kterém je požadovaný run-time atribut uložen. Viz též
+-- popis triku u procedury [i_rta_load], který se zde využívá.
+--   Je-li [no_dependance] nastaveno na True, je zajištěno, že výsledný operand [vysl] nebude po
+-- stránce použitých registrů závislý na původním operandu [op].
+----------------------------------------------------------------------------------------------------
+begin
+  -- zjistit adresu chtěného run-time atributu
+  -- POZOR, zde se používá trik dokumentovaný v popisu procedury [i_rta_load]
+  verify({VERIFY=}001015,op.optype<>io_mem or op.rta_info[rta].mode<>rtm_stored_in_value);
+  i_rta_load(inst,info,context,op,rta,vysl);
+  verify({VERIFY=}001017,vysl.optype<>io_mem);
+
+  -- jestliže je výsledný operand nežádoucím způsobem závislý na zdrojovém, tak adresu načíst
+  -- do jiného registru
+  if no_dependance and then vysl.depends_on(op) then
+    -- načíst adresu do jiného registru
+    i_gen_load_address_to_register(inst,info,context,vysl,for force_reg use true,for no_dependance use true);
+
+    -- transformovat registr na adresu
+    vysl.transform_reg_to_mem(edt_unsigned,4);
+    end if;
+  end i_rta_load_address;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_rta_store =
+-- Uloží zadaný run-time atribut do cílového operandu.
+----------------------------------------------------------------------------------------------------
+var
+  rta_value        : c_operand;                  -- hodnota run-time atributu
+
+begin
+  -- načíst atribut
+  i_rta_load(inst,info,context,op,rta,rta_value,for no_memory use dst.optype<>io_reg);
+  
+  -- uložit do cílového operandu
+  addii(inst,info,ii_mov,dst,rta_value,op0);
+
+leave
+  -- uvolnit operand
+  rta_value.free(info,context);
+  end i_rta_store;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_rta_store_to_temporary =
+-- Uloží zadaný run-time atribut do dočasné proměnné a vrátí její adresu.
+----------------------------------------------------------------------------------------------------
+begin
+  -- připravit temporary proměnnou
+  dst.create_temporary(inst,info,edt_unsigned,4);
+
+  -- uložit do ní zadaný run-time atribut
+  i_rta_store(inst,info,context,op,rta,dst);
+  end i_rta_store_to_temporary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_rta_push =
+-- Uloží zadaný run-time atribut na stack.
+----------------------------------------------------------------------------------------------------
+var
+  rta_value        : c_operand;                  -- hodnota run-time atributu
+
+begin
+  -- načíst atribut
+  i_rta_load(inst,info,context,op,rta,rta_value);
+  
+  -- uložit do cílového operandu
+  addii(inst,info,ii_push,rta_value,op0,op0);
+
+leave
+  -- uvolnit operand
+  rta_value.free(info,context);
+  end i_rta_push;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_rta_set_modes_of_referenced_value =
+-- Změní u zadaného operandu módy generování run-time atributů tak, aby odpovídaly referencovanému
+-- objektu.
+----------------------------------------------------------------------------------------------------
+use
+  supervised cx_expr,cx_expr.cx_rta;
+
+var
+  rta_modes        : t_rtattrib_modes;          -- způsoby načtení jednotlivých atributů
+
+begin
+  -- zjistit módy načtení jednotlivých atributů v pointeru
+  cx_expr.cx_rta.x_rta_pointer_attributes(sub,rta_modes);
+
+  -- změnit v operandu
+  vysl.set_rta_modes(rta_modes,rti_referenced_value);
+  end i_rta_set_modes_of_referenced_value;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_rta_get_effective_mode =
+-- Rekurzivním prohledáním [rta_modes] zjistí efektivní mód zjištění zadaného atributu.
+-- Efektivní mód je takový, který se po aplikaci rekuzivního výpočtu atributu z jiného atributu
+-- nakonec použije pro výpočet zdrojového atributu.
+----------------------------------------------------------------------------------------------------
+begin
+  case rta_modes[rta]
+    when rtm_invalid            do result:=rtm_invalid;
+    when rtm_static             do result:=rtm_static;
+    when rtm_stored_in_value    do result:=rtm_stored_in_value;
+    when rtm_stored_in_address  do result:=rtm_stored_in_address;
+    when rtm_stored_in_tag      do result:=i_rta_get_effective_mode(rta_tag,rta_modes);
+    when rtm_computed_from_size do result:=i_rta_get_effective_mode(rta_size,rta_modes);
+    when rtm_computed_from_last do result:=i_rta_get_effective_mode(rta_last,rta_modes);
+    end case; 
+  end i_rta_get_effective_mode;
+
+
+
+end ci_rta;

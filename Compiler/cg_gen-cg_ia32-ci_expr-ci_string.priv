@@ -6,6 +6,318 @@ module private ci_string =
 -- Ondra : 22.04.2003 : Vytvořil
 ----------------------------------------------------------------------------------------------------
 
+with
+  ci_expr.ci_rcheck;
+
+----------------------------------------------------------------------------------------------------
+procedure i_str_skip_length (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext výrazu
+    expr           : in pexpnode;                -- související výraz
+    op             : in c_operand) =             -- řetězec
+-- Přeskočí atribut :length uložený v řetězci. [op] musí být [io_reg] nebo [io_mem].
+----------------------------------------------------------------------------------------------------
+begin
+  -- pokud je operand konstanta typu univerzální pole, pak je uložena bez délky => nic neposouvat
+  if expr^.ntype=nt_imm and t_is_stype(expr^.t,dt_uniarray) then
+    return
+    end if;
+
+  -- posunout operand
+  case op.optype
+    when io_reg do addopimm(inst,info,context,ii_add,op,lstrisize32);
+    when io_mem do op.shift_displacement(lstrisize32);
+    when others do verify({VERIFY=}001024);
+    end case;
+  end i_str_skip_length;
+
+
+
+type
+  -- požadovaný tvar operandu s :length
+  t_length_mode = enum
+      lm_dont_care;                              -- je to fuk
+      lm_direct_ecx;                             -- vždy načíst přímo do ECX
+      lm_no_memory;                              -- vždy načíst libovolného registru
+      lm_no_dependance;                          -- načíst jako adresu nezávislou na původním op.
+      lm_address;                                -- načíst jako adresu obecně závislou na původním op.
+      end enum;
+
+----------------------------------------------------------------------------------------------------
+procedure i_str_load_length (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext výrazu
+    expr           : in pexpnode;                -- související podvýraz
+    op             : in c_operand;               -- registr obsahující adresu řetězce
+    oplength       : out c_operand;              -- :length řetězce
+    length_mode    : in t_length_mode := lm_no_memory) = -- požadovaný tvar operandu s :length
+-- Načte :length zadaného řetězce.
+----------------------------------------------------------------------------------------------------
+use
+  supervised cx_expr,cx_expr.cx_rta;
+
+begin
+  -- %%X Úplně nejvíc by se mi líbilo, kdyby případ konstantního univerzálního pole uměl
+  -- ošetřit přílo [i_rta_load], ale to by se do něj musel předávat související výraz, což
+  -- představuje posun od současné koncepce.
+
+  if expr^.ntype=nt_imm
+
+    -- velikost konstantního stringu se odvodí z počtu prvků jeho hodnoty
+    then
+      declare var
+        ui     : tuniint;
+
+      begin
+        -- zjistit délku konstantního agregátu
+        imm_get_length(pexpimm(expr)^.imm,ui);
+
+        -- sestavit operand
+        case length_mode
+
+          -- nacpat do ECX
+          when lm_direct_ecx do
+              -- alokovat ECX
+              oplength.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
+
+              -- uložit do něj konstantu
+              addopimm(inst,info,context,ii_mov,oplength,uniint_to_imm32(ui));
+
+          -- nacpat do nějakého registru
+          when lm_no_memory do
+              -- alokovat registr
+              oplength.create_new_register(inst,info,context,edt_unsigned,4);
+
+              -- uložit do něj konstantu
+              addopimm(inst,info,context,ii_mov,oplength,uniint_to_imm32(ui));
+
+          -- můžeme ponechat jako konstantu
+          when others do
+              oplength.create_imm(edt_unsigned,lstrisize32,uniint_to_imm32(ui));
+          end case; 
+        end declare;
+
+    -- v ostatních případech si sáhneme pro dynamický atribut
+    else
+      declare var
+        opmem  : c_operand;                  -- [<registr>]
+        rta_modes : t_rtattrib_modes;        -- módy načtení run-time atributů
+
+      begin
+        -- připravit operand reprezentující hodnotu, který budeme moci modifikovat
+        -- již reprezentuje hodnotu => stačí naklonovat
+        if op.edtype in edts_value and op.optype=io_mem then 
+          opmem.clone(inst,info,context,op);
+
+        -- je to adresa v registru nebo přímá hodnota => změnit na paměťovou adresu
+        elsif op.edtype=edt_address and op.optype in t_operand_type_set:[io_reg,io_imm] then 
+          opmem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op);
+
+        -- nic jiného neumíme
+        else 
+          verify({VERIFY=}001030);
+          end if;
+
+        -- nastavit správně módy run-time atributů
+        cx_expr.cx_rta.x_rta_string_attributes(expr,rta_modes);
+        opmem.set_rta_modes(rta_modes);
+
+        -- načíst :length 
+        case length_mode
+          when lm_dont_care     do i_rta_load(inst,info,context,opmem,rta_length,oplength);
+          when lm_direct_ecx    do i_rta_load(inst,info,context,opmem,rta_length,oplength,for no_memory use true,for pref_reg use in_ecx);
+          when lm_no_memory     do i_rta_load(inst,info,context,opmem,rta_length,oplength,for no_memory use true);
+          when lm_no_dependance do i_rta_load_address(inst,info,context,opmem,rta_length,oplength,for no_dependance use true);
+          when lm_address       do i_rta_load_address(inst,info,context,opmem,rta_length,oplength);
+          end case;
+
+      leave
+        -- uvolnit pracovní operand
+        opmem.free(info,context);
+        end declare;
+      end if;
+  end i_str_load_length;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_str_load_binary (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext výrazu
+    el             : in pexpnode;                -- levý podvýraz
+    er             : in pexpnode;                -- pravý podvýraz
+    op1            : out c_operand;              -- adresa levého řetězce v ESI
+    op2            : out c_operand;              -- adresa pravého řetězce v EDI
+    opecx          : in p_operand := nil;        -- volitelný operand pro rezervaci ECX
+    op1length      : in p_operand := nil;        -- volitelný operand pro délku levého řetězce
+    op2length      : in p_operand := nil;        -- volitelný operand pro délku pravého řetězce
+    skip_length    : in t_logical := false;      -- T-upravit ESI a EDI tak, aby ukazovaly za :length
+    direct_ecx     : in t_logical := false) =    -- T-pro délku levého operandu rovnou použít ECX
+-- Načte adresy řetězců do ESI (levý operand) a EDI (pravý operand), popřípadě i jejich velikosti
+-- do registrů. Jestliže je uveden parametr [opecx], rezervuje se před načtením délek registr ECX.
+--   Je-li [direct_ecx] rovno True, pak se délka levého operandu uloží rovnou do ECX, délka pravého
+-- operandu nemusí být nutně načtena do registru. Dále nesmí být nastaveno [opecx] a [skip_length].
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : iexprcontext;               -- kontext podvýrazů
+
+begin
+  -- načíst levý operand do ESI
+  i_newcontext(context,newcontext,lm_addr,nil);
+  i_setrpref(newcontext,in_esi,irm_addr);
+  i_load(inst,info,newcontext,context,el,op1);
+
+  -- načíst pravý operand do EDI
+  i_newcontext(context,newcontext,lm_addr,nil);
+  i_setrpref(newcontext,in_edi,irm_addr);
+  i_load(inst,info,newcontext,context,er,op2);
+
+  -- obnovit registry
+  op1.refresh(inst,info,context);
+  op2.refresh(inst,info,context);
+
+  -- redukovat počet registrů
+  i_gen_reduceop(inst,info,context,op1);
+  i_gen_reduceop(inst,info,context,op2);
+
+  -- interní kontrola
+  verify({VERIFY=}001022,op1.optype<>io_reg or else op1.reg.reg<>ir_esi);
+  verify({VERIFY=}001023,op2.optype<>io_reg or else op2.reg.reg<>ir_edi);
+
+  -- rezervovat ECX
+  if opecx<>nil then
+    verify({VERIFY=}001025,direct_ecx);
+    opecx^.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
+    end if;
+
+  -- načíst délku levého řetězce do registru
+  if op1length<>nil then
+    if direct_ecx
+      then i_str_load_length(inst,info,context,el,op1,op1length^,lm_direct_ecx);
+      else i_str_load_length(inst,info,context,el,op1,op1length^);
+      end if;
+    end if;
+
+  -- načíst délku pravého řetězce do registru
+  if op2length<>nil then
+    if direct_ecx
+      then i_str_load_length(inst,info,context,er,op2,op2length^,for length_mode use lm_dont_care);
+      else i_str_load_length(inst,info,context,er,op2,op2length^,for length_mode use lm_no_memory);
+      end if;   
+    end if;
+
+  -- přeskočit :length uložené v řetězcích
+  if skip_length then
+    verify({VERIFY=}001027,direct_ecx);
+    i_str_skip_length(inst,info,context,el,op1);
+    i_str_skip_length(inst,info,context,er,op2);
+    end if;
+  end i_str_load_binary;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_str_load_single (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext výrazu
+    expr           : in pexpnode;                -- levý podvýraz
+    op             : out c_operand;              -- adresa řetězce
+    pref_reg       : in iunireg := in_none;      -- preferovaný registr pro adresu řetězce
+    oplast         : in p_operand := nil;        -- volitelný operand pro :last řetězce
+    oplength       : in p_operand := nil;        -- volitelný operand pro délku řetězce
+    skip_length    : in t_logical := false;      -- T-upravit adresu řetězce tak, aby ukazovala za :length
+    length_mode    : in t_length_mode := lm_no_memory; -- požadovaný tvar operandu s :length
+    preserve_ecx   : in t_logical := false) =    -- vyvarovat se použití ECX
+-- Načte adresu řetězců, popřípadě i jeho :last a/nebo :length do registrů.
+--   Je-li [direct_ecx] rovno True, pak se délka operandu uloží rovnou do ECX.
+----------------------------------------------------------------------------------------------------
+var
+  newcontext       : iexprcontext;               -- kontext podvýrazů
+  opecx            : c_operand;                  -- rezervovaný registr ECX
+
+    ------------------------------------------------------------------------------------------------
+    procedure preserve_registers =
+    -- Rezervuje registry, jejichž použití se máme vyvarovat.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- není potřebat vyvarovat se použití ECX ?
+      if preserve_ecx then
+        verify({VERIFY=}001098,length_mode=lm_direct_ecx);
+        opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
+        end if;
+      end preserve_registers;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure load_expr (
+        mode       : iexprloadmode) =
+    -- Načte operand.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- načíst adresu levého operandu
+      i_newcontext(context,newcontext,mode,nil);
+      i_setrpref(newcontext,pref_reg,irm_addr);
+      i_load(inst,info,newcontext,context,expr,op);
+
+      -- obnovit registry
+      op.refresh(inst,info,context);
+
+      -- rezervovat registry, jejichž použití se máme vyvarovat
+      preserve_registers;
+      
+      -- redukovat počet registrů
+      i_gen_reduceop(inst,info,context,op);
+      end load_expr;
+
+begin
+  -- způsob výpočtu adresy je do značné míry závislý na požadavku na atribut :last
+  if oplast<>nil
+
+    -- je požadován => zjištění adresy je dvoukrokové
+    then
+      -- načíst operand
+      load_expr(i_get_load_mode_by_requested_rta(expr,rta_last,for addr_otherwise use true));
+
+      -- načíst hodnotu :last
+      i_rta_load(inst,info,context,op,rta_last,oplast^,for no_memory use true);
+
+      -- donačíst adresu, je-li to potřeba
+      i_gen_load_address_to_register_with_dereference(inst,info,context,op,for force_reg use pref_reg<>in_none,for pref_reg use pref_reg);
+
+    -- není požadován => zjištění je jednoduché
+    else 
+      -- načíst operand
+      load_expr(lm_addr);
+      end if;
+
+  -- interní kontrola
+  if pref_reg<>in_none then 
+    verify({VERIFY=}001029,op.optype<>io_reg or else iregtouni[op.reg.reg]<>pref_reg);
+    end if;
+
+  -- načíst atribut :length
+  if oplength<>nil then
+    i_str_load_length(inst,info,context,expr,op,oplength^,for length_mode use length_mode);
+    end if;
+
+  -- přeskočit :length uložené v řetězci
+  if skip_length then
+    verify({VERIFY=}001065,oplength<>nil and then op.depends_on(oplength^));
+    i_str_skip_length(inst,info,context,expr,op);
+    end if;
+
+leave
+  -- uvolnit případně rezervované registry
+  opecx.free(info,context);
+  end i_str_load_single;
+
+
+
 ----------------------------------------------------------------------------------------------------
 procedure i_gen_op_order_string =
 -- Porovnávání řetězců (< <= > >=).
@@ -41,17 +353,15 @@ begin
           el_uniarray : t_logical;               -- true, je-li levý operand konstanta typu univerzální pole
           er_uniarray : t_logical;               -- true, je-li pravý operand konstanta typu univerzální pole
           op1         : c_operand;               -- adresa levého řetězce v ESI
-          op1mem      : c_operand;               -- [ESI]
-          op1length   : c_operand;               -- počet prvků levého řetězce v registru
+          op1length   : aliased c_operand;       -- počet prvků levého řetězce v registru
           op2         : c_operand;               -- adresa pravého řetězce v EDI
-          op2mem      : c_operand;               -- [EDI]
-          op2length   : c_operand;               -- počet prvků pravého řetězce v registru
-          opecx       : c_operand;               -- min(op1length,op2length) v ECX`
+          op2length   : aliased c_operand;       -- počet prvků pravého řetězce v registru
+          opecx       : aliased c_operand;       -- min(op1length,op2length) v ECX`
 
         begin
           -- není náhodou některý operand konstanta typu univerzální pole ?
-          el_uniarray:=(el^.ntype=nt_imm) and t_is_stype(el^.t,dt_uniarray);
-          er_uniarray:=(er^.ntype=nt_imm) and t_is_stype(er^.t,dt_uniarray);
+          el_uniarray:=el^.ntype=nt_imm and t_is_stype(el^.t,dt_uniarray);
+          er_uniarray:=er^.ntype=nt_imm and t_is_stype(er^.t,dt_uniarray);
 
           if el_uniarray or er_uniarray then
             -- %%X Pozor, součástí konstanty typu univerzální pole není informace o délce,
@@ -60,49 +370,19 @@ begin
             unimplemented({UNIMP=}000197);
             end if;
 
-          -- načíst levý operand do ESI
-          i_newcontext(context,newcontext,lm_addr,nil);
-          i_setrpref(newcontext,in_esi,irm_addr);
-          i_load(inst,info,newcontext,context,el,op1);
-
-          -- načíst pravý operand do EDI
-          i_newcontext(context,newcontext,lm_addr,nil);
-          i_setrpref(newcontext,in_edi,irm_addr);
-          i_load(inst,info,newcontext,context,er,op2);
-
-          -- obnovit registry
-          op1.refresh(inst,info,context);
-          op2.refresh(inst,info,context);
-
-          -- kromě ESI potřebujeme i [ESI]
-          op1mem.create_memory_address_from_operand(inst,info,context,edt_unsigned,0,op1);
-
-          -- kromě EDI potřebujeme i [EDI]
-          op2mem.create_memory_address_from_operand(inst,info,context,edt_unsigned,0,op2);
-
-          -- rezervovat ECX
-          opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
-
-          -- registr na velikost řetězce vlevo
-          op1length.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
-
-          -- registr na velikost řetězce vpravo
-          op2length.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
-
-          -- načíst velikost řetězce vlevo
-          op1mem.adjust_size(lstrisize32);
-          addii(inst,info,ii_mov,op1length,op1mem,op0);
-
-          -- načíst velikost řetězce vpravo
-          op2mem.adjust_size(lstrisize32);
-          addii(inst,info,ii_mov,op2length,op2mem,op0);
+          -- načíst adresy obou operandů do ESI a EDI a provést nějaké další operace
+          i_str_load_binary(inst,info,context,el,er,op1,op2,
+              -- rezervovat ECX
+              for opecx       use ^opecx,
+              -- načíst velikost řetězce vlevo
+              for op1length   use ^op1length,
+              -- načíst velikost řetězce vpravo
+              for op2length   use ^op2length,
+              -- posunout pointery na řetězce, aby neukazovaly na :length
+              for skip_length use true);
 
           -- do ECX dát přednostně velikost řetězce vlevo
           addii(inst,info,ii_mov,opecx,op1length,op0);
-
-          -- posunout ESI a EDI o LSTRISIZE32
-          addopimm(inst,info,context,ii_add,op1,lstrisize32);
-          addopimm(inst,info,context,ii_add,op2,lstrisize32);
 
           -- porovnat velikosti řetězců
           addii(inst,info,ii_cmp,op1length,op2length,op0);
@@ -151,10 +431,8 @@ begin
         leave
           -- uvolnit operandy
           op1.free(info,context);
-          op1mem.free(info,context);
           op1length.free(info,context);
           op2.free(info,context);
-          op2mem.free(info,context);
           op2length.free(info,context);
           opecx.free(info,context);
           end declare;
@@ -190,26 +468,28 @@ procedure i_gen_op_compare_string =
     -- Porovná zadaný uzel na NIL.
     ------------------------------------------------------------------------------------------------
     var
-      op1       : c_operand;                     -- počet prvků řětězce
-      newcontext: iexprcontext;                  -- kontext podvýrazů
+      op1          : c_operand;                  -- řetězec
+      op1length    : aliased c_operand;          -- jeho :length
+      newcontext   : iexprcontext;               -- kontext podvýrazů
 
     begin
-      -- načíst počet prvků řětězce
-      i_newcontext(context,newcontext,lm_reg,x^.t.getctype^.srange.getctype);
-      i_load(inst,info,newcontext,context,x,op1);
+      -- adresa levého operandu
+      i_str_load_single(inst,info,context,x,op1,
+          -- načíst délku řetězce
+          for oplength    use ^op1length,
+          -- tvar, v jaké délku dostaneme, nás vůbec nezajímá
+          for length_mode use lm_dont_care);
 
-      -- obnovit registry
-      op1.refresh(inst,info,context);
-
-      -- porovnat na nulu
-      addii(inst,info,ii_cmp,op1,op_0,op0);
+      -- do :length nacpat nulu, tím se řetězec vyprázdní
+      addii(inst,info,ii_cmp,op1length,op_0,op0);
 
       -- výsledek
       vysl.create_condition(op2cc[expr^.oper,false]);
 
     leave
-      -- uvolnit operand
+      -- uvolnit operandy
       op1.free(info,context);
+      op1length.free(info,context);
       end cmpnil;
 
 var
@@ -221,7 +501,7 @@ var
   newcontext       : iexprcontext;               -- kontext podvýrazů
 
 begin
-  verify({VERIFY=}000800,(expr^.arity<>eoa_2) or not (expr^.oper in expopertypeset:[op_eq,op_ne]));
+  verify({VERIFY=}000800,expr^.arity<>eoa_2 or expr^.oper not in expopertypeset:[op_eq,op_ne]);
 
   -- podvýrazy
   expr^.get(el,er);
@@ -246,12 +526,11 @@ begin
     verify({VERIFY=}000624,el^.ntype=nt_imm);
 
     declare var
-      er_uniarray  : t_logical;                  -- true, je-li pravý operand konstanta typu univerzální pole
       op1          : c_operand;                  -- adresa levého řetězce v ESI
-      op1mem       : c_operand;                  -- [ESI]
+      op1length    : aliased c_operand;          -- počet prvků levého řetězce v registru
       op2          : c_operand;                  -- adresa pravého řetězce v EDI
-      op2mem       : c_operand;                  -- [EDI]
-      opecx        : c_operand;                  -- min(op1length,op2length) v ECX
+      op2length    : aliased c_operand;          -- počet prvků pravého řetězce v registru
+      tg_end       : itarget;                    -- návěští pro skok na konec porovnání
 
     begin
       -- %%X Optimalizace: Když je velikost báze rovna LSTRISIZE32, tak nemusím
@@ -262,132 +541,79 @@ begin
         unimplemented({UNIMP=}000166);
         end if;
 
-      -- není náhodou pravý operand konstant typu univerzální pole ?
-      er_uniarray:=(er^.ntype=nt_imm) and t_is_stype(er^.t,dt_uniarray);
+      -- načíst adresy obou operandů do ESI a EDI a provést nějaké další operace
+      i_str_load_binary(inst,info,context,el,er,op1,op2,
+          -- načíst velikost řetězce vlevo
+          for op1length   use ^op1length,
+          -- načíst velikost řetězce vpravo
+          for op2length   use ^op2length,
+          -- velikost levého operandu načíst do ECX
+          for direct_ecx  use true);
 
-      -- načíst levý operand do ESI
-      i_newcontext(context,newcontext,lm_addr,nil);
-      i_setrpref(newcontext,in_esi,irm_addr);
-      i_load(inst,info,newcontext,context,el,op1);
+      -- alokovat návěští
+      newtarget(info,tg_end);
 
-      -- načíst pravý operand do EDI
-      i_newcontext(context,newcontext,lm_addr,nil);
-      i_setrpref(newcontext,in_edi,irm_addr);
-      i_load(inst,info,newcontext,context,er,op2);
+      -- porovnat velikosti řetězců
+      addii(inst,info,ii_cmp,op1length,op2length,op0);
 
-      -- obnovit registry
-      op1.refresh(inst,info,context);
-      op2.refresh(inst,info,context);
+      -- jsou rozdílné ? => pak je porovnání hotové
+      addjump(inst,info,context,ic_ne,tg_end,{%%TODO(PREDICTION)}ijp_taken);
 
-      -- kromě ESI potřebujeme i [ESI]
-      op1mem.create_memory_address_from_operand(inst,info,context,edt_unsigned,0,op1);
+      -- Nyní jsou jistě délky řetězců shodné (Zero Flag=0). Původně jsem toho
+      -- chtěl využít, abych nemusel ještě testovat ECX na nulu, jenže počet
+      -- prvků řetězce se za chvíli bude násobit velikostí báze a tato operace
+      -- může ZF změnit.
 
-      -- kromě EDI potřebujeme i [EDI]
-      op2mem.create_memory_address_from_operand(inst,info,context,edt_unsigned,0,op2);
+      -- porovnat ECX na nulu
+      addii(inst,info,ii_cmp,op1length{opecx},op_0,op0);
+      addjump(inst,info,context,ic_e,tg_end,{%%TODO(PREDICTION)}ijp_not_taken);
 
-      -- rezervovat ECX
-      opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
-
-      -- do ECX načíst velikost levého operandu
-      op1mem.adjust_size(lstrisize32);
-      addii(inst,info,ii_mov,opecx,op1mem,op0);
-
-      -- porovnat s velikostí řetězce vlevo
-      if er_uniarray
-
-        -- vpravo je konstanta typu univerzální pole => informace o délce není její součástí
-        then
-          declare var
-            op2len : c_operand;                  -- kosntantní velikost pravého operandu
-            ui     : tuniint;
-
-          begin
-            -- připravit konstantní operand délky
-            imm_get_length(pexpimm(er)^.imm,ui);
-            op2len.create_imm(edt_unsigned,lstrisize32,uniint_to_imm32(ui));
-
-            -- porovnat
-            addii(inst,info,ii_cmp,opecx,op2len,op0);
-
-          leave
-            op2len.free(info,context);
-            end declare;
-
-        -- vpravo je něco jiného => informace o délce je její součástí
-        else
-          op2mem.adjust_size(lstrisize32);
-          addii(inst,info,ii_cmp,opecx,op2mem,op0);
-          end if;
+      -- posunout pointery na začátky datových částí
+      i_str_skip_length(inst,info,context,el,op1);
+      i_str_skip_length(inst,info,context,er,op2);
 
       declare var
-        tg_end     : itarget;                    -- návěští pro skok na konec porovnání
+        ii         : iinstr;                     -- zvolená porovnávací instrukce
+        imm        : timm32;                     -- délka operandu ve slovech
 
       begin
-        -- alokovat návěští
-        newtarget(info,tg_end);
-
-        -- jsou rozdílné ? => pak je porovnání hotové
-        addjump(inst,info,context,ic_ne,tg_end,{%%TODO(PREDICTION)}ijp_taken);
-
-        -- Nyní jsou jistě délky řetězců shodné (Zero Flag=0). Původně jsem toho
-        -- chtěl využít, abych nemusel ještě testovat ECX na nulu, jenže počet
-        -- prvků řetězce se za chvíli bude násobit velikostí báze a tato operace
-        -- může ZF změnit.
-
-        -- porovnat ECX na nulu
-        addii(inst,info,ii_cmp,opecx,op_0,op0);
-        addjump(inst,info,context,ic_e,tg_end,{%%TODO(PREDICTION)}ijp_not_taken);
-
-        -- posunout ESI a EDI o LSTRISIZE32
-        addopimm(inst,info,context,ii_add,op1,lstrisize32);
-        if not er_uniarray then
-          addopimm(inst,info,context,ii_add,op2,lstrisize32);
+        -- zvolit, jak budeme porovnávat (podle velikosti báze)
+        -- dělitelné 4 ? => po čtveřicích
+        if basesize mod 4=0 then
+          ii:=ii_cmpsd;
+          imm:=unsigned_to_imm32(basesize div 4);
+        -- dělitelné 2 ? => po dvojicích
+        elsif basesize mod 2=0 then
+          ii:=ii_cmpsw;
+          imm:=unsigned_to_imm32(basesize div 2);
+        -- musíme po bytech
+        else
+          ii:=ii_cmpsb;
+          imm:=unsigned_to_imm32(basesize);
           end if;
 
-        declare var
-          ii         : iinstr;                     -- zvolená porovnávací instrukce
-          imm        : timm32;                     -- délka operandu ve slovech
+        -- vynásobit počet prvků řetězce reziduem velikosti báze
+        i_gen_mul_reg(inst,info,context,op1,imm);
 
-        begin
-          -- zvolit, jak budeme porovnávat (podle velikosti báze)
-          -- dělitelné 4 ? => po čtveřicích
-          if basesize mod 4=0 then
-            ii:=ii_cmpsd;
-            imm:=unsigned_to_imm32(basesize div 4);
-          -- dělitelné 2 ? => po dvojicích
-          elsif basesize mod 2=0 then
-            ii:=ii_cmpsw;
-            imm:=unsigned_to_imm32(basesize div 2);
-          -- musíme po bytech
-          else
-            ii:=ii_cmpsb;
-            imm:=unsigned_to_imm32(basesize);
-            end if;
+        -- shodit Direction Flag - porovnává se zdola nahoru
+        addii(inst,info,ii_cld,op0,op0,op0);
 
-          -- vynásobit počet prvků řetězce reziduem velikosti báze
-          i_gen_mul_reg(inst,info,context,op1,imm);
-
-          -- shodit Direction Flag - porovnává se zdola nahoru
-          addii(inst,info,ii_cld,op0,op0,op0);
-
-          -- REPE CMPS
-          addip(inst,info,ip_repe);
-          addii(inst,info,ii,op0,op0,op0);
-          end declare;
-
-        -- a tím by to mělo být hotovo
-
-        -- cíl skoku na toto místo
-        settarget(info,tg_end,getaddr(inst));
+        -- REPE CMPS
+        addip(inst,info,ip_repe);
+        addii(inst,info,ii,op0,op0,op0);
         end declare;
+
+      -- a tím by to mělo být hotovo
+
+      -- cíl skoku na toto místo
+      settarget(info,tg_end,getaddr(inst));
 
     leave
       -- uvolnit operandy
       op1.free(info,context);
-      op1mem.free(info,context);
+      op1length.free(info,context);
       op2.free(info,context);
-      op2mem.free(info,context);
-      opecx.free(info,context);
+      op2length.free(info,context);
       end declare;
 
     -- výsledek
@@ -398,83 +624,258 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_load_string_and_last =
--- Načte adresu řetězce do EDI a zjistí jeho :last.
+procedure i_str_append_all (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext výrazu
+    ptyp           : in pentity_type;            -- typ výsledného řetězce
+    op1            : in c_operand;               -- adresa cílového řetězce v EDI
+    op1length      : in c_operand;               -- :length cílového řetězce
+    op1last        : in c_operand;               -- :last cílového řetězce
+    first_expr     : in pexpnode;                -- první připojovaný řetězec
+    do_assign      : in t_logical) =             -- T-do levého operandu se bude přiřazovat
+-- Na konec zadaného řetězce připojí všechny řetězce počínaje zadaným operandem [er].
+-- Jestliže je nastaven příznak [do_assign], tak do cílového operandu zřetězení přiřadí nikoli
+-- přiřetězí. :length cílového řetězce na začátku vynuluje.
 ----------------------------------------------------------------------------------------------------
 var
-  newcontext       : iexprcontext;               -- kontext podvýrazů
+  er               : pexpnode;                   -- pravý podvýraz
+  opremaining      : c_operand;                  -- čítač zbývajícího místa v řetězci
+  base_size        : t_unsigned32;               -- velikost báze řetězce
+
+    ------------------------------------------------------------------------------------------------
+    procedure adjust_target_length (
+        oplen      : in c_operand) =             -- velikost, o kterou se řetězec prodlužuje
+    -- Prodlouží :length cílového řetězce o zadanou hodnotu. Generuje run-time check.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- aktualizovat čítač zbývajícího místa v řetězci
+      addii(inst,info,ii_sub,opremaining,oplen,op0);
+
+      -- run-time check velikosti cílového řetězce
+      -- %%TODO(DYNAMIC_CHECK) Generovat pouze pokud si to vyžádá vyšší vrstva
+      i_gen_rcheck_constraint_error_on_condition(inst,info,context,ic_c);
+
+      -- aktualizovat :length levého operandu (v registru)
+      addii(inst,info,ii_add,op1length,oplen,op0);
+      end adjust_target_length;
 
 begin
-  if expr^.t.stype=dt_ustring
+  -- předvypočítat velikost báze řětězce
+  base_size:=unidata_size_to_unsigned(ptyp^.base.getctype^.size);
 
-    -- unconstrained string s dynamickou délkou
-    then
-      -- pak musí mít dynamický :last nebo :size
-      verify({VERIFY=}000344,not x_has_dynamic_size(expr));
+  -- shodit Direction Flag - kopíruje se zdola nahoru
+  addii(inst,info,ii_cld,op0,op0,op0);
 
-      declare var
-        op1        : c_operand;                  -- operand reprezentující řetězec
-        opedi      : c_operand;                  -- registr EDI
 
-      begin
-        -- vygenerovat levý operand
-        i_newcontext(context,newcontext,lm_addr_attr,nil);
-        i_load(inst,info,newcontext,context,expr,op1);
+  ----- (1) jedná-li se o přiřazení, tak vyprázdnit řetězec vlevo -----
+  if do_assign then
+    addii(inst,info,ii_mov,op1length,op_0,op0);
+    end if;
 
-        -- obnovit registry
-        op1.refresh(inst,info,context);
 
-        -- pro atribut bude potřeba registr
-        oplast.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
+  ----- (2) připravit čítač zbývajícího místa v řetězci -----
+  -- alokovat dočasnou proměnnou
+  opremaining.create_temporary(inst,info,edt_unsigned,4);
 
-        -- je k dispozici přímo :last
-        if rta_last in expr^.rta_used{%%ATTR} then
-          -- načíst :last
-          i_gen_load_rtattrib_value(inst,info,context,expr^.rta_used{%%ATTR},op1,rta_last,oplast);
+  -- pro začátek do ní přiřadit maximální velikost řetězce
+  addii(inst,info,ii_mov,opremaining,op1last,op0);
 
-        -- je k dispozici jen :size
-        elsif rta_size in expr^.rta_used{%%ATTR} then
-          -- načíst :size
-          i_gen_load_rtattrib_value(inst,info,context,expr^.rta_used{%%ATTR},op1,rta_size,oplast);
+  -- :last od této chvíle už nebude potřeba
+  op1last.free(info,context);
 
-          -- odečíst velikost interní části řetězce
-          addii(inst,info,ii_sub,oplast,op_lstrisize32,op0);
+  -- a není-li to přiřazení, tak nezapomenout odečíst již obsazenou část řetězce
+  if not do_assign then
+    i_gen_simple_op(inst,info,context,ii_sub,opremaining,op1length);
+    end if;
 
-          -- vydělit velikostí prvku
-          i_gen_div_reg(inst,info,context,oplast,unidata_size_to_imm32(expr^.t.getctype^.base.getctype^.size));
 
-        -- co si máme počít bez dynamického atributu ?
-        else
-          verify({VERIFY=}000516,true)
-          end if;
+  ----- (3) posunout pointer na začátek volné oblasti -----
+  if not do_assign then
+    declare var
+      optemp1      : c_operand;                  -- pracovní operand pro mezivýsledek
+      optemp2      : c_operand;                  -- pracovní operand pro velikost báze
 
-        -- registr EDI
-        opedi.create_use_register(inst,info,context,edt_address,ir_edi);
+    begin       
+      -- vypočítat :length*:base:size
+      optemp1.create_new_register(inst,info,context,edt_unsigned,4);
+      optemp2.create_imm(edt_unsigned,0,base_size);
+      addii(inst,info,ii_imul,optemp1,op1length,optemp2);
 
-        -- načíst adresu řetězce do EDI
-        op1.adjust_size(lpointer32);
-        addii(inst,info,ii_mov,opedi,op1,op0);
+      -- posunout pointer na začátek volného místa
+      verify({VERIFY=}001097,op1.optype<>io_reg);
+      i_gen_simple_op(inst,info,context,ii_add,op1,optemp1);
 
-        -- předat výsledek
-        op.transfer(opedi);
+    leave
+      -- uvolnit pracovní operandy
+      optemp1.free(info,context);
+      optemp2.free(info,context);
+      end declare;
+    end if;
 
-      leave 
-        -- uvolnit operandy
-        op1.free(info,context);
-        opedi.free(info,context);
-        end declare;
 
-    -- řetězec se statickou délkou
-    else
-      -- připravit konstantní atribut :last
-      oplast.create_imm(edt_unsigned,lstrisize32,uniint_to_imm32(expr^.t.getctype^.srange.getctype^.hval));
+  ----- (4) vygenerovat připojení všech operandů -----
+  er:=first_expr;
+  loop
+    -- vygenerovat zřetězení této komponenty
+    case er^.concatkind
+      -- podřetězec
+      when nck_substring do
+          declare var
+            op2       : c_operand;               -- pravý operand: ESI
+            op2length : aliased c_operand;       -- :length pravého operandu
 
-      -- načíst adresu levého operandu do EDI
-      i_newcontext(context,newcontext,lm_addr,nil);
-      i_setrpref(newcontext,in_edi,irm_addr);
-      i_load(inst,info,newcontext,context,expr,op);
-      end if;
-  end i_gen_load_string_and_last;
+          begin
+            -- načíst adresu pravého operandu do ESI
+            i_str_load_single(inst,info,context,er,op2,in_esi,
+                -- načíst velikost řetězce vpravo
+                for oplength    use ^op2length,
+                -- velikost řetězce načíst do ECX
+                for length_mode use lm_direct_ecx,
+                -- posunout pointer na řetězec, aby neukazoval na :length
+                for skip_length use true);
+
+            -- obnovit operandy
+            op1.refresh(inst,info,context);
+            op1length.refresh(inst,info,context);
+            op2.refresh(inst,info,context);
+            op2length.refresh(inst,info,context);
+
+            -- aktualizovat délku cílového řetězce
+            adjust_target_length(op2length);
+
+            -- vlastní přesun dat
+            i_gen_movsd_array(inst,info,context,op2,op1,op2length,base_size);
+
+          leave
+            -- uvolnit operandy
+            op2.free(info,context);
+            op2length.free(info,context);
+            end declare;
+
+      -- podpole
+      when nck_subarray do
+          unimplemented({UNIMP=}000272);
+
+      -- komponenta
+      when nck_component do
+          -- aktualizovat délku cílového řetězce
+          adjust_target_length(op_1);
+
+          -- nemá báze příznivou velikost ?
+          if base_size=1 or base_size=2 or base_size=4{%%TODO(SET) base_size in [1,2,4]}
+
+            -- má => použít registr
+            then
+              declare var
+                newcontext : iexprcontext;       -- kontext podvýrazů
+                op2        : c_operand;          -- hodnota pravého operandu
+                op1mem     : c_operand;          -- [EDI]
+
+              begin
+                -- načíst pravý operand do registru
+                i_newcontext(context,newcontext,lm_reg,ptyp^.base.getctype);
+                i_load(inst,info,newcontext,context,er,op2);
+
+                -- obnovit registry
+                op1.refresh(inst,info,context);
+                op1length.refresh(inst,info,context);
+                op2.refresh(inst,info,context);
+
+                -- kromě EDI nyní potřebujeme i [EDI]
+                op1mem.clone(inst,info,context,op1);
+                op1mem.transform_reg_to_mem(op2.edtype,base_size);
+
+                -- přiřadit
+                addii(inst,info,ii_mov,op1mem,op2,op0);
+
+                -- posunout EDI (je-li to třeba)
+                if er^.next<>nil then 
+                  addopimm(inst,info,context,ii_add,op1,base_size);
+                  end if;
+
+              leave
+                -- uvolnit operandy
+                op1mem.free(info,context);
+                op2.free(info,context);
+                end declare;
+
+            -- nemá => standardní přesun
+            else
+              declare var
+                newcontext : iexprcontext;       -- kontext podvýrazů
+                op2        : c_operand;          -- adresa pravého operandu v ESI
+
+              begin
+                -- načíst pravý operand do ESI
+                i_newcontext(context,newcontext,lm_addr,nil);
+                i_setrpref(newcontext,in_esi,irm_addr);
+                i_load(inst,info,newcontext,context,er,op2);
+
+                -- obnovit registry
+                op1.refresh(inst,info,context);
+                op1length.refresh(inst,info,context);
+                op2.refresh(inst,info,context);
+
+                -- přesun
+                i_gen_movsd_static(inst,info,context,op2,op1,base_size);
+
+              leave
+                -- uvolnit operand
+                op2.free(info,context);
+                end declare;
+              end if;
+
+      when others do verify({VERIFY=}001062,true);
+      end case;
+
+    -- další řetězec
+    er:=er^.next;
+    until er=nil;
+
+leave
+  -- uvolnit operandy
+  opremaining.free(info,context);
+  end i_str_append_all;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_str_prepare_constrained_temporary_result (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext výrazu
+    ptyp           : in pentity_type;            -- typ výsledného řetězce
+    optemp         : out c_operand;              -- dočasný mezivýsledek zřetězení
+    optemplast     : out c_operand;              -- statický atribut :last
+    optemplength   : out c_operand) =            -- dynamický atribut :length
+-- Připraví operand reprezentující dočasný mezivýsledek zřetězení.
+----------------------------------------------------------------------------------------------------
+use
+  supervised cx_expr,cx_expr.cx_rta;
+
+var
+  rta_modes        : t_rtattrib_modes;           -- módy načtení run-time atributů
+
+begin
+  verify({VERIFY=}001063,ptyp^.stype<>dt_string);
+
+  -- alokovat pracovní prostor na stacku
+  optemp.create_temporary(inst,info,edt_binary,unidata_size_to_unsigned(ptyp^.size));
+
+  -- asociovat pracovní prostor s odpovídajícím typem, aby správně fungovaly dynamické atributy
+  optemp.set_orgtyp(ptyp);
+
+  -- nastavit správně módy run-time atributů
+  cx_expr.cx_rta.x_rta_string_attributes_stored_in_value(rta_modes);
+  optemp.set_rta_modes(rta_modes);
+
+  -- připravit konstantní atribut :last
+  i_rta_load(inst,info,context,optemp,rta_last,optemplast);
+
+  -- připravit dynamický atribut :length
+  i_rta_load_address(inst,info,context,optemp,rta_length,optemplength);
+  end i_str_prepare_constrained_temporary_result;
 
 
 
@@ -485,181 +886,9 @@ procedure i_gen_op_concat_string =
 var
   el               : pexpnode;                   -- levý podvýraz
   er               : pexpnode;                   -- pravý podvýraz
-
-    ------------------------------------------------------------------------------------------------
-    procedure appendall (
-        op1        : in c_operand;               -- levý operand: EDI
-        op1mem     : in c_operand;               -- levý operand: [EDI]
-        op1length  : in c_operand;               -- :length levého operandu
-        op1last    : in c_operand;               -- :last levého operandu
-        opbasesize : in c_operand) =             -- konstantní velikost báze řetězce
-    -- Přikopírování všech operandů počínaje ER k OP1.
-    ------------------------------------------------------------------------------------------------
-    var
-      newcontext   : iexprcontext;               -- kontext podvýrazů
-      tg_end       : itarget;                    -- návěští pro skok na konec zřetězení
-      basesize     : t_unsigned32;
-
-    begin
-      -- návěští pro skok na konec zřetězení
-      newtarget(info,tg_end);
-
-      -- shodit Direction Flag - kopíruje se zdola nahoru
-      addii(inst,info,ii_cld,op0,op0,op0);
-
-      -- velikost báze
-      basesize:=imm32_to_unsigned(opbasesize.imm);
-
-      loop
-        -- vygenerovat zřetězení
-        case er^.concatkind
-          -- podřetězec
-          when nck_substring do
-              declare var
-                op2       : c_operand;                  -- pravý operand: ESI
-                op2mem    : c_operand;                  -- pravý operand: [ESI]
-                op2length : c_operand;                  -- :length pravého operandu
-
-              begin
-                -- načíst pravý operand do ESI
-                i_newcontext(context,newcontext,lm_addr,nil);
-                i_setrpref(newcontext,in_esi,irm_addr);
-                i_load(inst,info,newcontext,context,er,op2);
-
-                -- obnovit registry
-                op1.refresh(inst,info,context);
-                op1mem.refresh(inst,info,context);
-                op1length.refresh(inst,info,context);
-                op2.refresh(inst,info,context);
-
-                -- kromě ESI potřebujeme i [ESI]
-                op2mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op2);
-
-                -- počet prvků řetězce do ECX
-                op2length.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
-                op2mem.adjust_size(lstrisize32);
-                addii(inst,info,ii_mov,op2length,op2mem,op0);
-
-                -- posunout pointer na začátek datové části
-                addii(inst,info,ii_add,op2,op_lstrisize32,op0);
-
-                -- není to moc ? (op2length:=min(op2length,op1last-op1length)
-                declare var
-                  optemp : c_operand;              -- pomocný operand
-
-                begin
-                  optemp.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
-                  addii(inst,info,ii_mov,optemp,op1last,op0);
-                  addii(inst,info,ii_sub,optemp,op1length,op0);
-                  addii(inst,info,ii_cmp,op2length,optemp,op0);
-                  addcmov(inst,info,context,ic_be,op2length,optemp);
-                leave
-                  optemp.free(info,context);
-                  end declare;
-
-                -- aktualizovat :length levého operandu (v registru)
-                addii(inst,info,ii_add,op1length,op2length,op0);
-
-                -- vlastní přesun dat
-                i_gen_movsd_array(inst,info,context,op2,op1,op2length,basesize);
-
-              leave
-                -- uvolnit operandy vztahující se k pravému operandu
-                op2.free(info,context);
-                op2mem.free(info,context);
-                op2length.free(info,context);
-                end declare;
-
-          -- podpole
-          when nck_subarray do
-              unimplemented({UNIMP=}000121);
-
-          -- komponenta
-          when nck_component do
-              -- vejde se ještě komponenta do řetězce ?
-              addii(inst,info,ii_cmp,op1length,op1last,op0);
-              addjump(inst,info,context,ic_ae,tg_end,{%%TODO(PREDICTION)}ijp_not_taken);
-
-              -- inkrementovat :length
-              addii(inst,info,ii_inc,op1length,op0,op0);
-
-              -- nemá báze příznivou velikost ?
-              if basesize=1 or basesize=2 or basesize=4{%%TODO(SET) basesize in [1,2,4]}
-
-                -- má => použít registr
-                then
-                  declare var
-                    op2 : c_operand;             -- pravý operand: ESI
-
-                  begin
-                    -- načíst pravý operand do registru
-                    i_newcontext(context,newcontext,lm_reg,expr^.t.getctype^.base.getctype{nil});
-                    i_load(inst,info,newcontext,context,er,op2);
-
-                    -- obnovit registry
-                    op1.refresh(inst,info,context);
-                    op1mem.refresh(inst,info,context);
-                    op1length.refresh(inst,info,context);
-                    op2.refresh(inst,info,context);
-
-                    -- přiřadit
-                    op1mem.adjust_size(basesize);
-                    addii(inst,info,ii_mov,op1mem,op2,op0);
-
-                    -- posunout EDI (je-li to třeba)
-                    if er^.next<>nil then addii(inst,info,ii_add,op1,opbasesize,op0); end if;
-
-                  leave
-                    -- uvolnit operand
-                    op2.free(info,context);
-                    end declare;
-
-                -- nemá => standardní přesun
-                else
-                  declare var
-                    op2 : c_operand;             -- pravý operand: ESI
-
-                  begin
-                    -- načíst pravý operand do ESI
-                    i_newcontext(context,newcontext,lm_addr,nil);
-                    i_setrpref(newcontext,in_esi,irm_addr);
-                    i_load(inst,info,newcontext,context,er,op2);
-
-                    -- obnovit registry
-                    op1.refresh(inst,info,context);
-                    op1mem.refresh(inst,info,context);
-                    op1length.refresh(inst,info,context);
-                    op2.refresh(inst,info,context);
-
-                    -- přesun
-                    i_gen_movsd_static(inst,info,context,op2,op1,basesize);
-
-                  leave
-                    -- uvolnit operand
-                    op2.free(info,context);
-                    end declare;
-                  end if;
-
-          when others do verify({VERIFY=}000376,true);
-          end case;
-
-        -- další operand
-        er:=er^.next;
-        until er=nil;
-
-      -- cíl skoku na toto místo
-      settarget(info,tg_end,getaddr(inst));
-      end appendall;
-
-var
-  opbasesize       : c_operand;                  -- konstantní velikost báze řetězce
-  op1org           : c_operand;                  -- původní adresa levého operandu
   newcontext       : iexprcontext;               -- kontext podvýrazů
 
 begin
-  -- připravit operand s velikostí báze řetězce
-  opbasesize.create_imm(edt_unsigned,0,unidata_size_to_imm32(expr^.t.getctype^.base.getctype^.size));
-
   -- podvýrazy
   expr^.get(el,er);
 
@@ -669,69 +898,31 @@ begin
     then
       declare var
         op1        : c_operand;                  -- levý operand: EDI
-        op1mem     : c_operand;                  -- levý operand: [EDI]
-        op1length  : c_operand;                  -- :length levého operandu
-        op1last    : c_operand;                  -- :last levého operandu
+        op1last    : aliased c_operand;          -- :last levého operandu
+        op1length  : aliased c_operand;          -- :length levého operandu
 
-      begin
-        -- načíst adresu levého operandu do EDI
-        i_gen_load_string_and_last(inst,info,context,el,op1,op1last);
+      begin      
+        -- načíst adresu levého operandu di EDI a provést nějaké další operace
+        i_str_load_single(inst,info,context,el,op1,in_edi,
+            -- načíst maximální velikost řetězce vlevo
+            for oplast       use ^op1last,
+            -- načíst adresu velikosti řetězce vlevo
+            for oplength     use ^op1length,
+            -- délka řetězce musí být nezávislý na zdrojovém operandu
+            for length_mode  use lm_no_dependance,
+            -- posunout pointer na začátek datové oblasti
+            for skip_length  use true,
+            -- vyvarovat se použití ECX, bude potřeba
+            for preserve_ecx use true);
 
-        -- obnovit registry
-        op1.refresh(inst,info,context);
-        op1last.refresh(inst,info,context);
-
-        -- schovat si původní adresu levého operandu
-        -- %%X Někdy mohu mít k dispozici volný registr, který by šel využít
-        op1org.create_temporary(inst,info,edt_address,idefregsize);
-        addii(inst,info,ii_mov,op1org,op1,op0);
-
-        -- kromě EDI potřebujeme i [EDI]
-        op1mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op1);
-
-        -- :length řetězce vlevo umístit do registru
-        op1mem.adjust_size(lstrisize32);
-        op1length.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
-        addii(inst,info,ii_mov,op1length,op1mem,op0);
-        op1mem.adjust_size(0);
-
-        declare var
-          optemp   : c_operand;                  -- pomocný operand
-
-        begin
-          -- vypočítat :length*:base:size (index -> offset)
-          optemp.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
-          addii(inst,info,ii_imul,optemp,op1length,opbasesize);
-
-          -- posunout pointer na začátek volného místa
-          addii(inst,info,ii_add,op1,op_lstrisize32,op0);
-          addii(inst,info,ii_add,op1,optemp,op0);
-
-        leave
-          -- uvolnit pracovní registr
-          optemp.free(info,context);
-          end declare;
-
-        -- přikopírovat vše počínaje ER
-        appendall(op1,op1mem,op1length,op1last,opbasesize);
-
-        -- aktualizovat fyzické :length levého operandu
-        op1.adjust_size(idefregsize);
-        op1mem.adjust_size(lstrisize32);
-        addii(inst,info,ii_mov,op1,op1org,op0);
-        addii(inst,info,ii_mov,op1mem,op1length,op0);
-
-        -- uvolnit temporary prostor
-        --%%FLEX Tohle se snad udělá samo,ne?
-        -- freetemp(inst,info,op1org.disp);
+        -- připojit všechny pravé operandy
+        i_str_append_all(inst,info,context,expr^.t.getctype,op1,op1length,op1last,er,false);
 
       leave
         -- uvolnit operandy
         op1.free(info,context);
-        op1org.free(info,context);
-        op1mem.free(info,context);
-        op1length.free(info,context);
         op1last.free(info,context);
+        op1length.free(info,context);
         end declare;
 
     -- normální &
@@ -746,62 +937,34 @@ begin
         -- výsledek má statickou velikost
         else
           declare var
-            op1        : c_operand;                  -- levý operand: EDI
-            op1mem     : c_operand;                  -- levý operand: [EDI]
-            op1length  : c_operand;                  -- :length levého operandu
-            op1last    : c_operand;                  -- :last levého operandu
+            optemp       : c_operand;            -- dočasný mezivýsledek zřetězení
+            optemplast   : c_operand;            -- statický atribut :last
+            optemplength : c_operand;            -- dynamický atribut :length
 
           begin
-            -- %%X Nemůže se stát, že bude mezivýsledek příliš velký na to,
-            -- aby se nevešel na stack ? Myslím, že klidně může ...
+            -- připravit pracovní prostor pro mezivýsledek
+            i_str_prepare_constrained_temporary_result(inst,info,context,expr^.t.getctype,optemp,optemplast,optemplength);
 
-            -- alokovat pracovní prostor na stacku
-            op1org.create_temporary(inst,info,edt_binary,unidata_size_to_unsigned(expr^.t.getsize));
+            -- již teď známe výsledek - je to právě alokovaná dočasná proměnná
+            vysl.clone(inst,info,context,optemp);
 
-            -- připravit konstantní atribut :last
-            op1last.create_imm(edt_unsigned,0,uniint_to_imm32(expr^.t.getctype^.srange.getctype^.hval));
+            -- posunout pointer na začátek datové části
+            i_str_skip_length(inst,info,context,el,optemp);
 
-            -- počáteční nulové :length mezivýsledku
-            op1length.create_new_register(inst,info,context,edt_unsigned,lstrisize32);
-            addii(inst,info,ii_mov,op1length,op_0,op0);
+            -- načíst adresu (datové části) mezivýsledku do EDI
+            i_gen_load_address_to_register(inst,info,context,optemp,for pref_reg use in_edi);
 
-            -- adresu začátku datové části umístit do EDI
-            op1.clone(inst,info,context,op1org);
-            op1.shift_displacement(lstrisize32);
-            i_gen_lea(inst,info,context,op1,in_edi);
-
-            -- kromě EDI potřebujeme i [EDI]
-            op1mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op1);
-
-            -- přikopírovat všechny operandy
-            er:=el;
-            appendall(op1,op1mem,op1length,op1last,opbasesize);
-
-            -- obnovit registry
-            op1org.refresh(inst,info,context);
-
-            -- aktualizovat :length
-            op1org.adjust_size(lstrisize32);
-            addii(inst,info,ii_mov,op1org,op1length,op0);
-
-            -- výsledek
-            vysl.transfer(op1org);
-            vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
+            -- připojit všechny pravé operandy
+            i_str_append_all(inst,info,context,expr^.t.getctype,optemp,optemplength,optemplast,el,true);
 
           leave
             -- uvolnit operandy
-            op1.free(info,context);
-            op1org.free(info,context);
-            op1mem.free(info,context);
-            op1last.free(info,context);
-            op1length.free(info,context);
+            optemp.free(info,context);
+            optemplast.free(info,context);
+            optemplength.free(info,context);
             end declare;
           end if;
       end if;
-
-leave
-  -- uvolnit operandy
-  opbasesize.free(info,context);
   end i_gen_op_concat_string;
 
 
@@ -821,105 +984,213 @@ begin
   -- podvýrazy
   expr^.get(el,er);
 
-  if x_is_nil(er) {er^.t.stype=dt_uninil}
 
-    -- přiřazení prázdného řetězce
-    then
-      declare var
-        op1        : c_operand;                  -- levý operand: EDI
+  ----- (1) přiřazení prázdného řetězce ------------------------------------------------------------
+  if x_is_nil(er) then
+    declare var
+      op1        : c_operand;                  -- řetězec
+      op1length  : aliased c_operand;          -- jeho :length
 
-      begin
-        -- adresa levého operandu
-        i_newcontext(context,newcontext,lm_gen,nil);
-        i_load(inst,info,newcontext,context,el,op1);
+    begin
+      -- adresa levého operandu
+      i_str_load_single(inst,info,context,el,op1,
+          -- načíst délku řetězce
+          for oplength    use ^op1length,
+          -- délku potřebujeme jako adresní operand
+          for length_mode use lm_address);
 
-        -- obnovit registry
-        op1.refresh(inst,info,context);
+      -- do :length nacpat nulu, tím se řetězec vyprázdní
+      addii(inst,info,ii_mov,op1length,op_0,op0);
 
-        -- levý operand teď ukazuje na interní část řetězce
-        -- %%FLEX Xakru neměl by se tady NILovat celý řetězěc včetně nepoužitých bytů?
-        -- Minimálně pro řetězec splňující S:secure=true ano.
-        op1.adjust_size(4);
+    leave
+      -- uvolnit operandy
+      op1.free(info,context);
+      op1length.free(info,context);
+      end declare;
 
-        -- přiřadit nulu do :length
-        addii(inst,info,ii_mov,op1,op_0,op0);
 
-      leave
-        -- uvolnit levý operand
-        op1.free(info,context);
-        end declare;
+  ----- (2) přiřazení zřetězení více řetězců -------------------------------------------------------
+{ Trochu složitější varianta přiřazení zřetězení, která generuje asi o dvě instrukce lepší kód,
+  ale a) je zbytečně složitá a není důvod ji tu mít a b) při přiřazení :length mezivýsledku do
+  :length levého operandu vygeneruje chybnou instrukci (internal error 27).
 
-    -- ostatní případy
-    else
-      -- %%X Když je na pravé straně konstanta a el:last je též   
-      -- konstantní, lze to celé zjednodušit:
-      --   -- do ECX se šoupne konstanta,
-      --   -- do [EDI] se šoupne konstanta,
-      --   -- nemusí se testovat oříznutí.
-      -- Když je navíc konstanta vpravo dostatečně malá,
-      -- nemusím se obtěžovat s REP MOVSD ale mohu to rozvinout.
+  Do budoucna bude mít tato varianta smysl pouze pro obsluhu přiřazení do unconstrained stringu,
+  protože [i_gen_op_concat_string] sám o sobě neví, jak má vyalokovat velký pracovní prostor.
 
-      declare var
-        op1              : c_operand;                  -- levý operand: EDI
-        op1mem           : c_operand;                  -- levý operand: [EDI]
-        op1last          : c_operand;                  -- :last levého operandu
-        op2              : c_operand;                  -- pravý operand: ESI
-        op2mem           : c_operand;                  -- pravý operand: [ESI]
-        op2length        : c_operand;                  -- :length pravého operandu
+  elsif er^.ntype=nt_operator and then pexpoper(er)^.oper=op_concat then
+    -- alokovat pracovní prostor pro mezivýsledek
+    if expr^.t.stype=dt_ustring
 
-      begin
-        -- načíst adresu pravého operandu do ESI
-        i_newcontext(context,newcontext,lm_addr,nil);
-        i_setrpref(newcontext,in_esi,irm_addr);
-        i_load(inst,info,newcontext,context,er,op2);
+      -- výsledek má dynamickou velikost
+      then
+        unimplemented({UNIMP=}000273);
 
-        -- načíst adresu levého operandu do EDI
-        i_gen_load_string_and_last(inst,info,context,el,op1,op1last);
+      -- výsledek má statickou velikost
+      else
+        declare var
+          optemp       : c_operand;              -- dočasný mezivýsledek zřetězení
+          optemplast   : c_operand;              -- statický atribut :last
+          optemplength : c_operand;              -- dynamický atribut :length
 
-        -- obnovit registry
-        op1.refresh(inst,info,context);
-        op1last.refresh(inst,info,context);
-        op2.refresh(inst,info,context);
+        begin
+          -- připravit pracovní prostor pro mezivýsledek
+          i_str_prepare_constrained_temporary_result(inst,info,context,expr^.t.getctype,optemp,optemplast,optemplength);
 
-        -- kromě EDI potřebujeme i [EDI]
-        op1mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op1);
+          -- posunout pointer na začátek datové části
+          i_str_skip_length(inst,info,context,el,optemp);
 
-        -- kromě ESI potřebujeme i [ESI]
-        op2mem.create_memory_address_from_operand(inst,info,context,edt_binary,0,op2);
 
-        -- shodit Direction Flag - kopíruje se zdola nahoru
-        addii(inst,info,ii_cld,op0,op0,op0);
+          ---- (A) sestavit mezivýsledek zřetězení ----
+          declare var
+            optemp_edi : c_operand;              -- adresa dočasného mezivýsledku v EDI
 
-        -- počet prvků řetězce vpravo do ECX
-        op2length.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
-        op2mem.adjust_size(lstrisize32);
-        addii(inst,info,ii_mov,op2length,op2mem,op0);
+          begin
+            -- načíst adresu (datové části) mezivýsledku do EDI
+            optemp_edi.clone(inst,info,context,optemp);
+            i_gen_load_address_to_register(inst,info,context,optemp_edi,for pref_reg use in_edi);
 
-        -- není to moc ? (op2length:=min(op2length,op1last)
-        addii(inst,info,ii_cmp,op2length,op1last,op0);
-        addcmov(inst,info,context,ic_be,op2length,op1last);
+            -- připojit všechny pravé operandy
+            i_str_append_all(inst,info,context,expr^.t.getctype,optemp_edi,optemplength,optemplast,er^.sub,true);
 
-        -- uložit :length do levého operandu
-        op1mem.adjust_size(lstrisize32);
-        addii(inst,info,ii_mov,op1mem,op2length,op0);
+          leave
+            -- uvolnit operandy
+            optemp_edi.free(info,context);
+            end declare;
 
-        -- posunout pointer na začátek datové části
-        addii(inst,info,ii_add,op1,op_lstrisize32,op0);
-        addii(inst,info,ii_add,op2,op_lstrisize32,op0);
 
-        -- vlastní přesun dat
-        i_gen_movsd_array(inst,info,context,op2,op1,op2length,unidata_size_to_unsigned(expr^.t.getctype^.base.getctype^.size));
+          ---- (B) mezivýsledek přiřadit do levého operandu ----
+          declare var
+            op1        : c_operand;              -- levý operand: EDI
+            op1length  : aliased c_operand;      -- :length levého operandu
 
-      leave
-        -- uvolnit operandy
-        op1.free(info,context);
-        op1mem.free(info,context);
-        op1last.free(info,context);
-        op2.free(info,context);
-        op2mem.free(info,context);
-        op2length.free(info,context);
-        end declare;
-      end if;
+          begin
+            -- načíst adresu levého operandu do EDI a provést nějaké další operace
+            i_str_load_single(inst,info,context,el,op1,in_edi,
+                -- načíst adresu velikosti řetězce vlevo
+                for oplength   use ^op1length);
+
+            -- obnovit registry
+            op1.refresh(inst,info,context);
+            op1length.refresh(inst,info,context);
+            optemp.refresh(inst,info,context);
+            optemplast.refresh(inst,info,context);
+            optemplength.refresh(inst,info,context);
+
+            -- Poznámka: run-time check velikosti cílového řetězce ani CLD se provádět nemusí,
+            -- zařídil to již [i_str_append_all]
+
+            -- načíst adresu (datové části) mezivýsledku do EDI (nyní již natrvalo)
+            i_gen_load_address_to_register(inst,info,context,optemp,for pref_reg use in_edi);
+
+            -- uložit :length mezivýsledku do :length levého operandu
+            addii(inst,info,ii_mov,op1length,optemplength,op0);
+
+            -- posunout pointer na začátek datové části levého operandu
+            i_str_skip_length(inst,info,context,el,op1);
+
+            -- vlastní přesun dat
+            i_gen_movsd_array(inst,info,context,optemp,op1,optemplength,unidata_size_to_unsigned(expr^.t.getctype^.base.getctype^.size));
+
+          leave
+            -- uvolnit operandy
+            op1.free(info,context);
+            op1length.free(info,context);
+            end declare;
+
+        leave
+          -- uvolnit operandy
+          optemp.free(info,context);
+          optemplast.free(info,context);
+          optemplength.free(info,context);
+          end declare;
+        end if;
+
+      { A takhle jednoduše to může vypadat, když je zaručeno, že operand vlevo není použit i vpravo:
+
+        declare var
+          op1              : c_operand;                  -- levý operand: EDI
+          op1last          : aliased c_operand;          -- :last levého operandu
+          op1length        : aliased c_operand;          -- :length levého operandu
+
+        begin      
+          -- načíst adresu levého operandu di EDI a provést nějaké další operace
+          i_str_load_single(inst,info,context,el,op1,in_edi,
+              -- načíst maximální velikost řetězce vlevo
+              for oplast     use ^op1last,
+              -- načíst adresu velikosti řetězce vlevo
+              for oplength   use ^op1length);
+
+          -- připojit všechny pravé operandy
+          i_str_append_all(inst,info,context,expr^.t.getctype,op1,op1length,op1last,er^.sub,true);
+
+        leave
+          -- uvolnit operandy
+          op1.free(info,context);
+          op1last.free(info,context);
+          op1length.free(info,context);
+          end declare;
+      }
+}
+
+  ----- (3) ostatní případy ------------------------------------------------------------------------
+  else
+    declare var
+      op1              : c_operand;                  -- levý operand: EDI
+      op1last          : aliased c_operand;          -- :last levého operandu
+      op1length        : aliased c_operand;          -- :length levého operandu
+      op2              : c_operand;                  -- pravý operand: ESI
+      op2length        : aliased c_operand;          -- :length pravého operandu
+
+    begin
+      -- načíst adresu pravého operandu do ESI
+      i_str_load_single(inst,info,context,er,op2,in_esi,
+          -- načíst velikost řetězce vpravo
+          for oplength    use ^op2length,
+          -- velikost řetězce načíst do ECX
+          for length_mode use lm_direct_ecx);
+
+      -- načíst adresu levého operandu do EDI a provést nějaké další operace
+      i_str_load_single(inst,info,context,el,op1,in_edi,
+          -- načíst maximální velikost řetězce vlevo
+          for oplast      use ^op1last,
+          -- načíst adresu velikosti řetězce vlevo
+          for oplength    use ^op1length,
+          -- délku potřebujeme jako adresní operand
+          for length_mode use lm_address);
+
+      -- obnovit registry
+      op2.refresh(inst,info,context);
+      op2length.refresh(inst,info,context);
+      op1.refresh(inst,info,context);
+      op1last.refresh(inst,info,context);
+      op1length.refresh(inst,info,context);
+
+      -- shodit Direction Flag - kopíruje se zdola nahoru
+      addii(inst,info,ii_cld,op0,op0,op0);
+
+      -- run-time check velikosti cílového řetězce
+      -- %%TODO(DYNAMIC_CHECK) Generovat pouze pokud si to vyžádá vyšší vrstva
+      i_gen_rcheck_constraint_error_on_compare(inst,info,context,op2length,op1last,ic_a);
+
+      -- uložit :length pravého operandu do :length levého operandu
+      addii(inst,info,ii_mov,op1length,op2length,op0);
+
+      -- posunout pointery na začátky datových částí
+      i_str_skip_length(inst,info,context,el,op1);
+      i_str_skip_length(inst,info,context,er,op2);
+
+      -- vlastní přesun dat
+      i_gen_movsd_array(inst,info,context,op2,op1,op2length,unidata_size_to_unsigned(expr^.t.getctype^.base.getctype^.size));
+
+    leave
+      -- uvolnit operandy
+      op1.free(info,context);
+      op1last.free(info,context);
+      op1length.free(info,context);
+      op2.free(info,context);
+      op2length.free(info,context);
+      end declare;
+    end if;
   end i_gen_op_assign_string;
 
 

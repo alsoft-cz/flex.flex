@@ -12,20 +12,21 @@ use
 extend
   cp_cpu.cp_ia32.ci_instr;
 
+-- dopředné deklarace
+class c_operand; type p_operand = ^c_operand;
+
 type
   -- typ operandu
   t_operand_type   = enum
       io_none;                                   -- prázdný operand
       io_imm;                                    -- přímá hodnota
       io_reg;                                    -- registr - všeobecný
-{
-      io_reg_mmx;                                -- registr - všeobecný MMX
-      io_reg_xmm;                                -- regisyr - všeobecný XMM
-      io_reg_STi;                                -- registr - floating point ST(i)
-      io_reg_seg;                                -- registr - segmentový
-      io_reg_CRi;                                -- registr - řídící CRi
-      io_reg_DRi;                                -- registr - ladící DRi
-} 
+--    io_reg_mmx;                                -- registr - všeobecný MMX
+--    io_reg_xmm;                                -- registr - všeobecný XMM
+--    io_reg_STi;                                -- registr - floating point ST(i)
+--    io_reg_seg;                                -- registr - segmentový
+--    io_reg_CRi;                                -- registr - řídící CRi
+--    io_reg_DRi;                                -- registr - ladící DRi
       io_mem;                                    -- paměť
       io_rel;                                    -- relativní adresa
       io_cc;                                     -- podmínka
@@ -49,21 +50,35 @@ type
 
 const
   -- hodnoty
-  edts_value       = t_elementary_data_type_set:[edt_unsigned,edt_signed,edt_pointer,edt_float,edt_fixed,edt_binary];
+  edts_value         = t_elementary_data_type_set:[edt_unsigned,edt_signed,edt_pointer,edt_float,edt_fixed,edt_binary];
+  -- ordinální hodnoty
+  edts_ordinal       = t_elementary_data_type_set:[edt_unsigned,edt_signed];
+  -- pointery (adresy)
+  edts_pointer       = t_elementary_data_type_set:[edt_address,edt_pointer];
+  -- hodnoty s agregovanými run-time atributy
+  edts_with_rtattrib = t_elementary_data_type_set:[edt_pointer,edt_binary];
 
 type
-  -- způsob zjištění run-time atributu
-  t_rtattrib_mode  = enum
-      rtm_static;                                -- staticky určit podle datového typu operandu
-      rtm_stored_in_value;                       -- uložen v hodnotě, kterou operand reprezentuje
-      rtm_stored_in_tag;                         -- uložen v tagu dynamického typu hodnoty
-      rtm_stored_in_pointer;                     -- uložen v pointeru
+  -- nepřímost run-time atributu
+  t_rtattrib_indirection = enum
+      rti_this_value;                            -- atribut se vztahuje k hodnotě repzentované operandem
+      rti_referenced_value;                      -- atribut se vztahuje k hodnotě odkazované operandem-pointerem
       end enum;
 
 ----------------------------------------------------------------------------------------------------
 #separate public c_operand;
 #separate private c_operand;
 -- Operand strojové instrukce.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_reduceop (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in out c_operand);          -- operand
+-- Pokud operand používá moc registrů (=dva), vylepší to (na jeden).
+-- Operand musí být typu IO_MEM, IO_STACK nebo IO_IMM.
 ----------------------------------------------------------------------------------------------------
 
 var
@@ -110,6 +125,12 @@ procedure edtype_from_type (
     return t_elementary_data_type;               -- elementární datový typ odpovídající typu
 -- Určí elementární datový typ výrazu, který odpovídá dodanému typu. Typ smí být NIL.
 ----------------------------------------------------------------------------------------------------
+procedure value_size_from_expr (
+    expr           : in cx_expr.cx_def.pexpnode) -- zkoumaný výraz
+    return t_unsigned;                           -- velikost hodnoty
+-- Určí velikost hodnoty odpovídající danému výrazu. Pokud je to Unchecked view bez statické
+-- velikosti, vrátí nulu.
+----------------------------------------------------------------------------------------------------
 
 supervised
 
@@ -119,10 +140,12 @@ var
       -- univerzální typy
       for dt_uniint     use edt_unsigned,
       for dt_unireal    use edt_float,
-      for dt_unilogical use edt_fixed,
+      for dt_unilogical use edt_unsigned,
       for dt_unichar    use edt_unsigned,
       for dt_uniarray   use edt_binary,
       for dt_uninil     use edt_binary,
+      -- singulární typy
+      for dt_message    use edt_unsigned,
       -- regulární typy
       for dt_signed     use edt_signed,
       for dt_unsigned   use edt_unsigned,

@@ -48,7 +48,8 @@ var
     lines          : t_unsigned;                 -- aktualni radek
 
     include        : t_logical;                  -- T-je to includovaný soubor
-    efective       : t_logical;                  -- T-poslední zpracovávaný řádek byl efektivní
+    effective      : t_logical;                  -- T-poslední zpracovávaný řádek byl efektivní
+    effective_lines: t_unsigned;
 
     -- generic packet reader
     packet         : t_data_packet;              -- aktualni packet
@@ -57,8 +58,8 @@ var
     -- unget support
     unreadpos      : t_offset;                   -- zaporna pozice pred packetem
     unreadlen      : t_offset;                   -- delka dat v unread bufferu
-    unreadbuff     : aliased array 0..7          -- unget buffer
-                     of aliased t_data_byte;
+    unreadbuff     : aliased array 0..7 of aliased t_data_byte; -- unget buffer
+
 
 
   --------------------------------------------------------------------------------------------------
@@ -73,10 +74,9 @@ var
     lines:=1;
     
     -- otevru soubor
-    if cfg_sharing then
-      infile.open(name,tfss_shared_read,false);
-    else
-      infile.open(name,tfss_not_shared,false);
+    if cfg_sharing 
+      then infile.open(name,tfss_shared_read,false);
+      else infile.open(name,tfss_not_shared,false);
       end if;
 
     -- nastavim decoder
@@ -87,11 +87,11 @@ var
     -- rozhodnu se pro buffer
     infile.get_file(f);
     
-    if f^.get_size<=16384 then
+    if true or f^.get_size<=16_384 then
       input:=^c_input_stream:(coder);
     else
       -- pripojim a spustim buffer
-      infile.set_optimal_packet_size(16384);
+      infile.set_optimal_packet_size(16_384);
       new sbuffer;
       sbuffer^.init_input_buffer(^c_input_stream:(coder));
       input:=^c_input_stream:(sbuffer^);
@@ -102,9 +102,9 @@ var
 
   catch
     when file_error do
-      ce^.seterror({CCERR=}000568,ce_f_open);
-      ce^.setparam(name);
-      ce^.raiseerror;
+        ce^.seterror({CCERR=}000578,ce_f_open);
+        ce^.setparam(name);
+        ce^.raiseerror;
     end open;
 
 
@@ -115,6 +115,7 @@ var
   begin
     -- uvolnim posledni packet
     discard_packet(packet);
+
     -- zavru soubor
     input^.close;
     if sbuffer<>nil then
@@ -145,12 +146,12 @@ var
 
     -- vratim pozici
     eod:=false;
-    if column>0 then
+    --if column>0 then
       pred column;
-    else
-      column:=last_column;
-      pred lines;
-      end if;
+    --else
+      --column:=last_column;
+      --pred lines;
+      --end if;
     end ungetchar;
 
 
@@ -162,6 +163,8 @@ var
     _data          : p_data_array;
     readbytes      : t_offset;
     readun         : t_offset;
+    name           : p_text_name;             -- jméno otvíraného souboru
+    invalidchar    : t_logical;
 
   begin
     _data:unchecked:=^char;
@@ -190,7 +193,21 @@ var
     while (readsize>readbytes) loop
       -- pokud neni platny packet, stahni ho
       if packet.style=t_dps_invalid then
-        input^.read_packet(packet);
+        invalidchar:=false;
+        begin
+          input^.read_packet(packet);
+        catch 
+          when stream_invalid_data do
+          invalidchar:=true;
+          end;
+        --%%TODO move into catch and drop invalidchar bool
+        if invalidchar then
+          ce^.seterror({CCERR=}000577,ce_illegal_char);
+          get_full_name(name);
+          ce^.setparam(name^);
+          discard name;
+          ce^.raiseerror;
+          end if;
         --write('~?');
         end if;
 
@@ -280,11 +297,23 @@ var
   static next_line =
   ------------------------------------------------------------------------------------------------
   begin
-    efective:=false;
+    if effective then
+      succ effective_lines;
+      end if;
+    effective:=false;
     last_column:=column;
     column:=0;
     succ lines;
     end next_line;
+
+
+
+  ------------------------------------------------------------------------------------------------
+  static get_effective =
+  ------------------------------------------------------------------------------------------------
+  begin
+    result:=effective_lines;
+    end get_effective;
 
 
 
@@ -332,7 +361,7 @@ var
   static is_effective =
   ------------------------------------------------------------------------------------------------
   begin
-    result:=efective;
+    result:=effective;
     end is_effective;
 
 
@@ -340,7 +369,7 @@ var
   static set_effective =
   ------------------------------------------------------------------------------------------------
   begin
-    efective:=true;
+    effective:=true;
     end set_effective;
 
   
@@ -359,6 +388,12 @@ var
   end c_source_file;
 
 
+var
+  -- popis [t_open_file_type]
+  t_open_file_type_txt : const array t_open_file_type of t_char32str := [
+      for oft_separate use 'Separate  ',
+      for oft_include  use 'Include   ',
+      for oft_open     use 'Open      '];
 
 ----------------------------------------------------------------------------------------------------
 procedure text_open =
@@ -372,6 +407,12 @@ var
   s                : t_char32str;
 
 begin
+  -- vypsat zpávu na výstup
+  if cfg_verbosity>=vl_verbose then 
+    output^.write(t_open_file_type_txt[open_type]);
+    output^.write_line(name);
+    end if;
+
   -- alokovat paměť
   new source_file;
 
@@ -422,10 +463,13 @@ begin
   source_file:=lex_input;
   lex_input:=source_file^.next;
 
+  total_lines + source_file^.get_lines();
+  effective_lines + source_file^.get_effective();
+
   begin
     -- oznámit dokončení překladu tohoto souboru
     if cfg_verbosity>=vl_default then
-      output^.write('Compiled ');
+      output^.write('Compiled  ');
       declare var
         text_name    : p_text_name;                -- plain-text jméno souboru
       begin
@@ -437,7 +481,7 @@ begin
       output^.write(' (');
       output^.write(unsigned_to_string(source_file^.get_lines));
       output^.write('/');
-      output^.write(unsigned_to_string(total_lines));
+      output^.write(unsigned_to_string(source_file^.get_effective));
       output^.write_line(')');
       end if;
 

@@ -203,21 +203,31 @@ with
   ci_reg;
 
 var
-  pproc            : pentity_procedure;
+  pproc            : pentity_procedure;          -- volaná interní procedura
+  save_data        : t_reg_save_data;            -- kontext uložených registrů
 
 begin
   -- uložit použité registry, aby je volaná procedura nezmodifikovala
   if save_regs then 
     -- Ondra 14.5.2002 : Tak tohle je %%X %%TODO(REGALLOC) ** KRUTÁ ** záplata !!
     -- Podrobněji viz zakomentované volání SAVEREGS na začátku této procedury
+
     -- uložit všechny použité registry
     -- %%X Omezit jen na registry skutečně použité ve volané proceduře
     i_reg_save_used(inst,info,context);
+
+    -- uložit všechny aktivně lokálně použité registry
+    i_reg_save_used_local(inst,info,context,save_data);
     end if;
 
   -- zavolat interní proceduru
   rtl_get_entity(rtl,pentity(pproc));
   addcall(inst,info,context,pproc);
+
+  -- obnovit všechny aktivně lokálně použité registry
+  if save_regs then 
+    i_reg_restore_used_local(inst,info,context,save_data);
+    end if;
   end addcallrtl;
 
 
@@ -624,9 +634,6 @@ var
   useimm2          : t_unsigned8;                -- velikost přímé hodnoty 2
   newsize          : t_unsigned;
   chyba            : t_logical;
-#if dump then;
-  s                : t_char32str;
-#end if;
 
     ------------------------------------------------------------------------------------------------
     procedure genop (
@@ -810,14 +817,21 @@ begin
 
 #if dump then;
   -- zobrazit instrukci
-  s:=str_adjust(str_to_lower(entityident_to_string(iinstrtxt[ii])),10,t_str_end_set:[se_right]," ",st_no,t_str_end_set:[se_right])
-     & optostr(op1) & "," & optostr(op2) & "," & optostr(op3);
-  while s:length>0 and then s[s:length]="," loop pred s:length; end loop;
-  s:=str_adjust(s,40,t_str_end_set:[se_right]," ",st_no,t_str_end_set:[se_right]);
-  if iopcodemap[kod].op1<>op_null then s & iopmodetxt[iopcodemap[kod].op1]; end if;
-  if iopcodemap[kod].op2<>op_null then s & "," & iopmodetxt[iopcodemap[kod].op2]; end if;
-  if iopcodemap[kod].op3<>op_null then s & "," & iopmodetxt[iopcodemap[kod].op3]; end if;
-  if o_is_option_by_entity(opt_dump_code,info.entity^) then debug_dump('    ' & s); end if;
+  if o_is_option_by_entity(opt_dump_code,info.entity^) then
+    declare var
+      s            : t_char32str;
+
+    begin
+      s:=str_adjust(str_to_lower(entityident_to_string(iinstrtxt[ii])),10,t_str_end_set:[se_right]," ",st_no,t_str_end_set:[se_right])
+         & optostr(op1) & "," & optostr(op2) & "," & optostr(op3);
+      while s:length>0 and then s[s:length]="," loop pred s:length; end loop;
+      s:=str_adjust(s,40,t_str_end_set:[se_right]," ",st_no,t_str_end_set:[se_right]);
+      if iopcodemap[kod].op1<>op_null then s & iopmodetxt[iopcodemap[kod].op1]; end if;
+      if iopcodemap[kod].op2<>op_null then s & "," & iopmodetxt[iopcodemap[kod].op2]; end if;
+      if iopcodemap[kod].op3<>op_null then s & "," & iopmodetxt[iopcodemap[kod].op3]; end if;
+      debug_dump('    ' & s);
+      end declare;
+    end if;
 #end if;
 
   ----- přidat instrukci -----

@@ -404,6 +404,9 @@ var
     unhandledx     : t_rtl_except_row;
 
 begin
+  -- stack magic
+  tasks.rtl_stack_magic;
+
   _starter:=p_task_starter(starter);
   stacpy:=_starter^;
   discard _starter;
@@ -439,19 +442,23 @@ begin
     catch
       when task_abort do ;
     leave
-      -- odinicializovat taskove vlastnosti
-      rtl_critical_lock(stacpy.taskheader^.locker);
-      stacpy.taskheader^.isrunning:=false;
-      rtl_deinit_task_header(stacpy.taskheader);
-      if TlsSetValue(stask_header,nil)=0 then
-        raise tasking_error;
-        end if;
-      rtl_critical_unlock(stacpy.taskheader^.locker);
+      sequential
+        -- odinicializovat taskove vlastnosti
+        rtl_critical_lock(stacpy.taskheader^.locker);
+        stacpy.taskheader^.isrunning:=false;
+        rtl_deinit_task_header(stacpy.taskheader);
+        if TlsSetValue(stask_header,nil)=0 then
+          raise tasking_error;
+          end if;
+        rtl_critical_unlock(stacpy.taskheader^.locker);
+        end sequential;
       end;
     -- odinicializovat taskove vlastnosti
     rtl_task_exception_finalize(taskheader);
     rtl_terminate_task;
   catch
+    when task_abort do ;
+      -- eat exception
     when others do
       rtl_get_exception(unhandledx.etag,unhandledx.edata);
       rtl_raise_unhandled_exception(unhandledx.etag,unhandledx.edata);
@@ -515,7 +522,7 @@ begin
     starter^.wait:=false;
     end if;
 
-  starter^.taskheader^.ostask.taskhandle:=CreateThread(nil,64*1024{%%TODO remove when dynamic stack}*8{},^task_entry_internal,starter,STACK_SIZE_PARAM_IS_A_RESERVATION,taskheader^.ostask.taskid);
+  starter^.taskheader^.ostask.taskhandle:=CreateThread(nil,1024*1024{%%TODO remove when dynamic stack},^task_entry_internal,starter,STACK_SIZE_PARAM_IS_A_RESERVATION,taskheader^.ostask.taskid);
   if taskheader^.ostask.taskhandle=0 then
     discard taskheader;
     if not thistaskheader^.dllmain then
@@ -544,6 +551,9 @@ var
   unknown          : t_rtl_logical:=true;
 
 begin
+  -- stack magic
+  tasks.rtl_stack_magic;
+
   taskheader:=rtl_get_current_task_safe;
   if taskheader<>nil then
     unknown:=false;
@@ -777,4 +787,23 @@ begin
     end if;
   rtl_critical_discard(task_list_lock);
   end rtl_late_tasks_finalize;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure rtl_stack_magic =
+-- Stack magic (rather don't ask).
+----------------------------------------------------------------------------------------------------
+begin
+  #syntax asm;
+    mov    eax,esp
+    add    eax,65535
+    and    eax,$FFFF_0000
+    mov    ecx,239
+@1: sub    eax,4096
+    test   <t_rtl_unsigned8>[eax],0
+    loop   @1
+    #end asm;
+  end rtl_stack_magic;
+
 end tasks;

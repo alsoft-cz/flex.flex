@@ -21,7 +21,6 @@ with
   cc_base.cc_rtl;
 
 var
-  l                : itarget;                    -- odskok
   size             : t_unsigned;
 
 begin
@@ -35,22 +34,11 @@ begin
   size:=unidata_size_to_unsigned(val_typ.getsize);
   verify({VERIFY=}000708, size<>1 and size<>2 and size<>4);
 
-  -- alokovat navesti
-  newtarget(info,l);
-
-  -- preskoc generovani vyjimky pokud ne overflow/carry
-  if val_typ.stype=dt_signed then
-    addjump(inst,info,context,ic_no,l);
-  else 
-    addjump(inst,info,context,ic_nc,l);
+  -- vlastní run-time check na overflow
+  if val_typ.stype=dt_signed
+    then i_gen_rcheck_constraint_error_on_condition(inst,info,context,ic_o);
+    else i_gen_rcheck_constraint_error_on_condition(inst,info,context,ic_c);
     end if;
-  
-  -- vyhod constraint_error vyjimku
-  addcallrtl(inst,info,context,rtl_handle_constraint_error);
-  
-  -- nastav adresu odskoku za generovani vyjimky
-  settarget(info,l,getaddr(inst));
-
   end i_gen_ordinal_overflow_check;
 
 
@@ -190,36 +178,29 @@ begin
     when others do verify({VERIFY=}000713,true);
     end case;
 
-  declare 
-  var
-    oplo     : c_operand;
-    ophi     : c_operand;
-
-  begin
-    -- je treba zkontrolovat spodni mez?
-    if lo_cond<>ic_ucond then
-      -- porovnej [vysl] s [lval]
-      if lval_sign
-        then addopimmex(inst,info,context,ii_cmp,val,lval,edt_signed,val.size);
-        else addopimmex(inst,info,context,ii_cmp,val,lval,edt_unsigned,val.size);
-        end if;
-
-      -- pokud je [vysl] mensi, skoc na generovani vyjimky
-      addjump(inst,info,context,lo_cond,preexcept);
+  -- je treba zkontrolovat spodni mez?
+  if lo_cond<>ic_ucond then
+    -- porovnej [vysl] s [lval]
+    if lval_sign
+      then addopimmex(inst,info,context,ii_cmp,val,lval,edt_signed,val.size);
+      else addopimmex(inst,info,context,ii_cmp,val,lval,edt_unsigned,val.size);
       end if;
 
-    -- je treba zkontrolovat horni mez?
-    if hi_cond<>ic_ucond then
-      -- porovnej [vysl] s [hval]
-      if hval_sign
-        then addopimmex(inst,info,context,ii_cmp,val,hval,edt_signed,val.size);
-        else addopimmex(inst,info,context,ii_cmp,val,hval,edt_unsigned,val.size);
-        end if;
+    -- pokud je [vysl] mensi, skoc na generovani vyjimky
+    addjump(inst,info,context,lo_cond,preexcept);
+    end if;
 
-      -- pokud je [vysl] vetsi, skoc na generovani vyjimky
-      addjump(inst,info,context,hi_cond,preexcept);
+  -- je treba zkontrolovat horni mez?
+  if hi_cond<>ic_ucond then
+    -- porovnej [vysl] s [hval]
+    if hval_sign
+      then addopimmex(inst,info,context,ii_cmp,val,hval,edt_signed,val.size);
+      else addopimmex(inst,info,context,ii_cmp,val,hval,edt_unsigned,val.size);
       end if;
-    end declare;
+
+    -- pokud je [vysl] vetsi, skoc na generovani vyjimky
+    addjump(inst,info,context,hi_cond,preexcept);
+    end if;
 
   -- preskoc generovani vyjimky
   addjump(inst,info,context,ic_ucond,postexcept);
@@ -228,12 +209,14 @@ begin
   settarget(info,preexcept,getaddr(inst));
 
   -- vygeneruj vyjimku
-  addcallrtl(inst,info,context,rtl_handle_constraint_error);
+  if not cfg_no_runtime then
+    addcallrtl(inst,info,context,rtl_handle_constraint_error);
+    end if;
 
   -- nastav adresu odskoku [postexcept] za generovani vyjimky
   settarget(info,postexcept,getaddr(inst));
-
   end i_gen_ordinal_range_check;
+
 
   
 ----------------------------------------------------------------------------------------------------
@@ -300,8 +283,50 @@ begin
     -- %%TODO(rch_stringindex_range) - implementovat az bude pridana podpora pro nacteni runtime atributu length
     unimplemented({UNIMP=}000265);
     end if;
-
   end i_gen_stringindex_range_check;
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_rcheck_constraint_error_on_condition =
+-- Vygeneruje podmíněné vyvolání výjimky Constraint_Error.
+-- Jestliže je splněna podmínka [fail_if], vygeneruje vyvolání výjimky.
+----------------------------------------------------------------------------------------------------
+var
+  tg_ok : itarget;                 -- cíl skoku po porovnání velikostí
+
+begin
+  if not cfg_no_runtime then
+    -- alokovat cíl skoku
+    newtarget(info,tg_ok);
+
+    -- podmíněný skok
+    addjump(inst,info,context,icondneg[fail_if],tg_ok);
+
+    -- vyvolat výjimku Constraint_Error
+    addcallrtl(inst,info,context,rtl_handle_constraint_error);
+
+    -- cíl skoku na toto místo
+    settarget(info,tg_ok,getaddr(inst));
+    end if;
+  end i_gen_rcheck_constraint_error_on_condition;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_rcheck_constraint_error_on_compare =
+-- Vygeneruje podmíněné vyvolání výjimky Constraint_Error.
+-- Porovná dodané operandy a jestliže je splněna podmínka [fail_if], vygeneruje vyvolání výjimky.
+----------------------------------------------------------------------------------------------------
+begin
+  if not cfg_no_runtime then
+    -- porovnat operandy
+    addii(inst,info,ii_cmp,op1,op2,op0);
+
+    -- vlastní run-time check
+    i_gen_rcheck_constraint_error_on_condition(inst,info,context,fail_if);
+    end if;
+  end i_gen_rcheck_constraint_error_on_compare;
+
 
 
 end ci_rcheck;

@@ -5,10 +5,9 @@ module private memory =
 -- Copyright (C) 1999-2003 A && L soft
 ----------------------------------------------------------------------------------------------------
 with
-   synchronization
-  ,tasks
-  ,structures
-  ;
+  synchronization,
+  tasks,
+  structures;
 
 #if not #declared rtl_memory_debug; then;
 const
@@ -19,7 +18,7 @@ var
 #end if;
 
 var
-    systemheap     : system_heap.p_rtl_systemmemheap;
+  systemheap       : system_heap.p_rtl_systemmemheap;
 
 #separate private blocks;
 #separate private chains;
@@ -28,20 +27,26 @@ var
 #separate private system_pages;
 
 var
---%%TODO task_var 
-    actual_task_heap : p_rtl_memheap := nil;
-    actual_task_chain: p_rtl_chain := nil;
+  -- %%TODO(TASK) task_var 
+  actual_task_heap : p_rtl_memheap := nil;
+  actual_task_chain: p_rtl_chain := nil;
 
 var
-    systempages    : system_pages.c_rtl_systemmempages;
+  systempages      : system_pages.c_rtl_systemmempages;
 
 const
-    largeblocksize : t_rtl_native_unsigned       = 64*1024;
+  largeblocksize   : t_rtl_native_unsigned = 64*1024;
+
+  -- frequency of the regular (sparse) heap validation
+  rtl_sparse_heap_validation_frequency = 8192;
 
 #if rtl_advanced_segregated_heap then;
 var
-    segregatedheap : segregated_heap.p_rtl_segregatedmemheap;
-#separate private  segregated_heap;
+  segregatedheap   : segregated_heap.p_rtl_segregatedmemheap;
+
+----------------------------------------------------------------------------------------------------
+#separate private segregated_heap;
+----------------------------------------------------------------------------------------------------
 #end if;
 
 ----------------------------------------------------------------------------------------------------
@@ -49,15 +54,14 @@ procedure rtl_alloc =
 -- allocate memory
 ----------------------------------------------------------------------------------------------------
 begin
-  if size>=largeblocksize then
-    systempages.memmgr_alloc({num}0,addr,size,actual_task_chain);
-  else
-    if (actual_task_heap=nil) then
-      systemheap^.memmgr_alloc({num}0,addr,size,actual_task_chain);
+  if size>=largeblocksize 
+    then systempages.memmgr_alloc({num}0,addr,size,actual_task_chain);
     else
-      actual_task_heap^.memmgr_alloc({num}0,addr,size,actual_task_chain);
+      if actual_task_heap=nil
+        then systemheap^.memmgr_alloc({num}0,addr,size,actual_task_chain);
+        else actual_task_heap^.memmgr_alloc({num}0,addr,size,actual_task_chain);
+        end if;
       end if;
-    end if;
   end rtl_alloc;
 
 
@@ -67,7 +71,8 @@ procedure rtl_adjust =
 -- allocate memory
 ----------------------------------------------------------------------------------------------------
 var
-  header       : p_rtl_memmgr_header;
+  header           : p_rtl_memmgr_header;
+
 begin
   if addr=nil then
     rtl_alloc({num,}addr,size);
@@ -87,7 +92,7 @@ procedure rtl_free =
 -- free memory
 ----------------------------------------------------------------------------------------------------
 var
-  header       : p_rtl_memmgr_header;
+  header           : p_rtl_memmgr_header;
 
 begin
   if addr=nil then 
@@ -108,7 +113,7 @@ procedure rtl_size =
 -- returns size of block
 ----------------------------------------------------------------------------------------------------
 var
-  header       : p_rtl_memmgr_header;
+  header          : p_rtl_memmgr_header;
 
 begin
   if addr=nil then 
@@ -119,8 +124,11 @@ begin
   end rtl_size;
 
 
+
 ----------------------------------------------------------------------------------------------------
 procedure rtl_validate_heap =
+-- Validates the internal structures of the heap. A [memory_corrupt_error] is raised if the heap
+-- is corrupted.
 ----------------------------------------------------------------------------------------------------
 begin
   systemheap^.memmgr_validate;
@@ -129,10 +137,34 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+procedure rtl_sparse_heap_validate =
+-- Validates the internal structures of the heap on a regular basis.
+----------------------------------------------------------------------------------------------------
+with
+  flex.hw_api;
+
+var
+  counter          : static aliased t_rtl_native_signed;
+  old_counter      : t_rtl_native_signed;
+
+begin
+  -- increment the counter
+  rtl_interlocked_exchange_add(^counter,1,old_counter);
+
+  -- validate the heap every N times
+  if old_counter mod rtl_sparse_heap_validation_frequency=0 then 
+    rtl_validate_heap;
+    end if;
+  end rtl_sparse_heap_validate;
+
+
+
+----------------------------------------------------------------------------------------------------
 procedure rtl_dump_heap =
 ----------------------------------------------------------------------------------------------------
 var
-    count          : t_rtl_native_unsigned;
+  count            : t_rtl_native_unsigned;
+
 begin
   systemheap^.memmgr_dump(count);
   end rtl_dump_heap;
@@ -148,6 +180,7 @@ with
 begin
   system_heap.rtl_early_sysheap_init(systemheap);
   end rtl_early_heap_initialize;
+
 
 
 ----------------------------------------------------------------------------------------------------
@@ -171,11 +204,10 @@ begin
   --new actual_task_chain;
   --#end if;
 
-  #if rtl_advanced_segregated_heap  then;
+#if rtl_advanced_segregated_heap then;
   new segregatedheap;
   actual_task_heap:=p_rtl_memheap(segregatedheap:unchecked);
-  #end if;
-
+#end if;
   end entry;
 
 
@@ -188,20 +220,20 @@ begin
   --discard actual_task_chain;
   --#end if;
 
-  #if rtl_advanced_segregated_heap  then;
+#if rtl_advanced_segregated_heap then;
   discard segregatedheap;
   actual_task_heap:=nil;
-  #end if;
-
+#end if;
   end exit;
 #end if;
 
 
 
 ---- Compiler magic --------------------------------------------------------------------------------
-#pragma assign(alloc,rtl_alloc);
-#pragma assign(realloc,rtl_adjust);
-#pragma assign(free,rtl_free);
+#pragma assign(alloc        ,rtl_alloc);
+#pragma assign(realloc      ,rtl_adjust);
+#pragma assign(free         ,rtl_free);
+#pragma assign(validate_heap,rtl_sparse_heap_validate);
 ----------------------------------------------------------------------------------------------------
 
 end memory;

@@ -17,6 +17,10 @@ with
   cg_gen.cg_ia32.ci_code.ci_operand;
 
 ----------------------------------------------------------------------------------------------------
+-- Primitiva pro výběr adresy nebo hodnoty.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
 procedure i_ensure_address (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
@@ -31,114 +35,219 @@ procedure i_ensure_value (
     op             : in out c_operand);          -- operand
 -- Zajistí, že operand reprezentuje hodnotu.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_loadreg (
+procedure i_choose_reference_or_value (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in out c_operand;           -- operand
+    rta_modes      : in t_rtattrib_modes;        -- způsoby zjištění jednotlivých run-time atributů
+    value_edtype   : in t_elementary_data_type := edt_none; -- elementární datový typ hodnoty
+    value_size     : in t_unsigned := 0;         -- velikost hodnotu
+    deref          : in t_logical := false);     -- T-k získání hodnoty je třeba provést dereferenci
+-- Podle módu načtení výrazu zajistí správný pohled na objekt: buď coby jeho adresu (resp. adresu
+-- reference na něj) s případnými run-time atributy, nebo jako hodnotu. Jestliže je požadována 
+-- hodnota a je nastaveno [deref] na True, provede se dereference, přičemž se run-time atributy 
+-- stanou nedostupnými.
+--   Pokud je požadována hodnota, nastaví se elementární datový typ operandu a jeho velikost podle
+-- dodaného parametru [value_edtype] resp. [value_size].
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Mid-level primitiva pro ukládání hodnot, adres a pointerů.
+----------------------------------------------------------------------------------------------------
+
+type
+  -- cíl operace uložení
+  t_store_destination = enum
+      tsd_stack;                                 -- stack
+      tsd_temporary;                             -- dočasná proměnná
+      end enum;
+  t_store_destination_set = set of t_store_destination;
+
+  -- %%X Poznámka: Cíl operace uložení [t_store_destination] je takové zjednodušení od třídy 
+  -- [c_store_value_operation] (viz zakomentované někde ke konci tohoto souboru), kterou jsem 
+  -- původně chtěl vytvořit jako základ pro zobecnění všech generátorů různých store operací.
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_store_address (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in out c_operand;           -- operand
+    destination    : in t_store_destination);    -- cíl operace uložení
+-- Uloží adresu do zadaného cíle. [op] na výstupu reprezentuje cíl.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_store_value (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
     orgtyp         : in pentity_type;            -- typ původního výrazu
     op             : in out c_operand;           -- operand
-    all            : in t_logical;               -- F-vynechat pro konstanty
-    mode           : in iregallocmode);          -- režim alokace registrů
--- Načte operand do registru.
--- Je-li ALL=True, načte do registru i:
---   -- konstanty (io_imm),
---   -- podmínky (io_cc).
--- V opačném případě tyto typy operandů ponechá v původním tvaru. Je-li tedy
--- ALL=False, může být výsledek typu IO_REG, IO_IMM nebo IO_CC.
+    destination    : in t_store_destination);    -- cíl operace uložení
+-- Uloží hodnotu do zadaného cíle. [op] na výstupu reprezentuje cíl.
+-- Jestliže je to potřeba, provede konverzi hodnoty, přičemž jako původní typ výrazu použije dodaný
+-- [orgtyp]. Konverze se fyzicky provádí voláním [i_gen_load_value_to_register] a týká se pouze
+-- rozšíření či zúžení numerického operandu.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_loadeax (
+procedure i_gen_store_pointer (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
-    op             : in out c_operand);          -- operand
--- Načte operand do EAX.
+    opsrc          : in c_operand;               -- zdrojový pointer
+    opdst          : in c_operand);              -- cílový pointer
+-- Uloží pointer [opsrc] do zadaného cíle [opdst]. Množina run-time atributů cílového pointeru je
+-- dána kontextem generování výrazu.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_loadimm8cl (
+procedure i_gen_load_pointer_address (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
-    op             : in out c_operand);          -- operand
--- Načte operand do CL nebo ho ponechá const.
-----------------------------------------------------------------------------------------------------
-procedure i_gen_loadtemp (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o průběhu generování
-    context        : in out iexprcontext;        -- kontext generování výrazu
-    op             : in out c_operand);          -- operand
--- Načte operand do temporary proměnné nebo ho ponechá const.
--- Očekává, že velikost OP je 1, 2 nebo 4 byty.
-----------------------------------------------------------------------------------------------------
-procedure i_gen_loadpointer (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o průběhu generování
-    context        : in out iexprcontext;        -- kontext generování výrazu
-    oldtyp         : in pentity_type;            -- původní typ výrazu
-    reg            : in t_logical;               -- T-výsledek do registru
-    op             : in out c_operand);          -- operand
--- Normalizuje (=přidá/odstraní/přepočítá v něm uložené dynamické atributy)
--- operand podle typu uloženého v CONTEXTu a načte ho:
---   -- do registru, lze-li to a je-li REG=True,
---   -- ponechá v původním tvaru, pokud ho není třeba měnit,
---   -- načte do pracovní proměnné.
+    op             : in c_operand;               -- zdrojový pointer
+    vysl           : out c_operand;              -- operand reprezentující adresní složku pointeru
+    no_memory      : in t_logical := false);     -- T-adresu z paměti načíst do registru
+-- Sestaví operand reprezentující adresní složku pointeru. Jestliže je [no_memory] rovno True, 
+-- nikdy nevrátí odkaz na adresu v paměti, ale načte ho v takovém případě do registru.
 ----------------------------------------------------------------------------------------------------
 procedure i_gen_compose_pointer (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
-    op             : in c_operand;               -- operand s adresou
-    oldbase        : in pentity_type;            -- báze původního pointeru
-    outbase        : in pentity_type;            -- báze výsledného pointeru
-    outrta         : in rtattribset;             -- požadované dynamické atributy
-    opout          : in out c_operand);          -- pracovní proměnná
--- Ze zadaného operandu sestaví pointer. Operand musí být registr nebo přímá
--- hodnota. Všechny dynamické atributy jsou dopočítány. Výsledný pointer je
--- uložen do pracovní proměnné.
--- Operand OPOUT musí být již inicializován jako adresa nějaké pracovní
--- proměnné.
+    op             : in c_operand;               -- hodnota, na kterou se sestavuje pointer
+    vysl           : out c_operand);             -- pointer na zadanou hodnotu
+-- Sestaví operand reprezentující pointer na uvedenou hodnotu.
+-- Předpokládá, že v [context.outtyp] je naplněn cílový typ typu pointer.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_compute_rtattrib (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o průběhu generování
-    context        : in out iexprcontext;        -- kontext generování výrazu
-    optemppart     : in c_operand;               -- kam uložit atribut
-    rta            : in rtattrib;                -- vypočítávaný atribut
-    oldbase        : in pentity_type;            -- báze původního pointeru
-    outbase        : in pentity_type);           -- báze výsledného pointeru
--- Vypočte chybějící run-time atribut a uloží ho do cílového pointeru.
+
+
+
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_lea (
+-- Low-level primitiva pro ukládání adres.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_address_to_register (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
     op             : in out c_operand;           -- operand
-    rpref          : in iunireg);                -- preferovaný registr
--- Načte adresu danou operandem do registru.
--- Je-li RPREF<>IN_NONE, načte adresu do něj.
+    force_reg      : in t_logical := false;      -- T-do registru ukládat i konstanty
+    no_dependance  : in t_logical := false;      -- načíst jako adresu nezávislou na původním op.
+    pref_reg       : in iunireg := in_none);     -- preferovaný registr
+-- Načte adresu paměťového bloku reprezentovaného operandem do registru. Operand musí být typu
+-- [io_imm], [io_reg] nebo [io_mem]. Pro [io_mem] se chová jako instrukce LEA, v ostatních případech
+-- jako přiřazení. 
+--   Je-li uveden preferovaný registr, adresa se načte do něj. Pokud není nastaveno [force_reg], 
+-- tak operand typu [io_imm] ponechá v původním tvaru. Při [no_dependance] nastaveném na True je
+-- navíc zajištěno, že výsledná adresa je nezávislá na původním operandu z hlediska použitých 
+-- registrů.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_load_rtattrib_addr (
+procedure i_gen_load_address_to_register_with_dereference (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
-    rtaset         : in rtattribset;             -- uložené dynamické atributy
-    op             : in c_operand;               -- adresa řetězce
-    rta            : in rtattrib;                -- dynamický atribut
-    oprta          : in out c_operand);          -- cílový operand
--- Podle EXPR/OP určí adresu dynamického atributu RTA.
--- Předpokládá se, že před atributy je uložen strojový pointer.
--- Poznámka: OPRTA není CLONEOPnutý OP, ale prostá kopie se změněným DISP,
--- takže ho není třeba uvolňovat pomocí I_FREE.
+    op             : in out c_operand;           -- operand
+    force_reg      : in t_logical := false;      -- T-do registru ukládat i konstanty
+    no_dependance  : in t_logical := false;      -- načíst jako adresu nezávislou na původním op.
+    pref_reg       : in iunireg := in_none);     -- preferovaný registr
+-- Načte adresu paměťového bloku reprezentovaného operandem do registru. 
+--  Je-li dodaný operand adresa reference na hodnotu, tak provede dereferenci a do registru uloží 
+-- adresu cílového objektu. Reference se pozná tak, že operand je typu [io_mem] a má nastaven 
+-- elementární datový typ [edt_address]. 
+--   Ostatní vlastnosti jsou shodné s procedurou [i_gen_load_address_to_register].
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_load_rtattrib_value (
+{
+procedure i_perform_dereference (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
-    rtaset         : in rtattribset;             -- uložené dynamické atributy
-    op             : in c_operand;               -- adresa řetězce
-    rta            : in rtattrib;                -- dynamický atribut
-    opreg          : in out c_operand);          -- cílový registr
--- Podle EXPR/OP načte dynamický atribut RTA.
--- Předpokládá se, že před atributy je uložen strojový pointer.
--- Registr v OPREG musí být již určen.
+    op             : in out c_operand;           -- operand
+    rpref          : in iunireg;                 -- preferovaný registr
+    value_edtype   : in t_elementary_data_type;  -- elementární datový typ hodnoty
+    value_size     : in t_unsigned);             -- velikost hodnotu
+-- Je-li dodaný registr adresa reference na hodnotu, ta provede dereferenci. Reference se pozná tak,
+-- že operand je typu [io_mem] a má nastaven elementární datový typ [edt_address]. Ve všech 
+-- ostatních případech ponechá operand beze změny.
+----------------------------------------------------------------------------------------------------
+
+Rozlišit:
+  - načtení adresy do registru, které nebere ohled na preferovaný registr v kontextu (nebo jen ten
+    irm_address??? asi ne, nevolá se to jen z i_load),
+  - načtení hodnoty do registru.
+a používat na vhodných místech. Nelze všude používat i_gen_loadreg a spol. Kromě i_gen_lea musí být
+nějaké [i_gen_lea_with_dereference] podobné i_perform_dereference.
+}
+
+----------------------------------------------------------------------------------------------------
+-- Low-level primitiva pro ukládání hodnot.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_value_to_register (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    orgtyp         : in pentity_type;            -- typ původního výrazu
+    op             : in out c_operand;           -- operand
+    force_reg      : in t_logical := false;      -- T-do registru ukládat i konstanty
+    pref_reg       : in iunireg := in_none);     -- preferovaný registr
+-- Načte hodnotu reprezentovanou operandem do registru. Operand musí být typu [io_imm], [io_reg],
+-- [io_mem] nebo [io_cc] a mít velikost nejvýše 4 B. Pro operandy s elementárním datovým typem
+-- z množiny [edts_ordinal] generuje kód pro rozšíření/zúžení operandu s příslušným run-time
+-- checkem podle velikosti požadovaného datového typu daného kontextem ([context.rsize]).
+--   Je-li uveden preferovaný registr, adresa se načte do něj. Pokud není nastaveno [force_reg], 
+-- tak operandy typu [io_imm] a [io_cc] ponechá v původním tvaru.
+--   Poznámka: Zde uvedený preferovaný registr [pref_reg] se obecně liší od preferovaného registru
+-- nastaveného v kontextu generování. Priorita výběru je tato:
+--   1. je-li nastaven, tak povinně [pref_reg],
+--   2. registr recyklovaný z původního operandu [op],
+--   3. registr uvedený jako preferovaný v [context], souhlasí-li režim použití ([irm_int]) a je-li
+--      volný (viz [ci_reg.ci_alloc.i_reg_alloc]),
+--   4. jiný vhodný registr.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_value_to_eax (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in out c_operand);          -- operand
+-- Načte hodnotu reprezentovanou operandem do registru. Pokud je hodnota již uložena v AL, AX, EAX,
+-- tak ponechá operand beze změny. Registr AH kopíruje do AL. Předpokládá, že velikost operandu
+-- odpovídá požadované velistki datového typu daného kontextem ([context.rsize]).
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_value_to_imm8_cl (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in out c_operand);          -- operand
+-- Načte hodnotu reprezentovanou operandem do registru CL nebo ho ponechá konstantní ([io_imm]).
+-- Upozornění: při zužování operandu na8 bitů negeneruje run-time kontrolu na přetečení hodnoty.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_value_to_temporary (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in out c_operand);          -- operand
+-- Uloží hodnotu reprezentovanou operandem do temporary proměnné nebo ho ponechá konstantní 
+-- ([io_imm]). Předpokládá, že velikost hodnoty je 1, 2 nebo 4 B.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_push_value (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in c_operand);              -- operand
+-- Uloží operand na stack. Operand neuvolňuje ani nemění.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_push_nil (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    size           : in tunidata_size);          -- velikost NILu
+-- Uloží NIL v požadované velikosti [size] na stack.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Pomocné rutiny pro sestavování vybraných adresních operandů.
+----------------------------------------------------------------------------------------------------
+
 ----------------------------------------------------------------------------------------------------
 procedure i_load_this_address (
     inst           : in out icodeinst;           -- instance
@@ -155,19 +264,22 @@ procedure i_gen_this_address (
     op             : out c_operand);             -- výsledný operand
 -- Sestaví adresu THIS pointeru na instanci třídy.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_pushstack (
+procedure i_gen_subprogram_address (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
-    op             : in c_operand);              -- operand
--- Uloží operand na stack.
+    psubprog       : in pentity_subprogram;      -- podprogram
+    relative       : in t_logical;               -- T-zajímá nás relativní adresa
+    vysl           : out c_operand);             -- adresa podprogramu
+-- Vygeneruje adresu podprogramu.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_pushnil (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o průběhu generování
-    context        : in out iexprcontext;        -- kontext generování výrazu
-    size           : in tunidata_size);          -- velikost NILu
--- Uloží NIL na stack.
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Fragmenty jednoduchých sekvencí.
+----------------------------------------------------------------------------------------------------
+
 ----------------------------------------------------------------------------------------------------
 procedure i_gen_logical_jump (
     inst           : in out icodeinst;           -- instance
@@ -199,13 +311,49 @@ procedure i_gen_div_reg (
 -- Dělení registru konstantou (unsigned).
 -- OP1 musí být 32-bitový registr.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_reduceop (
+procedure i_gen_simple_assign (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
     context        : in out iexprcontext;        -- kontext generování výrazu
-    op             : in out c_operand);          -- operand
--- Pokud operand používá moc registrů (=dva), vylepší to (na jeden).
--- Operand musí být typu IO_MEM, IO_STACK nebo IO_IMM.
+    op1            : in c_operand;               -- operand 1
+    op2            : in c_operand);              -- operand 2
+-- Vygeneruje jednoduché přiřazení "mov <op1>,<op2>". Jestliže [op2] je [io_mem], hodnotu přiřadí
+-- přes pracovní registr. Zvládne i přiřazení [io_cc].
+----------------------------------------------------------------------------------------------------
+procedure i_gen_simple_op (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    ii             : in iinstr;                  -- požadovaná instrukce
+    op1            : in c_operand;               -- operand 1
+    op2            : in c_operand);              -- operand 2
+-- Vygeneruje jednoduchou instrukci "<ii> <op1>,<op2>". Jestliže [op2] je [io_mem], hodnotu přiřadí
+-- přes pracovní registr.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_stack_top_reserve (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    value_size     : in t_unsigned);             -- velikost alokovaného bloku
+-- Alokuje na vrcholu stacku prostor pro [size] bytů.
+----------------------------------------------------------------------------------------------------
+procedure i_gen_stack_top_alloc (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    value_edtype   : in t_elementary_data_type;  -- elementární datový typ bloku
+    value_size     : in t_unsigned;              -- velikost alokovaného bloku
+    vysl           : out c_operand);             -- operand reprezentující vyalokovaný blok
+-- Alokuje na vrcholu stacku prostor pro [size] bytů a sestaví odpovídající operand.
+-- Poznámka: sestavený operand je typu [io_mem] s bází rovnou ESP, nikoliv placeholder [io_stack].
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Blokové operace.
+----------------------------------------------------------------------------------------------------
+
 ----------------------------------------------------------------------------------------------------
 procedure i_gen_move_static (
     inst           : in out icodeinst;           -- instance
@@ -280,20 +428,72 @@ procedure i_gen_fillz_dynamic (
 -- OPDST musí být typu IO_MEM a měl by preferovaně používat EDI (pro STOSD).
 -- OPSIZE musí být registr ECX.
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_subprogram_address (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o průběhu generování
-    context        : in out iexprcontext;        -- kontext generování výrazu
-    psubprog       : in pentity_subprogram;      -- podprogram
-    relative       : in t_logical;               -- T-zajímá nás relativní adresa
-    vysl           : out c_operand);             -- adresa podprogramu
--- Vygeneruje adresu podprogramu.
+
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_adjust_rta_position (
-    rta            : in rtattrib;                -- hledaný run-time atribu
-    expr           : in pexpnode;                -- související výraz
-    vysl           : in out c_operand);          -- adresa podprogramu
--- Operand IO_MEM upraví tak, aby ukazoval na zadaný run-time atribut.
+#separate public ci_rta;
+-- Manipulace s run-time atributy.
 ----------------------------------------------------------------------------------------------------
+
+
+
+{
+----------------------------------------------------------------------------------------------------
+class public abstract c_store_value_operation = extend c_flex_class;
+-- Generátor operace uložení hodnoty do zadaného cíle.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    static setup_source (
+    -- Připraví zdroj operace.
+    ------------------------------------------------------------------------------------------------
+    static setup_stack
+    -- Připraví cíl operace: vrchol stacku.
+    ------------------------------------------------------------------------------------------------
+    static setup_memory
+    -- Připraví cíl operace: adresa v paměti.
+    ------------------------------------------------------------------------------------------------
+    static generate_store_operantion (
+        inst       : in out icodeinst;           -- instance
+        info       : in out igeninfo;            -- informace o průběhu generování
+        context    : in out iexprcontext);       -- kontext generování výrazu
+    -- Vlastní vygenerování operace uložení hodnoty
+    ------------------------------------------------------------------------------------------------
+    static get_destination
+    -- Vrátí operand reprezentující adresu výsledku.
+    ------------------------------------------------------------------------------------------------
+
+    end c_store_value_operation;
+
+
+
+----------------------------------------------------------------------------------------------------
+class public c_store_value_to_temporary = extend c_flex_class;
+-- Generátor operace uložení hodnoty do zadaného cíle: dočasná proměnná.
+----------------------------------------------------------------------------------------------------
+    
+    ------------------------------------------------------------------------------------------------
+    static setup_temporary (
+        inst       : in out icodeinst;           -- instance
+        info       : in out igeninfo;            -- informace o průběhu generování
+        context    : in out iexprcontext;        -- kontext generování výrazu
+    -- Připraví cíl operace: dočasná proměnná. Proměnnou alokuje.
+    ------------------------------------------------------------------------------------------------
+
+    end c_store_value_to_temporary;
+
+
+
+----------------------------------------------------------------------------------------------------
+class public c_store_value_to_stack = extend c_flex_class;
+-- Generátor operace uložení hodnoty do zadaného cíle: vrchol stacku.
+----------------------------------------------------------------------------------------------------
+
+
+----------------------------------------------------------------------------------------------------
+class public c_store_address_operation = extend c_flex_class;
+-- Generátor operace uložení adresy do zadaného cíle.
+----------------------------------------------------------------------------------------------------
+    end c_store_address_operation;
+}
 
 end ci_fragment;

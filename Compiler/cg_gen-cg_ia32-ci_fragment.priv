@@ -17,6 +17,57 @@ with
   cp_cpu.cp_32.cp_util;
 
 ----------------------------------------------------------------------------------------------------
+#separate private ci_rta;
+-- Manipulace s run-time atributy.
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure new_address_register (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in c_operand;               -- původní operand
+    vysl           : out c_operand;              -- alokovaný registr
+    pref_reg       : in iunireg;                 -- preferovaný registr
+    no_dependance  : in t_logical := false) =    -- zvolit registr nezávislý na původním operandu
+-- Alokuje nový registr. Pokud je nastaven preferovaný registr, použije přednostně ten, jinak se
+-- při vypnutém [no_dependance] aspoň pokusí recyklovat registr ze zdrojového operandu. Elementární 
+-- datový typ nastaví na [edt_address], velikost na 4.
+----------------------------------------------------------------------------------------------------
+begin
+  -- %%X Hnusná záplata: Tato procedura v nejnevhodnějších situacích při zřetězování řetězců žrala 
+  -- registr ESI a pak to padalo někde v alokátoru registrů, protože ho nedokázal přemapovat, 
+  -- přestože byl registr mezi tím odswapován na stack. Vyřešil jsem to tak, že se registr alokuje
+  -- jakoby datový uvedením elementárního datového typu [edt_unsigned] (resp. jakéhokoliv jiného než
+  -- [edt_address]) a na závěr se změní na správný [edt_address].
+
+  -- použít konkrétní preferovaný registr
+  if pref_reg<>in_none then 
+    vysl.create_use_register(inst,info,context,edt_unsigned,iunitoreg[pref_reg,4]);
+
+  -- registr nezávislý na původním operandu
+  elsif no_dependance then
+    vysl.create_new_register(inst,info,context,edt_unsigned,4);
+    verify({VERIFY=}001066,vysl.depends_on(op));
+
+  -- registr s možností recyklace
+  else 
+    vysl.create_new_register_from_operand(inst,info,context,edt_unsigned,4,op);
+    end if;
+
+  -- %% Konec hnusné záplaty: Zde se nastaví skutečný elementární datový typ operandu.
+  vysl.adjust_edtype(edt_address);
+  end new_address_register;
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Primitiva pro výběr adresy nebo hodnoty.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
 procedure i_ensure_address =
 -- Zajistí, že operand reprezentuje adresu hodnoty uložené v paměti.
 ----------------------------------------------------------------------------------------------------
@@ -30,14 +81,19 @@ begin
   -- operand reprezentuje hodnotu => zjistit, jestli není potřeba použít pracovní proměnnou
   elsif op.edtype in edts_value then
     case op.optype
-      -- adresa hodnoty => nedělat nic
+      -- adresa hodnoty => načíst adresu do registru
       when io_mem do
+          -- načíst adresu do registru
+          i_gen_load_address_to_register(inst,info,context,op);
 
       -- přímo uvedená hodnota => přiřadit do pracovní proměnné
       when io_reg, io_imm, io_cc do
           -- alokovat pracovní proměnnou
-          i_gen_loadtemp(inst,info,context,op);
+          i_gen_load_value_to_temporary(inst,info,context,op);
           verify({VERIFY=}000875,op.optype<>io_mem);
+
+          -- načíst adresu do registru
+          i_gen_load_address_to_register(inst,info,context,op);
 
       -- %%X a co [io_stack] ? asi naprogramovat, až to bude poprvé potřeba
 
@@ -88,675 +144,1023 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_loadreg =
--- Načte operand do registru.
+procedure do_dereference (
+    inst           : in out icodeinst;           -- instance
+    info           : in out igeninfo;            -- informace o průběhu generování
+    context        : in out iexprcontext;        -- kontext generování výrazu
+    op             : in out c_operand;           -- operand
+    pref_reg       : in iunireg := in_none;      -- preferovaný registr
+    no_dependance  : in t_logical := false) =    -- zvolit registr nezávislý na původním operandu
+-- Provede dereferenci. Očekává, že dodaný operand reprezentuje adresu ([io_mem]) reference/pointeru.
+-- Načtenou adresu uloží do registru, který vrátí v [op]. Původní operand je zrušen.
 ----------------------------------------------------------------------------------------------------
 var
   vysl             : c_operand;                  -- výsledek
 
 begin
-  verify({VERIFY=}000323,context.rsize=0);
+  -- alokovat registr
+  new_address_register(inst,info,context,op,vysl,pref_reg,for no_dependance use no_dependance);
 
-  -- načíst do registru
-  if op.optype=io_mem or (all and op.optype=io_imm) then
-    -- operand
-    vysl.create_new_register_from_operand(inst,info,context,edt_unsigned,context.rsize,op);
+  -- z celého pointeru nás zajímá jen a pouze adresa
+  op.adjust_size(4);
 
-    -- konstanty se konvertujou samy
-    if op.optype=io_imm then op.adjust_size(0); end if;
-
-    -- přiřadit
-    -- bez konverze velikosti operandu
-    if context.rsize=op.size or op.size=0 then
-      vysl.adjust_size(context.rsize);  -- %%FLEX Proč, když se v této velikosti již vytváří?
-      addii(inst,info,ii_mov,vysl,op,op0)
-
-    -- rozšíření operandu
-    elsif context.rsize>op.size then
-      if {%%CONTEXT ptyp^.stype=dt_signed} context.rsign and then orgtyp^.stype=dt_signed
-        -- znaménkově
-        then addii(inst,info,ii_movsx,vysl,op,op0)
-        -- neznaménkově
-        else addii(inst,info,ii_movzx,vysl,op,op0)
-        end if;
-
-    -- zúžení operandu
-    else
-      -- %%X generovat Overflow-check
-      -- %%X nahradit dvojicí XOR MOV
-      -- cože ? ^^^^^^^
-      op.adjust_size(vysl.size);
-      addii(inst,info,ii_mov{zx},vysl,op,op0);
-      -- %%X Tady bylo II_MOVZX, co to mělo znamenat ?
-      end if;
-
-    -- předat výsledek
-    op.replace(info,context,vysl);
-
-  -- operand už je v registru
-  elsif op.optype=io_reg then
-    -- rozšíření operandu
-    if context.rsize>op.size then
-      -- výsledek
-      vysl.create_use_register(inst,info,context,edt_unsigned,op.reg.reg);
-      vysl.adjust_size(context.rsize);
-
-      -- rozšířit
-      if context.rsign and then orgtyp^.stype=dt_signed
-        -- znaménkově
-        then addii(inst,info,ii_movsx,vysl,op,op0)
-        -- neznaménkově
-        else addii(inst,info,ii_movzx,vysl,op,op0);
-        end if;
-      -- %%X šlo by použít CBW/CWD ?
-
-      -- předat výsledek
-      op.replace(info,context,vysl);
-
-    -- zúžení operandu
-    elsif context.rsize<op.size then
-      -- ESI/EDI se musí řešit zvlášť
-      if context.rsize=1 and op.reg.reg in iregset:[ir_si,ir_di,ir_esi,ir_edi] then
-        -- alokovat registr
-        vysl.create_new_register(inst,info,context,edt_unsigned,context.rsize);
-
-        -- pro účely přiřazení se budou oba operandy chápat jako 32bitové (SI --> ESI, DI --> EDI)
-        vysl.adjust_size(idefregsize);
-        op.adjust_size(idefregsize);
-
-        -- movenout
-        addii(inst,info,ii_mov,vysl,op,op0);
-
-        -- změnit velikost výsledku zpět na požadovanou
-        vysl.adjust_size(context.rsize);
-
-        -- předat výsledek
-        op.replace(info,context,vysl);
-
-      -- pro ostatní registry je to triviální
-      else
-        op.adjust_size(context.rsize);
-        end if;
-      end if;
-
-  -- konstanta, aspoň upravit velikost
-  elsif op.optype=io_imm then
-    op.adjust_size(context.rsize);
-
-  -- podmínka
-  elsif op.optype=io_cc and all then
-    -- operand
-    vysl.create_new_register(inst,info,context,edt_unsigned,context.rsize);
-
-    -- nastavit hodnotu
-    addset(inst,info,context,op.cc,vysl);
-
-    -- předat výsledek
-    op.replace(info,context,vysl);
-
-  -- všechno kromě OP_IMM a OP_CC, které se ponechávají v původním tvaru, neumíme zpracovat
-  else
-    verify({VERIFY=}000523,op.optype not in t_operand_type_set:[io_imm,io_cc]);
-    end if;
-
-leave
-  -- uvolnit mezivýsledek
-  vysl.free(info,context);
-  end i_gen_loadreg;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_compute_rtattrib =
--- Vypočte chybějící run-time atribut a uloží ho do cílového pointeru.
-----------------------------------------------------------------------------------------------------
-var
-  oppart           : c_operand;
-
-begin
-  -- přiravit operand
-  oppart.create_imm(edt_unsigned,4,0);
-
-  -- určit jeho hodnotu
-  case rta
-    -- vymyslet :size
-    when rta_size do
-        if oldbase=nil
-          then oppart.set_imm(timm32(0));
-          else oppart.set_imm(unidata_size_to_imm32(oldbase^.size));
-          end if;
-      {%%TODO(CODEGEN) Tohle zase obnovit, až někdo předělá I_GEN_REF (viz Chyba [20030226115311])
-        verify({VERIFY=}000505,oldbase=nil);
-        oppart.imm:=unidata_size_to_imm32(oldbase^.size);
-      }
-
-    -- vymyslet do :last
-    when rta_last do
-        -- pointery na pole/stringy s bázemi stejné velikosti
-        if oldbase<>nil and outbase<>nil
-        and (((oldbase^.stype=dt_string) and (outbase^.stype in dts_string))
-        or ((oldbase^.stype=dt_array) and (outbase^.stype in dts_array)))
-        and oldbase^.base.getctype^.size=outbase^.base.getctype^.size
-        then
-          oppart.set_imm(uniint_to_imm32(uniint_length(oldbase^.lval,oldbase^.hval)));
-
-        -- jiné varianty zatím ošetřit neumíme
-        else
-          unimplemented({UNIMP=}000173)
-          end if;
-
-    -- atribut :tag
-    when rta_tag do
-        -- tagy se vyhodnocují až při linkování
-        oppart.set_relo_entity(oldbase);
-
-    when others do verify({VERIFY=}000504,true);
-    end case;
-
-  -- přiřadit
-  addii(inst,info,ii_mov,optemppart,oppart,op0);
-
-leave
-  -- uvolnit operand
-  oppart.free(info,context);
-  end i_gen_compute_rtattrib;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_loadpointer =
--- Normalizuje (=přidá/odstraní/přepočítá v něm uložené dynamické atributy)
--- operand podle typu uloženého v CONTEXTu a načte ho:
---   -- do registru, lze-li to a je-li REG=True,
---   -- ponechá v původním tvaru, pokud ho není třeba měnit,
---   -- načte do pracovní proměnné.
-----------------------------------------------------------------------------------------------------
-begin
-  verify({VERIFY=}000486,(context.outtyp{^}.stype<>dt_pointer) or (oldtyp^.stype<>dt_pointer));
-
-  ----- načíst do registru -----
-  if reg and context.outtyp{^}.size=uds_4 then
-    -- normalizovat velikost pointeru
-    if op.optype=io_mem then
-      op.adjust_size(4);
-      end if;
-
-    -- načíst do registru
-    i_gen_loadreg(inst,info,context,oldtyp,op,false,irm_addr);
-
-  ----- normalizovat uložené dynamické atributy -----
-  elsif context.outtyp{^}.pattrib<>oldtyp^.pattrib then
-    -- výsledkem má být pouze adresa
-    if context.outtyp{^}.pattrib=rtattribset:[] then
-      -- normalizovat velikost pointeru
-      if op.optype=io_mem then
-        op.adjust_size(4);
-        end if;
-
-      -- načíst do registru
-      i_gen_loadreg(inst,info,context,oldtyp,op,false,irm_addr);
-
-    -- výsledek má obsahovat i nějaké atributy
-    else
-      declare var
-        outsize    : t_unsigned;                 -- velikost výsledného pointeru
-        outbase    : pentity_type;               -- báze výsledného pointeru
-        oldbase    : pentity_type;               -- báze původního pointeru
-        optemp     : c_operand;                  -- pracovní proměnná
-
-      begin
-        -- velikost výsledného pointeru
-        outsize:=unidata_size_to_unsigned(context.outtyp{^}.size);
-
-        -- báze obou pointerů
-        oldbase:=oldtyp^.base.getutype;
-        outbase:=context.outtyp{^}.base{.getutype};
-
-        -- alokovat pracovní proměnnou
-        optemp.create_temporary(inst,info,edt_binary,outsize);
-
-        -- kde máme zdrojový pointer ?
-        case op.optype
-          -- v paměti
-          when io_mem     do
-              declare var
-                opreg      : c_operand;          -- pracovní registr
-                oppart     : c_operand;          -- část původního operandu
-                optemppart : c_operand;          -- část pracovní proměnné
-
-              begin
-                -- budeme potřebovat pracovní registr
-                opreg.create_new_register(inst,info,context,edt_unsigned,4);
-
-                -- zkopírovat adresu
-                oppart.clone(inst,info,context,op);
-                oppart.adjust_size(4);
-                optemppart.clone(inst,info,context,optemp);
-                optemppart.adjust_size(4);
-                addii(inst,info,ii_mov,opreg,oppart,op0);
-                addii(inst,info,ii_mov,optemppart,opreg,op0);
-
-                -- zkopírovat jednotlivé atributy
-                for rta in rtattrib loop
-                  if rta in context.outtyp{^}.pattrib then
-                    -- vypočítat umístění atributu v cílovém pointeru
-                    i_gen_load_rtattrib_addr(inst,info,context,context.outtyp{^}.pattrib,optemp,rta,optemppart);
-
-                    -- je k dispozici v původním pointeru ?
-                    if rta in oldtyp^.pattrib
-
-                      -- ano => zkopírovat
-                      then
-                        -- načíst do registru
-                        i_gen_load_rtattrib_value(inst,info,context,oldtyp^.pattrib,op,rta,opreg);
-
-                        -- je-li to :last, tak je možná nutný ještě nějaký přepočet
-                        if rta=rta_last then
-                          -- mají-li různé báze, tak zkoumat dál
-                          if context.outtyp.base<>oldtyp^.base.getutype then
-                            unimplemented({UNIMP=}000175);
-                            end if;
-                          end if;
-
-                        -- přesunout
-                        addii(inst,info,ii_mov,optemppart,opreg,op0);
-
-                      -- není => vymyslet
-                      else
-                        i_gen_compute_rtattrib(inst,info,context,optemppart,rta,oldbase,outbase);
-                        end if;
-                    end if;
-                  end loop;
-
-              leave
-                -- uvolnit pracovní operandy
-                opreg.free(info,context);
-                oppart.free(info,context);
-                optemppart.free(info,context);
-                end declare;
-
-          -- v registru či přímá hodnota
-          when io_reg, io_imm do
-              i_gen_compose_pointer(inst,info,context,op,oldbase,outbase,context.outtyp{^}.pattrib,optemp);
-          {
-              -- %%X oldtyp^.pattrib<>[] nastává u reference, ale nikde jinde by
-              -- pokud vím nemělo, takže by se to mělo v podmínce ověřovat.
-              --verify({VERIFY=}000811,(op.optype=io_reg) and (oldtyp^.pattrib<>[]));
-              verify({VERIFY=}000812,(op.optype=io_imm) and (op.size<>4));
-
-              -- zkopírovat adresu
-              optemppart:=optemp;
-              optemppart.size:=4;
-              addii(inst,info,ii_mov,optemppart,op,op0);
-
-              -- vymyslet všechny atributy
-              for rta in rta:first..rta:last loop
-                if rta in context.outtyp^.pattrib then
-                  -- vypočítat umístění atributu v cílovém pointeru
-                  i_gen_load_rtattrib_addr(inst,info,context,context.outtyp^.pattrib,optemp,rta,optemppart);
-
-                  -- vymyslet atribut
-                  computertattrib(rta);
-                  end if;
-                end loop;
-          }
-
-          when others do unimplemented({UNIMP=}000164);
-          end case;
-
-        -- převzít výsledek
-        op.replace(info,context,optemp);
-
-      leave
-        -- uvolnit operandy
-        optemp.free(info,context);
-        end declare;
-      end if;
-
-  ----- ponechat v původním stavu -----
-  else
-    verify({VERIFY=}000487,context.outtyp{^}.size<>oldtyp^.size);
-    -- jinak nic nedělat
-    end if;
-  end i_gen_loadpointer;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_compose_pointer =
--- Ze zadaného operandu sestaví pointer. Operand musí být registr nebo přímá
--- hodnota. Všechny dynamické atributy jsou dopočítány. Výsledný pointer je
--- uložen do pracovní proměnné.
-----------------------------------------------------------------------------------------------------
-var
-  opoutpart        : c_operand;                  -- část pracovní proměnné
-
-begin
-  -- %%X oldtyp^.pattrib<>[] nastává u reference, ale nikde jinde by
-  -- pokud vím nemělo, takže by se to mělo v podmínce ověřovat.
-  --verify({VERIFY=}000813,(op.optype=io_reg) and (oldtyp^.pattrib<>[]));
-  verify({VERIFY=}000508,op.optype not in t_operand_type_set:[io_reg,io_imm] or opout.optype<>io_mem);
-  verify({VERIFY=}000814,op.optype=io_imm and op.size<>4);
-
-  -- zkopírovat adresu
-  opoutpart.clone(inst,info,context,opout);
-  opoutpart.adjust_size(4);
-  addii(inst,info,ii_mov,opoutpart,op,op0);
-
-  -- vymyslet všechny atributy
-  for rta in rtattrib loop
-    if rta in outrta then
-      -- vypočítat umístění atributu v cílovém pointeru
-      i_gen_load_rtattrib_addr(inst,info,context,outrta,opout,rta,opoutpart);
-
-      -- vymyslet atribut
-      i_gen_compute_rtattrib(inst,info,context,opoutpart,rta,oldbase,outbase);
-      end if;
-    end loop;
-
-leave
-  -- uvoltit operandy
-  opoutpart.free(info,context);
-  end i_gen_compose_pointer;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_lea =
--- Načte adresu danou operandem do registru.
-----------------------------------------------------------------------------------------------------
-
-    ------------------------------------------------------------------------------------------------
-    procedure movreg (
-        vysl       : in c_operand;
-        reg        : in ireg) =
-    ------------------------------------------------------------------------------------------------
-    begin
-      -- není to náhodou ten samý registr ?
-      if iregtouni[reg]<>rpref then
-        declare var
-          optemp   : c_operand;                  -- pomocný operand
-
-        begin
-          -- připravit operand
-          optemp.create_use_register(inst,info,context,edt_unsigned,reg);
-
-          -- zkopírovat
-          addii(inst,info,ii_mov,vysl,optemp,op0);
-
-        leave
-          -- uvolnit pomocný operand
-          optemp.free(info,context);
-          end declare;
-        end if;
-      end movreg;
-
-begin
-  if rpref<>in_none
-
-    -- je určen preferovaný registr => načíst do něj
-    then
-      declare var
-        vysl       : c_operand;                  -- výsledek
-
-      begin
-        -- vytvořit operand
-        vysl.create_use_register(inst,info,context,edt_unsigned,iunitoreg[rpref,idefregsize]{%%FLEX rpref});
-
-        case op.optype
-          -- registr
-          when io_reg     do movreg(vysl,op.reg.reg);
-
-          -- adresa v paměti
-          when io_mem     do
-              -- jen displacement, použít MOV
-              if op.base.reg=ir_none and op.index.reg=ir_none then
-                declare var
-                  optemp : c_operand;              -- pomocný operand
-
-                begin
-                  -- připravit operand
-                  optemp.create_imm(edt_unsigned,idefregsize,op.disp);
-                  optemp.copy_relo(op);
-
-                  -- přiřadit
-                  addii(inst,info,ii_mov,vysl,optemp,op0);
-
-                leave
-                  -- uvolnit pomocný operand
-                  optemp.free(info,context);
-                  end declare;
-
-              -- jen báze, použít MOV
-              elsif op.base.reg<>ir_none and op.index.reg=ir_none and op.disp=timm32(0) then
-                movreg(vysl,op.base.reg);
-
-              -- jen index*1, použít MOV
-              elsif op.base.reg=ir_none and op.index.reg<>ir_none and op.disp=timm32(0) and op.relo_info.rtype=irt_none and op.scale=1 then
-                movreg(vysl,op.index.reg);
-
-              -- %%X a co případ RPREF+10 ? => přes ADD
-
-              -- složitější, použít LEA
-              else
-                addii(inst,info,ii_lea,vysl,op,op0);
-                end if;
-
-          -- data na stacku
-          when io_stack do
-              -- data jsou přímo na vrcholu stacku a máme jistotu, že nikdo neudělal nějaký
-              -- PUSH, který by s nimi pohnul (ani NEWOPUSE - viz CI_CODE.I_USEUNI)
-              addii(inst,info,ii_mov,vysl,op_esp,op0);
-
-          when others do verify({VERIFY=}000361,true);
-          end case;
-
-        -- předat výsledek
-        op.replace(info,context,vysl);
-
-      leave
-        -- uvolnit mezivýsledek
-        vysl.free(info,context);
-        end declare
-
-    -- není určen preferovaný registr => načíst do libovolného
-    else
-      case op.optype
-        -- přímá hodnota
-        when io_imm     do
-            -- normalizovat velikost
-            op.adjust_size(4);
-
-        -- registr
-        when io_reg     do -- nic nedělat
-
-        -- odkaz na paměť
-        when io_mem     do
-            -- jen displacement, předat jako přímou hodnotu
-            if op.base.reg=ir_none and op.index.reg=ir_none then
-              op.transform_mem_to_imm;
-
-            -- jen bázový registr
-            elsif ((op.base.reg<>ir_none and op.index.reg=ir_none)
-            -- nebo jen indexní registr
-            or (op.base.reg=ir_none and op.index.reg<>ir_none and op.scale=1))
-            -- a nulové posunutí
-            and op.disp=timm32(0) and op.relo_info.rtype=irt_none then
-              declare var
-                vysl : c_operand;                -- výsledek
-
-              begin
-                -- jen alokovat operand
-                vysl.create_new_register_from_operand(inst,info,context,edt_address,4,op);
-
-                -- jistě se vybere ten správný registr
-                verify({VERIFY=}000326,not (((op.base.reg<>ir_none) and (vysl.reg.reg=op.base.reg)) or ((op.index.reg<>ir_none) and (vysl.reg.reg=op.index.reg))));
-
-                -- předat výsledek
-                op.replace(info,context,vysl);
-
-              leave
-                -- uvolnit mezivýsledek
-                vysl.free(info,context);
-                end declare;
-
-            -- %%X Případ "EAX+10" dělat přes ADD a ne pomocí LEA
-
-            -- v ostatních případech je opravdu nutné LEA
-            else
-              declare var
-                vysl : c_operand;                -- výsledek
-
-              begin
-                -- operand
-                vysl.create_new_register(inst,info,context,edt_address,4);
-
-                -- načíst adresu
-                addii(inst,info,ii_lea,vysl,op,op0);
-
-                -- předat výsledek
-                op.replace(info,context,vysl);
-
-              leave
-                -- uvolnit mezivýsledek
-                vysl.free(info,context);
-                end declare;
-              end if;
-
-        -- relativní adresa
-        when io_rel     do -- %%X co s tím ?
-
-        -- data na stacku
-        when io_stack   do
-            declare var
-              vysl : c_operand;                -- výsledek
-
-            begin
-              -- operand
-              vysl.create_new_register(inst,info,context,edt_address,4);
-
-              -- data jsou přímo na vrcholu stacku a máme jistotu, že nikdo neudělal nějaký
-              -- PUSH, který by s nimi pohnul (ani NEWOPUSE - viz CI_CODE.I_USEUNI)
-              addii(inst,info,ii_mov,vysl,op_esp,op0);
-
-              -- předat výsledek
-              op.replace(info,context,vysl);
-
-            leave
-              -- uvolnit mezivýsledek
-              vysl.free(info,context);
-              end declare;
-
-        when others do verify({VERIFY=}000074,true);
-        end case;
-      end if;
-  end i_gen_lea;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_loadeax =
--- Načte operand do EAX.
-----------------------------------------------------------------------------------------------------
-var
-  vysl             : c_operand;                  -- výsledek
-  eax              : ireg;                       -- zvolený registr
-  i                : t_unsigned;
-
-begin
-  -- kromě případu hodnoty již v AL, AX, EAX; (AH se musí kopírovat do AL)
-  if op.optype=io_reg and then op.reg.reg in iregset:[ir_al,ir_ax,ir_eax] then
-    return;
-    end if;
-
-  -- velikost registru
-  if op.size=0
-    then i:=context.rsize;
-    else i:=op.size;
-    end if;
-  -- %%X Mám dojem, že požadovaná velikost může být i jiná, než je skutečná
-  -- velikost operandu. V takovém případě ale v této proceduře chybí
-  -- kód na konverzi operandu.
-  verify({VERIFY=}000324,i<>context.rsize);
-
-  -- vybrat variantu registru
-  case i
-    when 0 do eax:=ir_eax;
-    when 1 do eax:=ir_al;
-    when 2 do eax:=ir_ax;
-    when 4 do eax:=ir_eax;
-    when others do verify({VERIFY=}000030,true);
-    end case;
-
-  -- operand
-  vysl.create_use_register(inst,info,context,op.edtype,eax);
-
-  -- %%X Pro případ MOV AL,AH použít SHR EAX,8
-  -- (Pentiu se to bude určitě líbit víc)
-
-  -- přiřadit
+  -- načíst adresu do registru
   addii(inst,info,ii_mov,vysl,op,op0);
 
   -- předat výsledek
   op.replace(info,context,vysl);
 
 leave
-  -- uvolnit mezivýsledek
+  -- uvolnit pracovní operand
   vysl.free(info,context);
-  end i_gen_loadeax;
+  end do_dereference;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_loadimm8cl =
--- Načte operand do CL nebo ho ponechá const.
+procedure i_choose_reference_or_value =
+-- Podle módu načtení výrazu zajistí správný pohled na objekt: buď coby jeho adresu (resp. adresu
+-- reference na něj) s případnými run-time atributy, nebo jako hodnotu. Jestliže je požadována 
+-- hodnota a je nastaveno [deref] na True, provede se dereference, přičemž se run-time atributy 
+-- stanou nedostupnými.
+--   Pokud je požadována hodnota, nastaví se elementární datový typ operandu a jeho velikost podle
+-- dodaného parametru [value_edtype] resp. [value_size].
+----------------------------------------------------------------------------------------------------
+with
+  ci_fragment.ci_rta;
+
+begin
+  -- co chceme?
+  if context.mode in lms_addr
+
+    -- adresu => započítat run-time atributy
+    then
+      -- doplnit informace o run-time atributech
+      for rta in rta_modes:range loop
+        op.set_rta_mode(rta,rta_modes[rta]);
+        end loop;
+
+      -- z operandu se odteď bude vyšší vrstva snažit odvodit adresu hodnoty, takže případný
+      -- dereferencovatelný pointer již normalizovat na adresu, ať jí usnadníme práci
+      if deref then
+        if op.edtype=edt_pointer then
+          op.adjust_edtype(edt_address);
+          end if;
+        verify({VERIFY=}000960,op.edtype<>edt_address);
+        end if;
+
+    -- hodnotu nebo přirozený tvar
+    else
+      -- znamená to, že máme provést dereferenci ?
+      if deref
+        
+        -- ano, dereferencovat
+        then         
+          -- uživatel jistě dodal elementární datový typ hodnoty
+          verify({VERIFY=}000965,value_edtype=edt_none);
+
+          -- když máme dereferencovat, musí být samozřejmě co
+          verify({VERIFY=}000883,op.edtype not in edts_pointer);
+
+          -- provést vlastní dereferenci
+          do_dereference(inst,info,context,op);
+
+          -- zkonvertovat registr na adresní operand
+          op.transform_reg_to_mem(value_edtype,value_size);
+
+        -- ne, již to je hodnota, ještě opravit její typ a velikost
+        else
+          -- jestliže uživatel typ a velikost nedodal, necháme to tak, už si je zřejmě vyplnil dříve
+          if value_edtype<>edt_none then
+            op.adjust_edtype(value_edtype);
+            op.adjust_size(value_size);
+            end if;
+          end if;
+
+      -- z dodaných informací o run-time atributech nás zajímají jen ty, které nejsou efektivně
+      -- uložené v adrese
+      for rta in rta_modes:range loop      
+        if i_rta_get_effective_mode(rta,rta_modes)<>rtm_stored_in_address
+          -- atribut efektivně uložený mimo adresu => ok, použít dodaný mód
+          then op.set_rta_mode(rta,rta_modes[rta]);
+          -- něco jiného => atribut nelze zjistit
+          else op.set_rta_mode(rta,rtm_invalid);
+          end if;
+        end loop;
+      end if;
+  end i_choose_reference_or_value;
+
+
+{
+----------------------------------------------------------------------------------------------------
+procedure i_perform_dereference =
+-- Je-li dodaný registr adresa reference na hodnotu, ta provede dereferenci. Reference se pozná tak,
+-- že operand je typu [io_mem] a má nastaven elementární datový typ [edt_address]. Ve všech 
+-- ostatních případech ponechá operand beze změny.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- kromě případu hodnoty již v CL, CX, ECX; (CH se musí kopírovat do CL)
-  if op.optype=io_reg and then op.reg.reg in iregset:[ir_cl,ir_cx,ir_ecx] then
-    -- změnit na CL (a případně zúžit)
-    op.adjust_size(1);
+  if op.edtype=edt_address and op.optype=io_mem then
+    do_dereference(inst,info,context,op,value_edtype,value_size);
+    end if;
+  end i_perform_dereference;
+}
 
-  -- je v registru, ale nějakém jiném
-  elsif op.optype=io_reg then
+
+----------------------------------------------------------------------------------------------------
+-- Mid-level primitiva pro ukládání hodnot a adres.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure get_destination_rta_set (
+    context        : in iexprcontext;            -- kontext generování výrazu
+    out_rta        : out rtattribset;            -- cílová množina run-time atributů
+    out_size       : out t_unsigned) =           -- velikost cílového pointeru/adresy
+-- Podle kontextu zvolí cílovou množinu run-time atributů a určí velikost pointeru
+-- Pro režimy načtení hodnoty musí být typ výsledku pointer a použijí se v něm uložené run-time
+-- atributy, pro režimy načtení adresy se použije množina [context.rta].
+----------------------------------------------------------------------------------------------------
+begin
+  -- režimy načtení adresy
+  if context.mode in lms_addr then
+    -- zvolit atributy
+    out_rta:=context.rta;
+
+    -- velikost
     declare var
+      i            : timm32;
+
+    begin
+      -- určit velikost atributů
+      getrtattribsetsize(out_rta,i);
+
+      -- celkovou velikost tvoří velikost pointeru a run-time atributů
+      out_size:=imm32_to_unsigned(i)+4;
+      end declare;
+
+  -- režimy načtení hodnoty
+  elsif context.mode in lms_value+iexprloadmodeset:[lm_gen] then
+    verify({VERIFY=}001069,context.outtyp.stype<>dt_pointer);
+    
+    -- zvolit atributy
+    out_rta:=context.outtyp.pattrib;
+
+    -- velikost
+    out_size:=unidata_size_to_imm32(context.outtyp.size);
+
+  -- jiné režimy na tomto místě nepodporujeme
+  else
+    verify({VERIFY=}001068);
+    end if;
+  end get_destination_rta_set;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_store_address =
+-- Uloží adresu do zadaného cíle. [op] na výstupu reprezentuje cíl.
+----------------------------------------------------------------------------------------------------
+with
+  ci_rta;
+
+var
+  vysl             : c_operand;                  -- operand reprezentující výsledek
+  out_rta          : rtattribset;                -- cílová množina run-time atributů
+  out_size         : t_unsigned;                 -- velikost cílového bloku
+
+begin
+  -- zvolit cílovou množinu run-time atributů
+  get_destination_rta_set(context,out_rta,out_size);
+
+  case destination
+    -- uložení adresy (pointeru) na stack
+    when tsd_stack     do 
+        -- směrem odzadu budeme pushovat na stack run-time atributy
+        for rta in reverse rtattrib loop
+          if rta in out_rta{context.outtyp.pattrib} then
+            i_rta_push(inst,info,context,op,rta);
+            end if;
+          end loop;
+
+        -- na závěr pushnout vlastní adresu
+        declare var
+          opaddr   : c_operand;                  -- pomocný registr
+
+        begin
+          -- připravit si alias k adrese zahrnující pouze adresu
+          opaddr.clone(inst,info,context,op);
+          opaddr.adjust_size(4);
+
+          -- uložit na stack
+          addii(inst,info,ii_push,opaddr,op0,op0);
+
+        leave
+          -- uvolnit pomocné operandy
+          opaddr.free(info,context);
+          end declare;
+
+        -- zkonstruovat výsledek
+        vysl.create_on_stack(edt_address,out_size{unidata_size_to_unsigned(context.outtyp.size)});
+
+    -- uložení adresy (pointeru) do temporary proměnné
+    when tsd_temporary do
+        -- alokovat temporary proměnnou
+        vysl.create_temporary(inst,info,op.edtype,out_size{unidata_size_to_unsigned(context.outtyp.size)}{op.size});
+
+        -- uložit pointer
+        i_gen_store_pointer(inst,info,context,op,vysl);
+    end case;
+  
+  -- nahradit zdrojový operand výsledkem
+  op.replace(info,context,vysl);
+
+leave
+  -- uvolnit již nepotřebný výsledek
+  vysl.free(info,context);
+  end i_gen_store_address;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_store_value =
+-- Uloží hodnotu do zadaného cíle. [op] na výstupu reprezentuje cíl.
+----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}001067,op.edtype not in edts_value);
+
+  -- věci, které patří na stack i již na něm jsou, se nemusí nikam kopírovat
+  if destination=tsd_stack and op.optype=io_stack then
+    --if op.edtype=edt_pointer
+    return;
+    end if;
+
+  if op.edtype=edt_pointer
+
+    -- pointer se kvůli run-time atributům musí řešit zvlášť
+    then 
+      i_gen_store_address(inst,info,context,op,destination);
+{
+      declare var
+        optemp     : c_operand;                  -- pracovní paměť
+
+      begin
+        -- připravit paměť pro pointer
+        case destination
+          -- na stack
+          when tsd_stack     do i_gen_stack_top_alloc(inst,info,context,edt_pointer,unidata_size_to_unsigned(context.outtyp.size),optemp);
+          
+          -- do dočasné proměnné
+          when tsd_temporary do optemp.create_temporary(inst,info,edt_pointer,unidata_size_to_unsigned(context.outtyp.size));
+          end case;
+
+        -- uložit do připravené paměti
+        i_gen_store_pointer(inst,info,context,op,optemp);
+
+        -- jestliže je cílem pracovní proměnná, tak předat ven
+        if destination=tsd_temporary then
+          op.replace(info,context,optemp);
+          end if;
+
+      leave
+        -- uvolnit pracovní operand
+        optemp.free(info,context);
+        end declare;
+}
+    -- všechny ostatní druhy hodnot standardním způsobem
+    else
+      -- konverze hodnoty, je-li to potřeba
+      if destination in t_store_destination_set:[tsd_stack,tsd_temporary] and then context.rsize<>op.size then
+        i_gen_load_value_to_register(inst,info,context,orgtyp,op);
+        end if;
+
+      -- uložit do cíle
+      case destination
+        when tsd_stack        do i_gen_push_value(inst,info,context,op);
+        when tsd_temporary    do i_gen_load_value_to_temporary(inst,info,context,op);
+    {
+    --     when tsd_stack     do i_gen_pushstack(inst,info,context,op);
+    --     when tsd_temporary do i_gen_loadtemp(inst,info,context,op);
+    }
+        end case;
+      end if;
+  end i_gen_store_value;
+
+
+
+----------------------------------------------------------------------------------------------------
+#template generate_store_pointer (
+    out_rta,                                     -- cílová množina run-time atributů
+    opsrc,                                       -- zdrojový operand (například pointer)
+    opdst,                                       -- cílový pointer
+    copy_address_fragment);                      -- fragment kódu pro zkopírování adresy
+-- Schéma pro sestavení pointeru.
+----------------------------------------------------------------------------------------------------
+  declare var
+    oppart           : c_operand;                  -- složka cílového pointeru
+
+  begin
+    -- s cílem budeme pracovat po 4bytových složkách
+    oppart.clone(inst,info,context,opdst);
+    oppart.adjust_size(4);
+
+    -- zkopírovat adresu
+    copy_address_fragment
+
+    -- uložit run-time atributy
+    for rta in rtattrib loop
+      if rta in out_rta{context.outtyp.pattrib} then
+        -- zase o kousek posunout ukazatel do temporary proměnné
+        oppart.shift_displacement(4);
+        
+        -- uložit run-time atribut
+        i_rta_store(inst,info,context,opsrc,rta,oppart);
+        end if;
+      end loop;
+
+  leave
+    -- uvolnit složku cílového pointeru
+    oppart.free(info,context);
+    end declare;
+
+  #end generate_store_pointer;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_store_pointer =
+-- Uloží pointer [opsrc] do zadaného cíle [opdst]. Množina run-time atributů cílového pointeru je
+-- dána kontextem generování výrazu.
+----------------------------------------------------------------------------------------------------
+with
+  ci_rta;
+
+var
+  out_rta          : rtattribset;                -- cílová množina run-time atributů
+  out_size         : t_unsigned;                 -- velikost cílového bloku
+
+begin
+  -- zvolit cílovou množinu run-time atributů
+  get_destination_rta_set(context,out_rta,out_size);
+  verify({VERIFY=}001070,opdst.size<>out_size);
+
+  #expand generate_store_pointer;
+    -- cílová množina run-time atributů
+    #for out_rta use; out_rta
+
+    -- operandy
+    #for opsrc use; opsrc
+    #for opdst use; opdst
+
+    -- fragment kódu pro zkopírování adresy
+    #for copy_address_fragment use;
+        declare var
+          opaddr   : c_operand;                  -- registr s adresní složkou zdrojového pointeru
+
+        begin
+          -- načíst adresní složku zdrojového pointeru do registru
+          i_gen_load_pointer_address(inst,info,context,opsrc,opaddr{,for no_memory use true});
+
+          -- uložit do cílového pointeru
+          i_gen_simple_assign(inst,info,context,oppart,opaddr);
+          --addii(inst,info,ii_mov,oppart,opaddr,op0);
+
+        leave
+          -- uvolnit operandy
+          opaddr.free(info,context);
+          end declare;
+    #end generate_store_pointer;
+  end i_gen_store_pointer;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_pointer_address =
+-- Sestaví operand reprezentující adresní složku pointeru. Jestliže je [no_memory] rovno True, 
+-- nikdy nevrátí odkaz na adresu v paměti, ale načte ho v takovém případě do registru.
+----------------------------------------------------------------------------------------------------
+begin
+  -- připravit si alias ke zdrojovému pointeru zahrnující pouze adresu
+  vysl.clone(inst,info,context,op);
+  vysl.adjust_edtype(edt_address);
+  vysl.adjust_size(4);
+{
+  -- je-li to potřeba, tak zkopírovat adresu do registru
+  if no_memory and vysl.optype=io_mem then
+    i_gen_load_address_to_register(inst,info,context,vysl,for force_reg use true);
+    end if;
+}
+  end i_gen_load_pointer_address;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_compose_pointer =
+-- Sestaví operand reprezentující pointer na uvedenou hodnotu.
+----------------------------------------------------------------------------------------------------
+with
+  ci_rta;
+
+    ------------------------------------------------------------------------------------------------
+    procedure all_static return t_logical =
+    -- True, jestliže jsou všechny run-time atributy požadované v kontextu staticky zjistitelné.
+    ------------------------------------------------------------------------------------------------
+    begin
+      result:=true;
+      for rta in rtattrib loop 
+        if rta in context.outtyp.pattrib then
+          result and op.rta_info[rta].mode=rtm_static;
+          end if;
+        end loop;
+      end all_static;
+
+begin
+  verify({VERIFY=}000992,context.outtyp.stype<>dt_pointer);
+  --verify({VERIFY=}000994,op.edtype not in edts_value);
+
+  -- nepotřebujeme žádné run-time atributy
+  if context.outtyp.pattrib=rtattribset:[] 
+  -- nebo se všechny určí staticky => stačí předat adresu
+  or else all_static then
+    -- zduplikovat operand
+    vysl.clone(inst,info,context,op);
+
+    -- načíst adresu
+    i_gen_load_address_to_register_with_dereference(inst,info,context,vysl);
+
+    -- výsledek je určitě pointer obsahující pouze adresní složku
+    vysl.adjust_edtype(edt_pointer);
+    vysl.adjust_size(4);
+    
+  -- nějaké run-time atributy jsou potřeba a musejí se počítat => zkonstruovat dočasný pointer
+  else
+    verify({VERIFY=}000993,op.optype<>io_mem);
+
+    -- založit dočasnou proměnnou
+    vysl.create_temporary(inst,info,edt_pointer,unidata_size_to_unsigned(context.outtyp.size));
+
+    #expand generate_store_pointer;
+      -- cílová množina run-time atributů
+      #for out_rta use; context.outtyp.pattrib
+
+      -- operandy
+      #for opsrc use; op
+      #for opdst use; vysl
+
+      -- fragment kódu pro zkopírování adresy
+      #for copy_address_fragment use;
+          declare var
+            opaddr : c_operand;                  -- adresa hodnoty
+
+          begin
+            -- naklonovat operand
+            opaddr.clone(inst,info,context,op);
+
+            -- načíst adresu
+            i_gen_load_address_to_register_with_dereference(inst,info,context,opaddr,for no_dependance use true);
+
+            -- uložit do cílového pointeru
+            addii(inst,info,ii_mov,oppart,opaddr,op0);
+
+          leave
+            -- uvolnit operandy
+            opaddr.free(info,context);
+            end declare;
+      #end generate_store_pointer;
+    end if;
+  end i_gen_compose_pointer;
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Low-level primitiva pro ukládání adres.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_address_to_register = 
+-- Načte adresu paměťového bloku reprezentovaného operandem do registru. Operand musí být typu
+-- [io_imm], [io_reg] nebo [io_mem]. Pro [io_mem] se chová jako instrukce LEA, v ostatních případech
+-- jako přiřazení. 
+--   Je-li uveden preferovaný registr, adresa se načte do něj. Pokud není nastaveno [force_reg], 
+-- tak operand typu [io_imm] ponechá v původním tvaru.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure load_direct =
+    -- Dodaný operand přímo načte do registru.
+    ------------------------------------------------------------------------------------------------
+    var
       vysl         : c_operand;                  -- výsledek
 
     begin
-      -- výsledek
-      vysl.create_use_register(inst,info,context,op.edtype,ir_cl);
+      -- alokovat registr
+      new_address_register(inst,info,context,op,vysl,pref_reg,for no_dependance use no_dependance);
 
-      -- %%TECH Kdyby mělo ESI a EDI 8-bitové části, tak by
-      -- šlo vše movat 8-bitově... (a kdyby SHL/SHR nebylo
-      -- tak debilně vymyšlený, tak to tu nemuselo bejt vůbec)
+      -- přesunout
+      addii(inst,info,ii_mov,vysl,op,op0);
 
-      -- je to v CH, udělat SHR
-      if op.reg.reg=ir_ch then
-        -- změnit CL na ECX 
-        vysl.adjust_size(4);
+      -- předat výsledek
+      op.replace(info,context,vysl);
 
-        -- shiftnout
-        addii(inst,info,ii_shr,vysl,op_8,op0);
+    leave
+      -- uvolnit pracovní operand
+      vysl.free(info,context);
+      end load_direct;
 
-        -- a zase zpět na CL
-        vysl.adjust_size(1);
 
-      -- již má správnou velikost
-      elsif op.size=1 then
-        -- stačí movenout
-        addii(inst,info,ii_mov,vysl,op,op0);
 
-      -- 2 nebo 4 byty, provést 32-bitově (co kdyby to bylo (E)SI nebo (E)DI)
+    ------------------------------------------------------------------------------------------------
+    #template add_lea;
+    -- doplní LEA <vysl>,<op>.
+    ------------------------------------------------------------------------------------------------
+      addii(inst,info,ii_lea,vysl,op,op0);
+      #end add_lea;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure use_displacement (
+        vysl       : in out c_operand;           -- alokovaný registr
+        ii         : in iinstr) =                -- operace (ADD nebo MOV)
+    -- K cílovému operandu přičte displacement ze zdrojového se zohledněním relokace.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- nula bez relokace se přičítat nemusí
+      if ii=ii_add and then op.disp=0 and then op.relo_info.rtype=irt_none then
+        return;
+        end if;
+
+      declare var
+        opdisp     : c_operand;                  -- operand pro umístění displacementu
+
+      begin
+        -- připravit displacement do samostatného operandu
+        opdisp.create_imm(edt_offset,4,op.disp);
+
+        -- zkopírovat relokační informace
+        opdisp.copy_relo(op);
+
+        -- <ii>-nout k výslednému registru
+        addii(inst,info,ii,vysl,opdisp,op0);
+
+      leave
+        -- uvolnit pracovní operand
+        opdisp.free(info,context);
+        end declare;
+      end use_displacement;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure add_lea_or_add_displacement (
+        vysl       : in out c_operand;           -- alokovaný registr
+        reg        : in ireg) =                  -- registr, který by se mohl shodovat s cílovým
+    -- Jestliže se cílový registr shoduje s dodaným, přičte k cílovému registr displacement, jinak
+    -- použije plnohodnotné LEA nebo při nulovém posunutí MOV.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- shodují se => posunutí stačí k cílovému registru přičíst
+      if iregtouni[reg]=iregtouni[vysl.reg.reg] then
+        use_displacement(vysl,ii_add);
+    {
+      -- neshodují se a displacement je nulový bez relokace => stačí MOV
+      elsif op.disp=0 and op.relo_info.rtype=irt_none then
+        %%TODO(LEA)
+    }    
+      -- neshodují se a displacement je nenulový nebo s relokací => musí se použít LEA
       else
-        -- udělat z obou operandů 32 bitů
-        op.adjust_size(4);
+        add_lea;
+        end if;
+      end add_lea_or_add_displacement;
+
+
+    
+    ------------------------------------------------------------------------------------------------
+    procedure add_lea_or_shl_scale (
+        vysl       : in out c_operand;           -- alokovaný registr
+        reg        : in ireg) =                  -- registr, který by se mohl shodovat s cílovým 
+    -- Jestliže se cílový registr shoduje s dodaným a displacement je nulový bez relokace, cílový
+    -- registr shiftne vlevo o scale původního operandu, jinak použije plnohodnotné LEA.
+    ------------------------------------------------------------------------------------------------
+    begin
+    {
+      -- shodují se a posunutí je nulové bez relokace => stačí SHL
+      if iunireg[reg]=iunireg[vysl.reg] and op.disp=0 and op.relo_info.rtype=irt_none then
+        %%TODO(LEA)
+
+      -- neshodují se nebo je posunutí nenulové nebo s relokací => musí se použít LEA
+      else
+    }   add_lea;
+      { end if; }
+      end add_lea_or_shl_scale;     
+
+
+begin
+  case op.optype
+
+    -- registr
+    when io_reg do
+        -- je-li zadán preferovaný registr a liší se od již použitého, musí se přesunout
+        if pref_reg<>in_none and then pref_reg<>iregtouni[op.reg.reg] then
+          load_direct;
+          end if;
+
+    -- přímá hodnota
+    when io_imm do
+        -- do registru načítat jen je-li to vyžadováno
+        if force_reg then
+          -- normalizovat velikost
+          op.adjust_size(4);
+
+          -- načíst do registru
+          load_direct;
+          end if;
+
+    -- paměťová adresa
+    when io_mem do
+        -- není náhodou adresa tvořena jen displacementem?
+        if not force_reg and op.base.reg=ir_none and op.index.reg=ir_none
+
+          -- potom není-li vynuceno načtení do registru, můžeme ji rovnou předat ven
+          then
+            op.transform_mem_to_imm;
+            
+          -- v ostatních situacích je to mnohem složitější
+          else
+            declare var
+              vysl     : c_operand;                  -- výsledek
+
+            begin
+              -- alokovat registr
+              new_address_register(inst,info,context,op,vysl,pref_reg,for no_dependance use no_dependance);
+
+              -- pouze displacement => prosté přiřazení
+              if op.base.reg=ir_none and op.index.reg=ir_none then
+                use_displacement(vysl,ii_mov);
+
+              -- index*1 + displacement => LEA, ADD nebo MOV podle shody s cílovým registrem
+              elsif op.base.reg=ir_none and op.scale=1 then
+                add_lea_or_add_displacement(vysl,op.index.reg);
+
+              -- index*(scale>1) + displacement => LEA nebo SHL podle shody s cílovým registrem
+              elsif op.base.reg=ir_none and op.scale>1 then
+                add_lea_or_shl_scale(vysl,op.index.reg);
+
+              -- báze + displacement => LEA, ADD nebo MOV podle shody s cílovým registrem
+              elsif op.index.reg=ir_none then
+                add_lea_or_add_displacement(vysl,op.base.reg);
+              
+              -- ostatní případy => LEA
+              else
+                add_lea;
+                end if;
+
+              -- předat výsledek
+              op.replace(info,context,vysl);
+
+            leave
+              -- uvolnit pracovní operand
+              vysl.free(info,context);
+              end declare;
+            end if;
+
+    -- operand na vrcholu stacku
+    when io_stack do
+        declare var
+          vysl     : c_operand;                  -- výsledek
+
+        begin
+          -- alokovat registr
+          new_address_register(inst,info,context,op,vysl,pref_reg,for no_dependance use no_dependance);
+
+          -- nacpat do něj stack pointer
+          addii(inst,info,ii_mov,vysl,op_esp,op0);
+
+          -- předat výsledek
+          op.replace(info,context,vysl);
+
+        leave
+          -- uvolnit pracovní operand
+          vysl.free(info,context);
+          end declare;
+
+    -- %%TODO(LEA) ještě asi a [io_rel] (?co s tím?)
+
+    -- nic jiného nepodporujeme
+    when others do verify({VERIFY=}001057);
+    end case;
+  end i_gen_load_address_to_register;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_address_to_register_with_dereference = 
+-- Načte adresu paměťového bloku reprezentovaného operandem do registru. 
+--  Je-li dodaný operand adresa reference na hodnotu, tak provede dereferenci a do registru uloží 
+-- adresu cílového objektu. Reference se pozná tak, že operand je typu [io_mem] a má nastaven 
+-- elementární datový typ [edt_address]. 
+--   Ostatní vlastnosti jsou shodné s procedurou [i_gen_load_address_to_register].
+----------------------------------------------------------------------------------------------------
+begin
+  if op.edtype=edt_address and op.optype=io_mem
+    -- je-li dodaný operand reference na hodnotu, stačí provést dereferenci
+    then do_dereference(inst,info,context,op,for pref_reg use pref_reg,for no_dependance use no_dependance);
+    -- jinak načíst adresu
+    else i_gen_load_address_to_register(inst,info,context,op,for force_reg use force_reg,for no_dependance use no_dependance,for pref_reg use pref_reg);
+    end if;
+  end i_gen_load_address_to_register_with_dereference;
+
+
+
+----------------------------------------------------------------------------------------------------
+-- Low-level primitiva pro ukládání hodnot.
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_value_to_register =
+-- Načte hodnotu reprezentovanou operandem do registru. Operand musí být typu [io_imm], [io_reg],
+-- [io_mem] nebo [io_cc] a mít velikost nejvýše 4 B. Pro operandy s elementárním datovým typem
+-- z množiny [edts_ordinal] generuje kód pro rozšíření/zúžení operandu s příslušným run-time
+-- checkem podle velikosti požadovaného datového typu daného kontextem ([context.rsize]).
+--   Je-li uveden preferovaný registr, adresa se načte do něj. Pokud není nastaveno [force_reg], 
+-- tak operandy typu [io_imm] a [io_cc] ponechá v původním tvaru.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    procedure new_register (
+        vysl       : out c_operand;              -- alokovaný registr
+        size       : in t_unsigned) =            -- požadovaná velikost registru
+    -- Alokuje nový registr. Pokud je nastaven preferovaný registr, použije přednostně ten, jinak se
+    -- aspoň pokusí recyklovat registr ze zdrojového operandu. Elementární datový typ převezme od
+    -- operandu, velikost z kontextu.
+    ------------------------------------------------------------------------------------------------
+    begin
+      if pref_reg<>in_none
+        then vysl.create_use_register(inst,info,context,op.edtype,iunitoreg[pref_reg,size]);
+        else vysl.create_new_register_from_operand(inst,info,context,op.edtype,size,op);
+        end if;
+      end new_register;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure mov_no8bit (
+        vysl       : in out c_operand) =         -- alokovaný registr
+    -- Zkopíruje registr [op] bez 8bitové části do 8bitového výsledku [vysl].
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- pro účely přiřazení se budou oba operandy chápat jako 32bitové (SI --> ESI, DI --> EDI)
+      vysl.adjust_size(4);
+      op.adjust_size(4);
+
+      -- movenout
+      addii(inst,info,ii_mov,vysl,op,op0);
+
+      -- změnit velikost výsledku zpět na 8 bitů
+      vysl.adjust_size(1);
+      end mov_no8bit;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure load_with_adjust =
+    -- Načte operand do registru a případně vygeneruje run-time check.
+    ------------------------------------------------------------------------------------------------
+    var
+      vysl         : c_operand;                  -- výsledek
+
+    begin
+      -- alokovat registr
+      new_register(vysl,context.rsize);
+
+      -- velikosti souhlasí nebo na ní nezáleží => stačí prosté přiřazení
+      if context.rsize=op.size or op.size=0 then
+        addii(inst,info,ii_mov,vysl,op,op0)
+
+      -- rozšíření operandu
+      elsif context.rsize>op.size then
+        verify({VERIFY=}001049,op.edtype not in edts_ordinal);
+        verify({VERIFY=}001051,context.rsign and orgtyp=nil);
+        
+        -- provést rozšíření
+        if context.rsign and then orgtyp^.stype=dt_signed
+          -- znaménkově
+          then addii(inst,info,ii_movsx,vysl,op,op0)
+          -- neznaménkově
+          else addii(inst,info,ii_movzx,vysl,op,op0)
+          end if;
+
+      -- zúžení operandu
+      elsif context.rsize<op.size then
+        verify({VERIFY=}001050,op.edtype not in edts_ordinal and (op.edtype<>edt_pointer or else context.rsize<>4));
+
+        if context.rsize=1 and then op.optype=io_reg and then op.reg.reg in ir_no8bit 
+
+          -- při 8bitovém výsledku se registry bez 8bitové části se musí řešit zvlášť
+          then
+            mov_no8bit(vysl);
+
+          -- pro ostatní registry je to triviální
+          else
+            -- pro účely přiřazení změnit velikost operandu
+            op.adjust_size(vysl.size);
+
+            -- přiřadit
+            addii(inst,info,ii_mov{zx},vysl,op,op0);
+            end if;
+        end if;
+
+      -- předat výsledek
+      op.replace(info,context,vysl);
+
+    leave
+      -- uvolnit pracovní operand
+      vysl.free(info,context);
+      end load_with_adjust;
+
+begin
+  verify({VERIFY=}001042,op.edtype not in edts_value);
+  verify({VERIFY=}001047,context.rsize=0);
+
+  case op.optype
+    -- registr
+    when io_reg do
+        if pref_reg<>in_none and then pref_reg<>iregtouni[op.reg.reg] 
+
+          -- je-li zadán preferovaný registr a liší se od již použitého, musí se přesunout
+          then 
+            load_with_adjust;
+
+          -- jinak stačí provést rozšíření/zúžení
+          else
+            -- rozšíření operandu
+            if context.rsize>op.size then
+              verify({VERIFY=}001052,op.edtype not in edts_ordinal);
+              verify({VERIFY=}001053,context.rsign and orgtyp=nil);
+
+              declare var
+               vysl : c_operand;                  -- výsledek
+
+              begin
+                -- výsledek
+                vysl.clone(inst,info,context,op);
+                vysl.adjust_size(context.rsize);
+
+                -- rozšířit
+                if context.rsign and then orgtyp^.stype=dt_signed
+                  -- znaménkově
+                  then addii(inst,info,ii_movsx,vysl,op,op0)
+                  -- neznaménkově
+                  else addii(inst,info,ii_movzx,vysl,op,op0);
+                  end if;
+                -- %%X šlo by použít CBW/CWD ?
+
+                -- předat výsledek
+                op.replace(info,context,vysl);
+
+              leave
+                -- uvolnit pracovní operand
+                vysl.free(info,context);
+                end declare;
+
+            -- zúžení operandu
+            elsif context.rsize<op.size then
+              verify({VERIFY=}001058,op.edtype not in edts_ordinal);
+
+              if context.rsize=1 and op.reg.reg in ir_no8bit 
+
+                -- při 8bitovém výsledku se registry bez 8bitové části se musí řešit zvlášť
+                then
+                  declare var
+                   vysl : c_operand;                  -- výsledek
+
+                  begin
+                    -- alokovat registr
+                    new_register(vysl,context.rsize);
+
+                    -- provést vlastní přiřazení
+                    mov_no8bit(vysl);
+
+                    -- předat výsledek
+                    op.replace(info,context,vysl);
+
+                  leave
+                    -- uvolnit pracovní operand
+                    vysl.free(info,context);
+                    end declare;
+
+                -- pro ostatní registry je to triviální
+                else
+                  op.adjust_size(context.rsize);
+                  end if;
+              end if;
+            end if;
+
+    -- paměť
+    when io_mem do load_with_adjust;
+
+    -- přímá hodnota
+    when io_imm do
+        -- do registru načítat jen je-li to vyžadováno
+        if force_reg then
+          -- velikost je úplně nezajímavá, zresetovat
+          op.adjust_size(0);
+
+          -- načíst
+          load_with_adjust;
+
+        -- liší-li se velikost konstanty, tak upravit alespoň tu
+        elsif op.size<>0 and then context.rsize<>op.size then
+          verify({VERIFY=}001059,op.edtype not in edts_ordinal);
+          op.adjust_size(context.rsize);
+          end if;
+
+    -- podmínka
+    when io_cc do 
+        -- do registru načítat jen je-li to vyžadováno
+        if force_reg then
+          declare var
+            vysl   : c_operand;                  -- výsledek
+
+          begin
+            -- alokovat registr
+            new_register(vysl,4);
+
+            -- nastavit
+            addset(inst,info,context,op.cc,vysl);
+
+            -- upravit velikost na požadovanou
+            vysl.adjust_size(context.rsize);
+
+            -- předat výsledek
+            op.replace(info,context,vysl);
+
+          leave
+            -- uvolnit mezivýsledek
+            vysl.free(info,context);
+            end declare;
+          end if;
+
+    -- nic jiného neumíme
+    when others do verify({VERIFY=}001048);
+    end case;
+  end i_gen_load_value_to_register;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_value_to_eax =
+-- Načte hodnotu reprezentovanou operandem do registru. Pokud je hodnota již uložena v AL, AX, EAX,
+-- tak ponechá operand beze změny. Registr AH kopíruje do AL. Předpokládá, že velikost operandu
+-- odpovídá požadované velistki datového typu daného kontextem ([context.rsize]).
+----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}001041,op.edtype not in edts_value);
+  verify({VERIFY=}001046,op.optype not in t_operand_type_set:[io_mem,io_reg,io_imm]);
+
+  -- kromě případu hodnoty již v AL, AX, EAX; (AH se musí kopírovat do AL)
+  if op.optype=io_reg and then op.reg.reg in iregset:[ir_al,ir_ax,ir_eax] then
+    return;
+    end if;
+
+  declare var
+    vysl           : c_operand;                  -- výsledek
+    eax            : ireg;                       -- zvolený registr
+    value_size     : t_unsigned;                 -- velikost registru
+
+  begin
+    -- velikost registru
+    if op.size=0
+      then value_size:=context.rsize;
+      else value_size:=op.size;
+      end if;
+    
+    -- interní kontrola - velikost musí souhlasit s požadovanou velikostí datového typu uvedenou
+    -- v kontextu; nicméně není problém dodělat konverzi stejně jako v [i_gen_load_value_to_register]
+    verify({VERIFY=}001044,value_size<>context.rsize);
+
+    -- vybrat variantu registru
+    case value_size
+      when 0 do eax:=ir_eax;
+      when 1 do eax:=ir_al;
+      when 2 do eax:=ir_ax;
+      when 4 do eax:=ir_eax;
+      when others do verify({VERIFY=}001045,true);
+      end case;
+
+    -- připravit EAX
+    vysl.create_use_register(inst,info,context,op.edtype,eax);
+
+    -- přiřadit
+    if op.optype=io_reg and then op.reg.reg=ir_ah
+
+      -- pro případ AH -> AL použít SHR EAX,8
+      then
         vysl.adjust_size(4);
-
-        -- movenout
-        addii(inst,info,ii_mov,vysl,op,op0);
-
-        -- a výsledek opět zúžit na 8 bitů
+        addii(inst,info,ii_shr,vysl,op_8,op0);
         vysl.adjust_size(1);
+
+      -- ve všech ostatních případech standardní přiřazení
+      else
+        addii(inst,info,ii_mov,vysl,op,op0);
         end if;
 
     -- předat výsledek
@@ -766,45 +1170,118 @@ begin
     -- uvolnit mezivýsledek
     vysl.free(info,context);
     end declare;
-
-  -- konstanta
-  elsif op.optype=io_imm then
-    -- zúžit na 8 bitů
-    op.adjust_size(1);
-
-  -- je v paměti
-  else
-    declare var
-      vysl         : c_operand;                  -- výsledek
-
-    begin
-      -- výsledek
-      vysl.create_use_register(inst,info,context,op.edtype,ir_cl);
-
-      -- udělat z toho 8 bitů
-      op.adjust_size(1);
-
-      -- movenout
-      addii(inst,info,ii_mov,vysl,op,op0);
-
-      -- předat výsledek
-      op.replace(info,context,vysl);
-
-    leave
-      -- uvolnit mezivýsledek
-      vysl.free(info,context);
-      end declare;
-    end if;
-  end i_gen_loadimm8cl;
+  end i_gen_load_value_to_eax;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_loadtemp =
--- Načte operand do temporary proměnné nebo ho ponechá const.
+procedure i_gen_load_value_to_imm8_cl =
+-- Načte hodnotu reprezentovanou operandem do registru CL nebo ho ponechá konstantní ([io_imm]).
 ----------------------------------------------------------------------------------------------------
 begin
-  verify({VERIFY=}000417,op.size<>1 and op.size<>2 and op.size<>4);
+  verify({VERIFY=}001040,op.edtype not in edts_value);
+
+  case op.optype
+    -- registr
+    when io_reg do 
+        if op.reg.reg in iregset:[ir_cl,ir_cx,ir_ecx]
+
+          -- triviální případ hodnoty již v CL, CX, ECX; (CH se musí kopírovat do CL)
+          then
+            -- zúžením operandu změnit na CL
+            op.adjust_size(1);
+
+          -- ostatní případy, kdy je to nějaký jiný registr (včetně CH)
+          else
+            declare var
+              vysl         : c_operand;                  -- výsledek
+
+            begin
+              -- výsledek
+              vysl.create_use_register(inst,info,context,op.edtype,ir_ecx);
+
+              -- %%TECH Kdyby mělo ESI a EDI 8-bitové části, tak by
+              -- šlo vše movat 8-bitově... (a kdyby SHL/SHR nebylo
+              -- tak debilně vymyšlený, tak to tu nemuselo bejt vůbec)
+
+              -- je to v CH, udělat SHR
+              if op.reg.reg=ir_ch then
+                -- shiftnout
+                addii(inst,info,ii_shr,vysl,op_8,op0);
+
+              -- již má správnou velikost
+              elsif op.size=1 then
+                -- změnit ECX na CL (provést tedy osmibitově, zabrání se tak nežádoucím prodlevám 
+                -- na některých procesorech)
+                vysl.adjust_size(1);
+
+                -- stačí movenout
+                addii(inst,info,ii_mov,vysl,op,op0);
+
+              -- 2 nebo 4 byty, provést 32-bitově (co kdyby to bylo (E)SI nebo (E)DI)
+              else
+                -- udělat z obou operandů 32 bitů
+                op.adjust_size(4);
+
+                -- movenout
+                addii(inst,info,ii_mov,vysl,op,op0);
+                end if;
+
+              -- změnit ECX na CL (nestalo-li se tak již dříve)
+              vysl.adjust_size(1);
+
+              -- předat výsledek
+              op.replace(info,context,vysl);
+
+            leave
+              -- uvolnit mezivýsledek
+              vysl.free(info,context);
+              end declare;
+            end if;
+
+    -- konstanta
+    when io_imm do
+        -- zúžit na 8 bitů
+        op.adjust_size(1);
+
+    -- paměť
+    when io_mem do
+        declare var
+          vysl     : c_operand;                  -- výsledek
+
+        begin
+          -- výsledek
+          vysl.create_use_register(inst,info,context,op.edtype,ir_cl);
+
+          -- udělat z toho 8 bitů
+          op.adjust_size(1);
+
+          -- movenout
+          addii(inst,info,ii_mov,vysl,op,op0);
+
+          -- předat výsledek
+          op.replace(info,context,vysl);
+
+        leave
+          -- uvolnit mezivýsledek
+          vysl.free(info,context);
+          end declare;
+
+    -- nic jiného obsloužit neumíme
+    when others do verify({VERIFY=}001043);
+    end case;
+  end i_gen_load_value_to_imm8_cl;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_load_value_to_temporary =
+-- Uloží hodnotu reprezentovanou operandem do temporary proměnné nebo ho ponechá konstantní 
+-- ([io_imm]). Předpokládá, že velikost hodnoty je 1, 2 nebo 4 B.
+----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}001036,op.optype<>io_imm and then (op.size<>1 and op.size<>2 and op.size<>4));
+  verify({VERIFY=}001039,op.edtype not in edts_value);
 
   case op.optype
     -- přímá hodnota
@@ -856,147 +1333,81 @@ begin
           opreg.free(info,context);
           end declare;
 
-    when others do verify({VERIFY=}000416,true);
+    when others do verify({VERIFY=}001037,true);
     end case;
-  end i_gen_loadtemp;
+  end i_gen_load_value_to_temporary;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_load_rtattrib_addr =
--- Podle EXPR/OP určí adresu dynamického atributu RTA.
-----------------------------------------------------------------------------------------------------
-
-    ------------------------------------------------------------------------------------------------
-    procedure get_set return rtattribset =
-    ------------------------------------------------------------------------------------------------
-    with
-      advanced,
-      advanced.low_level,
-      advanced.low_level.bit_operations;
-
-    begin
-      for xrta in rta:first..pred rta loop
-        if xrta in rtaset then
-          bit_set(result,t_bit_index(xrta:ord));
-          end if;
-        end loop;
-      end get_set;
-
-var
-  x                : timm32;
-
-begin
-  verify({VERIFY=}000551,op.optype<>io_mem);
-
-  -- základ operandu se shodný s původním operandem
-  oprta.clone(inst,info,context,op);
-
-  -- upravit velikost
-  oprta.adjust_size(unidata_size_to_unsigned(cpu32_rtattribsize[rta]));
-
-  -- offset run-time atributu v rámci původního operandu
-  if rta>rta:first then
-    getrtattribsetsize(get_set{%%TODO(SET)rtaset*rtattribset:[rta:first..pred rta]},x);
-    end if;
-  oprta.shift_displacement(imm32_to_signed{%%X}(imm32_lpointer32+x));
-  end i_gen_load_rtattrib_addr;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_load_rtattrib_value =
--- Podle EXPR/OP načte dynamický atribut RTA.
-----------------------------------------------------------------------------------------------------
-var
-  oprta            : c_operand;
-
-begin
-  -- načíst adresu dynamického atributu
-  i_gen_load_rtattrib_addr(inst,info,context,rtaset,op,rta,oprta);
-
-  -- načíst hodnotu do registru
-  addii(inst,info,ii_mov,opreg,oprta,op0);
-
-leave
-  -- uvolnit operand
-  oprta.free(info,context);
-  end i_gen_load_rtattrib_value;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_load_this_address =
--- Adresa THIS pointeru na instanci třídy resp. složky v rámci třídy.
-----------------------------------------------------------------------------------------------------
-begin
-  -- načíst pointer na třídu
-  i_gen_this_address(inst,op);
-  i_gen_loadreg(inst,info,context,nil,op,true,irm_addr);
-
-  -- udělat z registru adresu
-  op.transform_reg_to_mem(_edtype,_size);
-
-  -- přičíst offset složky
-  op.shift_displacement(imm32_to_signed{%%X}(unidata_addr_to_imm32(ofs)));
-  end i_load_this_address;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_this_address =
--- Sestaví adresu THIS pointeru na instanci třídy.
-----------------------------------------------------------------------------------------------------
-begin
-  op.create_memory_address_on_stack(inst,edt_address,lpointer32,signed_to_imm32(inst.profile.thisofs));
-  end i_gen_this_address;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_pushstack =
+procedure i_gen_push_value =
 -- Uloží operand na stack.
 ----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    #template push_mem (load_mem,do_push);
+    -- Schéma uložení operandu typu [io_mem] na stack. [load_mem] reprezentuje konverzi operandu do 
+    -- pracovního, [do_push] je vlastní mechanismus pro uložení na stack.
+    ------------------------------------------------------------------------------------------------
+      declare var
+        op1 : c_operand;                 -- pracovní kopie operandu
+
+      begin
+        -- naklonovat operand
+        op1.clone(inst,info,context,op);
+
+        -- načíst
+        load_mem
+
+        -- normalizovat na 32 bitů
+        op1.adjust_size(4);
+
+        -- pushnout
+        do_push
+
+      leave
+        -- uvolnit pracovní operand
+        op1.free(info,context);
+        end declare;
+      #end push_mem;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure push_with_adjust =
+    -- Operand uloží na stack. Jeho velikost nejdříve normalizuje na 4 B.
+    ------------------------------------------------------------------------------------------------
+    var
+      old_size     : t_unsigned;                 -- původní velikost operandu
+
+    begin
+      -- normalizovat na 32 bitů
+      old_size:=op.size;
+      op.adjust_size(4);
+
+      -- pushnout
+      addii(inst,info,ii_push,op,op0,op0);
+
+      -- vrátit zpět původní velikost
+      op.adjust_size(old_size);
+      end push_with_adjust;
+
 begin
+  verify({VERIFY=}001038,op.edtype not in edts_value);
+
   case op.optype
     -- někdo už ho pro nás na stack uložil
     when io_stack do -- nic nedělat
 
     -- přímá hodnota
     when io_imm do
-        verify({VERIFY=}000557,op.size<>0 and op.size<>1 and op.size<>2 and op.size<>4);
-
-        declare var
-          old_size : t_unsigned;                 -- původní velikost operandu
-
-        begin
-          -- normalizovat na 32 bitů
-          old_size:=op.size;
-          op.adjust_size(4);
-
-          -- pushnout
-          addii(inst,info,ii_push,op,op0,op0);
-
-          -- vrátit zpět původní velikost
-          op.adjust_size(old_size);
-          end declare;
+        verify({VERIFY=}001032,op.size<>0 and op.size<>1 and op.size<>2 and op.size<>4);
+        push_with_adjust;
 
     -- registr
     when io_reg do
-        declare var
-          old_size : t_unsigned;                 -- původní velikost operandu
-
-        begin
-          -- normalizovat na 32 bitů
-          old_size:=op.size;
-          op.adjust_size(4);
-
-          -- pushnout
-          addii(inst,info,ii_push,op,op0,op0);
-
-          -- vrátit zpět původní velikost
-          op.adjust_size(old_size);
-          end declare;
+        verify({VERIFY=}001035,op.reg.reg in ir_r8h);
+        push_with_adjust;
 
     -- operand v paměti
     when io_mem do
@@ -1006,54 +1417,30 @@ begin
 
           -- příznivá velikost
           when 1,2 do
-              declare var
-                op1 : c_operand;                 -- pracovní kopie operandu
-
-              begin
-                -- naklonovat operand
-                op1.clone(inst,info,context,op);
-
-                -- načíst do registru
-                i_gen_loadreg(inst,info,context,nil,{%%CONTEXT nil,}op1,true,irm_int);
-
-                -- normalizovat na 32 bitů
-                op1.adjust_size(4);
-
-                -- pushnout
-                addii(inst,info,ii_push,op1,op0,op0);
-
-              leave
-                -- uvolnit pracovní operand
-                op1.free(info,context);
-                end declare;
+              #expand push_mem;
+                #for load_mem use; 
+                    -- načíst hodnotu do registru
+                    i_gen_load_value_to_register(inst,info,context,nil,op1);
+                #for do_push  use; 
+                    -- uložit na stack
+                    addii(inst,info,ii_push,op1,op0,op0);
+                #end push_mem;
 
           -- slabě příznivá velikost
           when 8,12,16 do
-              declare var
-                op1 : c_operand;                 -- pracovní kopie operandu
+              #expand push_mem;
+                #for do_push  use;
+                    -- posunout operand na konec
+                    op1.shift_displacement(t_signed(op.size-4));
 
-              begin
-                -- naklonovat operand
-                op1.clone(inst,info,context,op);
+                    -- n-krát pushnout
+                    for i in reverse 1..op.size div 4 loop
+                      addii(inst,info,ii_push,op1,op0,op0);
+                      op1.unshift_displacement(4);
+                      end loop;
+                #end push_mem;
 
-                -- normalizovat na 32 bitů
-                op1.adjust_size(4);
-
-                -- posunout operand na konec
-                op1.shift_displacement(t_signed(op.size-4));
-
-                -- n-krát pushnout
-                for i in reverse 1..op.size div 4 loop
-                  addii(inst,info,ii_push,op1,op0,op0);
-                  op1.unshift_displacement(4);
-                  end loop;
-
-              leave
-                -- uvolnit pracovní operand
-                op1.free(info,context);
-                end declare;
-
-          when others do unimplemented({UNIMP=}000060);
+          when others do unimplemented({UNIMP=}000271);
           end case;
 
     -- výsledek porovnání
@@ -1076,15 +1463,15 @@ begin
           op1.free(info,context);
           end declare;
 
-    when others do verify({VERIFY=}000150,true);
+    when others do verify({VERIFY=}001033,true);
     end case;
-  end i_gen_pushstack;
+  end i_gen_push_value;
 
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_pushnil =
--- Uloží NIL na stack.
+procedure i_gen_push_nil =
+-- Uloží NIL v požadované velikosti [size] na stack.
 ----------------------------------------------------------------------------------------------------
 var
   nsize            : t_unsigned;                 -- normalizovaná velikosti NILu v násobcích 4 B
@@ -1096,7 +1483,7 @@ begin
   -- kolic moc nul budeme pushovat ?
   if nsize<=8
 
-    -- jen toho málo => pushnout přímo
+    -- je toho málo => pushnout přímo
     then
       -- n-krát pushnout 0
       while nsize>0 loop
@@ -1106,9 +1493,37 @@ begin
 
     -- je toho hodně => vzít to cyklem
     else
-      unimplemented({UNIMP=}000192);
+      unimplemented({UNIMP=}000270);
       end if;
-  end i_gen_pushnil;
+  end i_gen_push_nil;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_load_this_address =
+-- Adresa THIS pointeru na instanci třídy resp. složky v rámci třídy.
+----------------------------------------------------------------------------------------------------
+begin
+  -- načíst pointer na třídu
+  i_gen_this_address(inst,op);
+  i_gen_load_address_to_register_with_dereference(inst,info,context,op);
+
+  -- udělat z registru adresu
+  op.transform_reg_to_mem(_edtype,_size);
+
+  -- přičíst offset složky
+  op.shift_displacement(imm32_to_signed{%%X}(unidata_addr_to_imm32(ofs)));
+  end i_load_this_address;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_this_address =
+-- Sestaví adresu THIS pointeru na instanci třídy.
+----------------------------------------------------------------------------------------------------
+begin
+  op.create_memory_address_on_stack(inst,edt_address,lpointer32,signed_to_imm32(inst.profile.thisofs));
+  end i_gen_this_address;
 
 
 
@@ -1261,43 +1676,81 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_reduceop =
--- Pokud operand používá moc registrů (=dva), vylepší to (na jeden).
--- Operand musí být typu IO_MEM, IO_STACK nebo IO_IMM.
+procedure i_gen_simple_assign =
+-- Vygeneruje jednoduché přiřazení "mov <op1>,<op2>". Jestliže [op2] je [io_mem], hodnotu přiřadí
+-- přes pracovní registr. Zvládne i přiřazení [io_cc].
 ----------------------------------------------------------------------------------------------------
 begin
-  case op.optype
-    -- přímá hodnota
-    when io_imm   do -- nic nedělat
+  if op2.optype=io_cc
 
-    -- operand na stacku
-    when io_stack do -- nic nedělat
+    -- podmínka => SET
+    then 
+      addset(inst,info,context,op2.cc,op1);
 
-    -- operand v paměti
-    when io_mem   do
-        -- jsou použity dva registry ?
-        if op.base.reg<>ir_none and op.index.reg<>ir_none then
-          declare var
-            org_edtype : t_elementary_data_type;
-            org_size   : t_unsigned;
-            
-          begin
-            -- shovat si elementární datový typ a velikost operandu
-            org_edtype:=op.edtype;
-            org_size:=op.size;
+    -- všechno ostatní standardně
+    else
+      i_gen_simple_op(inst,info,context,ii_mov,op1,op2);
+      end if;
+  end i_gen_simple_assign;
 
-            -- načíst výslednou adresu
-            i_gen_lea(inst,info,context,op,in_none);
-            verify({VERIFY=}000491,op.optype<>io_reg);
 
-            -- změnit zpět z registru na paměť
-            op.transform_reg_to_mem(org_edtype,org_size);
-            end declare;
-          end if;
 
-    when others do verify({VERIFY=}000338,true{op.optype<>io_mem});
-    end case;
-  end i_gen_reduceop;
+----------------------------------------------------------------------------------------------------
+procedure i_gen_simple_op =
+-- Vygeneruje jednoduchou instrukci "<ii> <op1>,<op2>". Jestliže [op2] je [io_mem], hodnotu přiřadí
+-- přes pracovní registr.
+----------------------------------------------------------------------------------------------------
+begin
+  if op1.optype=io_mem and op2.optype=io_mem
+
+    -- paměť => vzít přes registr
+    then
+      declare var
+        optemp   : c_operand;                  -- pracovní registr
+
+      begin
+        -- alokovat pracovní registr
+        optemp.create_new_register(inst,info,context,op2.edtype,op2.size);
+
+        -- provést operaci
+        addii(inst,info,ii_mov,optemp,op2,op0);
+        addii(inst,info,ii,op1,optemp,op0);
+
+      leave
+        -- uvolnit pracovní operand
+        optemp.free(info,context);
+        end declare;
+
+    -- všechno ostatní přímo
+    else
+      addii(inst,info,ii,op1,op2,op0);
+      end if;
+  end i_gen_simple_op;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_stack_top_reserve =
+-- Alokuje na vrcholu stacku prostor pro [size] bytů.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat prostor
+  addopimm(inst,info,context,ii_sub,op_esp,value_size);
+  end i_gen_stack_top_reserve;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_stack_top_alloc =
+-- Alokuje na vrcholu stacku prostor pro [size] bytů a sestaví odpovídající operand.
+----------------------------------------------------------------------------------------------------
+begin
+  -- alokovat prostor na vrcholu stacku
+  i_gen_stack_top_reserve(inst,info,context,value_size);
+
+  -- sestavit odpovídající operand
+  vysl.create_memory_address_on_stack(inst,value_edtype,value_size,0,for use_stack_ptr use true);
+  end i_gen_stack_top_alloc;
 
 
 
@@ -1665,40 +2118,66 @@ with
   cc_base,cc_base.cc_util;
 
 begin
-  declare var
-    opesi            : c_operand;                  -- zdrojový operand
-    opedi            : c_operand;                  -- cílový operand
+  if size<=ismallobject and size mod 4=0
 
-  begin
-    -- vytvořit si zdrojový operand
-    opesi.create_on_stack(edt_binary,size);--newopstack(inst,info,context,opesi,size);
+    -- pro malé objekty použijeme POP
+    then
+      declare var
+        optemp     : c_operand;                  -- pracovní kopie cílového operandu
 
-    -- odvodit nový cílový operand
-    opedi.clone(inst,info,context,opdst);
+      begin
+        -- připravit si pracovní kopii cílového operandu, kterou budeme moci zničit
+        optemp.clone(inst,info,context,opdst);
+        optemp.adjust_size(4);
+        verify({VERIFY=}001094,optemp.optype<>io_mem);
 
-    -- načíst adresy operandů do EDI a ESI
-    i_gen_lea(inst,info,context,opesi,in_esi);
-    i_gen_lea(inst,info,context,opedi,in_edi);
+        -- vygenerovat příslušný počet POPů
+        for i in 1..size div 4 loop
+          addii(inst,info,ii_pop,optemp,op0,op0);
+          optemp.shift_displacement(4);
+          end loop;
 
-    -- přesunout
-    i_gen_movsd_static(inst,info,context,opesi,opedi,size);
+      leave
+        -- uvolnit pracovní operand
+        optemp.free(info,context);
+        end declare;
 
-  leave
-    -- uvolnit operandy
-    opesi.free(info,context);
-    opedi.free(info,context);
-    end declare;
+    -- větší objekty standardním přesuneme
+    else
+      declare var
+        opesi            : c_operand;                  -- zdrojový operand
+        opedi            : c_operand;                  -- cílový operand
+        aligned_size   : t_unsigned32;               -- zarovnaná velikost báze
 
-  declare var
-    aligned_size   : t_unsigned32;               -- zarovnaná velikost báze
+      begin
+        -- vytvořit si zdrojový operand
+        opesi.create_on_stack(edt_binary,size);--newopstack(inst,info,context,opesi,size);
 
-  begin
-    -- zarovnat na 4 a získat tak použitou velikost prostoru na stacku
-    addalign(aligned_size,0,size,4);
+        -- odvodit nový cílový operand
+        opedi.clone(inst,info,context,opdst);
 
-    -- odstranit zdrojový operand ze stacku
-    addaddimm(inst,info,context,op_esp,aligned_size);
-    end declare;
+        -- načíst adresy operandů do EDI a ESI
+        i_gen_load_address_to_register(inst,info,context,opesi,for pref_reg use in_esi);
+        i_gen_load_address_to_register(inst,info,context,opedi,for pref_reg use in_edi);
+    {
+    --     i_gen_lea(inst,info,context,opesi,in_esi);
+    --     i_gen_lea(inst,info,context,opedi,in_edi);
+    }
+        -- přesunout
+        i_gen_movsd_static(inst,info,context,opesi,opedi,size);
+
+        -- zarovnat na 4 a získat tak použitou velikost prostoru na stacku
+        addalign(aligned_size,0,size,4);
+
+        -- odstranit zdrojový operand ze stacku
+        addaddimm(inst,info,context,op_esp,aligned_size);
+
+      leave
+        -- uvolnit operandy
+        opesi.free(info,context);
+        opedi.free(info,context);
+        end declare;
+      end if;
   end i_gen_pop_static;
 
 
@@ -2067,7 +2546,7 @@ begin
 
       begin
         -- načíst adresu do EDI
-        i_gen_lea(inst,info,context,opdst,in_edi);
+        i_gen_load_address_to_register(inst,info,context,opdst,for pref_reg use in_edi,for force_reg use true);
 
         -- shodit Direction Flag
         addii(inst,info,ii_cld,op0,op0,op0);
@@ -2144,7 +2623,7 @@ begin
   newtarget(info,tg_end);
 
   -- načíst adresu do EDI
-  i_gen_lea(inst,info,context,opdst,in_edi);
+  i_gen_load_address_to_register(inst,info,context,opdst,for pref_reg use in_edi);
 
   -- shodit Direction Flag
   addii(inst,info,ii_cld,op0,op0,op0);
@@ -2210,41 +2689,6 @@ begin
       end if;
   vysl.set_relo_entity(psubprog);
   end i_gen_subprogram_address;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_gen_adjust_rta_position =
--- Operand IO_MEM upraví tak, aby ukazoval na zadaný run-time atribut.
-----------------------------------------------------------------------------------------------------
-
-    ------------------------------------------------------------------------------------------------
-    procedure get_set return rtattribset =
-    ------------------------------------------------------------------------------------------------
-    with
-      advanced,
-      advanced.low_level,
-      advanced.low_level.bit_operations;
-
-    begin
-      for xrta in rta:first..pred rta loop
-        if xrta in expr^.rta_used then
-          bit_set(result,t_bit_index(xrta:ord));
-          end if;
-        end loop;
-      end get_set;
-
-var
-  x                : timm32;
-
-begin
-  verify({VERIFY=}000321,vysl.optype<>io_mem);
-  vysl.adjust_size(unidata_size_to_imm32(cpu32_rtattribsize[rta]));
-  if rta>rta:first then
-    getrtattribsetsize(get_set{%%TODO(SET)expr^.rta_used{%%ATTR}*rtattribset:[rta:first..pred rta]},x);
-    end if;
-  vysl.shift_displacement(imm32_to_signed{%%X}(imm32_lpointer32+x));
-  end i_gen_adjust_rta_position;
 
 
 

@@ -21,6 +21,8 @@ var
     for others      use irm_int];
 
 var
+  orgtyp           : pentity_type;               -- původní typ souvisejícího podvýrazu
+  orgtyp_set       : t_logical := false;         -- T-[orgtyp] byl již nastaven
   dirty            : t_logical;                  -- operand byl již alespoň jednou použit
   low_level        : t_logical;                  -- operand byl vytvořen low level operací
 
@@ -138,7 +140,10 @@ begin
   init(io_mem,_edtype,_size);
 
   -- naplnit bázi a posunutí
-  this.base.reg:=istackframereg[inst.frame];
+  if use_stack_ptr
+    then this.base.reg:=ir_esp;
+    else this.base.reg:=istackframereg[inst.frame];
+    end if;
   this.disp:=_disp;
   end create_memory_address_on_stack;
 
@@ -146,16 +151,26 @@ begin
 
 ----------------------------------------------------------------------------------------------------
 static create_memory_address_from_operand =
--- Vytvoří operand typu [io_mem] podle dodaného původního operandu typu [io_reg].
+-- Vytvoří operand typu [io_mem] podle dodaného původního operandu typu [io_reg] nebo [io_imm].
+-- Původní operand neuvolňuje.
 ----------------------------------------------------------------------------------------------------
 begin
-  verify({VERIFY=}000646,_old_operand.optype<>io_reg);
-
   -- počáteční inicializace nového operandu
   init(io_mem,_edtype,_size);
 
-  -- naplnit bázi
-  i_reg_use(inst,info,context,_old_operand.reg.reg,this.base,idefregsize);
+  -- podle původního operandu natavit adresu
+  case _old_operand.optype
+    -- registr => naplnit bázi
+    when io_reg do i_reg_use(inst,info,context,_old_operand.reg.reg,this.base,idefregsize);
+
+    -- přímá hodnota => naplnit posunutí a zkopírovat relokaci
+    when io_imm do 
+        disp:=_old_operand.imm;
+        copy_relo(_old_operand);
+
+    -- nic jiného neumíme
+    when others do verify({VERIFY=}000646);
+    end case;
   end create_memory_address_from_operand;
 
 
@@ -214,12 +229,49 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
+static set_orgtyp =
+-- Přiřadí operandu původní typ souvisejícího podvýrazu.
+----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}001081,not dirty);
+
+-- Interní kontrola zrušena, protože jeden operand často bez úprav přežije více pater generovaného
+-- stromu.
+-- -- tuto operanci lze provést nejvýše jednou
+-- verify({VERIFY=}000997,orgtyp_set);
+
+  -- přiřadit operandu původní typ souvisejícího podvýrazu.
+  this.orgtyp:=orgtyp;
+  orgtyp_set:=true;
+  end set_orgtyp;
+
+                 
+
+----------------------------------------------------------------------------------------------------
+static get_orgtyp =
+-- Zjistí původní typ souvisejícího podvýrazu. Přednost má původní typ souvisejícího podvýrazu
+-- nastavený v operandu, pokud se tak nestalo, použije se původní typ z dodaného kontextu.
+----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}001082,not dirty);
+
+  if orgtyp_set
+    then result:=orgtyp
+    else result:=context.orgtyp
+    end if;
+  end get_orgtyp;
+
+
+
+----------------------------------------------------------------------------------------------------
 static copy_from (
     _old_operand   : in c_operand) =             -- původní operand, ze kterého se kopírují údaje
 -- Zkopíruje údaje z dodaného [_old_operand] do tohoto operandu.
 ----------------------------------------------------------------------------------------------------
 begin
   -- %%TODO(ASSIGN) vzhledem k tomu, že zatím neexistuje přiřazení tříd spolu s ADJUST, tak se to řeší po položkách
+
+  verify({VERIFY=}001080,not _old_operand.dirty);
 
   -- základní údaje
   optype    :=_old_operand.optype;
@@ -262,7 +314,14 @@ begin
   disp_target:=_old_operand.disp_target;
 
   -- přídavné údaje inline assembleru
-  spos   :=_old_operand.spos;
+  spos       :=_old_operand.spos;
+
+  -- interní proměnné
+  orgtyp     :=_old_operand.orgtyp;
+  orgtyp_set :=_old_operand.orgtyp_set;
+
+  -- operand je odteď použitý
+  dirty:=true;
   end copy_from;
 
 
@@ -314,6 +373,10 @@ begin
 
   -- přídavné údaje inline assembleru
   spos       :=nil;
+
+  -- interní proměnné
+  orgtyp     :=nil;
+  orgtyp_set :=false;
   end empty;
 
 
@@ -348,7 +411,6 @@ static transfer =
 -- operandu. Původní operand tedy již není třeba uvolňovat.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- %%FLEX
   verify({VERIFY=}000653,dirty);
 
   -- zkopírovat
@@ -366,11 +428,11 @@ static replace =
 -- a [transfer] s tím rozdílem, že je povoleno stejný operand použít dvakrát.
 ----------------------------------------------------------------------------------------------------
 begin
-  -- %%FLEX
   -- uvolnit tento operand
   free(info,context);
 
   -- dovolit opakované použití
+  low_level:=false;
   dirty:=false;
 
   -- převést údaje z původního operandu
@@ -385,8 +447,6 @@ static free =
 -- Jestliže není [free] explicitně zavoláno, zavolá se automaticky při provedené [exit] operandu.
 ----------------------------------------------------------------------------------------------------
 begin
-  --%%FLEX
-
   -- uvolnit zdroje
   if not low_level then
     case optype 
@@ -412,6 +472,8 @@ static retrieve =
 -- Převede operand z podřízeného kontextu do nadřazeného.
 ----------------------------------------------------------------------------------------------------
 begin
+  verify({VERIFY=}001083,not dirty);
+
   --%%FLEX
   --  i_reg_retrieve: reg, base, index
 
@@ -440,8 +502,7 @@ static refresh =
 -- Aktualizuje jména registrů v operandu.
 ----------------------------------------------------------------------------------------------------
 begin
-  --%%FLEX
-  --  i_reg_refresh: reg, base, index
+  verify({VERIFY=}001074,not dirty);
 
   -- aktualizovat jména registrů v operandu
   if optype=io_reg then
@@ -460,6 +521,8 @@ static adjust_size =
 -- Pokud registr nemá tak velkou subčást, způsobí interní chybu.
 ----------------------------------------------------------------------------------------------------
 begin
+  verify({VERIFY=}001075,not dirty);
+
   -- změnit velikost operandu
   size:=_size;
 
@@ -476,6 +539,8 @@ static adjust_edtype =
 -- Upraví elementární datový typ operandu.
 ----------------------------------------------------------------------------------------------------
 begin
+  verify({VERIFY=}001076,not dirty);
+
   -- změnit elementární datový typ operandu
   edtype:=_edtype;
   end adjust_edtype;
@@ -515,23 +580,40 @@ with
   advanced.low_level.bit_operations;
 
 begin
-  -- %%FLEX
+  verify({VERIFY=}001085,not dirty);
+
   case optype
     -- registr
     when io_reg do 
         --%%TODO(SET) result:=[iregtouni[reg.reg]];
-        bit_set(result,t_bit_index(iregtouni[reg.reg]:ord));
+        if iregtouni[reg.reg]<>in_none then bit_set(result,t_bit_index(iregtouni[reg.reg]:ord)) end if;
 
     -- adresa - až dva registry na výběr
     when io_mem do
-        --%%TODO(SET) if base.reg<>ir_none then result+iuniregset:[iregtouni[base.reg]] end if;
-        --%%TODO(SET) if index.reg<>ir_none then result+iuniregset:[iregtouni[index.reg]] end if;
-        if base.reg<>ir_none then bit_set(result,t_bit_index(iregtouni[base.reg]:ord)) end if;
-        if index.reg<>ir_none then bit_set(result,t_bit_index(iregtouni[index.reg]:ord)) end if;
+        --%%TODO(SET) if iregtouni[base.reg]<>in_none then result+iuniregset:[iregtouni[base.reg]] end if;
+        --%%TODO(SET) if iregtouni[index.reg]<>in_none then result+iuniregset:[iregtouni[index.reg]] end if;
+        if iregtouni[base.reg]<>in_none then bit_set(result,t_bit_index(iregtouni[base.reg]:ord)) end if;
+        if iregtouni[index.reg]<>in_none then bit_set(result,t_bit_index(iregtouni[index.reg]:ord)) end if;
 
     -- žádný jiný operand v sobě registr nemá
     end case;
+  
+  -- Poznámka: Do výsledné množiny by se neměly dostat registry, které se mapují na [in_none].
+  verify({VERIFY=}001064,in_none in result);
   end get_all_uni_registers;
+
+
+
+----------------------------------------------------------------------------------------------------
+static depends_on =
+-- True, jestliže tento operand závisí na dodaném operandu [_other_op]. Závislé operandy se poznají
+-- tak, že sdílejí alespoň jeden registr.
+----------------------------------------------------------------------------------------------------
+begin
+  -- Poznámka: Registry, jako například EBP či ESP, které se mapují na [in_none], se do množiny
+  -- vypočtené metodou [get_all_uni_registers] jistě nedostanou.
+  result:=get_all_uni_registers*_other_op.get_all_uni_registers<>iuniregset:[];
+  end depends_on;
 
 
 
@@ -540,9 +622,7 @@ static transform_imm_to_rel =
 -- Transformuje operand typu [io_imm] na operand typu [io_rel].
 ----------------------------------------------------------------------------------------------------
 begin
-  --%%FLEX
-  --      vysl.optype:=io_rel;
-  --      vysl.rel:=vysl.imm;
+  verify({VERIFY=}001077,optype<>io_imm);
 
   -- změnit typ operandu
   optype:=io_rel;
@@ -603,10 +683,11 @@ static transform_imm_or_reg_to_mem =
 -- Transformuje operand typu [io_reg] na operand typu [io_mem]. Registr použije jako bázi.
 ----------------------------------------------------------------------------------------------------
 begin
-  if optype=io_reg
-    then transform_reg_to_mem(_edtype,_size)
-    else transform_imm_to_mem(_edtype,_size)
-    end if;
+  case optype
+    when io_reg do transform_reg_to_mem(_edtype,_size)
+    when io_imm do transform_imm_to_mem(_edtype,_size)
+    when others do verify({VERIFY=}000962,true);
+    end case;
   end transform_imm_or_reg_to_mem;
 
 
@@ -619,7 +700,6 @@ static transform_mem_to_imm =
 -- zůstanou zachovány.
 ----------------------------------------------------------------------------------------------------
 begin
-  --%%FLEX
   verify({VERIFY=}000651,optype<>io_mem or else base.reg<>ir_none or else index.reg<>ir_none);
 
   -- zm2nit typ operandu
@@ -666,6 +746,7 @@ static set_target =
 -- Operandu typu [io_rel] přiřadí návěští cíle.
 ----------------------------------------------------------------------------------------------------
 begin 
+  verify({VERIFY=}001078,not dirty);
   this.disp_target:=_target;
   end set_target;
 
@@ -682,6 +763,8 @@ var
   addr             : t_unsigned32;               -- cílová adresa
 
 begin
+  verify({VERIFY=}001079,not dirty);
+ 
   -- cílová adresa (pro zjednodušení)
   gettarget(info,disp_target,addr);
 
@@ -784,7 +867,6 @@ static shift_by_base =
 -- Nastaví bázi operandu na registr [_base].
 ----------------------------------------------------------------------------------------------------
 begin
-  -- %%FLEX
   verify({VERIFY=}000652,optype<>io_mem or else base.reg<>ir_none or else _base not in ir_r32);
   
   -- doplnit bázový registr
@@ -812,6 +894,7 @@ static set_relo_entity =
 -- Přiřadí k operandu relokabilní entitu.
 ----------------------------------------------------------------------------------------------------
 begin
+  verify({VERIFY=}001086,not dirty);
   this.relo_info.rtype:=irt_entity;
   this.relo_info.rentity:=_entity;
   end set_relo_entity;
@@ -823,6 +906,7 @@ static set_relo_imm =
 -- Přiřadí k operandu relokabilní přímou hodnotu (v podobě odpovídajícího uzlu stromu).
 ----------------------------------------------------------------------------------------------------
 begin
+  verify({VERIFY=}001087,not dirty);
   this.relo_info.rtype:=irt_imm;
   this.relo_info.rexpr:=_expr;
   end set_relo_imm;
@@ -834,6 +918,7 @@ static set_relo_interface =
 -- Přiřadí k operandu relokabilní interface třídy reprezentující jeho fake tag.
 ----------------------------------------------------------------------------------------------------
 begin
+  verify({VERIFY=}001088,not dirty);
   this.relo_info.rtype:=irt_interface;
   this.relo_info.rinterface:=_interface;
   end set_relo_interface;
@@ -844,7 +929,7 @@ static copy_relo =
 -- Zkopíruje informace o relokabilním objektu z dodaného operandu [_old_operand].
 ----------------------------------------------------------------------------------------------------
 begin
-  -- %%FLEX
+  verify({VERIFY=}001089,not dirty);
   relo_info:=_old_operand.relo_info;
   end copy_relo;
 
@@ -855,8 +940,23 @@ static set_rta_mode =
 -- Nastaví způsob zjištění zadaného run-time atributu tohoto operandu.
 ----------------------------------------------------------------------------------------------------
 begin
-  --%%FLEX
+  verify({VERIFY=}001090,not dirty);
+  rta_info[_rta].mode:=_rta_mode;
+  rta_info[_rta].indirection:=_rta_indirection;
   end set_rta_mode;
+
+
+
+----------------------------------------------------------------------------------------------------
+static set_rta_modes =
+-- Dávkově nastaví způsoby zjištění všech run-time atributů tohoto operandu.
+----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}001091,not dirty);
+  for rta in rtattrib loop
+    set_rta_mode(rta,_rta_modes[rta],_rta_indirection);
+    end loop;
+  end set_rta_modes;
 
 
 
@@ -926,13 +1026,10 @@ static shift_by_base_low_level =
 -- Přičte k adresnímu operandu zadanou bázi [_base].
 ----------------------------------------------------------------------------------------------------
 begin
-  verify({VERIFY=}000656,optype<>io_mem or else base.reg<>ir_none);
+  verify({VERIFY=}000656,optype<>io_mem or else base.reg<>ir_none or else not low_level);
   
   -- doplnit bázový registr
   this.base.reg:=_base;
-
-  -- operand byl vytvořen low-level operací
-  low_level:=true;
   end shift_by_base_low_level;
 
 
@@ -942,16 +1039,13 @@ static shift_by_index_low_level =
 -- Přičte k adresnímu operandu zadaný posuv [_index]*[_scale].
 ----------------------------------------------------------------------------------------------------
 begin
-  verify({VERIFY=}000655,optype<>io_mem or else index.reg<>ir_none);
+  verify({VERIFY=}000655,optype<>io_mem or else index.reg<>ir_none or else not low_level);
   
   -- doplnit indexní registr
   this.index.reg:=_index;
 
   -- doplnit měřítko
   this.scale:=_scale;
-
-  -- operand byl vytvořen low-level operací
-  low_level:=true;
   end shift_by_index_low_level;
 
 
@@ -961,12 +1055,11 @@ static base_on_stack_low_level =
 -- Bázuje operand vzhledem k frame pointeru.
 ----------------------------------------------------------------------------------------------------
 begin
+  verify({VERIFY=}001093,optype<>io_mem or else base.reg<>ir_none or else not low_level);
+
   -- současnou bázi vypucovat a nastavit na frame pointer
   base:=nil;
   base.reg:=istackframereg[inst.frame];
-
-  -- operand byl vytvořen low-level operací
-  low_level:=true;
   end base_on_stack_low_level;
 
 
@@ -976,6 +1069,7 @@ static clear_relo_low_level =
 -- Zruší relokaci.
 ----------------------------------------------------------------------------------------------------
 begin
+  verify({VERIFY=}001092,not dirty);
   relo_info:=nil;
   end clear_relo_low_level;
 

@@ -129,7 +129,7 @@ begin
       psym:=curr.context.entity;
       inst^.nested.nlist^:length:=curr.nesting-1;
       for i in reverse inst^.nested.nlist^:range loop
-        verify({VERIFY=}000500,(psym=nil) or not (psym^.etype in ets_subprogram) or (pentity_code(psym)^.nesting<>i));
+        verify({VERIFY=}000500,psym=nil or psym^.etype not in ets_subprogram or pentity_code(psym)^.nesting<>i);
         inst^.nested.nlist^[i]:=pentity_code(psym);
         psym:=psym^.context.entity;
         end loop;
@@ -162,13 +162,50 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_program_compile (
-    curr           : in out tentity_compile) =   -- kompilační jednotka
--- Vygeneruje kód kompilační jednotky programu
+procedure i_gen_runtime_initialization (
+    curr           : in out tentity_compile;     -- kompilační jednotka
+    inst           : in out icodeinst;
+    info           : in out igeninfo;
+    context        : in out iexprcontext;        -- kontext výrazu
+    register_task  : in t_rtl_entity;            -- interní procedura pro registraci tasku
+    do_initialize  : in t_logical := true) =     -- T-volat early run-time inicializaci
+-- Vygeneruje kód pro inicializaci run-time knihovny.
 ----------------------------------------------------------------------------------------------------
 with
   ci_fragment;
 
+var
+  stack_reserve_addr : c_operand;                -- adresa rezervy na stacku
+
+begin
+  -- reservovat misto na stacku
+  do_stack_reserve(context,curr,inst,info,stack_reserve_addr);
+  
+  -- inicializovat runtime knihovnu
+  if do_initialize then
+    addcallrtl(inst,info,rtl_early_runtime_initialize); 
+    end if;
+
+  -- načíst adresu rezervy
+  i_gen_load_address_to_register(inst,info,context,stack_reserve_addr);
+
+  -- uložit na stack
+  addii(inst,info,ii_push,stack_reserve_addr,op0,op0);
+
+  -- inicializovat task control block pro hlavní task
+  addcallrtl(inst,info,register_task);
+
+leave
+  stack_reserve_addr.free(info,context);
+  end i_gen_runtime_initialization;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure i_gen_program_compile (
+    curr           : in out tentity_compile) =   -- kompilační jednotka
+-- Vygeneruje kód kompilační jednotky programu
+----------------------------------------------------------------------------------------------------
 var
   inst             : picodeinst;                 -- instance
   info             : igeninfo;                   -- informace o generování
@@ -206,27 +243,8 @@ begin
   i_gen_entry(curr,inst^,info);
 
   if not cfg_no_runtime then
-    
-    declare var
-      stack_reserve_addr : c_operand;                -- adresa rezervy na stacku
-
-    begin
-      -- reservovat misto na stacku
-      do_stack_reserve(context,curr,inst^,info,stack_reserve_addr);
-      
-      -- inicializovat runtime knihovnu
-      addcallrtl(inst^,info,rtl_early_runtime_initialize); 
-
-      i_gen_lea(inst^,info,context,stack_reserve_addr,in_none);
-
-      addii(inst^,info,ii_push,stack_reserve_addr,op0,op0);
-
-      -- inicializovat task control block pro hlavní task
-      addcallrtl(inst^,info,rtl_register_task);
-    
-    leave
-      stack_reserve_addr.free(info,context);
-      end declare; 
+    -- inicializovat run-time
+    i_gen_runtime_initialization(curr,inst^,info,context,rtl_register_task);
 
     -- vytvořit exception-frame
     i_create_xframe(inst^,info,framehandler,tg_endxframe);
@@ -382,26 +400,8 @@ begin
   addjump(inst^,info,context,ic_ne,l1);
   
   if not cfg_no_runtime then 
-
-    declare var
-      stack_reserve_addr : c_operand;                -- adresa rezervy na stacku
-
-    begin
-      -- reservovat misto na stacku
-      do_stack_reserve(context,curr,inst^,info,stack_reserve_addr);
-      
-      -- inicializovat runtime knihovnu
-      addcallrtl(inst^,info,rtl_early_runtime_initialize); 
-
-      i_gen_lea(inst^,info,context,stack_reserve_addr,in_none);
-
-      addii(inst^,info,ii_push,stack_reserve_addr,op0,op0);
-
-      -- inicializovat task control block pro hlavní task
-      addcallrtl(inst^,info,rtl_register_task_dll); 
-    leave
-      stack_reserve_addr.free(info,context);
-      end declare; 
+    -- inicializovat run-time
+    i_gen_runtime_initialization(curr,inst^,info,context,rtl_register_task_dll);
 
     -- vytvořit exception-frame
     i_create_xframe(inst^,info,framehandler,tg_endxframe);
@@ -470,22 +470,8 @@ begin
   addjump(inst^,info,context,ic_ne,l_konec);
 
   if not cfg_no_runtime then 
-    declare var
-      stack_reserve_addr : c_operand;                -- adresa rezervy na stacku
-
-    begin
-      -- reservovat misto na stacku
-      do_stack_reserve(context,curr,inst^,info,stack_reserve_addr);
-      
-      i_gen_lea(inst^,info,context,stack_reserve_addr,in_none);
-
-      addii(inst^,info,ii_push,stack_reserve_addr,op0,op0);
-
-      -- inicializovat task control block pro hlavní task
-      addcallrtl(inst^,info,rtl_register_task_dll); 
-    leave
-      stack_reserve_addr.free(info,context);
-      end declare; 
+    -- inicializovat run-time
+    i_gen_runtime_initialization(curr,inst^,info,context,rtl_register_task_dll,for do_initialize use false);
 
     -- vytvořit exception-frame
     i_create_xframe(inst^,info,framehandler,tg_endxframe2);
@@ -681,6 +667,16 @@ begin
   -- vygenerovat kód pro všechny entity
   entity:=context.region^.entities.first;
   while entity<>nil loop
+  #if #environment compiler_version;<>'4.0.3.14' then;
+    declare 
+      message tag_error : exception;
+    begin
+      if entity^.context.entity^:tag<>context.entity^:tag then
+        raise tag_error;
+        end if;
+      end declare;
+  #end if;
+    
     -- zpracovat
     i_estimate(entity,total);
 

@@ -220,6 +220,27 @@ begin
 
       -- nastavit alespoň nějakou pozici symbolu
       entity_set_position(curr^,etp_header,pos);
+
+      -- zkontrolovat, zda entita nezastiňuje jinou, zděděnou
+      if curr^.etype in tentitytypeset:[et_static,et_virtual,et_procedure,et_overload] then
+        -- entita [curr] má definovaného předka
+        if curr^.context.entity^.ancestor.isset then
+          declare var
+            srch2  : tentitysearch;              -- hledátko
+
+          begin
+            -- pokusit se vyhledat symbol v předkovi
+            srch2.find_local(sym_primary_context(curr^.context.entity^.ancestor.getuentity^),id^,tentityvisibleset:[etv_public,etv_protected]);
+
+            -- symbol byl nalezen -> nahlásit hint
+            if srch2.psym<>nil then
+              ce^.sethint(context,{CCERR=}000573,ch_declaration_hides_ancestor);
+              ce^.setparam(entityident_to_string(id^));
+              ce^.loadpos;
+              end if;
+            end declare;
+          end if;
+        end if;
       end if;
 
   -- jaká část deklarace se překládá
@@ -253,6 +274,16 @@ begin
 
   -- poznačit, že je symbol překládán
   curr^.compile+tentitycompileset:[etc_compiling];
+
+#if #environment compiler_version;<>'4.0.3.14' then;
+  declare 
+    message tag_error : exception;
+  begin
+    if curr^.context.entity^:tag<>context.entity^:tag then
+      raise tag_error;
+      end if;
+    end declare;
+#end if;
   end d_create;
 
 
@@ -482,6 +513,9 @@ begin
 procedure d_next =
 -- Překlad další části deklarace.
 ----------------------------------------------------------------------------------------------------
+var
+  container        : pentity;                    -- kontejner entity [curr]
+
 begin
   verify({VERIFY=}000153,curr.compiling<>etd_none);
 
@@ -503,6 +537,18 @@ begin
   -- začátek další části deklarace
   -- (pro jistotu i konec)
   getlexposall(pos,ll_curr);
+
+  -- je to entita obsahující kód?
+  if curr.etype in ets_enclosed then
+    -- získat kontejner entity [curr]
+    container:=sym_get_container(^curr);
+
+    -- úplná deklarace v public části je považována za neobvyklou konstrukci
+    if curr.etype in ets_enclosed and (container<>nil and then container^.compiling=etd_public) then
+      ce^.setwarning(curr.context,{CCERR=}000571,cw_strange_design);
+      ce^.loadpos;
+      end if;
+    end if;
   end d_next;
 
 

@@ -353,6 +353,9 @@ procedure i_new (
     info           : in out igeninfo) =          -- informace o průběhu generování
 -- Generování kódu příkazu NEW.
 ----------------------------------------------------------------------------------------------------
+with
+  cg_gen.cg_ia32.ci_fragment.ci_rta;
+
 var
   ptyp             : pentity_type;               -- typ proměnné
   base             : pentity_type;               -- typ báze pointeru
@@ -372,15 +375,15 @@ var
         begin
           -- obnovit registry
           opvar.refresh(inst,info,mastercontext);
-
+          
           -- sestavit adresu atributu
-          i_gen_load_rtattrib_addr(inst,info,mastercontext,ptyp^.pattrib,opvar,rta,oprtaaddr);
+          i_rta_load_address(inst,info,mastercontext,opvar,rta,oprtaaddr);
 
           -- přiřadit
           addii(inst,info,ii_mov,oprtaaddr,oprtavalue,op0);
 
           -- korekce pro :last - neomezené pole bázovat od nuly
-          if (rta=rta_last) and then (base<>nil) and then (base^.stype=dt_uarray) then
+          if rta=rta_last and then base<>nil and then base^.stype=dt_uarray then
             addii(inst,info,ii_dec,oprtaaddr,op0,op0);
             end if;
 
@@ -426,7 +429,10 @@ begin
         i_load_subexpr(inst,info,subcontext,mastercontext,bl^.xvar,opvar);
 
         -- z registru odvodit adresní operand
-        opvar.transform_imm_or_reg_to_mem(edt_pointer,0);
+        opvar.transform_imm_or_reg_to_mem(edt_pointer,unidata_size_to_unsigned(ptyp^.size));
+
+        -- změnit módy načtení run-time atributů tak, aby popisovaly referencovaný objekt
+        i_rta_set_modes_of_referenced_value(bl^.xvar,opvar);
 
       -- nemáme žádné => při generování výrazu jen uložit adresu na stack
       else
@@ -602,6 +608,9 @@ var
         oprtavalue : in c_operand) =             -- hodnota atributu
     -- Do pointeru uloží zadaný dynamický atribut (je-li to požadováno).
     ------------------------------------------------------------------------------------------------
+    with
+      cg_gen.cg_ia32.ci_fragment.ci_rta;
+
     begin
       if rta in ptyp^.pattrib then
         declare var
@@ -611,13 +620,13 @@ var
           opvar.refresh(inst,info,mastercontext);
 
           -- sestavit adresu atributu
-          i_gen_load_rtattrib_addr(inst,info,mastercontext,ptyp^.pattrib,opvar,rta,oprtaaddr);
+          i_rta_load_address(inst,info,mastercontext,opvar,rta,oprtaaddr);
 
           -- přiřadit
           addii(inst,info,ii_mov,oprtaaddr,oprtavalue,op0);
 
           -- korekce pro :last - neomezené pole bázovat od nuly
-          if (rta=rta_last) and then (base<>nil) and then (base^.stype=dt_uarray) then
+          if rta=rta_last and then base<>nil and then base^.stype=dt_uarray then
             addii(inst,info,ii_dec,oprtaaddr,op0,op0);
             end if;
 
@@ -1001,15 +1010,15 @@ begin
       -- dolní mez
       case bl^.xrange^.sub^.t.stype
         when dt_string,dt_ustring do oplow.create_imm(bound_edtype,0,timm32(1));
-        when dt_uarray do oplow.create_imm(bound_edtype,0,timm32(0));
-        when others do verifyx({VERIFY=}000598,true,bl^.pos[bp_begin]);
+        when dt_uarray            do oplow.create_imm(bound_edtype,0,timm32(0));
+        when others               do verifyx({VERIFY=}000598,true,bl^.pos[bp_begin]);
         end case;
 
       -- horní mez
       case bl^.xrange^.sub^.t.stype
-        when dt_string,dt_ustring do i_load_sublength(inst,info,mastercontext,curr,bl^.xrange^.sub,bl^.order=bfo_reverse,ophigh); --unimplementedx({UNIMP=}000128,bl^.pos[bp_begin]);
-        when dt_uarray do i_load_subrtattrib(inst,info,mastercontext,curr,rta_last,bl^.xrange^.sub,bl^.order=bfo_reverse,ophigh);
-        when others do verifyx({VERIFY=}000599,true,bl^.pos[bp_begin]);
+        when dt_string,dt_ustring do i_load_subrtattrib(inst,info,mastercontext,curr,rta_length,bl^.xrange^.sub,bl^.order=bfo_reverse,ophigh);
+        when dt_uarray            do i_load_subrtattrib(inst,info,mastercontext,curr,rta_last,  bl^.xrange^.sub,bl^.order=bfo_reverse,ophigh);
+        when others               do verifyx({VERIFY=}000599,true,bl^.pos[bp_begin]);
         end case;
 
       -- pro reverzní cyklus zaměnit operandy
@@ -1019,9 +1028,11 @@ begin
         declare var
           optemp   : c_operand;
         begin
-          optemp.replace(info,mastercontext,oplow);
-          oplow.replace(info,mastercontext,ophigh);
+          optemp.clone(inst,info,mastercontext,oplow);
+          oplow .replace(info,mastercontext,ophigh);
           ophigh.replace(info,mastercontext,optemp);
+        leave
+          optemp.free(info,mastercontext);
           end declare;
 
         -- patchnout velikost - v tomto případě se bude hodit i v konstantním operandu,
@@ -2372,7 +2383,7 @@ begin
   -- implementační omezení: neporadíme si s návratovými hodnotami o velikosti <> 4 B,
   -- viz zejména kopírování návratové hodnoty do EAX v [i_gen_exit].
   if ppar^.rta_used<>rtattribset:[] or ppar^.pass not in pps_value then
-    unimplemented({VERIFY=}000937);
+    unimplemented({UNIMP=}000254);
     end if;
   
   -- započítat run-time atributy
@@ -2652,7 +2663,9 @@ procedure i_gen_exit =
 -- Vygeneruje exit sekvenci podprogramu.
 ----------------------------------------------------------------------------------------------------
 with
-  cc_base.cc_sym;
+  cc_def.cc_var,
+  cc_base.cc_sym,
+  ci_expr.ci_rcheck;
 
 begin
   -- doplnit záznam pro generování debug informací
@@ -2660,7 +2673,7 @@ begin
   --  adddebuginfo(inst.di,dbt_exit_,getaddr(inst),pblnode(curr.bl._b)^.pos[bp_end].b,nil);
   --  end if;
 
-  -- v některých případech je potřeba ošetřit předání návratové hodnoty v EAX
+  ----- (1) v některých případech je potřeba ošetřit předání návratové hodnoty v EAX ---------------
   if inst.profile.call in iccs_ret_eax then
     declare var
       ptyp         : pentity_type;               -- typ procedury
@@ -2709,7 +2722,14 @@ begin
       end declare;
     end if;
 
-  -- zrušit stack-frame
+
+  ----- (2) kontrola konzistence heapu -------------------------------------------------------------
+  if not cfg_no_runtime and o_is_option_by_entity(opt_validate_heap,info.entity^) then 
+    addcallrtl(inst,info,rtl_validate_heap);
+    end if;
+
+
+  ----- (3) zrušit stack-frame, popřípadě zkontrolovat jeho konzistenci ----------------------------
   case inst.frame
     -- ESP-relativní
     when isf_sptr do -- nic nedělat
@@ -2730,15 +2750,44 @@ begin
             setfield(inst,info.espmark,t_unsigned(-t_signed(inst.layout.last^.ofs)));
             end if;
 
-        -- MOV ESP,EBP
-        addii(inst,info,ii_mov,op_esp,op_ebp,op0);
-        -- POP EBP
-        addii(inst,info,ii_pop,op_ebp,op0,op0);
+        declare
 
-    when others do verify({VERIFY=}000793,true);
+          ------------------------------------------------------------------------------------------
+          procedure stack_validate =
+          -- Vygeneruje kód pro kontrolu konzistence stacku.
+          ------------------------------------------------------------------------------------------
+          var
+            context : iexprcontext;              -- kontext generování výrazu
+
+          begin
+            if not cfg_no_runtime and o_is_option_by_entity(opt_validate_stack,info.entity^) then
+              -- vytvořit pracovní kontext
+              i_createcontext(context,lm_gen,nil);
+
+              -- EBP musí být > ESP
+              i_gen_rcheck_constraint_error_on_compare(inst,info,context,op_ebp,op_esp,ic_b);
+              end if;
+            end stack_validate;
+
+        begin
+          -- kontrola konzistence stacku
+          stack_validate;
+
+          -- MOV ESP,EBP
+          addii(inst,info,ii_mov,op_esp,op_ebp,op0);
+
+          -- POP EBP
+          addii(inst,info,ii_pop,op_ebp,op0,op0);
+
+          -- kontrola konzistence stacku
+          stack_validate;
+          end declare;
+
+    when others do verify({VERIFY=}000793);
     end case;
 
-  -- exit
+
+  ----- (4) exit sekvence --------------------------------------------------------------------------
   if inst.profile.retfree>0 and inst.profile.call not in iccs_leave_params
 
     -- s odstraněním parametrů

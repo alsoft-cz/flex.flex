@@ -10,15 +10,165 @@ with
   cc_attr;
 
 ----------------------------------------------------------------------------------------------------
-procedure x_rta_provided_attributes =
--- Pro zadaný uzel naplní množinu dynamických atributů, které je schopen
--- poskytnout svému kontextu.
+procedure x_rta_add_rta_from_pointer (
+    rta_avail      : in out rtattribset;         -- množina dostupných run-time atributů
+    rta_modes      : in out t_rtattrib_modes;    -- módy načtení jednotlivých run-time atributů
+    pattrib        : in rtattribset;             -- atributy uložené v pointeru
+    rta_mode       : in t_rtattrib_mode) =       -- způsob zjištění atributů
+-- Do výrazu doplní dynamické atributy uložené v pointeru.
+-- Poznámka: Způsob zjištění atributů je nutné dodat zvenku, protože někdy se jedná o pohled na
+-- pointer jako takový a použije se [rtm_stored_in_value] nebo o dereferencovaný pointer, kdy se
+-- použije [rtm_stored_in_address], protože se jedná o atributy dostupné de facto u podvýrazu.
 ----------------------------------------------------------------------------------------------------
+begin
+  verify({VERIFY=}000924,rta_avail*pattrib<>rtattribset:[]);
+
+  -- doplnit atributy
+  rta_avail+pattrib;
+
+  -- doplnit způsoby zjištění atributů
+  for rta in rtattrib loop
+    if rta in pattrib then
+      rta_modes[rta]:=rta_mode;
+      end if;
+    end loop;
+  end x_rta_add_rta_from_pointer;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_add_rta_from_rta (
+    t              : in typeview;                -- pohled na typ souvisejícího výrazu
+    rta_avail      : in out rtattribset;         -- množina dostupných run-time atributů
+    rta_modes      : in out t_rtattrib_modes) =  -- módy načtení jednotlivých run-time atributů
+-- Do výrazu doplní dynamické atributy zjistitelné z jiných již známých dynamických atributů.
+----------------------------------------------------------------------------------------------------
+begin
+  -- není možné doplnit :size ?
+  if rta_size not in rta_avail then
+    verify({VERIFY=}000978,rta_modes[rta_size]<>rtm_static);
+    
+    -- :size lze vždy určit z :tag
+    if rta_tag in rta_avail then
+      rta_avail+rtattribset:[rta_size];
+      rta_modes[rta_size]:=rtm_stored_in_tag;
+      end if;
+    end if;
+
+  -- není možné doplnit :last ? (má smysl jen pro výrazy unconstrained typu)
+  if rta_last not in rta_avail and t_is_sts(t,dts_unconstrained) then
+    verify({VERIFY=}000979,rta_modes[rta_last]<>rtm_static);
+    
+    -- :last je možné zjistit ze :size, ale nechceme si to moc komplikovat
+    if rta_size in rta_avail and then rta_modes[rta_size]<>rtm_stored_in_tag then
+      rta_avail+rtattribset:[rta_last];
+      rta_modes[rta_last]:=rtm_computed_from_size;
+
+    -- kromě toho lze :last vždy zjistit z :tag
+    elsif rta_tag in rta_avail then
+      rta_avail+rtattribset:[rta_last];
+      rta_modes[rta_last]:=rtm_stored_in_tag;
+      end if;
+    end if;
+
+  -- není možné doplnit :length ? (v této proceduře má smysl jen pro unconstrained pole;
+  -- unconstrained stringy se řeší jinak)
+  if rta_length not in rta_avail and t_is_stype(t,dt_uarray) then
+    verify({VERIFY=}001095,rta_modes[rta_length]<>rtm_static);
+    
+    -- :length lze vždy určit z :last
+    if rta_last in rta_avail then
+      rta_avail+rtattribset:[rta_length];
+      rta_modes[rta_length]:=rtm_computed_from_last;
+      end if;
+    end if;
+  end x_rta_add_rta_from_rta;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_provided_attributes =
+-- Pro zadaný uzel naplní množinu dynamických atributů, které je schopen poskytnout svému kontextu.
+----------------------------------------------------------------------------------------------------
+
+    ------------------------------------------------------------------------------------------------
+    #template add_rta (rta,rtm);
+    -- Do výrazu doplní zadaný dynamický atribut a jeho mód načtení.
+    ------------------------------------------------------------------------------------------------
+      expr^.rta_avail+rtattribset:[rta];
+      expr^.rta_modes[rta]:=rtm;
+      #end add_rta;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    #template add_rta_from_pointer (pattrib,rta_mode);
+    -- Do výrazu doplní dynamické atributy uložené v pointeru.
+    ------------------------------------------------------------------------------------------------
+      x_rta_add_rta_from_pointer(expr^.rta_avail,expr^.rta_modes,pattrib,rta_mode)
+      #end add_rta_from_pointer;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure add_rta_from_parameter (
+        pattrib    : in rtattribset) =           -- atributy uložené v adrese parametru
+    -- Do výrazu doplní dynamické atributy uložené v adrese parametru.
+    ------------------------------------------------------------------------------------------------
+    begin
+      verify({VERIFY=}000925,expr^.rta_avail*pattrib<>rtattribset:[]);
+
+      -- doplnit atributy
+      expr^.rta_avail+pattrib;
+
+      -- doplnit způsoby zjištění atributů
+      for rta in rtattrib loop
+        if rta in pattrib then
+          expr^.rta_modes[rta]:=rtm_stored_in_address;
+          end if;
+        end loop;
+      end add_rta_from_parameter;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    procedure add_rta_from_class (
+        static_size: in t_logical := false) =    -- T-velikost je určena staticky
+    -- Do výrazu doplní dynamické atributy dostupné pro instanci třídy.
+    ------------------------------------------------------------------------------------------------
+    begin
+      -- poznámka: kontroluje se i :size bez ohledu na [static_size], protože je-li zjistitelná
+      -- staticky, nemá tu stejně co dělat
+      verify({VERIFY=}000923,expr^.rta_avail*rtas_class<>rtattribset:[]);
+
+      -- doplnit atributy :tag a :size
+      expr^.rta_avail+rtattribset:[rta_tag];
+      if not static_size then
+        expr^.rta_avail+rtattribset:[rta_size];
+        end if;
+
+      -- doplnit způsoby zjištění atributů :tag a :size
+      expr^.rta_modes[rta_tag]:=rtm_stored_in_value;
+      if not static_size then
+        expr^.rta_modes[rta_size]:=rtm_stored_in_tag;
+        end if;
+      end add_rta_from_class;
+
+
+
+    ------------------------------------------------------------------------------------------------
+    #template add_rta_from_rta;
+    -- Do výrazu doplní dynamické atributy zjistitelné z jiných již známých dynamických atributů.
+    ------------------------------------------------------------------------------------------------
+      x_rta_add_rta_from_rta(expr^.t,expr^.rta_avail,expr^.rta_modes)
+      #end add_rta_from_rta;
+
 var
   pvar             : pentity_var;                -- související proměnná
   partyp           : typeview;
 
 begin
+  ----- (1) základní množina dostupných run-time atributů podle vlastností uzlu --------------------
   case expr^.ntype
     -- komponenta
     when nt_component do
@@ -34,17 +184,24 @@ begin
           --      a :size (musí se ošetřit takhle explicitně, protože pro
           --      parametry typu třída se dynamické atributy neuvádějí),
           if pvar^.vimplements=vi_parameter and t_is_stype(expr^.t,dt_class) then
+            add_rta_from_class;
+          { 
             expr^.rta_avail+rtattribset:[rta_size];
             expr^.rta_avail+rtattribset:[rta_tag];
-
+          }
           --   -- je to parametr, pak má dynamické atributy parametru,
           elsif pvar^.vimplements=vi_parameter then
+            add_rta_from_parameter(pvar^.imp_param^.rta_avail);
+          {
             expr^.rta_avail:=pvar^.imp_param^.rta_avail;
-
+          }
           --   -- proměnná typu třída => :tag (jen :tag, u proměnné lze
           --      velikost staticky zjistit.
           elsif t_is_sts(expr^.t,dts_class) then
+            add_rta_from_class(true);
+          {
             expr^.rta_avail+rtattribset:[rta_tag];
+          }
             end if;
 
           --   -- ref proměnná constrained typu => :tag,
@@ -86,7 +243,10 @@ begin
         if expr^.nclass in ncs_value then
           -- %%LANG Prvek pole typu třída má dynamický atribut :tag.
           if t_is_sts(expr^.t,dts_class) then
+            add_rta_from_class(true);
+          {
             expr^.rta_avail+rtattribset:[rta_tag];
+          }
             end if;
           end if;
 
@@ -94,10 +254,13 @@ begin
     when nt_ref do
         -- zajímají nás jen hodnoty
         if expr^.nclass in ncs_value then
+          {%%TODO(RTATTRIB) reference nemá žádné dynamické atributy ! }
+        {  
           -- %%LANG Reference může mít všechny dynamické atributy, které
           -- obsahuje výsledný typ pointer. Ten je přebírán od referencovaného
           -- podvýrazu.
           expr^.rta_avail:=expr^.t.getpattrib;
+        }
           end if;
 
     -- dereference
@@ -107,10 +270,16 @@ begin
           -- %%LANG Dereference může mít všechny dynamické atributy, které
           -- definuje typ dereferencovaného pointeru. Dereference pointeru na
           -- třídu navíc zpřístupňuje atributy :tag a :size.
+          add_rta_from_pointer(expr^.sub^.t.getpattrib,rtm_stored_in_address);
+        { 
           expr^.rta_avail:=expr^.sub^.t.getpattrib;
+        }
           if t_is_stype(expr^.sub^.t.getbase(curr),dt_class) then
+            add_rta_from_class;
+          {
             expr^.rta_avail+rtattribset:[rta_size];
             expr^.rta_avail+rtattribset:[rta_tag];
+          }
             end if;
           end if;
 
@@ -120,9 +289,12 @@ begin
         if expr^.nclass in ncs_value then
           -- %%LANG Operátor zřetězení s unconstrained typem výsledku má
           -- dynamické atributy :size a :last.
-          if (pexpoper(expr)^.oper=op_concat) and t_is_stype(expr^.t,dt_uarray) then
+          if pexpoper(expr)^.oper=op_concat and t_is_stype(expr^.t,dt_uarray) then
+            {%%TODO(RTATTRIB)}
+          {  
             expr^.rta_avail+rtattribset:[rta_size];
             expr^.rta_avail+rtattribset:[rta_last];
+          }
             end if;
           end if;
 
@@ -133,8 +305,11 @@ begin
           -- %%LANG THIS odkazující na instanci třídy má dynamické atributy
           -- :size a :tag.
           if t_is_stype(expr^.t,dt_class) then
+            add_rta_from_class;
+          {
             expr^.rta_avail+rtattribset:[rta_size];
             expr^.rta_avail+rtattribset:[rta_tag];
+          }
             end if;
           end if;
 
@@ -144,9 +319,12 @@ begin
         if expr^.nclass in ncs_value then
           -- %%LANG Přetypování objektu, který má dynamické atributy :size nebo
           -- :last, na unconstrained typ má atributy :size a :last.
-          if t_is_sts(expr^.t,dts_unconstrained) and (expr^.sub^.next^.rta_avail*rtattribset:[rta_size,rta_last]<>rtattribset:[]) then
+          if t_is_sts(expr^.t,dts_unconstrained) and expr^.sub^.next^.rta_avail*rtattribset:[rta_size,rta_last]<>rtattribset:[] then
+            {%%TODO(RTATTRIB)}
+          {
             expr^.rta_avail+rtattribset:[rta_size];
             expr^.rta_avail+rtattribset:[rta_last];
+          }
             end if;
           end if;
 
@@ -156,14 +334,145 @@ begin
         if expr^.nclass in ncs_value then
           -- %%LANG Atribut :unchecked aplikovaný na objekt, který má dynamické
           -- atributy :size nebo :last, má dynamický atribut :size
-          if (pexpattrib(expr)^.ata=ata_var_unchecked) and (expr^.sub^.rta_avail*rtattribset:[rta_size,rta_last]<>rtattribset:[]) then
+          if pexpattrib(expr)^.ata=ata_var_unchecked and expr^.sub^.rta_avail*rtattribset:[rta_size,rta_last]<>rtattribset:[] then
+            {%%TODO(RTATTRIB)}
+          {
             expr^.rta_avail+rtattribset:[rta_size];
+          }
             end if;
           end if;
 
     -- u ostatních typů uzlů nemají dynamické atributy smysl
     end case;
+
+
+  ----- (2) atribut :length v závislosti na typu a dalších vlastnostech uzlu -----------------------
+
+  -- nekonstantní řetězec má vždy dynamický atribut :length
+  if expr^.nclass in ncs_value and expr^.ntype<>nt_imm and t_is_sts(expr^.t,dts_string) then
+    add_rta(rta_length,rtm_stored_in_value);
+{
+  -- nekonstantní unconstrained pole s atributem :last má vždy dynamický atribut :length
+  elsif expr^.nclass in ncs_value and expr^.ntype<>nt_imm and t_is_stype(expr^.t,dt_uarray) and rta_last in expr^.rta_avail then
+    add_rta(rta_length,rtm_computed_from_last);
+}
+    end if;
+
+
+  ----- (3) run-time atributy vyplývající z jiných run-time atributů -------------------------------
+  add_rta_from_rta;
   end x_rta_provided_attributes;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_pointer_attributes =
+-- Pro zadaný uzel typu pointer určí způsoby načtení jednotlivých run-time atributů uložených
+-- v pointeru.
+----------------------------------------------------------------------------------------------------
+var
+  rta_avail        : rtattribset;                -- množina dostupných run-time atributů
+
+begin
+  verify({VERIFY=}000976,not t_is_sts(expr^.t,dts_pointer));
+
+  -- má vůbec cenu něco začínat ?
+  if expr^.t.getpattrib=rtattribset:[] then return end if;
+
+  ----- (1) základní množina dostupných run-time atributů podle vlastností uzlu --------------------
+  -- způsob zjištění do značné míry závisí na typu uzlu
+  case expr^.ntype
+    -- komponenta => přesně podle pointeru
+    when nt_component,
+    -- index pole => přesně podle pointeru
+         nt_index,
+    -- dereference => přesně podle pointeru
+         nt_deref,
+    -- volání procedury => přesně podle pointeru
+         nt_call      do x_rta_add_rta_from_pointer(rta_avail,rta_modes,expr^.t.getpattrib,rtm_stored_in_value);
+
+    -- reference 
+    when nt_ref       do 
+        
+        declare
+
+          ------------------------------------------------------------------------------------------
+          procedure all_static return t_logical =
+          -- True, jestliže jsou všechny run-time atributy uložené v pointeru staticky zjistitelné.
+          ------------------------------------------------------------------------------------------
+          begin
+            result:=true;
+            for rta in rtattrib loop 
+              if rta in expr^.t.getpattrib then
+                result and expr^.sub^.rta_modes[rta]=rtm_static;
+                end if;
+              end loop;
+            end all_static;
+
+        begin
+          -- Jestliže pointer obsahuje nějaké run-time atributy, které nejsou staticky zjistitelné,
+          -- generátor kódu musí pointer vypočítat, takže z našeho pohledu budou všechny run-time
+          -- atributy uloženy v něm. V opačném případě se v [rta_modes] všude ponechá [rtm_static].
+          --   Dále pokud je to pointer na podprogram, (jediný možný) run-time atribut (pointer na
+          -- instanci) se bude vždy vypočítávat, resp. pointer se bude vždy vypočítávat, takže
+          -- z našeho pohledu budou všechny run-time atributy uloženy v něm.
+          if expr^.t.getpattrib<>rtattribset:[] and then (expr^.t.getpclass=pc_subprogram or else not all_static) then
+            x_rta_add_rta_from_pointer(rta_avail,rta_modes,expr^.t.getpattrib,rtm_stored_in_value);
+            end if;
+          end declare;
+        {a co jako s tím do prdele???
+        
+        a co se na to tady vysrat a dělat to speciálním případem v generování kódu? že by kromě
+        lm_pointer bylo ještě nějaké i_load_pointer, které by nt_ref a nt_typecast řešilo zvlášť.
+        
+        unimplemented({UNIMP=}000255);}
+
+    -- přetypování
+    when nt_typecast  do 
+        -- run-time atributy budou každopádně uloženy v pointeru; jestliže layout pointeru
+        -- v podvýrazu nesouhlasí s layoutem výsledného pointeru, musí generátor kódu zajistit
+        -- konverzi
+        x_rta_add_rta_from_pointer(rta_avail,rta_modes,expr^.t.getpattrib,rtm_stored_in_value);
+    {
+        -- nemá pointer stejný layout jako pointer v podvýrazu ?
+        if t_is_stype(expr^.sub^.t,dt_pointer) and then expr^.t.getpattrib=expr^.sub^.t.getpattrib
+
+          -- ano => převzít nastavení run-time atributů i s chlupama
+          then
+    }
+        {unimplemented({UNIMP=}000256);}
+
+    -- nic jiného neumíme
+    when others do verify({VERIFY=}000977,true);
+    end case;
+
+  ----- (2) run-time atributy vyplývající z jiných run-time atributů -------------------------------
+  x_rta_add_rta_from_rta(expr^.t,rta_avail,rta_modes);
+  end x_rta_pointer_attributes;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_string_attributes =
+-- Pro zadaný uzel typu string určí způsoby načtení jednotlivých run-time atributů uložených
+-- v řetězci samotném. (Efektivně tedy nastaví mód načtení atributu :length.)
+----------------------------------------------------------------------------------------------------
+begin
+  if expr^.nclass in ncs_value and expr^.ntype<>nt_imm and t_is_sts(expr^.t,dts_string) then
+    x_rta_string_attributes_stored_in_value(rta_modes);
+    end if;
+  end x_rta_string_attributes;
+
+
+
+----------------------------------------------------------------------------------------------------
+procedure x_rta_string_attributes_stored_in_value =
+-- Sestaví způsoby načtení jednotlivých run-time atributů obecně uložených v řetězci. 
+-- (Efektivně tedy nastaví mód načtení atributu :length.)
+----------------------------------------------------------------------------------------------------
+begin
+  rta_modes[rta_length]:=rtm_stored_in_value;
+  end x_rta_string_attributes_stored_in_value;
 
 
 
@@ -195,7 +504,7 @@ begin
           -- constrained typy i z:tag
           if rta_last in expr^.rta_avail then 
             rta:=rta_last
-          elsif t_is_sts(expr^.t,dts_constrained) and (rta_tag in expr^.rta_avail) then 
+          elsif t_is_sts(expr^.t,dts_constrained) and rta_tag in expr^.rta_avail then 
             rta:=rta_tag; 
             end if;
 
@@ -245,7 +554,7 @@ begin
       -- sice takové zřetězení může mít jako podvýraz opět zřetězení, to se
       -- ale ošetří při postupném trasování stromu zdola nahoru v typové
       -- kontrole voláním X_RTA_CHECK_ATTRIBUTE. Zde se skutečně jedná jen o
-      -- prošíření jednoho jedniného fyzického dynamického atribut z nižších
+      -- prošíření jednoho jediného fyzického dynamického atribut z nižších
       -- pater stromu výš a ne o zajištění existence hodnot, které na výpočet
       -- takového atributu vedou.
       end case;
@@ -347,7 +656,7 @@ begin
           verify({VERIFY=}000854,pentity_param(arg^.sym)^.rta_used-rtattribset:[rta_size,rta_last,rta_tag]<>rtattribset:[]);
 
           -- :tag
-          if (rta_tag in pentity_param(arg^.sym)^.rta_used) and x_rta_is_available(arg^.sub,rta_tag) then
+          if rta_tag in pentity_param(arg^.sym)^.rta_used and x_rta_is_available(arg^.sub,rta_tag) then
             x_rta_require_attribute(curr,arg^.sub,rta_tag);
             end if;
 
@@ -425,7 +734,7 @@ begin
     when rta_size do result:=rtattribset:[rta_size,rta_last,rta_tag]*expr^.rta_avail<>rtattribset:[];
                                      {%%X ^^^^^^^ A co unconstrained typy ? To snad nejde, ne ? }
     -- :last
-    when rta_last do result:=rtattribset:[rta_size,rta_last]*expr^.rta_avail<>rtattribset:[];
+    when rta_last do result:=rtattribset:[rta_size,rta_last,rta_tag]*expr^.rta_avail<>rtattribset:[];
 
     -- pro ostatní atributy není definována zastupitelnost
     when others do result:=rta in expr^.rta_avail;

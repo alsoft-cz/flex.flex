@@ -116,16 +116,13 @@ with
   standard,
   cc_def.cc_codes,
   cc_def.cc_var,
-  cc_base,
   cc_base.cc_type,
   cc_base.cc_util,
   cc_base.cc_rtl,
   cc_base.cc_debug,
   cc_attr,
-  cx_expr,
   cx_expr.cx_util,
   cx_expr.cx_imm,
-  ci_code,
   ci_code.ci_operand,
   ci_code.ci_instr,
   ci_code.ci_stack,
@@ -134,6 +131,7 @@ with
   ci_context,
   ci_reg,
   ci_fragment,
+  ci_fragment.ci_rta,
   ci_struct,
   cp_cpu.cp_32.cp_metadata,
   cp_cpu.cp_32.cp_util,
@@ -165,23 +163,29 @@ with
 --                      (s oříznutím)
 --   [lm_reg_eax]    -- výsledek je uložen do EAX
 --   [lm_push_value] -- hodnota výrazu je uložena na stack
---   [lm_temp_value] -- hodnotu výrazu je uložena do temporary proměnné, kromě přímé hodnoty, 
+--   [lm_temp_value] -- hodnota výrazu je uložena do temporary proměnné, kromě přímé hodnoty, 
 --                      která je ponechána v původním stavu
---   [lm_pointer]    -- hodnota výrazu typu pointer je normalizována podle dodaného typu pointer
---                      (=přidá/odstraní/konvertuje dynamické atributy); je vrácen buď původní 
---                      operand nebo adresa temporary proměnné se zkonstruovaným pointerem
---   [lm_pointer_reg]-- jako předchozí, ale lze-li to, tak je pointer vrácen v registru
+--   [lm_pointer]    -- výsledek je interpretován jako pointer a informace o run-time atributech 
+--                      v operandu, které po vygenerování přirozeného tvaru klasifikují pointer 
+--                      samotný, jsou nahrazeny informacemi o run-time atributech v pointeru 
+--                      uložených (!!!), tedy klasifikujících objekt, na který pointer odkazuje
+--                     
+--   Obzlášť POZOR na specifické zacházení módu [lm_pointer] s run-time atributy. Je určen téměř
+--   výhradně pro porovnávání pointerů.
 --
 --   Před aplikací hodnotového módu načtení je volána metoda [i_ensure_value], která zajistí, že
 --   operand skutečně reprezentuje hodnotu.
 -- 
 -- Módy vedoucí na adresu hodnoty objektu:
 --
---   [lm_addr]       -- adresa objektu určeného podvýrazem; pokud je nastaven preferovaný registr 
---                      (v módu [irm_addr]), načte adresu do něj
+--   [lm_addr]       -- adresa objektu určeného podvýrazem; adresu načte do registru nebo ponechá
+--                      konstantní, pokud je nastaven preferovaný registr (v módu [irm_addr]), 
+--                      vždy načte adresu do něj (a to i konstantu)
 --   [lm_addr_attr]  -- adresa objektu obsahujícího dynamické atributy (pokud je podvýraz parametr 
 --                      předávaný hodnotou (proměnná s implicitní dereferencí), je výsledkem adresa
---                      pointeru na tento objekt; podrobněji viz dále)
+--                      pointeru na tento objekt; podrobněji viz dále); adresa nemusí být nutně
+--                      v registru, výsledkem je adresa reference na hodnotu nebo adresa hodnoty
+--                      samotné
 --   [lm_imm_to_rel] -- je-li výsledkem přímá hodnota, je interpretována jako relativní adresa
 --   [lm_push_addr]  -- adresa hodnoty výrazu je uložena na stack
 --   [lm_push_and_load_addr] -- adresa hodnoty výrazu je uložena na stack a současně vrácena jako 
@@ -189,9 +193,17 @@ with
 --   [lm_temp_addr]  -- adresa objektu je uložena do temporary proměnné
 --
 --   Před aplikací adresního módu načtení je volána metoda [i_ensure_address], která zajistí, že
---   operand skutečně reprezentuje hodnotu. Pokud reprezentuje hodnotu bez adresy (například
+--   operand skutečně reprezentuje adresu. Pokud reprezentuje hodnotu bez adresy (například
 --   mezivýsledek uložený v registru, přímá hodnota a podobně), uloží ji do pracovní proměnné
 --   a vrátí adresu této pracovní proměnné.
+--     Dva nejdůležitější adresní módu načtení jsou [lm_addr] a [lm_addr_attr]. První z nich načte
+--   adresu objeku do registru a je tak vhodný pro použití v situacích, kdy je potřeba manipulovat
+--   s obecně velkým objektem (string, pole, record a podobně). Druhý režim ([lm_addr_attr]) je
+--   určen pro situace, kdy je potřeba kromě hodnoty zjistit i její dynamické atributy, které jsou
+--   typicky uloženy v referenci na hodnotu. V takové situaci je výsledkem právě adresa reference na
+--   hodnotu. Po použití dynamických atributů je potřeba zavolat proceduru
+--   [i_gen_load_address_to_register_with_dereference], která načte adresu do registru a je-li to
+--   potřeba, tak provede dereferenci. Teprve potom je možné zaručeně pracovat s vlastní hodnotou.
 --
 -- Při generování musí být zvláštní pozornost věnována dynamickým atributům.
 -- Požadované dynamické atributy jsou uloženy v proměnné CONTEXT.RTA a jsou
@@ -224,7 +236,6 @@ with
 -- Lze sice postupně připojovat operandy vpravo k operandu vlevo, ale nesmí
 -- se při tom změnit hodnota :length levého operandu.
 ----------------------------------------------------------------------------------------------------
-
 
 var
   op2cc            : const array op_eq..op_ge,t_logical of icond := [
@@ -340,14 +351,32 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-#separate public ci_rcheck;
 #separate private ci_rcheck;
 -- behove kontroly
 ----------------------------------------------------------------------------------------------------
-#separate public ci_rta;
-#separate private ci_rta;
--- Manipulace s run-time atributy.
+
 ----------------------------------------------------------------------------------------------------
+procedure i_get_load_mode_by_requested_rta (
+    expr           : in pexpnode;                -- generovaný výraz
+    rta            : in rtattrib;                -- atribut, který se bude zjišťovat
+    addr_otherwise : in t_logical := false)      -- T-pro statické atributy vrátit [lm_addr]
+    return iexprloadmode =                       -- doporučený mód načtení výrazu
+-- Určí nejvhodnější mód načtení výrazu potřebný pro načtení uvedeného run-time atributu.
+----------------------------------------------------------------------------------------------------
+begin
+  case expr^.rta_modes[rta]
+    when rtm_static             do 
+        if addr_otherwise
+          then result:=lm_addr
+          else verify({VERIFY=}001071);
+          end if;
+    when rtm_stored_in_value    do result:=lm_gen;
+    when rtm_stored_in_address  do result:=lm_addr_attr;
+    when rtm_stored_in_tag      do result:=i_get_load_mode_by_requested_rta(expr,rta_tag);
+    when rtm_computed_from_size do result:=i_get_load_mode_by_requested_rta(expr,rta_size);
+    when rtm_computed_from_last do result:=i_get_load_mode_by_requested_rta(expr,rta_last);
+    end case;
+  end i_get_load_mode_by_requested_rta;
 
 
 
@@ -379,6 +408,9 @@ begin
     -- v ostatních případech preference není (resp. podle původního kontextu)
     end case;
 
+  -- nastavit původní typ výrazu
+  i_set_orgtyp(subcontext,sub^.t.getutype);
+
   -- vygenerovat podvýraz
   i_gen(inst,info,subcontext,sub,vysl);
 
@@ -386,6 +418,26 @@ begin
   if subcontext.mode in lms_value then
     -- zajistit, že se jedná opravdu o hodnotu
     i_ensure_value(inst,info,subcontext,vysl);
+
+    -- interní kontrola správnosti nastavení elementárního datového typu právě vygenerovaného operandu
+    declare var
+      edtype       : t_elementary_data_type;     -- elementární datový typ, který by měl operand mít
+
+    begin
+      -- jaký elementární datový typ by měl mít tento výraz?
+      edtype:=edtype_from_expr(sub);
+
+      -- %%X Kontrola by se dala zpřísnit, pokud by se následující unifikace signed/unsigned
+      -- prováděla pouze pokud nadřízený uzel je přetypování.
+      
+      -- jsou dovoleny volné, obousměrné konverze mezi některými typy
+      if edtype in edts_ordinal and vysl.edtype in edts_ordinal then
+        edtype:=vysl.edtype;
+        end if;
+
+      -- zkontrolovat
+      verify({VERIFY=}001073,vysl.edtype<>edtype);
+      end declare;
 
   -- má se načíst adresa
   elsif subcontext.mode in lms_addr then
@@ -397,139 +449,108 @@ begin
     verify({VERIFY=}000877,true);
     end if;
 
+  -- zafixovat původní typ výrazu do operandu
+  if vysl.optype<>io_none then
+    vysl.set_orgtyp(subcontext.orgtyp);
+    end if;
+
   -- provest behove kontroly dokud je vysledek cerstvy
-  {%%X při lms_addr nemají runtime kontroly smysl, ne ? }
+  -- %%X při lms_addr nemají runtime kontroly smysl, ne ?
   ci_rcheck.i_gen_runtime_checks(inst,info,subcontext,rchcl_load,sub^,vysl);
 
   -- načíst hodnotu
   case subcontext.mode
+
     -- pouze generovat
     when lm_gen         do -- nic nedělat
 
-    -- načíst adresu
-    when lm_addr        do
-        -- zajistit, že se jedná opravdu o adresu hodnoty
-        -- i_ensure_address(inst,info,subcontext,vysl);
-
-        -- načíst adresu
-        if subcontext.rpref.reg<>in_none and subcontext.rpref.mode=irm_addr
-          then i_gen_lea(inst,info,subcontext,vysl,subcontext.rpref.reg);
-          else i_gen_lea(inst,info,subcontext,vysl,in_none);
-          end if;
-
-    -- adresa objektu s dynamickými atributy
-    when lm_addr_attr   do
-        -- zajistit, že se jedná opravdu o adresu hodnoty
-        -- i_ensure_address(inst,info,subcontext,vysl);
+    ----- Načtení hodnoty --------------------------------------------------------------------------
 
     -- konvertovat na typ výsledku
     when lm_conv        do
-        -- zajistit, že se jedná opravdu o hodnotu
-        -- i_ensure_value(inst,info,subcontext,vysl);
-        
         -- liší-li se od velikosti podvýrazu...
         if subcontext.rsize<>vysl.size then
-          if vysl.optype=io_imm
-            -- .. tak změnit velikost konstanty
-            then vysl.adjust_size(subcontext.rsize)
-            -- ... jinak načíst do registru
-            else i_gen_loadreg(inst,info,subcontext,sub^.t.getctype{ptyp},vysl,(vysl.optype=io_cc) and (subcontext.outpref<>iop_cc){false},irm_int);
-            end if;
+          i_gen_load_value_to_register(inst,info,subcontext,sub^.t.getctype,vysl,for force_reg use vysl.optype=io_cc and subcontext.outpref<>iop_cc);
           end if;
 
     -- konvertovat a načíst do registru
-    when lm_reg         do 
-        -- zajistit, že se jedná opravdu o hodnotu
-        -- i_ensure_value(inst,info,subcontext,vysl);
-        
-        -- načíst
-        i_gen_loadreg(inst,info,subcontext,sub^.t.getctype,vysl,false,irm_int);
+    when lm_reg         do i_gen_load_value_to_register(inst,info,subcontext,sub^.t.getctype,vysl);
 
     -- konvertovat a načíst do registru (i přímou hodnotu)
-    when lm_reg_all     do 
-        -- zajistit, že se jedná opravdu o hodnotu
-        -- i_ensure_value(inst,info,subcontext,vysl);
-        
-        -- načíst
-        i_gen_loadreg(inst,info,subcontext,sub^.t.getctype,vysl,true,irm_int);
+    when lm_reg_all     do  i_gen_load_value_to_register(inst,info,subcontext,sub^.t.getctype,vysl,for force_reg use true);
 
     -- konvertovat a načíst do CL nebo ponechat const.
-    when lm_imm8_cl     do 
-        -- zajistit, že se jedná opravdu o hodnotu
-        -- i_ensure_value(inst,info,subcontext,vysl);
-        
-        -- načíst
-        i_gen_loadimm8cl(inst,info,subcontext,vysl);
+    when lm_imm8_cl     do i_gen_load_value_to_imm8_cl(inst,info,subcontext,vysl);
 
     -- konvertovat a načíst do EAX
-    when lm_reg_eax     do 
-        -- zajistit, že se jedná opravdu o hodnotu
-        -- i_ensure_value(inst,info,subcontext,vysl);
-        
-        -- načíst
-        i_gen_loadeax(inst,info,subcontext,vysl);
+    when lm_reg_eax     do i_gen_load_value_to_eax(inst,info,subcontext,vysl);
+
+    -- načíst hodnotu a uložit na stack
+    when lm_push_value  do 
+           -- pro konstrukci pointeru budou potřeba run-time atributy referencované hodnoty
+           if vysl.edtype=edt_pointer then
+             i_rta_set_modes_of_referenced_value(sub,vysl);
+             end if;
+
+           -- uložit na stack
+           i_gen_store_value(inst,info,subcontext,sub^.t.getctype,vysl,tsd_stack);
+
+    -- uložit hodnotu do temporary proměnné, nebo nechat imm
+    when lm_temp_value  do 
+           -- pro konstrukci pointeru budou potřeba run-time atributy referencované hodnoty
+           if vysl.edtype=edt_pointer then
+             i_rta_set_modes_of_referenced_value(sub,vysl);
+             end if;
+
+           -- uložit do temporary proměnné
+           i_gen_store_value(inst,info,subcontext,sub^.t.getctype,vysl,tsd_temporary);
+
+    -- načíst pointer a informace o v něm uložených run-time atributech
+    when lm_pointer     do i_rta_set_modes_of_referenced_value(sub,vysl);
+
+    ----- Načtení adresy ---------------------------------------------------------------------------
+
+    -- načíst adresu
+    when lm_addr        do
+        -- načíst adresu
+        if subcontext.rpref.reg<>in_none and subcontext.rpref.mode=irm_addr
+          then i_gen_load_address_to_register_with_dereference(inst,info,subcontext,vysl,for force_reg use true,for pref_reg use subcontext.rpref.reg);
+          else i_gen_load_address_to_register_with_dereference(inst,info,subcontext,vysl);
+          end if;
+
+    -- adresa objektu s dynamickými atributy
+    when lm_addr_attr   do -- nic nedělat
+    
+    -- načíst adresu a uložit na stack
+    when lm_push_addr   do i_gen_store_address(inst,info,subcontext,vysl,tsd_stack);
+
+    -- načíst adresu, uložit na stack a kopii vrátit ven
+    when lm_push_and_load_addr do
+        -- načíst adresu do registru
+        i_gen_load_address_to_register_with_dereference(inst,info,subcontext,vysl);
+
+        -- uložit na stack
+        declare var
+          optemp   : c_operand;                  -- pracovní kopie výsledku, kterou můžeme zničit
+
+        begin
+          -- připravit si kopii výsledku, bude zničena
+          optemp.clone(inst,info,subcontext,vysl);
+
+          -- uložit na stack
+          i_gen_store_address(inst,info,subcontext,optemp,tsd_stack);
+
+        leave
+          -- uvolnit pracovní operand
+          optemp.free(info,subcontext);
+          end declare;
 
     -- konvertovat přímou hodnotu na relativní adresu            
-    when lm_imm_to_rel  do                                       --<<<<<<<< ??????
+    when lm_imm_to_rel  do
         if vysl.optype=io_imm then
           verify({VERIFY=}000861,vysl.edtype<>edt_address);
           vysl.transform_imm_to_rel;
           end if;
-
---vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
-
-    -- načíst hodnotu a uložit na stack
-    when lm_push_value  do
-        -- načíst a normalizovat pointer
-        if subcontext.outtyp.stype=dt_pointer then
-          i_gen_loadpointer(inst,info,subcontext,sub^.t.getctype,false,vysl);
-          end if;
-
-        -- uložit na stack
-        i_gen_pushstack(inst,info,subcontext,vysl);
-
-    -- načíst adresu a uložit na stack, popřípadě vrátit kopii v registru
-    when lm_push_addr, lm_push_and_load_addr do
-        -- Ondra 15.5.2002 : Pro dereferenci se načtení adresy mění na načtení hodnoty pointeru,
-        -- protože v takovém případě dereference nic nedereferencuje, ale maximálně transformuje
-        -- dereferencovaný pointer na výsledný pointer.
-        if sub^.ntype<>nt_deref then
-          -- načíst adresu
-          i_gen_lea(inst,info,subcontext,vysl,in_none);
-          end if;
-
-        -- uložit na stack
-        i_gen_pushstack(inst,info,subcontext,vysl);
-
-        -- pokud není výsledek žádán, tak se ho zbavit
-        if subcontext.mode<>lm_push_and_load_addr then
-          -- žádný výsledek se vracet nebude
-          vysl.free(info,subcontext);
-          end if;
-
-    -- uložit hodnotu do temporary proměnné, nebo nechat imm
-    when lm_temp_value  do
-        -- liší-li se od velikosti podvýrazu...
-        if subcontext.rsize<>vysl.size then
-          if vysl.optype=io_imm
-            -- .. tak změnit velikost konstanty
-            then vysl.adjust_size(subcontext.rsize)
-            -- ... jinak načíst do registru
-            else i_gen_loadreg(inst,info,subcontext,sub^.t.getctype{ptyp},vysl,false,irm_int);
-            end if;
-          end if;
-
-        -- načíst do temporary proměnné
-        i_gen_loadtemp(inst,info,subcontext,vysl);
-
-    -- uložit adresu do temporary proměnné
---  when lm_temp_addr   do unimplemented({UNIMP=}000238);
-
-    -- načíst a normalizovat pointer
-    when lm_pointer     do i_gen_loadpointer(inst,info,subcontext,sub^.t.getctype,false,vysl);
-
-    -- načíst a normalizovat pointer, preferovaně uložit do registru
-    when lm_pointer_reg do i_gen_loadpointer(inst,info,subcontext,sub^.t.getctype,true,vysl);
 
     -- adresa slotu táskové proměnné
     when lm_task_var_slot do -- nic nedelat
@@ -607,57 +628,6 @@ begin
   op1.refresh(inst,info,context);
   op2.refresh(inst,info,context);
   end i_load_binary;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_load_binary_pointer (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o průběhu generování
-    context        : in out iexprcontext;        -- kontext generování výrazu
-    expr           : in pexpoper;                -- strom
-    typ            : in pentity_type;            -- požadovaný typ podvýrazů
-    el             : in pexpnode;                -- podvýrazy
-    er             : in pexpnode;                -- podvýrazy
-    op1            : out c_operand;              -- výsledek
-    op2            : out c_operand) =            -- výsledek
--- Vygeneruje a načte hodnotu dvojice podvýrazů (svázaných binárním
--- operátorem) typu pointer. Pointery normalizuje podle dodaného typu
-----------------------------------------------------------------------------------------------------
-var
-  newcontext       : iexprcontext;               -- kontext podvýrazů
-
-begin
-  verify({VERIFY=}000801,expr^.arity<>eoa_2);
-  verify({VERIFY=}000484,typ^.stype<>dt_pointer);
-
-  if expr^.assign
-
-    -- přiřazení    : opačné pořadí operandů
-    then
-      -- vygenerovat a načíst pravý podvýraz
-      i_newcontext(context,newcontext,lm_pointer_reg,typ);
-      i_load(inst,info,newcontext,context,er,op2);
-
-      -- vygenerovat levý podvýraz
-      i_newcontext(context,newcontext,lm_gen,nil);
-      i_load(inst,info,newcontext,context,el,op1);
-
-    -- normální pořadí operandů
-    else
-      -- vygenerovat a načíst levý podvýraz
-      i_newcontext(context,newcontext,lm_pointer_reg,typ);
-      i_load(inst,info,newcontext,context,el,op1);
-
-      -- vygenerovat pravý podvýraz
-      i_newcontext(context,newcontext,lm_pointer,typ);
-      i_load(inst,info,newcontext,context,er,op2);
-      end if;
-
-  -- obnovit registry
-  op1.refresh(inst,info,context);
-  op2.refresh(inst,info,context);
-  end i_load_binary_pointer;
 
 
 
@@ -775,7 +745,7 @@ procedure i_gen_op_compare_binary : topergen =
             opecx.refresh(inst,info,context);
 
             -- zjistit velikost pole
-            size:=unidata_size_to_unsigned(x^.t.getsize);
+            size:=value_size_from_expr(x);
 
             -- zvolit, jak budeme porovnávat
             #template adjust_operands(denominator);
@@ -895,7 +865,7 @@ begin
         opecx.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
 
         -- zjistit velikost polí
-        size:=unidata_size_to_unsigned(el^.t.getsize);
+        size:=value_size_from_expr(el);
 
         -- zvolit, jak budeme porovnávat
         -- dělitelné 4 ? => po čtveřicích
@@ -1011,11 +981,25 @@ begin
   end i_gen_op_compare_record;
 
 
+{
+-- Zatím nerušit, návrh na nový tvar.
+--
+-- ----------------------------------------------------------------------------------------------------
+-- procedure i_gen_op_assign_nil : topergen =
+-- -- Univerzální přiřazení NIL.
+-- ----------------------------------------------------------------------------------------------------
+-- begin
+--   end i_gen_op_assign_nil;
+}
+
 
 ----------------------------------------------------------------------------------------------------
 procedure i_gen_op_assign : topergen =
 -- Univerzální přiřazení.
 ----------------------------------------------------------------------------------------------------
+with
+  ci_rcheck;
+
 var
   el               : pexpnode;                   -- levý podvýraz
   er               : pexpnode;                   -- pravý podvýraz
@@ -1027,6 +1011,77 @@ begin
   -- podvýrazy
   expr^.get(el,er);
 
+-- Zatím nerušit, návrh na nový tvar.
+--
+--   -- vyřídit triviální případ přiřazení NIL
+--   if x_is_nil(er) then
+--     i_gen_op_assign_nil(inst,info,context,expr,vysl);
+-- 
+--   -- oba operandy mají statickou velikost
+--   elsif x_has_static_size(el) and x_has_static_size(er) then
+--     declare var
+--       size         : t_unsigned32;               -- velikost operandu
+-- 
+--     begin
+--       -- pro zjednodušení velikost operandu
+--       size:=unidata_size_to_unsigned(expr^.t.getsize);
+-- 
+--       if size=1 or size=2 or size=4{%%TODO(SET) size in [1,2,4]}
+-- 
+--         -- příznivá velikost => na to stačí jeden MOV
+--         then
+--           -- vygenerovat a načíst operandy
+--           i_load_binary(inst,info,context,iop_cc,expr,expr^.t.getctype,el,er,op1,op2);
+-- 
+--           -- přiřazení
+--           -- Ondra 11.9.2002 : Hodnota může být reprezentována i kódem podmínky
+--           if op2.optype=io_cc
+--             then addset(inst,info,context,op2.cc,op1);
+--             else addii(inst,info,ii_mov,op1,op2,op0);
+--             end if;
+-- 
+--           -- výsledek
+--           vysl.transfer(op1);
+-- 
+--         -- něco jiného => obecná metoda přesunu
+--         else
+--           -- vygenerovat a načíst pravý podvýraz (může být i na stacku)
+--           i_newcontext(context,newcontext,lm_gen,nil);
+--           i_setoutpref(newcontext,iop_stack);
+--           i_load(inst,info,newcontext,context,er,op2);
+-- 
+--           -- vygenerovat levý podvýraz
+--           i_newcontext(context,newcontext,lm_gen,nil);
+--           i_load(inst,info,newcontext,context,el,op1);
+-- 
+--           -- obnovit registry
+--           op1.refresh(inst,info,context);
+--           op2.refresh(inst,info,context);
+-- 
+--           -- operandy by neměly spotřebovat moc registrů
+--           i_gen_reduceop(inst,info,context,op1);
+--           i_gen_reduceop(inst,info,context,op2);
+-- 
+--           -- kopírovat
+--           case op2.optype
+--             when io_stack do i_gen_pop_static(inst,info,context,op1,size);
+--             when io_mem   do i_gen_move_static(inst,info,context,op2,op1,size);
+--             when others   do verify({VERIFY=}001016,true);
+--             end case;
+-- 
+--           -- %%X A co výsledek ??             
+--           end if;
+--     leave
+--       -- uvolnit operandy
+--       op1.free(info,context);
+--       op2.free(info,context);
+--       end declare;
+-- 
+--   -- alespoň jeden z operandů má dynamickou velikost
+--   else
+--     ...
+--     end if;  
+
   if x_has_dynamic_size(el)
 
     -- levý operand má dynamickou velikost
@@ -1037,7 +1092,7 @@ begin
         op1edi     : c_operand;                  -- adresa levého operandu v EDI
 
       begin
-        {verify({VERIFY=}000803,not (rta_size in el^.rta_used{%%ATTR}));}
+        {verify({VERIFY=}000803,rta_size not in el^.rta_used{%%ATTR});}
 
         -- vygenerovat levý operand
         i_newcontext(context,newcontext,lm_addr_attr,nil);
@@ -1048,28 +1103,10 @@ begin
         op1.refresh(inst,info,context);
 
         -- pro atribut bude potřeba registr ECX
-        op1size.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
-      {
-        -- načíst :size
-        i_gen_load_rtattrib_value(inst,info,context,el^.rta_used{%%ATTR},op1,rta_size,op1size);
-      }
-        -- je k dispozici přímo :size
-        if rta_size in el^.rta_used{%%ATTR} then
-          -- načíst :size
-          i_gen_load_rtattrib_value(inst,info,context,el^.rta_used{%%ATTR},op1,rta_size,op1size);
+        -- op1size.create_use_register(inst,info,context,edt_unsigned,ir_ecx);
 
-        -- je k dispozici jen :last
-        elsif rta_last in el^.rta_used{%%ATTR} then
-          -- načíst :last
-          i_gen_load_rtattrib_value(inst,info,context,el^.rta_used{%%ATTR},op1,rta_last,op1size);
-
-          -- vynásobit velikostí prvku
-          i_gen_mul_reg(inst,info,context,op1size,unidata_size_to_imm32(el^.t.getctype^.base.getctype^.size));
-
-        -- co si máme počít bez dynamického atributu ?
-        else
-          verify({VERIFY=}000804,true)
-          end if;
+        -- načíst do ECX dynamickou velikost levého operandu
+        i_rta_load(inst,info,context,op1,rta_size,op1size,for no_memory use true,for pref_reg use in_ecx);
 
         -- registr EDI
         op1edi.create_use_register(inst,info,context,edt_address,ir_edi);
@@ -1078,7 +1115,7 @@ begin
         op1.adjust_size(lpointer32);
         addii(inst,info,ii_mov,op1edi,op1,op0);
 
-        if x_is_nil(er) {er^.t.stype=dt_uninil}
+        if x_is_nil(er)
 
           -- přiřazení NIL
           then
@@ -1108,32 +1145,17 @@ begin
                   -- obnovit registry
                   op2.refresh(inst,info,context);
 
-                  -- určit adresu :size
-                  i_gen_load_rtattrib_addr(inst,info,context,er^.rta_used{%%ATTR},op2,rta_size,op2size);
+                  -- načíst do ECX dynamickou velikost levého operandu
+                  i_rta_load(inst,info,context,op2,rta_size,op2size);
 
                 -- pravý operand má statickou velikost
                 else
                   -- načíst velikost pravého operandu
-                  op2size.create_imm(edt_unsigned,0,unidata_size_to_imm32(er^.t.getsize));
+                  op2size.create_imm(edt_unsigned,0,value_size_from_expr(er));
                   end if;
 
-              declare var
-                tg_ok : itarget;                 -- cíl skoku po porovnání velikostí
-
-              begin
-                -- alokovat cíl skoku
-                newtarget(info,tg_ok);
-
-                -- porovnat s ECX
-                addii(inst,info,ii_cmp,op1size,op2size,op0);
-                addjump(inst,info,context,ic_e,tg_ok);
-
-                -- vyvolat výjimku Constraint_Error
-                -- %%X
-
-                -- cíl skoku na toto místo
-                settarget(info,tg_ok,getaddr(inst));
-                end declare;
+              -- run-time check velikosti přiřazovaného bloku
+              i_gen_rcheck_constraint_error_on_compare(inst,info,context,op1size,op2size,ic_ne);
 
               ---- přiřazení hodnoty ----
               if x_has_dynamic_size(er)
@@ -1179,7 +1201,7 @@ begin
         size       : t_unsigned32;               -- velikost operandu
       begin
         -- velikost operandu
-        size:=unidata_size_to_unsigned(expr^.t.getsize);
+        size:=value_size_from_expr(expr);
 
         ----- %%X Připomínky ---------------------------------------------------
         -- -- Co když se levý a pravý operand překrývají ?
@@ -1215,13 +1237,10 @@ begin
                 then
                   -- vygenerovat a načíst operandy
                   i_load_binary(inst,info,context,iop_cc,expr,expr^.t.getctype,el,er,op1,op2);
+                  verify({VERIFY=}001096,op2.edtype=edt_address);
 
                   -- přiřazení
-                  -- Ondra 11.9.2002 : Hodnota může být reprezentována i kódem podmínky
-                  if op2.optype=io_cc
-                    then addset(inst,info,context,op2.cc,op1);
-                    else addii(inst,info,ii_mov,op1,op2,op0);
-                    end if;
+                  i_gen_simple_assign(inst,info,context,op1,op2);
 
                   -- výsledek
                   vysl.transfer(op1);
@@ -1252,7 +1271,7 @@ begin
                     when others   do verify({VERIFY=}000488,true);
                     end case;
 
-                  -- %%X A co výsledek ??             
+                  -- %%X A co výsledek ??
                   end if;
 
             leave
@@ -1449,133 +1468,6 @@ leave
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_gen_rtattrib (
-    inst           : in out icodeinst;           -- instance
-    info           : in out igeninfo;            -- informace o průběhu generování
-    context        : in out iexprcontext;        -- kontext generování výrazu
-    expr           : in pexpnode{component};     -- strom
-    vysl           : in c_operand) =             -- výsledek výpočtu výrazu (adresa)
--- Generování dynamických atributů.
--- VYSL obsahuje adresu bloku tvaru:
---     +----------+
---     | atributy | +4 až +n
---     +----------+
---     | adresa   | +0
---     +----------+
--- Atributy jsou z této struktury zkopírovány do obdobné (bez pole adresa),
--- která leží na bázové adrese dané registrem CONTEXT.RTABASE.
-----------------------------------------------------------------------------------------------------
-var
-  opsrc            : c_operand;                  -- ukazatel na zdrojovou oblast
-  dattrib          : rtattribset;                -- dynamické atributy výrazu
-  srange           : pentity_type;               -- rozsah pole/řetězce
-  x                : timm32;
-
-begin
-  -- chce to vůbec nějaké atributy ?
-  if context.rta=rtattribset:[] then return; end if;
-
-  -- jaké atributy jsou k dispozici ?
-  dattrib:=context.rta*expr^.rta_used{%%ATTR};
-
-  -- připravit ukazatel do zdrojové oblasti
-  verify({VERIFY=}000333,vysl.optype<>io_mem);
-  opsrc.clone(inst,info,context,vysl);
-  getrtattribsetsize(expr^.rta_used{%%ATTR},x);
-  --%%X Zbytečné přetypování, dodefinovat shift_displacement o TIMM32 hodnotu
-  opsrc.shift_displacement(t_signed(imm32_lpointer32+x));  
-
-  -- stack roste shora --> dolů
-  for attrib in reverse rtattrib loop
-    -- posunout offset ve zdrojové oblasti
-    if attrib in expr^.rta_used{%%ATTR} then
-      opsrc.unshift_displacement(imm32_to_signed(unidata_size_to_imm32(cpu32_rtattribsize[attrib])));
-      end if;
-
-    -- určit velikost atributu
-    opsrc.adjust_size(unidata_size_to_unsigned(cpu32_rtattribsize[attrib]));
-
-    -- zkopírovat dynamický atribut
-    if attrib in dattrib then
-      -- stačí jeden PUSH
-      -- %%X Nebude se ten PUSH chovat divně,
-      -- kdyby náhodou bylo OPSRC.SIZE<>4 ?
-      addii(inst,info,ii_push,opsrc,op0,op0);
-
-    -- určit staticky
-    elsif attrib in context.rta then
-      declare var
-        optemp     : c_operand;                  -- pracovní registr
-
-      begin
-        -- připravit druhý operand
-        case attrib
-          -- ^instance
-          when rta_instance do
-              -- statický pointer na instanci je zřejmě NIL
-              optemp.create_imm(edt_address,0,0);
-
-          -- :tag
-          when rta_tag      do
-              -- je to tagged typ ?
-              if tf_tagged in expr^.t.getctype^.tflags
-
-                -- ano => použít reálný tag
-                then
-                  optemp.create_imm(edt_unsigned,opsrc.size,0);
-                  optemp.set_relo_entity(expr^.t.getctype);
-
-                -- ne => uložit prázdný tag
-                else
-                  optemp.create_imm(edt_unsigned,0,0);
-                  end if;
-
-          -- :size
-          when rta_size     do
-              optemp.create_imm(edt_unsigned,opsrc.size,unidata_size_to_imm32(expr^.t.getsize));
-
-          -- :last
-          when rta_last     do
-              -- připravit operand
-              optemp.create_imm(edt_unsigned,opsrc.size,0);
-
-              -- liší se pro pole a pro řetězce
-              verify({VERIFY=}000335,not t_is_sts(expr^.t,dts_index));
-              srange:=expr^.t.getctype^.srange.getctype;
-              case expr^.t.stype
-                -- pole
-                when dt_array, dt_uarray do
-                    -- :last odpovídá :length-1
-                    optemp.set_imm(uniint_to_imm32(uniint_length(srange^.lval,srange^.hval))-timm32(1));
-
-                -- řetězec
-                when dt_string, dt_ustring do
-                    -- :last je :last
-                    optemp.set_imm(uniint_to_imm32(srange^.hval));
-
-                when others do verify({VERIFY=}000336,true);
-                end case;
-
-          when others do verify({VERIFY=}000332,true);
-          end case;
-
-        -- uložit
-        addii(inst,info,ii_push,optemp,op0,op0);
-      leave
-        -- uvolnit operand
-        optemp.free(info,context);
-        end declare;
-      end if;
-    end loop;
-
-leave
-  -- uvolnit operand
-  opsrc.free(info,context);
-  end i_gen_rtattrib;
-
-
-
-----------------------------------------------------------------------------------------------------
 procedure i_gen_component (
     inst           : in out icodeinst;           -- instance
     info           : in out igeninfo;            -- informace o průběhu generování
@@ -1626,10 +1518,7 @@ begin
 
               -- určit koncový elementární datový typ a koncovou velikost
               final_edtype:=edtype_from_expr(expr);
-              if expr^.t.hassize
-                then final_size:=unidata_size_to_unsigned(expr^.t.getsize);
-                else final_size:=0;
-                end if;
+              final_size:=value_size_from_expr(expr);
 
               case pvar^.mclass
                 -- automatická
@@ -1741,55 +1630,20 @@ begin
                     verify({VERIFY=}000334,context.rta*(pvar^.rta_avail{allrta}-pvar^.rta_used{usedrta})<>rtattribset:[]);
                     expr^.rta_used{%%ATTR}:=pvar^.rta_used{usedrta};
 
-                    -- chceme uložit i dynamické atributy ?
-                    if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
-                      i_gen_rtattrib(inst,info,context,expr,vysl);
-                      end if;
+                    -- rozhodnout se, jestli uživatel chce hodnotu nebo referenci na ní
+                    i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes,
+                        final_edtype,final_size,for deref use pvar^.vmode=vm_ref);
 
-                    -- implicitní dereference
-                    if pvar^.vmode=vm_ref and context.mode<>lm_addr_attr then
-                      declare var
-                        optemp : c_operand;
-                      begin
-                      {
-                        -- opravit typ a velikost operandu (při přípravě jsme 
-                        -- možnost [vm_ref] nezohlednili, tak to teď musíme napravit)
-                        vysl.adjust_edtype(edt_address);
-                        vysl.adjust_size(4);
-                      }
-                        -- alokovat pracovní registr
-                        optemp.create_new_register(inst,info,context,edt_address,4);
-
-                        -- načíst adresu
-                        addii(inst,info,ii_mov,optemp,vysl,op0);
-
-                        -- nahradit výsledek právě načtenou adresou
-                        vysl.replace(info,context,optemp);
-
-                        -- změnit operand na adresní
-                        vysl.transform_reg_to_mem(final_edtype,final_size);
-                      leave
-                        -- uvolnit pracovní operand
-                        optemp.free(info,context);
-                        end declare;
-                      end if;
-                  {
-                    -- velikost operandu
-                    if expr^.t.hassize
-                      then vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
-                      else vysl.adjust_size(0);
-                      end if;
-                  }
                 -- statická
                 when mc_static do
+                    verify({VERIFY=}000893,pvar^.vmode<>vm_direct);
+
                     -- adresa proměnné
                     vysl.create_memory_address(inst,info,context,final_edtype,final_size,ir_none,0);
-                    vysl.set_relo_entity(expr^.s.psym);
+                    vysl.set_relo_entity(pvar);
 
-                    -- chceme uložit i dynamické atributy ?
-                    if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
-                      i_gen_rtattrib(inst,info,context,expr,vysl);
-                      end if;
+                    -- rozhodnout se, jestli uživatel chce hodnotu nebo referenci na ní
+                    i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes);
 
                 -- tasková proměnná
                 when mc_task do
@@ -1808,7 +1662,7 @@ begin
 
                         begin
                           -- na stacku rezervovat prostor pro návratovou hodnotu - adresa hodnoty taskové proměnné
-                          addii(inst,info,ii_sub,op_esp,op_4,op0);
+                          i_gen_stack_top_reserve(inst,info,context,4);
 
                           -- handle taskové proměnné uložit na stack
                           slot.create_memory_address(inst,info,context,edt_unsigned,4,ir_none,0);
@@ -1821,7 +1675,10 @@ begin
                           -- vyzvednout ze stacku adresu hodnoty taskové proměnné
                           vysl.create_new_register(inst,info,context,edt_address,4);
                           addii(inst,info,ii_pop,vysl,op0,op0);
-                          vysl.transform_reg_to_mem(edtype_from_expr(expr),unidata_size_to_unsigned(expr^.t.getsize));
+                          
+                          -- rozhodnout se, jestli uživatel chce hodnotu nebo referenci na ní
+                          i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes,
+                              edtype_from_expr(expr),value_size_from_expr(expr),for deref use true);
 
                         leave
                           slot.free(info,context);
@@ -1831,13 +1688,13 @@ begin
 
                 -- proměnná třídy
                 when mc_class do
+                    verify({VERIFY=}000894,pvar^.vmode<>vm_direct);
+
                     -- načíst adresu složky
                     i_load_this_address(inst,info,context,final_edtype,final_size,pvar^.addr,vysl);
 
-                    -- chceme uložit i dynamické atributy ?
-                    if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
-                      i_gen_rtattrib(inst,info,context,expr,vysl);
-                      end if;
+                    -- rozhodnout se, jestli uživatel chce hodnotu nebo referenci na ní
+                    i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes);
 
                 when others do verify({VERIFY=}000071,true);
                 end case;
@@ -1858,13 +1715,12 @@ begin
             -- adresa
             vysl.shift_displacement(imm32_to_signed{%%X}(unidata_addr_to_imm32(pentity_var(expr^.s.psym)^.addr{pivarlink(pentity_var(expr^.s.psym)^.codegen)^.addr})));
 
-            -- velikost operandu
-            vysl.adjust_size(unidata_size_to_unsigned(pentity_var(expr^.s.psym)^.typ.getctype^.size));
+            -- upravit elementární datový typ a velikost operandu
+            vysl.adjust_edtype(edtype_from_expr(expr));
+            vysl.adjust_size(value_size_from_expr(expr));
 
-            -- chceme uložit i dynamické atributy ?
-            if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
-              i_gen_rtattrib(inst,info,context,expr,vysl);
-              end if;
+            -- rozhodnout se, jestli uživatel chce hodnotu nebo referenci na ní
+            i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes);
             end if;
 
     -- procedura
@@ -1909,13 +1765,11 @@ begin
     -- zajímá nás adresa hodnoty
     then
       -- adresa
-      vysl.create_memory_address(inst,info,context,edtype,unidata_size_to_unsigned(expr^.t.getsize),ir_none,0);
+      vysl.create_memory_address(inst,info,context,edtype,value_size_from_expr(expr),ir_none,0);
       vysl.set_relo_imm(expr);
 
-      -- chceme uložit i dynamické atributy ?
-      if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
-        i_gen_rtattrib(inst,info,context,expr,vysl);
-        end if;
+      -- rozhodnout se, jestli uživatel chce hodnotu nebo referenci na ní
+      i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes);
 
     -- zajímá nás hodnota samotná
     else
@@ -1924,7 +1778,7 @@ begin
         when ic_ordinal do
             if t_is_sts(expr^.t,dts_unitype)
               then vysl.create_imm(edtype,0,uniint_to_imm32(expr^.imm.ui));
-              else vysl.create_imm(edtype,unidata_size_to_unsigned(expr^.t.getsize),uniint_to_imm32(expr^.imm.ui));
+              else vysl.create_imm(edtype,value_size_from_expr(expr),uniint_to_imm32(expr^.imm.ui));
               end if;
 
          { No a to je právě ten omyl. Tohle se musí řešit s využitím NATTYP
@@ -1964,7 +1818,7 @@ begin
                      or ((expr^.imm.ic=ic_array) and (expr^.imm.aitems^.lcount>expr^.imm.aitems^.lsize))
                      or ((expr^.imm.ic=ic_record) and (expr^.imm.ritems^.lcount>expr^.imm.ritems^.lsize)),expr^.pos);}
             {!!}
-            vysl.create_memory_address(inst,info,context,edtype,unidata_size_to_unsigned(expr^.t.getsize),ir_none,0);
+            vysl.create_memory_address(inst,info,context,edtype,value_size_from_expr(expr),ir_none,0);
             vysl.set_relo_imm(expr);
 
         -- %%X
@@ -2176,7 +2030,7 @@ begin
 
           -- speciální případ: předává se NIL hodnotou
           then
-            i_gen_pushnil(inst,info,context,arg^.t.getctype^.size);
+            i_gen_push_nil(inst,info,context,arg^.t.getctype^.size);
             params_size+unidata_size_to_unsigned(arg^.t.getctype^.size);
 
           -- všechny ostatní případy
@@ -2221,7 +2075,7 @@ begin
               -- parametr předaný hodnotou nemá dynamické atributy
               verify({VERIFY=}000327,(pentity_param(arg^.sym)^.pass=pp_value) and (newcontext.rta<>rtattribset:[]));
 
-              -- velikost pouzitych runtime atributu
+              -- do celkového součtu velikostí parametrů započítat i velikost použitých runtime atributů
               getrtattribsetsize(newcontext.rta,rta_size);
               params_size+imm32_to_unsigned(rta_size);
 
@@ -2280,7 +2134,7 @@ begin
 
     begin     
       -- velikost návratové hodnoty
-      resultsize:=unidata_size_to_unsigned(expr^.t.getsize);
+      resultsize:=value_size_from_expr(expr);
 
       if ptyp^.result^.pass in pps_ref
         -- odkazem
@@ -2289,7 +2143,7 @@ begin
           op1.create_temporary(inst,info,edtype_from_expr(expr),resultsize);
 
           -- získanou adresu převést na absolutní
-          i_gen_lea(inst,info,context,op1,in_none);
+          i_gen_load_address_to_register(inst,info,context,op1);
 
           -- uložit na stack
           addii(inst,info,ii_push,op1,op0,op0);
@@ -2426,14 +2280,14 @@ begin
                 addii(inst,info,ii_push,opcall,op0,op0);
 
                 -- načíst pointer na instanci do registru
-                i_gen_loadreg(inst,info,context,nil,opcall,true,irm_addr);
+                i_gen_load_address_to_register_with_dereference(inst,info,context,opcall);
 
                 -- sestavit adresní operand ukazující na tag
-                opcall.transform_reg_to_mem(edt_address,4);
+                opcall.transform_imm_or_reg_to_mem(edt_address,4);
                 opcall.shift_displacement(imm32_to_signed{%%X}(cpu32_class_tag));
 
                 -- načíst tag (=adresu deskriptoru typu) do registru
-                i_gen_loadreg(inst,info,context,nil,opcall,true,irm_addr);
+                i_gen_load_address_to_register_with_dereference(inst,info,context,opcall);
 
                 -- sestavit adresní operand ukazující na adresu virtuální metody
                 declare var
@@ -2532,14 +2386,14 @@ begin
     if call in iccs_leave_params then
       if pinst=nil 
         then
-        -- Jestliže není k dispozici instance volané procedury, nevíme, o kolik bytů zvýšit
-        -- stack pointer. S touto situací není lehké si poradit. Nastává, když volaná procedura
-        -- je deklarována uvnitř volající. Důvodem je nevýhodné pořadí generování kódu těchto
-        -- dvou procedur. Řešením by mohl být předvýpočet profilu parametrů před vlastním
-        -- generováním kódu čehokoliv.
-        -- %%HYNEK: Zatim vyreseno tak, ze si sami behem generovani volani spocitame kolik se pushlo.
-        --          Neumime zapocitat instanci - napr. dynamicke zjisteni v pripade pointeru na proceduru
-        --          je drobet slozitejsi.
+          -- Jestliže není k dispozici instance volané procedury, nevíme, o kolik bytů zvýšit
+          -- stack pointer. S touto situací není lehké si poradit. Nastává, když volaná procedura
+          -- je deklarována uvnitř volající. Důvodem je nevýhodné pořadí generování kódu těchto
+          -- dvou procedur. Řešením by mohl být předvýpočet profilu parametrů před vlastním
+          -- generováním kódu čehokoliv.
+          -- %%HYNEK: Zatim vyreseno tak, ze si sami behem generovani volani spocitame kolik se pushlo.
+          --          Neumime zapocitat instanci - napr. dynamicke zjisteni v pripade pointeru na proceduru
+          --          je drobet slozitejsi.
         
           if instance_needed then
             unimplemented({UNIMP=}000203);
@@ -2565,7 +2419,7 @@ begin
 
     begin
       -- velikost výsledku
-      resultsize:=unidata_size_to_unsigned(expr^.t.getsize);
+      resultsize:=value_size_from_expr(expr);
       resultedtype:=edtype_from_expr(expr);
 
       -- na stacku
@@ -2598,7 +2452,7 @@ begin
               -- jinak s tím něco udělat
               else
                 -- nevešel by se výsledek do registru ?
-                if resultsize=1 or resultsize=2 or resultsize=4{%%TODO(SET) resultsize in [1,2,4]}
+                if resultsize=1 or resultsize=2 or resultsize=4
 
                   then
                     declare var
@@ -2642,10 +2496,8 @@ begin
         verify({VERIFY=}000104,false);
         end if;
 
-      -- chceme uložit i dynamické atributy ?
-      if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
-        i_gen_rtattrib(inst,info,context,expr,vysl);
-        end if;
+      -- rozhodnout se, jestli uživatel chce hodnotu nebo referenci na ní
+      i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes);
       end declare;
     end if;
   end i_gen_call_subprogram;
@@ -2725,7 +2577,8 @@ begin
 
   -- základ výsledku
   vysl.clone(inst,info,context,op1);
-  vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
+  vysl.adjust_edtype(edtype_from_expr(expr));
+  vysl.adjust_size(value_size_from_expr(expr));
   verify({VERIFY=}000490,vysl.optype<>io_mem);
   -- Pozor: nutný předpoklad pro správné ošetření IO_CC
 
@@ -2850,10 +2703,8 @@ begin
     vysl.shift_displacement(lstrisize32);
     end if;
 
-  -- Ondra 18.12.2002 : chceme uložit i dynamické atributy ?
-  if (context.mode=lm_push_addr) and (context.rta<>rtattribset:[]) then
-    i_gen_rtattrib(inst,info,context,expr,vysl);
-    end if;
+  -- rozhodnout se, jestli uživatel chce hodnotu nebo referenci na ní
+  i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes);
 
 leave
   -- uvolnit operandy
@@ -2883,48 +2734,30 @@ begin
   case expr^.t.getpclass
     -- pointer na data
     when pc_data do
-        -- vygenerovat podvýraz
-        i_newcontext(context,newcontext,lm_addr,nil);
-        i_load(inst,info,newcontext,context,el,vysl);
+        declare var
+          op       : c_operand;                  -- levý operand
 
-        -- obnovit registry
-        vysl.refresh(inst,info,context);
+        begin
+          -- vygenerovat podvýraz
+          i_newcontext(context,newcontext,lm_addr_attr,nil);
+          i_load(inst,info,newcontext,context,el,op);
 
-        -- má pointer obsahovat nějaké run-time atributy ?
-        if {context.outtyp.pattrib}expr^.t.getpattrib<>rtattribset:[] 
-        
-          -- ano => doplnit je do něj
-          then
-            declare var
-              optemp : c_operand;
-            begin
-              -- alokovat pracovní proměnnou
-              optemp.create_temporary(inst,info,edt_pointer,unidata_size_to_unsigned(expr^.t.getsize));
+          -- obnovit registry
+          op.refresh(inst,info,context);
 
-              -- zkonstruovat celý pointer
-              i_gen_compose_pointer(inst,info,context,vysl,expr^.t.getctype^.base.getutype,expr^.t.getctype^.base.getutype,{context.outtyp.pattrib}expr^.t.getpattrib,optemp);
+          -- sestavit pointer
+          i_gen_compose_pointer(inst,info,context,op,vysl);
 
-              -- předat výsledek
-              vysl.replace(info,context,optemp);
-
-            leave
-              -- uvolnit pracovní operand
-              optemp.free(info,context);
-              end declare;
-
-          -- ne => pouze změnit adresní operand na hodnotový
-          else
-            -- změnit elementární datový typ na pointer
-            verify({VERIFY=}000881,vysl.edtype<>edt_address);
-            vysl.adjust_edtype(edt_pointer);
-
-            -- velikost pointeru se měnit nemusí
-            verify({VERIFY=}000882,unidata_size_to_unsigned(expr^.t.getsize)<>vysl.size);
-            end if;
+        leave
+          -- uvolnit operand
+          op.free(info,context);
+          end declare;
 
     -- pointer na proceduru
     when pc_subprogram do
         verify({VERIFY=}000512,el^.ntype<>nt_component or el^.getsymbol=nil);
+        -- sorry, ale class pointery na procedury neumíme
+        verify({VERIFY=}001014,expr^.t.getpattrib-rtattribset:[rta_instance]<>rtattribset:[]{%%TODO(SET) expr^.t.getpattrib>rtattribset:[rta_instance]});
 
         declare var
           instance : pexpnode;                   -- výraz určující instanci třídy
@@ -2940,39 +2773,49 @@ begin
           x_classinstance(el^.sub,instance);
 
           -- alokovat pracovní proměnnou
-          vysl.create_temporary(inst,info,edt_pointer,unidata_size_to_unsigned(expr^.t.getsize));
+          vysl.create_temporary(inst,info,edt_pointer,value_size_from_expr(expr));
 
+          ----- (1) vlastní adresa podprogramu -----
           declare var
             oppart : c_operand;                  -- část pointeru
+            optemp : c_operand;                  -- adresa podprogramu
 
           begin
             -- operand odpovídající části pointeru, která obsahuje adresu podprogramu
             oppart.clone(inst,info,context,vysl);
             oppart.adjust_size(4);
 
+            -- sestavit adresu podprogramu
+            optemp.create_imm(edt_address,4,0);
+            optemp.set_relo_entity(pproc);
+
+            -- uložit adresu na podprogram do pointeru
+            addii(inst,info,ii_mov,oppart,optemp,op0);
+
+          leave
+            -- uvolnit pracovní operandy
+            oppart.free(info,context);
+            optemp.free(info,context);
+            end declare;
+
+
+          ----- (2) pointer na instanci, je-li součástí pointeru -----
+          if rta_instance in expr^.t.getpattrib then
             declare var
+              opptr  : c_operand;                -- kopie výsledku čistě pro účely úpravu módu získání atributů
+              oppart : c_operand;                -- část pointeru
               optemp : c_operand;                -- pracovní proměnná pro zkonstruovaný pointer
 
             begin
-              -- adresa podprogramu
-              optemp.create_imm(edt_address,4,0);
-              optemp.set_relo_entity(pproc);
+              -- připravit si kopii výsledku
+              opptr.clone(inst,info,context,vysl);
 
-              -- uložit adresu na podprogram do pointeru
-              addii(inst,info,ii_mov,oppart,optemp,op0);
+              -- vypočítat módy získání atributů uložených ve výsledku
+              i_rta_set_modes_of_referenced_value(expr,opptr);
 
-            leave
-              -- uvolnit pracovní operand
-              optemp.free(info,context);
-              end declare;
+              -- operand odpovídající části pointeru, která obsahuje adresu podprogramu           
+              i_rta_load_address(inst,info,context,opptr,rta_instance,oppart);
 
-            -- adresa pointeru na instanci
-            i_gen_load_rtattrib_addr(inst,info,context,{context.outtyp.pattrib}expr^.t.getpattrib,vysl,rta_instance,oppart);
-
-            declare var
-              optemp : c_operand;                -- pracovní proměnná pro zkonstruovaný pointer
-
-            begin
               -- podprogram se neváže na instanci => uložit FFFFFFFF
               if pproc^.instance=tip_none then
                 optemp.create_imm(edt_address,4,unsigned_to_imm32($FFFF_FFFF));
@@ -2983,17 +2826,12 @@ begin
 
               -- máme instanci
               elsif instance<>nil and pproc^.instance<>tip_none then
-                -- vygenerovat podvýraz
+                -- vygenerovat podvýraz a načíst jeho adresu do registru
                 i_newcontext(context,newcontext,lm_addr,nil);
                 i_load(inst,info,newcontext,context,instance,optemp);
                 
                 -- obnovit registry
                 optemp.refresh(inst,info,context);
-
-                -- načíst do registru
-                i_gen_loadreg(inst,info,context,inttype_machine_pointer,optemp,false,irm_addr);
-                
-                --u_nimplemented(43);
 
               -- jiné případy nemohou nastat
               else
@@ -3005,22 +2843,11 @@ begin
 
             leave
               -- uvolnit pracovní operand
+              opptr.free(info,context);
+              oppart.free(info,context);
               optemp.free(info,context);
               end declare;
-
-            -- popřípadě uložit :tag
-            if rta_tag in {context.outtyp.pattrib}expr^.t.getpattrib then
-              -- adresa atributu
-              i_gen_load_rtattrib_addr(inst,info,context,{context.outtyp.pattrib}expr^.t.getpattrib,vysl,rta_tag,oppart);
-
-              -- vypočítat a uložit
-              i_gen_compute_rtattrib(inst,info,context,oppart,rta_tag,expr^.t.getctype^.base.getctype,expr^.t.getctype^.base.getctype);
-              end if;
-
-          leave
-            -- uvolnit pracovní operand
-            oppart.free(info,context);
-            end declare;
+            end if;
           end declare;
 
     -- pointer na task
@@ -3053,62 +2880,32 @@ begin
   -- podvýrazy
   expr^.get(el);
 
-  -- pro některé režimy načtení výrazu dereference moc nedereferencuje
-  case context.mode
-
-    -- uložení adresy a atributů na stack => načíst kompletní hodnotu pointeru
-    when lm_push_addr do
-        -- připravit kontext
-        i_newcontext(context,newcontext,lm_pointer,nil);
-
-        -- zkonstruovat charakteristiku typu výsledku
-        declare var
-          ptrsize  : tunidata_size;              -- velikost vykonstruovaného pointeru
-        begin
-          cpu^.getptrsize(context.rta,ptrsize);
-          i_compose_outtyp(newcontext,dt_pointer,ptrsize,context.rta,expr^.t.getctype);
-          end declare;
-
-        -- vygenerovat podvýraz
+  -- způsob provedení dereference do značné míry závisí na třídě pointeru
+  case el^.t.getpclass
+    -- pointer na data
+    when pc_data  do
+        -- vygenerovat podvýraz - na této úrovni nás zajímá hodnota pointeru
+        i_newcontext(context,newcontext,lm_gen{???},el^.t.getutype);
         i_load(inst,info,newcontext,context,el,vysl);
 
-    -- adresa pointeru s uloženými atributy => načíst adresu pointeru
-    when lm_addr_attr do
+        -- rozhodnout se, jestli uživatel chce hodnotu (tj. skutečně provést dereferenci), nebo
+        -- jestli ho zajímá pouze pointer samotný
+        i_choose_reference_or_value(inst,info,context,vysl,expr^.rta_modes,
+            edtype_from_expr(expr),value_size_from_expr(expr),for deref use true);
+
+    -- pointer na proceduru
+    when pc_subprogram do
         -- vygenerovat podvýraz
-        i_newcontext(context,newcontext,lm_gen,nil);
+        i_newcontext(context,newcontext,lm_gen{lm_pointer},el^.t.getutype);
         i_load(inst,info,newcontext,context,el,vysl);
 
-    -- cokoliv jiného => dereferencovat
-    when others do
-        verifyx({VERIFY=}000558,context.mode in lms_addr-iexprloadmodeset:[lm_addr],expr^.pos);
+    -- pointer na task
+    when pc_task  do unimplemented({UNIMP=}000245);
 
-        case el^.t.getpclass
-          -- pointer na data
-          when pc_data  do
-              -- vygenerovat podvýraz (jako unchecked machine pointer, ať se zbavíme runtime atributů)
-              i_newcontext(context,newcontext,lm_pointer_reg,inttype_machine_pointer{el^.t.getutype});
-              i_load(inst,info,newcontext,context,el,vysl);
+    -- pointer na zprávu
+    when pc_message do unimplemented({UNIMP=}000246);
 
-              -- adresa
-              vysl.transform_reg_to_mem(edtype_from_expr(expr),0);
-              if expr^.t.hassize then
-                vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
-                end if;
-
-          -- pointer na proceduru
-          when pc_subprogram do
-              -- vygenerovat podvýraz
-              i_newcontext(context,newcontext,lm_pointer,el^.t.getutype);
-              i_load(inst,info,newcontext,context,el,vysl);
-
-          -- pointer na task
-          when pc_task  do unimplemented({UNIMP=}000065);
-
-          -- pointer na zprávu
-          when pc_message do unimplemented({UNIMP=}000084);
-
-          when others do verify({VERIFY=}000808,true);
-          end case;
+    when others do verify({VERIFY=}000892,true);
     end case;
   end i_gen_deref;
 
@@ -3132,17 +2929,22 @@ procedure i_gen_attrib (
     ------------------------------------------------------------------------------------------------
     var
       newcontext   : iexprcontext;               -- kontext podvýrazů
+      opaddr       : c_operand;                  -- operand reprezentující adresu podvýrazu
 
     begin
       -- načíst adresu proměnné
-      i_newcontext(context,newcontext,lm_addr_attr{lm_gen},nil);
-      i_load(inst,info,newcontext,context,expr^.sub,vysl);
+      i_newcontext(context,newcontext,i_get_load_mode_by_requested_rta(expr^.sub,rta),nil);
+      i_load(inst,info,newcontext,context,expr^.sub,opaddr);
 
-      -- udělat z operandu atribut :"rta"
-      i_gen_adjust_rta_position(rta,expr^.sub,vysl);
+      -- načíst požadovaný atribut
+      if context.mode in lms_addr
+        then i_rta_load_address(inst,info,context,opaddr,rta,vysl);
+        else i_rta_load(inst,info,context,opaddr,rta,vysl,for reuse_reg use true);
+        end if;
 
-      -- načíst hodnotu do registru
-      i_gen_loadreg(inst,info,newcontext,nil,{nil,}vysl,false,irm_int);
+    leave
+      -- uvolnit podvýraz
+      opaddr.free(info,context);
       end loadrtattrib;
 
 var
@@ -3155,9 +2957,6 @@ begin
     -- statické atributy
     when atc_static  do
         case expr^.ata
-        ---- :unchecked
-        --ata_var_unchecked : i_load(inst,info,lm_gen,nil,expr^.sub,vysl);
-
           -- :tag
           when ata_type_tag do
               vysl.create_imm(edt_unsigned,4,0);
@@ -3181,13 +2980,7 @@ begin
               i_load(inst,info,newcontext,context,expr^.sub,vysl);
 
           -- :length
-          when ata_string_length do
-              -- vygenerovat
-              i_newcontext(context,newcontext,lm_gen,nil);
-              i_load(inst,info,newcontext,context,expr^.sub,vysl);
-
-              -- změnit velikost
-              vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
+          when ata_string_length do loadrtattrib(rta_length,vysl);
 
           -- :ord
           when ata_ord_ord do
@@ -3201,12 +2994,7 @@ begin
           when ata_expr_size do loadrtattrib(rta_size,vysl);
 
           -- :length neomezeného pole
-          when ata_array_length do
-              -- načíst atribut :last
-              loadrtattrib(rta_last,vysl);
-
-              -- přičíst 1
-              addii(inst,info,ii_inc,vysl,op0,op0);
+          when ata_array_length do loadrtattrib(rta_length,vysl);
 
           -- :tag
           when ata_expr_tag do loadrtattrib(rta_tag,vysl);
@@ -3268,8 +3056,9 @@ begin
         i_newcontext(context,newcontext,lm_gen,nil);
         i_load(inst,info,newcontext,context,er,vysl);
 
-        -- velikost operandu
-        vysl.adjust_size(unidata_size_to_unsigned(expr^.t.getsize));
+        -- upravit velikost a elementární datový typ operandu
+        vysl.adjust_edtype(edtype_from_expr(expr));
+        vysl.adjust_size(value_size_from_expr(expr));
 
     -- ... Full view ...
     when tview_full     do
@@ -3277,32 +3066,47 @@ begin
           -- ... na Full view
           when tview_full do
               -- ordinální --> ordinální
-              if (er^.t.stype in dts_ordinal) and (el^.t.stype in dts_ordinal) then
+              if er^.t.stype in dts_ordinal and el^.t.stype in dts_ordinal then
                 -- načíst hodnotu
                 i_newcontext(context,newcontext,lm_conv,el^.t.getctype);
                 i_load(inst,info,newcontext,context,er,vysl);
 
               -- pointer -> pointer
-              elsif (er^.t.stype=dt_pointer) and (el^.t.stype=dt_pointer) then
+              elsif er^.t.stype=dt_pointer and el^.t.stype=dt_pointer then
                 -- načíst hodnotu
                 i_newcontext(context,newcontext,lm_pointer,el^.t.getctype);
                 i_load(inst,info,newcontext,context,er,vysl);
+
+                -- jestliže výsledný pointer obsahuje pouze adresu, stačí upravit velikost
+                if el^.t.getpattrib=rtattribset:[] then
+                  vysl.adjust_edtype(edt_pointer);
+                  vysl.adjust_size(4);
+
+                -- jestliže mají pointery různý fyzický layout, musí se zkonvertovat
+                elsif el^.t.getpattrib<>er^.t.getpattrib then
+                  declare var
+                    optemp : c_operand;          -- dočasná proměnná
+
+                  begin
+                    -- založit dočasnou proměnnou
+                    optemp.create_temporary(inst,info,edt_pointer,value_size_from_expr(el));
+
+                    -- uložit do ní pointer (tím se provede potřebná konverze run-time atributů)
+                    i_gen_store_pointer(inst,info,context,vysl,optemp);
+
+                    -- předat výsledek
+                    vysl.replace(info,context,optemp);
+
+                  leave
+                    -- uvolnit operand
+                    optemp.free(info,context);
+                    end declare;
+                  end if;
 
               -- jiné konverze neumíme
               else 
                 verifyx({VERIFY=}000611,true,expr^.pos);
                 end if;
-            {
-              -- vygenerovat
-              i_newcontext(context,newcontext,lm_gen,nil);
-              i_load(inst,info,newcontext,context,er,vysl);
-
-              -- %%X Tady chybí konverze !
-
-              -- velikost operandu
-              vysl.size:=unidata_size_to_unsigned(expr^.t.getsize);
-            }
-
 
           -- ... Partial view
 
@@ -3311,11 +3115,6 @@ begin
 
     when others do verify({VERIFY=}000149,true);
     end case;
-
-  -- vygenerovat podvýraz
-  --i_load(inst,info,,arg^.sub^.t.typ,el,op1);
-
-  --u_nimplemented(56);
   end i_gen_typecast;
 
 
@@ -3352,7 +3151,7 @@ begin
 
     -- nemá parametry => na stack dát NIL
     else
-      i_gen_pushstack(inst,info,context,op_0);
+      i_gen_push_value(inst,info,context,op_0);
       end if;
 
 leave
@@ -3372,8 +3171,6 @@ procedure i_gen_callspec (
 -- Generování kódu volání speciální metody.
 ----------------------------------------------------------------------------------------------------
 var
-  opnone           : c_operand;                  -- prázdný výsledek
-  newcontext       : iexprcontext;               -- kontext výrazu
   el               : pexpnode;                   -- instance třídy (je-li to metoda třídy)
   arglist          : pexpitem;                   -- seznam parametrů
 
@@ -3400,9 +3197,16 @@ begin
         when nc_var     do
             verify({VERIFY=}000583,not el^.t.isclass);
 
-            -- adresu instance uložit na stack
-            i_newcontext(context,newcontext,lm_push_addr,nil);
-            i_load(inst,info,newcontext,context,el,opnone);
+            declare var
+              opnone     : c_operand;            -- prázdný výsledek
+              newcontext : iexprcontext;         -- kontext výrazu
+            begin
+              -- adresu instance uložit na stack
+              i_newcontext(context,newcontext,lm_push_addr,nil);
+              i_load(inst,info,newcontext,context,el,opnone);
+            leave
+              opnone.free(info,context);
+              end declare;
 
             -- zavolat speciální metodu
             if expr^.spec=nil
@@ -3528,7 +3332,7 @@ procedure i_gen_this (
 ----------------------------------------------------------------------------------------------------
 begin
   -- vygenerovat a načíst adresu instance třídy
-  i_load_this_address(inst,info,context,edtype_from_expr(expr),unidata_size_to_unsigned(expr^.t.getsize),uda_0,vysl);
+  i_load_this_address(inst,info,context,edtype_from_expr(expr),value_size_from_expr(expr),uda_0,vysl);
   --verify({VERIFY=}000696,vysl.size<>unidata_size_to_unsigned(expr^.t.getsize));
   end i_gen_this;
 
@@ -3649,10 +3453,10 @@ begin
 
   begin
     -- připravit kontext
-    i_createcontext(context,lm_gen,nil);
+    i_createcontext(context,lm_gen,expr^.t.getutype{nil});
 
     -- vygenerovat výraz
-    i_gen(inst,info,context,expr,vysl);
+    i_load(inst,info,context,context,expr,vysl);
 
   catch
     when resume_error do
@@ -3897,62 +3701,12 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-procedure i_load_rtattrib =
--- Načte požadovaný run-time atribut daného výrazu.
-----------------------------------------------------------------------------------------------------
-var
-  context          : iexprcontext;               -- kontext výrazu
-
-begin
-#if dump then;
-  if o_is_option_by_entity(opt_dump_code,info.entity^) then
-    debug_dump('---- Generovani vyrazu --------------------------------------------------------');
-    dumptree(expr);
-    end if;
-#end if;
-
-  begin
-    -- načíst adresu proměnné
-    i_createcontext(context,lm_addr_attr,nil);
-    i_load(inst,info,context,context,expr,vysl);
-
-    -- udělat z operandu atribut ":rta"
-    i_gen_adjust_rta_position(rta,expr,vysl);
-{
-    -- načíst hodnotu do registru
-    i_gen_loadreg(inst,info,context,{nil,}vysl,false,irm_int);
-}
-    -- načíst do temporary proměnné
-    if reg
-      then i_gen_loadreg(inst,info,context,nil,vysl,false,irm_int);
-      else i_gen_loadtemp(inst,info,context,vysl);
-      end if;
-
-  catch
-    when resume_error do
-        expr^.errpos;
-        raise;
-
-    when compiler_error do
-        expr^.errpos;
-        raise;
-    end;
-
-#if dump then;
-  if o_is_option_by_entity(opt_dump_code,info.entity^) then
-    debug_dump('-------------------------------------------------------------------------------');
-    end if;
-#end if;
-  end i_load_rtattrib;
-
-
-
-----------------------------------------------------------------------------------------------------
 procedure i_load_subrtattrib =
 -- Načte požadovaný run-time atribut daného výrazu.
 ----------------------------------------------------------------------------------------------------
 var
   context          : iexprcontext;               -- kontext výrazu
+  op               : c_operand;                  -- operand pro mezivýsledek
 
 begin
 #if dump then;
@@ -3962,21 +3716,17 @@ begin
     end if;
 #end if;
 
-  begin
+  begin  
     -- načíst adresu proměnné
-    i_newcontext(supercontext,context,lm_addr_attr,nil);
-    i_load(inst,info,context,supercontext,expr,vysl);
+    i_newcontext(supercontext,context,i_get_load_mode_by_requested_rta(expr,rta),nil);
+    i_load(inst,info,context,supercontext,expr,op);
 
-    -- udělat z operandu atribut ":rta"
-    i_gen_adjust_rta_position(rta,expr,vysl);
-  {
-    -- načíst hodnotu do registru
-    i_gen_loadreg(inst,info,supercontext,{nil,}vysl,false,irm_int);
-  }
-    -- načíst do temporary proměnné
+    -- načíst hodnotu požadovaného atributu
     if reg
-      then i_gen_loadreg(inst,info,supercontext,nil,vysl,false,irm_int);
-      else i_gen_loadtemp(inst,info,supercontext,vysl);
+      -- do registru (popřípadě ponechat konstantní)
+      then i_rta_load(inst,info,supercontext,op,rta,vysl,for no_memory use true,for reuse_reg use true);
+      -- do temporary proměnné
+      else i_rta_store_to_temporary(inst,info,supercontext,op,rta,vysl);
       end if;
 
   catch
@@ -3987,6 +3737,10 @@ begin
     when compiler_error do
         expr^.errpos;
         raise;
+
+  leave
+    -- uvolnit již nepotřebný operand
+    op.free(info,context);
     end;
 
 #if dump then;
@@ -3995,106 +3749,6 @@ begin
     end if;
 #end if;
   end i_load_subrtattrib;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_load_length =
--- Načte run-time atribut :length daného výrazu.
--- %%X Něco jako záplata. Vymyslet sjednocení s I_LOAD_RTATTRIB asi na bázi
--- sloučení s I_GEN_ATTRIB.
-----------------------------------------------------------------------------------------------------
-var
-  context          : iexprcontext;               -- kontext výrazu
-
-begin
-#if dump then;
-  if o_is_option_by_entity(opt_dump_code,info.entity^) then
-    debug_dump('---- Generovani vyrazu --------------------------------------------------------');
-    dumptree(expr);
-    end if;
-#end if;
-
-  begin
-    -- načíst adresu proměnné
-    i_createcontext(context,lm_gen,nil);
-    i_load(inst,info,context,context,expr,vysl);
-
-    -- změnit velikost
-    vysl.adjust_size(4);
-
-    -- načíst do temporary proměnné
-    if reg
-      then i_gen_loadreg(inst,info,context,nil,vysl,false,irm_int)
-      else i_gen_loadtemp(inst,info,context,vysl);
-      end if;
-
-  catch
-    when resume_error do
-        expr^.errpos;
-        raise;
-
-    when compiler_error do
-        expr^.errpos;
-        raise;
-    end;
-
-#if dump then;
-  if o_is_option_by_entity(opt_dump_code,info.entity^) then
-    debug_dump('-------------------------------------------------------------------------------');
-    end if;
-#end if;
-  end i_load_length;
-
-
-
-----------------------------------------------------------------------------------------------------
-procedure i_load_sublength =
--- Načte run-time atribut :length daného výrazu.
--- %%X Něco jako záplata. Vymyslet sjednocení s I_LOAD_RTATTRIB asi na bázi
--- sloučení s I_GEN_ATTRIB.
-----------------------------------------------------------------------------------------------------
-var
-  context          : iexprcontext;               -- kontext výrazu
-
-begin
-#if dump then;
-  if o_is_option_by_entity(opt_dump_code,info.entity^) then
-    debug_dump('---- Generovani vyrazu --------------------------------------------------------');
-    dumptree(expr);
-    end if;
-#end if;
-
-  begin
-    -- načíst adresu proměnné
-    i_newcontext(supercontext,context,lm_gen,nil);
-    i_load(inst,info,context,supercontext,expr,vysl);
-
-    -- změnit velikost
-    vysl.adjust_size(4);
-
-    -- načíst do temporary proměnné
-    if reg
-      then i_gen_loadreg(inst,info,supercontext,nil,vysl,false,irm_int)
-      else i_gen_loadtemp(inst,info,supercontext,vysl);
-      end if;
-
-  catch
-    when resume_error do
-        expr^.errpos;
-        raise;
-
-    when compiler_error do
-        expr^.errpos;
-        raise;
-    end;
-
-#if dump then;
-  if o_is_option_by_entity(opt_dump_code,info.entity^) then
-    debug_dump('-------------------------------------------------------------------------------');
-    end if;
-#end if;
-  end i_load_sublength;
 
 
 
@@ -4171,6 +3825,7 @@ begin
   -- = <>
   osetss(opertab,[op_eq,op_ne],dts_string,^i_gen_op_compare_string);
 
+
   ---- pole ----
   -- :=
   oset1s(opertab,op_assign,dts_array,^i_gen_op_assign);
@@ -4208,9 +3863,11 @@ begin
   -- <> =
   osetss(opertab,[op_ne,op_eq],dts_tag,^i_gen_op_compare_ordinal);
 
+
   ---- třídy ----
   -- :=
   oset1s(opertab,op_assign,dts_class,^i_gen_op_assign);
+
 
   ---- unchecked ----
   --oset11(opertab,op_assign,st_unchecked,^i_gen_op_assign);

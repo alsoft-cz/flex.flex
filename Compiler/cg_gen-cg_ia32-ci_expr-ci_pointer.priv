@@ -6,25 +6,25 @@ module private ci_pointer =
 -- Ondra : 18.04.2003 : Vytvořil
 ----------------------------------------------------------------------------------------------------
 
+
+
 ----------------------------------------------------------------------------------------------------
 procedure i_gen_op_compare_pointer =
 -- Porovnávání pointerů.
 ----------------------------------------------------------------------------------------------------
+with
+  advanced.low_level.bit_operations,
+  ci_expr.ci_rcheck;
+
 var
   el               : pexpnode;                   -- levý podvýraz
   er               : pexpnode;                   -- pravý podvýraz
---op1              : c_operand;                  -- operand 1
---op2              : c_operand;                  -- operand 2
---optmp            : c_operand;                  -- operand s porovnávanou hodnotou
-  tgend            : itarget;                    -- návěští pro skok na konec porovnávání
   cc               : icond;                      -- kód podmínky
   rest             : typeview;                   -- společný typ operandů
   newcontext       : iexprcontext;               -- kontext generování podvýrazu
-  size             : t_unsigned;
-  i                : t_unsigned;
 
 begin
-  verify({VERIFY=}000325,(expr^.arity<>eoa_2) or expr^.assign);
+  verify({VERIFY=}000325,expr^.arity<>eoa_2 or expr^.assign);
 
   -- podvýrazy
   expr^.get(el,er);
@@ -39,12 +39,13 @@ begin
   if x_is_nil(er) then
     declare var
       op1          : c_operand;                  -- operand 1
+
     begin
       -- vygenerovat a načíst levý podvýraz
-      i_newcontext(context,newcontext,lm_pointer_reg,rest.getutype);
+      i_newcontext(context,newcontext,lm_pointer{lm_pointer_reg},rest.getutype);
       i_load(inst,info,newcontext,context,el,op1);
 
-      -- z pointeru nás zajímá jen adresa
+      -- stačí porovnat na NIL pouze adresu
       -- %%X Opravdu ? viz flex@alsoft.cz
       op1.adjust_size(4);
 
@@ -60,106 +61,132 @@ begin
   else
     -- různé typy pointerů se porovnávají obecně jinak
     case rest.getpclass
-      -- přístup k datům
-      when pc_data do
-          -- zvolit způsob porovnání podle velikosti pointeru
-          size:=unidata_size_to_unsigned(rest.getsize);
-          case size
-            -- pouze adresa
-            when 4 do
+
+      -- přístup k datům nebo podprogramu
+      when pc_data, pc_subprogram do
+          ----- %%TECH Porovnávání pointerů na třídu na (ne)rovnost --------------------------------
+          -- Pro porovnání dvou class pointerů na třídu na (ne)rovnost stačí porovnat adresy uložené
+          -- v pointerech a není potřeba se zabývat run-time tagy uloženými v instancích těchto
+          -- tříd. Jinými slovy jsou-li adresy instancí tříd stejné, jsou jistě stejné i jejich
+          -- run-time tagy. 
+          --   Vyplývá to z toho, že instance třídy obsahuje na začátku servisní informace, takže se
+          -- nemůže stát, že by její první složka (typu třída) měla stejnou adresu jako instance.
+          -- Tato vlastnost samozřejmě platí i při porovnávání class pointeru na bázovou třídu se
+          -- strict pointerem na odvozenou třídu.
+          ------------------------------------------------------------------------------------------
+
+          declare var
+            op1    : c_operand;                  -- operand 1
+            op2    : c_operand;                  -- operand 2
+            rta_set: rtattribset;                -- run-time atributy podporované některým z operandů
+            tg_end : itarget;                    -- návěští pro skok na konec porovnávání
+
+          begin
+            -- vygenerovat levý podvýraz
+            i_newcontext(context,newcontext,lm_pointer,rest.getutype);
+            i_load(inst,info,newcontext,context,el,op1);
+
+            -- vygenerovat pravý podvýraz
+            i_newcontext(context,newcontext,lm_pointer,rest.getutype);
+            i_load(inst,info,newcontext,context,er,op2);
+
+            -- obnovit registry
+            op1.refresh(inst,info,context);
+            op2.refresh(inst,info,context);
+
+            -- zjistit množiny run-time atributů podporovaných jednotlivými operandy
+          #if #environment compiler_version;='4.0.3.14' then;
+            rta_set:=nil;
+          #else;
+            rta_set:=el^.t.getpattrib+er^.t.getpattrib;
+          #end if;
+
+            -- alokovat návěští pro skok na konec
+            newtarget(info,tg_end);
+
+            ----- (1) porovnat adresy -----
+            declare var
+              opaddr1 : c_operand;               -- adresa v levém operandu
+              opaddr2 : c_operand;               -- adresa v pravém operandu
+
+            begin
+              -- načíst adresní složku levého operandu
+              i_gen_load_pointer_address(inst,info,context,op1,opaddr1);
+
+              -- načíst adresní složku pravého operandu
+              i_gen_load_pointer_address(inst,info,context,op2,opaddr2);
+
+              -- obnovit registry
+              opaddr1.refresh(inst,info,context);
+              opaddr2.refresh(inst,info,context);
+
+              -- porovnat
+              i_gen_simple_op(inst,info,context,ii_cmp,opaddr1,opaddr2);
+
+              -- podmíněný skok na konec
+              if rta_set<>rtattribset:[] then
+                addjump(inst,info,context,ic_ne,tg_end);
+                end if;
+
+            leave
+              -- uvolnit operandy
+              opaddr1.free(info,context);
+              opaddr2.free(info,context);
+              end declare;
+
+            ----- (2) porovnat uložené run-time atributy -----
+            -- v praxi je v pointeru přímo uložen pouze :tag, :size a :@instance
+            verify({VERIFY=}000971,rta_set-rtattribset:[rta_tag,rta_size,rta_instance]<>rtattribset:[]);
+
+            -- má cenu něco začínat ?
+            for rta in rtattrib loop
+              -- jestliže je atribut alespoň v jednom pointeru, budeme ho porovnávat
+              if rta in rta_set then
                 declare var
-                  op1 : c_operand;               -- operand 1
-                  op2 : c_operand;               -- operand 2
-                begin
-                  -- vygenerovat a načíst operandy
-                  i_load_binary_pointer(inst,info,context,expr,rest.getutype,el,er,op1,op2);
+                  oprta1 : c_operand;            -- hodnota run-time atributu levého operandu
+                  oprta2 : c_operand;            -- hodnota run-time atributu pravého operandu
+
+                begin  
+                  -- načíst atribut levého pointeru
+                  i_rta_load(inst,info,context,op1,rta,oprta1);
+
+                  -- načíst atribut pravého pointeru
+                  i_rta_load(inst,info,context,op2,rta,oprta2,for no_memory use true);
+
+                  -- obnovit registry
+                  oprta1.refresh(inst,info,context);
+                  oprta2.refresh(inst,info,context);
 
                   -- porovnat
-                  addii(inst,info,ii_cmp,op1,op2,op0);
+                  addii(inst,info,ii_cmp,oprta1,oprta2,op0);
 
-                leave
-                  -- uvolnit operandy
-                  op1.free(info,context);
-                  op2.free(info,context);
-                  end declare;
+                  {%%TODO(RTATTRIB) Toto opatření zrušit po zavedení run-time tag checků }
+                  i_gen_rcheck_constraint_error_on_condition(inst,info,context,ic_ne);
 
-            -- pointer s nějakými atributy
-            when 8,12,16 do
-                declare var
-                  op1   : c_operand;             -- operand 1
-                  op2   : c_operand;             -- operand 2
-                  optmp : c_operand;             -- pracovní operand pro část porovnávané hodnoty
-                begin
-                  -- vygenerovat a načíst adresu levého operandu
-                  i_newcontext(context,newcontext,lm_gen,rest.getutype);
-                  i_load(inst,info,newcontext,context,el,op1);
+                  -- vyřešili jsme jeden atribut
+                  bit_reset(rta_set,t_bit_index(rta:ord));
 
-                  -- načíst adresu pravého operandu
-                  i_newcontext(context,newcontext,lm_gen,rest.getutype);
-                  i_load(inst,info,newcontext,context,er,op2);
-
-                  -- obnovit registr
-                  verify({VERIFY=}000494,op1.optype<>io_mem or op2.optype<>io_mem);
-                  op1.refresh(inst,info,context);
-                  op2.refresh(inst,info,context);
-
-                  -- pokud už nemáme volné registry, tak zkusit redukovat počet registrů v operandech
-                  if not i_reg_are_available(context,4) then
-                    i_gen_reduceop(inst,info,context,op1);
-                    i_gen_reduceop(inst,info,context,op2);
+                  -- podmíněný skok na konec
+                  if rta_set<>rtattribset:[] then
+                    addjump(inst,info,context,ic_ne,tg_end);
                     end if;
 
-                  -- budeme potřebovat jeden registr
-                  optmp.create_new_register(inst,info,context,edt_unsigned,4);
-
-                { %%TODO(CODEGEN) Tento úsek kódu zase obnovit, až bude správně fungovat
-                   veškerá manipulace s tagy včetně modifikátoru CLASS v deklaraci parametru.
-                  -- alokovat návěští pro skok na konec
-                  newtarget(info,tgend);
-                }
-                  -- operandy budeme zpracovávat po 4bytových krocích
-                  op1.adjust_size(4);
-                  op2.adjust_size(4);
-
-                { %%TODO(CODEGEN) Tento úsek kódu zase obnovit, až bude správně fungovat
-                   veškerá manipulace s tagy včetně modifikátoru CLASS v deklaraci parametru.
-
-                  -- porovnat
-                  for i in 1..size div 4-1 loop
-                    -- načíst a porovnat hodnotu
-                    addii(inst,info,ii_mov,optmp,op1,op0);
-                    addii(inst,info,ii_cmp,optmp,op2,op0);
-
-                    -- podmíněný skok na konec
-                    addjump(inst,info,ic_ne{icondneg[cc]},tgend);
-
-                    -- posunout adresy obou operandů
-                    shiftop(op1,4);
-                    shiftop(op2,4);
-                    end loop;
-                }
-                  -- porovnat poslední dvojici
-                  addii(inst,info,ii_mov,optmp,op1,op0);
-                  addii(inst,info,ii_cmp,optmp,op2,op0);
-
-                { %%TODO(CODEGEN) Tento úsek kódu zase obnovit, až bude správně fungovat
-                   veškerá manipulace s tagy včetně modifikátoru CLASS v deklaraci parametru.
-                  -- adresa skoku na toto místo
-                  settarget(info,tgend,getaddr(inst));
-                }
                 leave
                   -- uvolnit operandy
-                  optmp.free(info,context);
-                  op1.free(info,context);
-                  op2.free(info,context);
+                  oprta1.free(info,context);
+                  oprta2.free(info,context);
                   end declare;
- 
-            when others do verify({VERIFY=}000492,true);
-            end case;
+                end if;
+              end loop;
 
-      -- přístup k podprogramu
-      when pc_subprogram do
-          unimplemented({UNIMP=}000167);
+            -- adresa skoku na toto místo
+            settarget(info,tg_end,getaddr(inst));
+
+          leave
+            -- uvolnit operandy
+            op1.free(info,context);
+            op2.free(info,context);
+            end declare;
 
       -- přístup k tasku
       when pc_task do
@@ -186,8 +213,6 @@ procedure i_gen_op_assign_pointer =
 var
   el               : pexpnode;                   -- levý podvýraz
   er               : pexpnode;                   -- pravý podvýraz
-  newcontext       : iexprcontext;               -- kontext generování podvýrazu
-  size             : t_unsigned32;               -- velikost pointeru
 
 begin
   verify({VERIFY=}000502,expr^.arity<>eoa_2);
@@ -195,20 +220,19 @@ begin
   -- podvýrazy
   expr^.get(el,er);
 
-  -- velikost pointeru
-  size:=unidata_size_to_unsigned(el^.t.getsize);
-
   --- přiřazení NIL ---
   if x_is_nil(er) then
     declare var
       op1          : c_operand;                  -- operand 1
+      newcontext   : iexprcontext;               -- kontext generování podvýrazu
+
     begin
       -- vygenerovat levý podvýraz
       i_newcontext(context,newcontext,lm_gen,el^.t.getctype);
       i_load(inst,info,newcontext,context,el,op1);
 
       -- vynulovat
-      i_gen_fillz_static(inst,info,context,op1,size);
+      i_gen_fillz_static(inst,info,context,op1,value_size_from_expr(el));
 
     leave
       -- uvolnit operand
@@ -218,69 +242,26 @@ begin
   --- přiřazení jiného pointeru ---
   else
     declare var
-      op1 : c_operand;               -- operand 1
-      op2 : c_operand;               -- operand 2
+      op1          : c_operand;                  -- levý operand
+      op2          : c_operand;                  -- pravý operand
+      newcontext   : iexprcontext;               -- kontext generování podvýrazu
+
     begin
-      -- vygenerovat a načíst oba operandy
-      i_load_binary_pointer(inst,info,context,expr,el^.t.getctype,el,er,op1,op2);
+      -- vygenerovat a načíst pravý podvýraz
+      i_newcontext(context,newcontext,lm_pointer,el^.t.getctype);
+      i_load(inst,info,newcontext,context,er,op2);
 
-      -- přiřadit
-      case size
-        -- půjde to možná jednoduše
-        when 4 do
-            if op2.optype in t_operand_type_set:[io_imm,io_reg]
+      -- vygenerovat levý podvýraz
+      i_newcontext(context,newcontext,lm_pointer,nil);
+      i_load(inst,info,newcontext,context,el,op1);
 
-              -- hodnota je v registru nebo je to konstanta
-              then addii(inst,info,ii_mov,op1,op2,op0)
+      -- obnovit registry
+      op1.refresh(inst,info,context);
+      op2.refresh(inst,info,context);
 
-              -- musíme přes pomocný registr
-              else
-                declare var
-                  optemp : c_operand;            -- pracovní operand pro část přiřazované hodnoty
-                begin
-                  -- alokovat registr
-                  optemp.create_new_register(inst,info,context,edt_unsigned,4);
+      -- vygenerovat vlastní přiřazení
+      i_gen_store_pointer(inst,info,context,op2,op1);
 
-                  -- přesunout
-                  addii(inst,info,ii_mov,optemp,op2,op0);
-                  addii(inst,info,ii_mov,op1,optemp,op0);
-
-                leave
-                  -- uvolnit operand
-                  optemp.free(info,context);
-                  end declare;
-                end if;
-
-        -- rozhodně musíme přes registry
-        when 8,12,16 do
-            declare var
-              optemp : c_operand;            -- pracovní operand pro část přiřazované hodnoty
-            begin
-              -- alokovat registr
-              optemp.create_new_register(inst,info,context,edt_unsigned,4);
-
-              -- operandy budeme zpracovávat po 4bytových kouscích
-              op1.adjust_size(4);
-              op2.adjust_size(4);
-
-              -- přesunout
-              for i in 1..size div 4 loop
-                -- přesunout jednu čtveřici
-                addii(inst,info,ii_mov,optemp,op2,op0);
-                addii(inst,info,ii_mov,op1,optemp,op0);
-
-                -- posunout adresy obou operandů
-                op1.shift_displacement(4);
-                op2.shift_displacement(4);
-                end loop;
-
-            leave
-              -- uvolnit operand
-              optemp.free(info,context);
-              end declare;
-
-        when others do verify({VERIFY=}000503,true);
-        end case;
     leave
       -- uvolnit operandy
       op1.free(info,context);
