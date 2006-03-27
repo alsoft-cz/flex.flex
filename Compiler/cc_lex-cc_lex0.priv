@@ -85,7 +85,7 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-static getnum (
+static parse_numeric_literal (
     lex            : out lexsym;                 -- lexikální element
     val            : out lexval;                 -- hodnota elementu
     append         : in t_logical) =             -- T-textovou reprezentaci přidat k již existující
@@ -269,7 +269,6 @@ begin
 
       -- započítat exponent do výsledku
       val.ur*uniint_exp10(ui);
-
       end if;
 
     -- posledně přečtený znak vrátit zpět do vstupu
@@ -294,12 +293,12 @@ begin
   if not append then
     val.txt:=buf_txt.endtext;
     end if;  
-  end getnum;
+  end parse_numeric_literal;
 
 
 
 ----------------------------------------------------------------------------------------------------
-static get_char_encoding (
+static parse_character_encoding (
     ui         : out tuniint) =                  -- ordinální hodnota znaku
 -- Ziska znak zapsaný svým ordinálním číslem.
 ----------------------------------------------------------------------------------------------------
@@ -309,21 +308,28 @@ var
 
 begin
   -- přečíst číslo znaku
-  getnum(nlex,ord,true);
+  parse_numeric_literal(nlex,ord,true);
+
+  -- je to celé číslo ?
+  if nlex<>lex_numi then
+    ce^.seterror({CCERR=}000686,ce_x_integer_number);
+    ce^.loadtextpos;
+    end if;
 
   -- vejde se do jednoho znaku ?
   if ord.ui<ui_unichar_first or ord.ui>ui_unichar_last then
+    ce^.seterror({CCERR=}000687,ce_character_encoding);
     ord.ui:=ui_0;
     end if;
 
   -- předat ven
   ui:=ord.ui;
-  end get_char_encoding;
+  end parse_character_encoding;
 
 
 
 ----------------------------------------------------------------------------------------------------
-static getstr (
+static parse_character_aggregate (
     isfc           : in t_logical;               -- T-FC je platné
     fc             : in tunichar) =              -- první znak agregátu
 -- Ziska z prectene hodnoty retezec.
@@ -429,7 +435,7 @@ begin
           buf_txt.addchar(c);
 
           -- získat znak
-          get_char_encoding(ui);
+          parse_character_encoding(ui);
 
           -- uložit do bufferu znakového agregátu (bez překladu)
           --%%X Tohle se mi vůbec nelíbí. Potřebuju proceduru UNICHAR_TO_LEXCHAR, jenže ji nemůžu
@@ -450,7 +456,7 @@ begin
 
   -- výsledný lexikální element
   last.lex:=lex_str;
-  end getstr;
+  end parse_character_aggregate;
 
 
 {
@@ -475,7 +481,7 @@ begin
 
 
 ----------------------------------------------------------------------------------------------------
-static comment =
+static parse_multiline_comment =
 -- Preskoci komentar typu { }.
 ----------------------------------------------------------------------------------------------------
 var
@@ -498,7 +504,7 @@ begin
       ce^.raiseerror;
       end if;
     until hloubka=0;
-  end comment;
+  end parse_multiline_comment;
 
 
 
@@ -511,6 +517,7 @@ with
 
 var
   c                : lexchar;                    -- přečtený znak
+  c1               : lexchar;
 
 begin
 #if #declared profiler_lex; #and then; profiler_lex then;
@@ -591,7 +598,7 @@ begin
       -- číslo
       when "0".."9","$" do
           lex_input^.ungetchar;
-          getnum(last.lex,last.val,false);
+          parse_numeric_literal(last.lex,last.val,false);
 
       -- znakový literál
       when """ do 
@@ -631,7 +638,7 @@ begin
       -- znakový agregát
       when "'" do
           lex_input^.ungetchar;
-          getstr(false,uc_nil);
+          parse_character_aggregate(false,uc_nil);
 
       -- znakový literál nebo znakový agregát
       when "\" do
@@ -642,7 +649,7 @@ begin
           buf_txt.addchar(c);
 
           -- přečíst kód znaku
-          get_char_encoding(last.val.ui);
+          parse_character_encoding(last.val.ui);
 
           -- co je zač další znak ?
           lex_input^.getchar(c);
@@ -651,7 +658,7 @@ begin
 
             -- pokračuje znakový agregát
             then 
-              getstr(true,uniint_to_unichar(last.val.ui));
+              parse_character_aggregate(true,uniint_to_unichar(last.val.ui));
 
             -- byl to znakový literál
             else
@@ -771,6 +778,14 @@ begin
           buf_txt.newtext;
           buf_id.newtext;
 
+          -- musí následovat platný identifikátor
+          lex_input^.getchar(c1);
+          lex_input^.ungetchar;
+          if not ((c1>="a" and c1<="z") or (c1>="A" and c1<="Z") or c1="_")  then
+            ce^.seterror({CCERR=}000688,ce_x_id);
+            ce^.loadtextpos;
+            end if;
+        
           -- přečíst celý identifikátor
           loop
             -- uložit do bufferu textové reprezentace
@@ -822,8 +837,7 @@ begin
           last.lex:=lex_asm_label;
 
       -- komentář { }
-      when "{" do
-          comment;
+      when "{" do parse_multiline_comment;
 
       -- znak "konec řádku" - LF
       when \10 do 
